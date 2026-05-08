@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>CHIM Actions</title>
+    <link rel="stylesheet" href="settings_menu.css">
+</head>
+<body>
+    <div id="settings-modal" class="modal-container">
+        <!-- Header -->
+        <div class="modal-header">
+            <div class="breadcrumb">
+                <span>CHIM Actions</span>
+            </div>
+            <button class="close-btn" onclick="closeMenu()">×</button>
+        </div>
+
+        <!-- Content Area - All options visible, no collapsing -->
+        <div class="modal-content">
+            <!-- General -->
+            <div class="settings-group">
+                <h2 class="group-title">General</h2>
+                <div class="options-grid options-grid-half">
+                    <button class="setting-btn" onclick="selectOption('open_ai_quest_manager')"
+                            onmouseenter="showDescription('Open AI Quest Manager V1 with SNQE fields and controls')"
+                            onmouseleave="clearDescription()">AI Quest Manager</button>
+                    <button class="setting-btn" onclick="selectOption('open_create_rumor')"
+                            onmouseenter="showDescription('Create a manual rumor and save it directly into the Background Life rumors table')"
+                            onmouseleave="clearDescription()">Create Rumor</button>
+                </div>
+            </div>
+            <!-- Mode Options -->
+            <div class="settings-group">
+                <h2 class="group-title">Mode</h2>
+                <div class="options-grid">
+                    <button class="setting-btn" data-option="mode_standard" onclick="selectOption('mode_standard')" 
+                            onmouseenter="showDescription('Normal conversation mode with roleplay and event injection support')"
+                            onmouseleave="clearDescription()">Standard Chat</button>
+                    <button class="setting-btn" data-option="mode_shout" onclick="selectOption('mode_shout')"
+                            onmouseenter="showDescription('Project your voice farther. Doubles the spatial hearing distance for player speech.')"
+                            onmouseleave="clearDescription()">Shout Chat</button>
+                    <button class="setting-btn" data-option="mode_whisper" onclick="selectOption('mode_whisper')"
+                            onmouseenter="showDescription('Private conversation mode - only nearby NPCs (4 meters) can hear and respond')"
+                            onmouseleave="clearDescription()">Whisper Chat</button>
+                    <button class="setting-btn" data-option="mode_narrator" onclick="selectOption('mode_narrator')"
+                            onmouseenter="showDescription('Private narrator mode - when you speak, only The Narrator hears the conversation and nearby NPCs do not')"
+                            onmouseleave="clearDescription()">Narrator Mode</button>
+                    <button class="setting-btn" data-option="mode_director" onclick="selectOption('mode_director')"
+                            onmouseenter="showDescription('Give direct instructions to NPCs as game director')"
+                            onmouseleave="clearDescription()">Director Mode</button>
+                    <button class="setting-btn" data-option="mode_spawn" onclick="selectOption('mode_spawn')"
+                            onmouseenter="showDescription('Spawn new characters by describing them')"
+                            onmouseleave="clearDescription()">Spawn NPC</button>
+                    <button class="setting-btn" data-option="mode_cheat" onclick="selectOption('mode_cheat')"
+                            onmouseenter="showDescription('All input processed as cheat commands - NPCs will execute any request')"
+                            onmouseleave="clearDescription()">Cheat Mode</button>
+                    <button class="setting-btn" data-option="mode_autochat" onclick="selectOption('mode_autochat')"
+                            onmouseenter="showDescription('Speaks for you using your Player Bio and Speech Style. Makes 2 LLM calls: first rewrites your input into in-character dialogue (fast model), then the NPC responds.')"
+                            onmouseleave="clearDescription()">Auto Chat</button>
+                    <button class="setting-btn" data-option="mode_inject_log" onclick="selectOption('mode_inject_log')"
+                            onmouseenter="showDescription('Add events to NPC memory without triggering responses')"
+                            onmouseleave="clearDescription()">Inject Event</button>
+                    <button class="setting-btn" data-option="mode_inject_chat" onclick="selectOption('mode_inject_chat')"
+                            onmouseenter="showDescription('Add events to NPC memory and get a response')"
+                            onmouseleave="clearDescription()">Inject & Chat</button>
+                </div>
+            </div>
+
+            <!-- LLM Profile Options -->
+            <div class="settings-group">
+                <h2 class="group-title">LLM Profiles</h2>
+                <div class="options-grid">
+                    <button class="setting-btn" data-option="llm_standard" onclick="selectOption('llm_standard')"
+                            onmouseenter="showDescription('Balanced speed and quality for general conversations')"
+                            onmouseleave="clearDescription()">Standard LLM</button>
+                    <button class="setting-btn" data-option="llm_fast" onclick="selectOption('llm_fast')"
+                            onmouseenter="showDescription('Faster responses with lighter model')"
+                            onmouseleave="clearDescription()">Fast LLM</button>
+                    <button class="setting-btn" data-option="llm_powerful" onclick="selectOption('llm_powerful')"
+                            onmouseenter="showDescription('Best quality responses with heavier model')"
+                            onmouseleave="clearDescription()">Powerful LLM</button>
+                    <button class="setting-btn" data-option="llm_experimental" onclick="selectOption('llm_experimental')"
+                            onmouseenter="showDescription('Experimental features and cutting-edge models')"
+                            onmouseleave="clearDescription()">Experimental LLM</button>
+                    <button class="setting-btn" onclick="selectOption('llm_focus')"
+                            onmouseenter="showDescription('Limit context to current conversation only')"
+                            onmouseleave="clearDescription()">Focus Chat</button>
+                </div>
+            </div>
+
+            <!-- NPC Profile Assignment (shown when targeting NPC) -->
+            <div id="npc-settings" class="settings-group" style="display: none;">
+                <h2 class="group-title">Assign Profile to <span id="npc-name" class="npc-highlight">NPC</span></h2>
+                <div class="options-grid">
+                    <button class="setting-btn profile-btn" data-option="profile_1" onclick="selectOption('profile_1')" 
+                            onmouseenter="showDescription('Assign Profile 1 to this NPC')"
+                            onmouseleave="clearDescription()">
+                        <div class="profile-name" id="profile-1-name">Profile 1</div>
+                    </button>
+                    <button class="setting-btn profile-btn" data-option="profile_2" onclick="selectOption('profile_2')"
+                            onmouseenter="showDescription('Assign Profile 2 to this NPC')"
+                            onmouseleave="clearDescription()">
+                        <div class="profile-name" id="profile-2-name">Profile 2</div>
+                    </button>
+                    <button class="setting-btn profile-btn" data-option="profile_3" onclick="selectOption('profile_3')"
+                            onmouseenter="showDescription('Assign Profile 3 to this NPC')"
+                            onmouseleave="clearDescription()">
+                        <div class="profile-name" id="profile-3-name">Profile 3</div>
+                    </button>
+                    <button class="setting-btn profile-btn" data-option="profile_4" onclick="selectOption('profile_4')"
+                            onmouseenter="showDescription('Assign Profile 4 to this NPC')"
+                            onmouseleave="clearDescription()">
+                        <div class="profile-name" id="profile-4-name">Profile 4</div>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Roleplay Options -->
+            <div class="settings-group">
+                <h2 class="group-title">Roleplay - Global</h2>
+                <div class="options-grid">
+                    <button class="setting-btn" onclick="selectOption('rp_gather')"
+                            onmouseenter="showDescription('Call all nearby AI friends to gather around you')"
+                            onmouseleave="clearDescription()">Gather Friends</button>
+                    <button class="setting-btn" onclick="selectOption('rp_halt')"
+                            onmouseenter="showDescription('Stop all AI actions for nearby NPCs')"
+                            onmouseleave="clearDescription()">Stop All AI</button>
+                    <button class="setting-btn" onclick="selectOption('rp_diary_all')"
+                            onmouseenter="showDescription('Request all nearby NPCs to write diary entries')"
+                            onmouseleave="clearDescription()">Write All Diaries</button>
+                    <button class="setting-btn" onclick="selectOption('rp_diary_narrator')"
+                            onmouseenter="showDescription('Request The Narrator to write a diary entry')"
+                            onmouseleave="clearDescription()">Write Narrator Diary</button>
+                    <button class="setting-btn" id="player-diary-button" onclick="selectOption('rp_diary_player')"
+                            onmouseenter="showDescription('Request the current player character to write a diary entry')"
+                            onmouseleave="clearDescription()"><span id="player-diary-button-label">Write Player Diary</span></button>
+                    <button class="setting-btn" onclick="selectOption('rp_update_nearby_profiles')"
+                            onmouseenter="showDescription('Request all nearby AI NPCs to refresh their dynamic profile fields')"
+                            onmouseleave="clearDescription()">Update Nearby NPC Dynamic Profiles</button>
+                    <button class="setting-btn" onclick="selectOption('rp_update_narrator')"
+                            onmouseenter="showDescription('Request The Narrator to refresh its dynamic profile fields')"
+                            onmouseleave="clearDescription()">Update Narrator Dynamic Profile</button>
+                </div>
+            </div>
+
+            <!-- NPC-Targeted Roleplay (shown when targeting NPC) -->
+            <div id="roleplay-npc-actions" class="settings-group" style="display: none;">
+                <h2 class="group-title">Roleplay - <span id="roleplay-npc-name" class="npc-highlight">NPC</span></h2>
+                <div class="options-grid">
+                    <button class="setting-btn" onclick="selectOption('rp_write_diary')"
+                            onmouseenter="showDescription('Ask this NPC to write about recent events')"
+                            onmouseleave="clearDescription()">Write Diary</button>
+                    <button class="setting-btn" onclick="selectOption('rp_update_npc')"
+                            onmouseenter="showDescription('Refresh this NPCs personality and memories')"
+                            onmouseleave="clearDescription()">Update NPC Dynamic Profile</button>
+                    <button class="setting-btn" onclick="selectOption('rp_wait')"
+                            onmouseenter="showDescription('Command this NPC to wait here')"
+                            onmouseleave="clearDescription()">Wait Here</button>
+                    <button class="setting-btn" onclick="selectOption('rp_follow')"
+                            onmouseenter="showDescription('Command this NPC to follow you')"
+                            onmouseleave="clearDescription()">Follow Me</button>
+                    <button class="setting-btn" onclick="selectOption('rp_rename')"
+                            onmouseenter="showDescription('Add this NPC to Background Life')"
+                            onmouseleave="clearDescription()">Add to Background Life</button>
+                    <button class="setting-btn" onclick="selectOption('continue_chat')"
+                            onmouseenter="showDescription('Ask this NPC to continue speaking naturally')"
+                            onmouseleave="clearDescription()">Continue Speaking</button>
+                    <button id="ai-generate-profile-btn" class="setting-btn" onclick="selectOption('rp_ai_generate_profile')"
+                            onmouseenter="showDescription('Generate or refresh this NPC\\'s CHIM profile using up to the last 100 usable events')"
+                            onmouseleave="clearDescription()">AI Generate Profile</button>
+                </div>
+            </div>
+
+            <!-- Soulgaze Options -->
+            <div class="settings-group">
+                <h2 class="group-title">Soulgaze</h2>
+                <div class="options-grid">
+                    <button class="setting-btn" onclick="selectOption('sg_soulgaze')"
+                            onmouseenter="showDescription('Perform full soulgaze ITT image reading. Requires ITT to be configured!')"
+                            onmouseleave="clearDescription()">Soulgaze</button>
+                    <button class="setting-btn" onclick="selectOption('sg_photo_zoom')"
+                            onmouseenter="showDescription('Take close-up photo of NPCs for CHIM NPC profile picture')"
+                            onmouseleave="clearDescription()">NPC Photo Zoom</button>
+                    <button class="setting-btn" onclick="selectOption('sg_photo')"
+                            onmouseenter="showDescription('Take standard photo of NPCs for CHIM NPC profile picture')"
+                            onmouseleave="clearDescription()">NPC Photo</button>
+                    <button class="setting-btn" onclick="selectOption('sg_upload')"
+                            onmouseenter="showDescription('Upload current scene to CHIM Soulgaze gallery')"
+                            onmouseleave="clearDescription()">Upload Image</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="rumor-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeRumorModal()">
+            <div class="rumor-modal-panel" role="dialog" aria-modal="true" aria-labelledby="rumor-modal-title">
+                <div class="rumor-modal-header">
+                    <div class="rumor-modal-title-wrap">
+                        <h3 id="rumor-modal-title" class="rumor-modal-title">Create Rumor</h3>
+                        <p class="rumor-modal-subtitle">Add a rumor directly to Background Life without leaving Prisma.</p>
+                    </div>
+                    <button class="rumor-modal-close" type="button" onclick="closeRumorModal()" aria-label="Close create rumor modal">&times;</button>
+                </div>
+                <form id="rumor-create-form" class="rumor-form" onsubmit="submitRumorForm(event)">
+                    <div class="rumor-form-row">
+                        <div class="rumor-field">
+                            <label for="rumor-hold-select">Hold</label>
+                            <select id="rumor-hold-select" name="rumor_hold" required>
+                                <option value="">Select hold</option>
+                                <option value="Skyrim">Skyrim</option>
+                                <option value="Whiterun">Whiterun</option>
+                                <option value="Eastmarch">Eastmarch</option>
+                                <option value="Haafingar">Haafingar</option>
+                                <option value="The Reach">The Reach</option>
+                                <option value="Hjaalmarch">Hjaalmarch</option>
+                                <option value="The Pale">The Pale</option>
+                                <option value="Falkreath">Falkreath</option>
+                                <option value="The Rift">The Rift</option>
+                                <option value="Winterhold">Winterhold</option>
+                                <option value="Solstheim">Solstheim</option>
+                            </select>
+                        </div>
+                        <div class="rumor-field">
+                            <label for="rumor-type-input">Type</label>
+                            <input id="rumor-type-input" name="rumor_type" type="text" placeholder="General">
+                        </div>
+                        <div class="rumor-field">
+                            <label for="rumor-length-days-input">Rumor Length (Days)</label>
+                            <input id="rumor-length-days-input" name="rumor_length_days" type="number" min="1" step="1" value="7" placeholder="7">
+                        </div>
+                    </div>
+                    <div class="rumor-field">
+                        <label for="rumor-content-input">Content</label>
+                        <textarea id="rumor-content-input" name="rumor_content" rows="5" required placeholder="Write the rumor text here..."></textarea>
+                    </div>
+                    <div id="rumor-form-status" class="rumor-form-status" aria-live="polite"></div>
+                    <div class="rumor-form-actions">
+                        <button class="setting-btn rumor-cancel-btn" type="button" onclick="closeRumorModal()">Cancel</button>
+                        <button id="rumor-submit-btn" class="setting-btn rumor-submit-btn" type="submit">Create Rumor</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="menu-footer">
+            <div class="hint-text" id="hover-description">Hover over any option to see details</div>
+        </div>
+    </div>
+    
+    <script src="layout.js"></script>
+    <script src="settings_menu.js"></script>
+</body>
+</html>

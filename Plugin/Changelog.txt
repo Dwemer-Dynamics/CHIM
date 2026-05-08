@@ -1,0 +1,34 @@
+2.7.2 - 2026-04-23
+* Combatend raises 50% chance and 30 seconds cooldown. If player still fighting , dont' do
+* Added wavcutter. Cuts one half second at the end of wavs (silence at the end prevents stop mouth movement)
+* Bored event from time to time
+* Minor fixes
+
+
+
+0.6.1
+* Combatend raises 50% chance and 30 seconds cooldown.
+* Herika should stop moving mouth when wav stops to play. (if TTS enabled)
+* Books now are routed via SendAndWait. (needs gwserver update)
+* Added initial support for OpenAI's whisper online via API (needs gwserver update)
+- 1.0.8 	Added missing timeout on HTTPManager not respecting MCM config
+- 1.0.9 	getAgentByName is now case insensitive
+		removeAgentByName is now case insensitive
+
+- 1.0.10 	Checking if actor is still present at SpeakerManager
+			Refuse to clean if actor is dead
+			Probably fixed a bug in MCM toggle animation not preserving state
+			Added more roleplay commands * wip
+			Support for playing player speech
+			Improved function findLocation
+
+- 1.0.11	Added conf for CombatDialogueEnabled
+			Added more roleplay commands
+
+- 1.0.12	Reworked spawnCharacter rolecommand
+			Changed some actor displays to DisplayFullName()
+			Cleaner Player TTS
+			Player Talk will interrupt speech
+			Kishar Update
+			Change stop -> Halt, stop eating things with the word "Follow".
+

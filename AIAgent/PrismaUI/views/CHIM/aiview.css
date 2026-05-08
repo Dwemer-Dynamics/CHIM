@@ -1,0 +1,622 @@
+/* CHIM AI View - Multi-Window HUD Layout */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
+    background: transparent;
+    color: #e8e8e8;
+    overflow: hidden;
+}
+
+/* Container for all HUD elements */
+#chim-aiview-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    display: flex;
+}
+
+/* Make individual panels clickable but not the container */
+#chim-aiview-panel > * {
+    pointer-events: auto;
+}
+
+/* =========================
+   TOP BAR - Target Info
+   ========================= */
+.target-bar {
+    position: fixed;
+    top: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+    min-width: 450px;
+    background: rgba(10, 10, 15, 0.93);
+    border: 1px solid rgba(242, 124, 17, 0.6);
+    border-radius: 6px;
+    box-shadow: 
+        0 2px 15px rgba(0, 0, 0, 0.8),
+        0 0 20px rgba(242, 124, 17, 0.2);
+    backdrop-filter: blur(10px);
+    padding: 12px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.target-info-content {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.target-name {
+    font-size: 1.15em;
+    font-weight: 600;
+    color: rgb(242, 124, 17);
+    text-shadow: 0 0 10px rgba(242, 124, 17, 0.3);
+}
+
+.target-name.no-target {
+    color: #666;
+    font-style: italic;
+}
+
+.target-metadata {
+    display: flex;
+    gap: 12px;
+    font-size: 0.85em;
+    color: #999;
+}
+
+.target-race,
+.target-refid,
+.target-status {
+    padding: 3px 8px;
+    background: rgba(30, 30, 40, 0.7);
+    border-radius: 3px;
+    border: 1px solid rgba(80, 80, 90, 0.5);
+}
+
+.panel-controls {
+    display: flex;
+    gap: 6px;
+}
+
+.btn-close {
+    width: 24px;
+    height: 24px;
+    border: 1px solid rgba(242, 124, 17, 0.3);
+    background: rgba(40, 40, 48, 0.8);
+    color: #aaa;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-close:hover {
+    background: rgba(60, 60, 70, 0.9);
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+}
+
+/* Corner placement - driven by layout.js */
+/* left-panel: default top-left */
+.left-panel.chim-corner-top-left     { top: 20px !important;    left: 20px !important;  bottom: auto !important; right: auto !important; }
+.left-panel.chim-corner-top-right    { top: 20px !important;    right: 20px !important; bottom: auto !important; left: auto !important;  }
+.left-panel.chim-corner-bottom-left  { bottom: 20px !important; left: 20px !important;  top: auto !important;    right: auto !important; }
+.left-panel.chim-corner-bottom-right { bottom: 20px !important; right: 20px !important; top: auto !important;    left: auto !important;  }
+
+/* =========================
+   LEFT PANEL - Config
+   ========================= */
+.left-panel {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    width: 390px;
+    max-height: calc(100vh - 90px);
+    background: rgba(10, 10, 15, 0.93);
+    border: 1px solid rgba(242, 124, 17, 0.5);
+    border-radius: 6px;
+    box-shadow: 
+        0 2px 15px rgba(0, 0, 0, 0.8),
+        0 0 20px rgba(242, 124, 17, 0.2);
+    backdrop-filter: blur(10px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* bio-panel: default bottom-right */
+.bio-panel.chim-corner-top-left     { top: 20px !important;    left: 20px !important;  bottom: auto !important; right: auto !important; }
+.bio-panel.chim-corner-top-right    { top: 20px !important;    right: 20px !important; bottom: auto !important; left: auto !important;  }
+.bio-panel.chim-corner-bottom-left  { bottom: 20px !important; left: 20px !important;  top: auto !important;    right: auto !important; }
+.bio-panel.chim-corner-bottom-right { bottom: 20px !important; right: 20px !important; top: auto !important;    left: auto !important;  }
+
+/* =========================
+   BIOGRAPHY PANEL - Bottom Right (2-column, WIDER with Relationships)
+   ========================= */
+.bio-panel {
+    position: fixed;
+    bottom: 12px;
+    right: 20px;
+    width: calc(100vw - 430px);
+    max-width: calc(100vw - 430px);
+    max-height: calc(58vh - 24px);
+    background: rgba(10, 10, 15, 0.93);
+    border: 1px solid rgba(242, 124, 17, 0.5);
+    border-radius: 6px;
+    box-shadow: 
+        0 2px 15px rgba(0, 0, 0, 0.8),
+        0 0 20px rgba(242, 124, 17, 0.2);
+    backdrop-filter: blur(10px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.bio-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+}
+
+.bio-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.bio-column {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* Relationships Section in Biography (Full Width) */
+.bio-relationships {
+    width: 100%;
+    margin-bottom: 16px;
+}
+
+.bio-relationships .bio-field {
+    padding: 12px;
+}
+
+/* Panel Headers */
+.panel-section-header {
+    padding: 10px 14px;
+    background: linear-gradient(180deg, rgba(242, 124, 17, 0.2), rgba(242, 124, 17, 0.05));
+    border-bottom: 1px solid rgba(242, 124, 17, 0.3);
+    font-size: 0.9em;
+    font-weight: 600;
+    color: rgb(242, 124, 17);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Scrollable Content */
+.panel-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+.panel-content::-webkit-scrollbar {
+    width: 5px;
+}
+
+.panel-content::-webkit-scrollbar-track {
+    background: rgba(20, 20, 25, 0.5);
+}
+
+.panel-content::-webkit-scrollbar-thumb {
+    background: rgba(242, 124, 17, 0.4);
+    border-radius: 3px;
+}
+
+/* =========================
+   LOADING & EMPTY STATES
+   ========================= */
+.loading-section {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+}
+
+.loading-spinner {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    border: 3px solid rgba(242, 124, 17, 0.2);
+    border-top: 3px solid rgb(242, 124, 17);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 12px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+#empty-message {
+    text-align: center;
+    padding: 30px 20px;
+    color: #666;
+    font-style: italic;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* =========================
+   INFO SECTIONS
+   ========================= */
+.info-section {
+    margin-bottom: 14px;
+    background: rgba(20, 20, 28, 0.6);
+    border: 1px solid rgba(60, 60, 70, 0.4);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: rgba(30, 30, 38, 0.7);
+    border-bottom: 1px solid rgba(60, 60, 70, 0.3);
+}
+
+.section-title {
+    font-size: 0.9em;
+    font-weight: 600;
+    color: rgba(242, 124, 17, 0.9);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.section-content {
+    padding: 12px;
+}
+
+.section-header-compact {
+    padding-top: 8px;
+    padding-bottom: 8px;
+}
+
+.section-content-compact {
+    padding: 10px;
+}
+
+/* Info Grid */
+.info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.info-item.span-2 {
+    grid-column: span 2;
+}
+
+.info-label {
+    font-size: 0.75em;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.info-value {
+    font-size: 0.9em;
+    color: #ddd;
+    word-break: break-word;
+}
+
+.info-value.code {
+    font-family: 'Consolas', 'Monaco', monospace;
+    background: rgba(242, 124, 17, 0.1);
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+
+/* =========================
+   PROFILE & CONNECTORS
+   ========================= */
+.connector-list {
+    margin-top: 8px;
+}
+
+.connector-item {
+    background: rgba(30, 30, 40, 0.6);
+    border-left: 2px solid rgba(242, 124, 17, 0.5);
+    border-radius: 3px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+}
+
+.connector-slot {
+    font-size: 0.75em;
+    color: rgb(242, 124, 17);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.connector-name {
+    font-size: 0.85em;
+    color: #ddd;
+    margin-bottom: 2px;
+}
+
+.connector-model {
+    font-size: 0.75em;
+    color: #999;
+    font-style: italic;
+}
+
+/* =========================
+   SETTINGS TOGGLES
+   ========================= */
+.toggle-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.compact-toggle-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.toggle-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    background: rgba(30, 30, 40, 0.5);
+    border-radius: 4px;
+    min-height: 38px;
+}
+
+.toggle-label {
+    font-size: 0.85em;
+    color: #bbb;
+    flex: 1;
+}
+
+.toggle-value {
+    font-size: 0.8em;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-width: 60px;
+    text-align: center;
+}
+
+.compact-toggle-item {
+    min-height: 0;
+    padding: 7px 9px;
+    gap: 10px;
+}
+
+.compact-toggle-item .toggle-label {
+    font-size: 0.78em;
+    line-height: 1.2;
+}
+
+.compact-toggle-item .toggle-value {
+    min-width: 54px;
+    font-size: 0.74em;
+    padding: 4px 8px;
+}
+
+.toggle-value.on {
+    background: rgba(46, 204, 113, 0.2);
+    color: #58d68d;
+    border: 1px solid rgba(46, 204, 113, 0.4);
+}
+
+.toggle-value.off {
+    background: rgba(100, 100, 110, 0.2);
+    color: #888;
+    border: 1px solid rgba(100, 100, 110, 0.4);
+}
+
+.toggle-value.inherited {
+    border-style: dashed;
+    opacity: 0.85;
+}
+
+.toggle-value.inherited::after {
+    content: ' ⟨P⟩';
+    font-size: 0.75em;
+    opacity: 0.7;
+    margin-left: 2px;
+}
+
+/* =========================
+   BIO FIELDS
+   ========================= */
+.bio-field {
+    padding: 8px 10px;
+    background: rgba(20, 20, 28, 0.6);
+    border: 1px solid rgba(60, 60, 70, 0.4);
+    border-radius: 4px;
+}
+
+.bio-label {
+    font-size: 0.75em;
+    color: rgba(242, 124, 17, 0.8);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+
+.bio-text {
+    font-size: 0.82em;
+    color: #ccc;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.bio-text:empty::before {
+    content: '(Not specified)';
+    color: #666;
+    font-style: italic;
+}
+
+/* =========================
+   RELATIONSHIPS & AFFINITY
+   ========================= */
+.roleplay-info-text {
+    font-size: 0.85em;
+    color: #ccc;
+    line-height: 1.5;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: rgba(20, 20, 28, 0.5);
+    border-radius: 4px;
+}
+
+.roleplay-info-text:empty {
+    display: none;
+}
+
+.affinity-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.affinity-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 8px 10px;
+    background: rgba(30, 30, 40, 0.6);
+    border-left: 2px solid rgba(242, 124, 17, 0.5);
+    border-radius: 3px;
+}
+
+.affinity-copy {
+    min-width: 0;
+    flex: 1;
+    padding-right: 12px;
+}
+
+.affinity-npc {
+    font-size: 0.84em;
+    color: #ddd;
+    font-weight: 600;
+}
+
+.affinity-description {
+    margin-top: 4px;
+    font-size: 0.76em;
+    line-height: 1.35;
+    color: #9ca3af;
+}
+
+.affinity-value {
+    font-size: 0.8em;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 3px;
+    min-width: 40px;
+    text-align: center;
+}
+
+.affinity-value.positive {
+    background: rgba(46, 204, 113, 0.2);
+    color: #58d68d;
+    border: 1px solid rgba(46, 204, 113, 0.4);
+}
+
+.affinity-value.negative {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.affinity-value.neutral {
+    background: rgba(100, 100, 110, 0.2);
+    color: #aaa;
+    border: 1px solid rgba(100, 100, 110, 0.4);
+}
+
+.affinity-empty {
+    grid-column: 1 / -1;
+    color: #666;
+    font-style: italic;
+    padding: 8px;
+    text-align: center;
+}
+
+/* =========================
+   RESPONSIVE ADJUSTMENTS
+   ========================= */
+@media (max-width: 1400px) {
+    .left-panel {
+        width: 350px;
+    }
+
+    .bio-panel {
+        width: calc(100vw - 390px);
+        max-width: calc(100vw - 390px);
+    }
+}
+
+@media (max-width: 1180px) {
+    .affinity-list,
+    .compact-toggle-list,
+    .bio-columns {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-height: 800px) {
+    .target-bar {
+        top: 10px;
+    }
+    
+    .left-panel {
+        top: 60px;
+        max-height: calc(100vh - 75px);
+    }
+
+    .bio-panel {
+        bottom: 10px;
+        max-height: calc(60vh - 20px);
+    }
+}
