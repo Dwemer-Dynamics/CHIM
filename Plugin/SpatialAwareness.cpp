@@ -714,29 +714,34 @@ namespace SpatialAwareness
             airDistance + std::max(settings.doorTriangulationAbsoluteTolerance,
                                    airDistance * settings.doorTriangulationPercentTolerance);
 
-        speakerCell->ForEachReferenceInRange(
-            speakerPosition, scanRadius, [&](RE::TESObjectREFR& reference) {
-                const auto* baseObject = reference.GetBaseObject();
-                if (!baseObject || baseObject->GetFormType() != RE::FormType::Door) {
+        // Exterior worldspaces contain many load doors that do not form meaningful
+        // audio barriers between outdoor actors. Restrict door triangulation to
+        // same-cell interior conversations.
+        if (speakerInterior) {
+            speakerCell->ForEachReferenceInRange(
+                speakerPosition, scanRadius, [&](RE::TESObjectREFR& reference) {
+                    const auto* baseObject = reference.GetBaseObject();
+                    if (!baseObject || baseObject->GetFormType() != RE::FormType::Door) {
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
+
+                    if (!IsBetweenActors(speakerPosition, listenerPosition, reference.GetPosition(), airDistance, settings)) {
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
+
+                    const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
+                    if (IsClosedDoorState(openState)) {
+                        ++closedDoorCount;
+                        return RE::BSContainer::ForEachResult::kStop;
+                    }
+
+                    if (IsOpenDoorState(openState)) {
+                        ++openDoorCount;
+                    }
+
                     return RE::BSContainer::ForEachResult::kContinue;
-                }
-
-                if (!IsBetweenActors(speakerPosition, listenerPosition, reference.GetPosition(), airDistance, settings)) {
-                    return RE::BSContainer::ForEachResult::kContinue;
-                }
-
-                const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
-                if (IsClosedDoorState(openState)) {
-                    ++closedDoorCount;
-                    return RE::BSContainer::ForEachResult::kStop;
-                }
-
-                if (IsOpenDoorState(openState)) {
-                    ++openDoorCount;
-                }
-
-                return RE::BSContainer::ForEachResult::kContinue;
-            });
+                });
+        }
 
         result.openDoorCount = openDoorCount;
         result.closedDoorCount = closedDoorCount;
