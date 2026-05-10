@@ -15,7 +15,9 @@
 #include <windows.h>
 #include <x3daudio.h>
 #include <xaudio2.h>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
 
 #include <string>
@@ -58,7 +60,7 @@ public:
     WAVEFORMATEX wfx = {};
     BYTE* copiedData = nullptr;
 
-    float defaultVolume = 1.0f;
+    std::atomic<float> defaultVolume{1.0f};
     bool spatialUpdatesEnabled = true;
 
     // Volume ramping members

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <condition_variable>
 #include <cmath>
 #include <iostream>
 #include <sstream>
@@ -1043,6 +1044,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     std::atomic<int64_t> loopPhaseStartMs{0};
     std::atomic<int64_t> loopIterCount{0};
     std::atomic<bool> loopRunning{true};
+    std::mutex loopWakeMtx;
+    std::condition_variable loopWakeCv;
     auto phaseNowMs = [&]() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now() - loopWatchdogStart).count();
@@ -1055,12 +1058,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     std::string speakerCopy = speaker;  // for safe access from watchdog thread
     _dap_phase("pre_watchdog_thread_spawn");
     std::thread loopWatchdog([&loopRunning, &loopPhase, &loopPhaseStartMs, &loopIterCount,
-                              &loopWatchdogStart, speakerCopy]() {
+                              &loopWatchdogStart, &loopWakeMtx, &loopWakeCv, speakerCopy]() {
         logger::info("[LOOP-WATCHDOG STARTED speaker={}]", speakerCopy);
         const char* lastReportedPhase = nullptr;
         int64_t lastReportedStartMs = -1;
         while (loopRunning.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
+            // wait_for instead of sleep_for so cleanup notify_all wakes us instantly.
+            std::unique_lock<std::mutex> lk(loopWakeMtx);
+            loopWakeCv.wait_for(lk, std::chrono::seconds(3),
+                                [&] { return !loopRunning.load(std::memory_order_relaxed); });
+            lk.unlock();
             if (!loopRunning.load(std::memory_order_relaxed)) break;
             auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - loopWatchdogStart).count();
@@ -1080,16 +1087,17 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
     });
 
-    // RAII guard: signals watchdog and joins it even if the loop unwinds via
-    // exception, or if a future code path adds an early return inside the loop.
+    // RAII guard: signals watchdog (notify wakes it instantly, no 0-3s join lag) and joins.
     struct WatchdogGuard {
         std::atomic<bool>& running;
+        std::condition_variable& cv;
         std::thread& th;
         ~WatchdogGuard() {
             running.store(false, std::memory_order_relaxed);
+            cv.notify_all();
             if (th.joinable()) th.join();
         }
-    } _watchdogGuard{loopRunning, loopWatchdog};
+    } _watchdogGuard{loopRunning, loopWakeCv, loopWatchdog};
     _dap_phase("post_watchdog_thread_spawn");
 
     while (std::chrono::steady_clock::now() < endTimeWithBlankSegment) {
@@ -1375,6 +1383,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     setPhase("loop_exit");
     loopRunning.store(false, std::memory_order_relaxed);
+    loopWakeCv.notify_all();
     if (loopWatchdog.joinable()) {
         loopWatchdog.join();
     }

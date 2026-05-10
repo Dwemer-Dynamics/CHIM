@@ -409,13 +409,11 @@ bool AudioManager::Play() {
 }
 
 void AudioManager::setVolume(float vol) {
-    // Clamp [0,1]: XAudio2 accepts higher but it clips and deadlocks the audio callback.
+    // Clamp [0,1]: XAudio2 clips above 1.0 and can deadlock the audio callback.
     float normalized = vol / 100.0f;
-    if (normalized < 0.0f)
-        normalized = 0.0f;
-    else if (normalized > 1.0f)
-        normalized = 1.0f;
-    defaultVolume = normalized;
+    if (normalized < 0.0f) normalized = 0.0f;
+    else if (normalized > 1.0f) normalized = 1.0f;
+    defaultVolume.store(normalized, std::memory_order_relaxed);
 }
 
 
@@ -434,32 +432,27 @@ void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition, const X3DAUDIO
     }
 
     // Handle volume ramping
+    const float dv = defaultVolume.load(std::memory_order_relaxed);
     if (isRamping) {
         auto currentTime = std::chrono::steady_clock::now();
         float elapsedSeconds = std::chrono::duration<float>(currentTime - rampStartTime).count();
-        
+
         if (elapsedSeconds < rampDuration) {
-            // Calculate ramped volume
-            float newVolume = (elapsedSeconds / rampDuration) * defaultVolume;
-            if (std::abs(newVolume - currentVolume) > 0.01f) {  // Only update if change is significant
+            float newVolume = (elapsedSeconds / rampDuration) * dv;
+            if (std::abs(newVolume - currentVolume) > 0.01f) {
                 currentVolume = newVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                //logger::debug("[AudioManager] Ramping volume to: {}", currentVolume);
             }
         } else {
-            // Ramping complete
-            if (std::abs(defaultVolume - currentVolume) > 0.01f) {
-                currentVolume = defaultVolume;
+            if (std::abs(dv - currentVolume) > 0.01f) {
+                currentVolume = dv;
                 pSourceVoice->SetVolume(currentVolume);
-                //logger::debug("[AudioManager] Volume ramp complete, set to: {}", currentVolume);
             }
             isRamping = false;
         }
-    } else if (std::abs(defaultVolume - currentVolume) > 0.01f) {
-        // Only update volume if it has changed significantly
-        currentVolume = defaultVolume;
+    } else if (std::abs(dv - currentVolume) > 0.01f) {
+        currentVolume = dv;
         pSourceVoice->SetVolume(currentVolume);
-        //logger::debug("[AudioManager] Set volume to: {}", defaultVolume);
     }
 
     if (!spatialUpdatesEnabled) {
