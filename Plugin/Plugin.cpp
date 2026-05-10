@@ -1286,6 +1286,15 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    // 200ms throttle: fires from TESSceneEvent which storms in towns; was hitting 17/sec.
+    static std::chrono::steady_clock::time_point lastRun;
+    static std::mutex lastRunMtx;
+    {
+        std::lock_guard<std::mutex> lk(lastRunMtx);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastRun < std::chrono::milliseconds(200)) return;
+        lastRun = now;
+    }
     auto* sm = RE::SubtitleManager::GetSingleton();
     logger::info("[ProcedureListenToScene] start");
     for (auto s : sm->subtitles) {
