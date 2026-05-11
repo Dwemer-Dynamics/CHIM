@@ -117,10 +117,10 @@
         
         if (profileData.connectors) {
             const connectorNames = {
-                'primary': 'Primary LLM',
-                'secondary': 'Secondary LLM',
-                'tertiary': 'Tertiary LLM',
-                'quaternary': 'Quaternary LLM',
+                'primary': 'Standard LLM',
+                'secondary': 'Fast LLM',
+                'tertiary': 'Powerful LLM',
+                'quaternary': 'Experimental LLM',
                 'formatter': 'Formatter LLM',
                 'diary': 'Diary LLM'
             };

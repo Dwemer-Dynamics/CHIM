@@ -52,12 +52,13 @@
         const status = data.data;
         const pipeline = status.pipeline || {};
         
-        // Thinking = LLM/STT/PlayerTTS active
-        const isThinking = pipeline.llm || pipeline.stt || pipeline.player_tts;
+        // Treat both generation and TTS work as active so the MiniHUD reflects
+        // the full live response pipeline instead of only the narrow LLM/STT window.
+        const isThinking = !!(pipeline.llm || pipeline.stt || pipeline.player_tts || pipeline.tts);
         thinkingStatus.classList.toggle('active', isThinking);
         
-        // Voice = TTS playing
-        voiceStatus.classList.toggle('active', !!pipeline.tts);
+        // Surface both NPC TTS and player-TTS as active audio states.
+        voiceStatus.classList.toggle('active', !!(pipeline.tts || pipeline.player_tts));
         
         // Mode
         updateMode(status.mode);

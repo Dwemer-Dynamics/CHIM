@@ -1448,8 +1448,44 @@ std::string ToLowerCopyPlugin(std::string value)
     return value;
 }
 
-std::string ClassifyFurnitureUseType(const std::string& furnitureName, const std::string& editorId, RE::TESFurniture* furnitureForm)
+bool FurnitureHasMarkerAnimation(RE::TESObjectREFR* furnitureRef, RE::BSFurnitureMarker::AnimationType desiredType)
 {
+    if (!furnitureRef) {
+        return false;
+    }
+
+    auto* root = furnitureRef->Get3D();
+    if (!root) {
+        return false;
+    }
+
+    auto* extra = root->GetExtraData("FRN");
+    auto* markerNode = extra ? netimmerse_cast<RE::BSFurnitureMarkerNode*>(extra) : nullptr;
+    if (!markerNode) {
+        return false;
+    }
+
+    for (auto it = markerNode->markers.begin(); it != markerNode->markers.end(); ++it) {
+        const auto& marker = *it;
+        if (marker.animationType.get() == desiredType) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string ClassifyFurnitureUseType(
+    const std::string& furnitureName,
+    const std::string& editorId,
+    RE::TESFurniture* furnitureForm,
+    RE::TESObjectREFR* furnitureRef = nullptr,
+    bool* prefersLean = nullptr)
+{
+    if (prefersLean) {
+        *prefersLean = false;
+    }
+
     std::string combined = ToLowerCopyPlugin(furnitureName + " " + editorId);
 
     auto contains = [&combined](std::initializer_list<const char*> needles) {
@@ -1491,18 +1527,8 @@ std::string ClassifyFurnitureUseType(const std::string& furnitureName, const std
     if (contains({"bed", "sleep"})) {
         return "bed";
     }
-    if (contains({"chair", "stool", "bench", "throne"})) {
-        return "chair";
-    }
 
     if (furnitureForm) {
-        if (furnitureForm->furnFlags.any(RE::TESFurniture::ActiveMarker::kCanSleep)) {
-            return "bed";
-        }
-        if (furnitureForm->furnFlags.any(RE::TESFurniture::ActiveMarker::kCanSit)) {
-            return "chair";
-        }
-
         const auto benchType = static_cast<RE::TESFurniture::WorkBenchData::BenchType>(
             furnitureForm->workBenchData.benchType.underlying());
         if (benchType == RE::TESFurniture::WorkBenchData::BenchType::kAlchemy ||
@@ -1518,6 +1544,38 @@ std::string ClassifyFurnitureUseType(const std::string& furnitureName, const std
             benchType == RE::TESFurniture::WorkBenchData::BenchType::kCreateObject) {
             return "workbench";
         }
+    }
+
+    if (FurnitureHasMarkerAnimation(furnitureRef, RE::BSFurnitureMarker::AnimationType::kLean)) {
+        if (prefersLean) {
+            *prefersLean = true;
+        }
+        return "furniture";
+    }
+    if (FurnitureHasMarkerAnimation(furnitureRef, RE::BSFurnitureMarker::AnimationType::kSleep)) {
+        return "bed";
+    }
+    if (FurnitureHasMarkerAnimation(furnitureRef, RE::BSFurnitureMarker::AnimationType::kSit)) {
+        return "chair";
+    }
+
+    if (furnitureForm) {
+        if (furnitureForm->furnFlags.any(RE::TESFurniture::ActiveMarker::kCanLean)) {
+            if (prefersLean) {
+                *prefersLean = true;
+            }
+            return "furniture";
+        }
+        if (furnitureForm->furnFlags.any(RE::TESFurniture::ActiveMarker::kCanSleep)) {
+            return "bed";
+        }
+        if (furnitureForm->furnFlags.any(RE::TESFurniture::ActiveMarker::kCanSit)) {
+            return "chair";
+        }
+    }
+
+    if (contains({"chair", "stool", "bench", "throne"})) {
+        return "chair";
     }
 
     return combined.empty() ? "" : "furniture";
@@ -1641,30 +1699,31 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     std::string furnitureName;
     std::string furnitureEditorId;
     std::string useType;
+    bool prefersLean = false;
 
-    if (furnitureOverride != nullptr) {
+    auto furnitureHandle = npc->GetOccupiedFurniture();
+    if (furnitureHandle) {
+        auto furnitureRef = furnitureHandle.get().get();
+        if (furnitureRef) {
+            furnitureName = trim(furnitureRef->GetDisplayFullName());
+            auto* furnitureBase = furnitureRef->GetBaseObject();
+            furnitureEditorId = furnitureBase && furnitureBase->GetFormEditorID()
+                ? trim(furnitureBase->GetFormEditorID())
+                : "";
+            auto* furnitureForm = furnitureBase ? furnitureBase->As<RE::TESFurniture>() : nullptr;
+            useType = ClassifyFurnitureUseType(furnitureName, furnitureEditorId, furnitureForm, furnitureRef, &prefersLean);
+        }
+    }
+
+    if (useType.empty() && furnitureOverride != nullptr) {
         furnitureName = trim(*furnitureOverride);
         if (!furnitureName.empty()) {
-            useType = ClassifyFurnitureUseType(furnitureName, "", nullptr);
-        }
-    } else {
-        auto furnitureHandle = npc->GetOccupiedFurniture();
-        if (furnitureHandle) {
-            auto furnitureRef = furnitureHandle.get().get();
-            if (furnitureRef) {
-                furnitureName = trim(furnitureRef->GetDisplayFullName());
-                auto* furnitureBase = furnitureRef->GetBaseObject();
-                furnitureEditorId = furnitureBase && furnitureBase->GetFormEditorID()
-                    ? trim(furnitureBase->GetFormEditorID())
-                    : "";
-                auto* furnitureForm = furnitureBase ? furnitureBase->As<RE::TESFurniture>() : nullptr;
-                useType = ClassifyFurnitureUseType(furnitureName, furnitureEditorId, furnitureForm);
-            }
+            useType = ClassifyFurnitureUseType(furnitureName, "", nullptr, nullptr, &prefersLean);
         }
     }
 
     const bool hasNonSeatUse = !useType.empty() && useType != "chair" && useType != "bed";
-    const bool isLeaningUse = useType == "furniture" && isSitting;
+    const bool isLeaningUse = prefersLean || (useType == "furniture" && isSitting);
 
     std::string currentAction = "idle";
     if (isDead) {
