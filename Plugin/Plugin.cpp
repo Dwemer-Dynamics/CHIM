@@ -41,8 +41,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "2.7.2"
-#define PLUGIN_RELEASE_DATE "2026-04-23"
+#define PLUGIN_VERSION "2.8.0"
+#define PLUGIN_RELEASE_DATE "2026-05-10"
 
 /* Plugin Globals */
 
