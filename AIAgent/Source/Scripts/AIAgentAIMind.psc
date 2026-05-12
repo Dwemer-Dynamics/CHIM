@@ -2744,19 +2744,20 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	Debug.Trace("MoveInventoryItem start");
 	if (akItemToRemove.GetFormID()==0xf)
 	
-		string result = SkyMessage.Show(source.GetDisplayName()+ " wants to give you "+amount+" gold. Accept?", "No, thanks", "Yes, please!")
+		
+		string result = SkyMessage.Show(source.GetDisplayName()+ " will transfer "+amount+" gold to "+target.getDisplayName()+". Accept?", "No, thanks", "Yes, please!")
 
 		if result == "Yes, please!"
 			source.RemoveItem(akItemToRemove, amount)
 			target.AddItem(akItemToRemove,amount)
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" Gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())	
+			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())	
 		else
 			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())	
 		endif	
 		
 	else
 		source.RemoveItem(akItemToRemove, amount, false, target)
-		Debug.Notification(source.GetDisplayName()+ " gives you "+amount+" "+realName);
+		Debug.Notification(source.GetDisplayName()+ " gives "+amount+" "+realName+" to "+target.getDisplayName());
 		;TESCOntainerEvent will take care of the transaction
 	endif
 	Debug.Trace("MoveInventoryItem end");
