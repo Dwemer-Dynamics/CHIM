@@ -1215,6 +1215,61 @@ void parseRoleCommand(std::string rawCommand) {
                 }
             }
         }
+    } else if (command.contains("SpawnGoldRaw")) {
+        std::vector<std::string> splitResult = splitString(parameter);
+        if (splitResult.size() < 2) {
+            logger::info("Command has not enough parms {}", command);
+        } else {
+            auto targetName = jusTrim(splitResult[0]);
+
+            int goldAmount = 1;
+            try {
+                goldAmount = std::stoi(jusTrim(splitResult[1]));
+            } catch (const std::exception&) {
+                goldAmount = 1;
+            }
+            if (goldAmount <= 0) {
+                goldAmount = 1;
+            } else if (goldAmount > 1000000) {
+                goldAmount = 1000000;
+            }
+
+            RE::Actor* targetActor = resolveNarratorRoleTargetActor(targetName);
+            if (!targetActor) {
+                auto errorText = std::format("[CHIM] Could not find {}", targetName.empty() ? "the gold recipient" : targetName);
+                logger::warn("[SpawnGoldRaw] Could not resolve target '{}'", targetName);
+                RE::DebugNotification(errorText.c_str());
+            } else {
+                auto goldForm = RE::TESForm::LookupByID(0x0f);
+                if (!goldForm) {
+                    auto errorText = std::string("[CHIM] Could not find the gold form");
+                    logger::error("[SpawnGoldRaw] Could not find gold form");
+                    HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                 "command@SpawnGold@Gold@Error: invalid gold reference"),
+                                     targetActor);
+                    RE::DebugNotification(errorText.c_str());
+                } else {
+                    std::string resolvedTargetName = getPreferredActorDisplayName(targetActor, targetName);
+                    std::string papyrusTargetName = resolvedTargetName;
+                    std::string goldName = "Gold";
+                    auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                    auto args = RE::MakeFunctionArguments(std::move(targetActor), std::move(goldForm),
+                                                          static_cast<int>(goldAmount), std::move(goldName),
+                                                          std::move(papyrusTargetName));
+                    RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                        "AIAgentAIMind", "SpawnAndGiveItemToActor", args, callback);
+
+                    HTTPManager::log(std::format("infoaction|{}|{}|{} receives {} gold", getCurrentTimeMillis(),
+                                                 GetGameTimeStamp(), resolvedTargetName, goldAmount),
+                                     targetActor);
+                    HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                 "command@SpawnGold@" + resolvedTargetName + "@" +
+                                                     resolvedTargetName + " receives " + std::to_string(goldAmount) +
+                                                     " gold."),
+                                     targetActor);
+                }
+            }
+        }
     } else if (command.contains("CombatPlayer")) {
         std::vector<std::string> splitResult = splitString(parameter);
 
