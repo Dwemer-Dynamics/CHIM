@@ -1765,35 +1765,49 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             forceNarratorListener("explicit call of narrator");
         }
 
-        auto camera = RE::PlayerCamera::GetSingleton();
-        auto cameraState = camera->currentState.get();
+        // VR: PlayerCamera->currentState->GetRotation returns degenerate quat in action_rework's
+        // external camera, force-routing every utterance to Narrator. Read HMD node directly instead.
+        auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+        if (narrator) {
+            float pitchDegrees = 0.0f;
+            bool pitchValid = false;
 
-        // Check looking up
-        if (cameraState) {
-            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
-            if (narrator) {
-                RE::NiQuaternion rotation;
-                cameraState->GetRotation(rotation);
-
-                // Get pitch in radians (using Roll component)
-                float pitchRadians = GetPitchFromQuaternionDebug(rotation);
-
-                pitchRadians = GetPitchFromQuaternion(rotation);
-
-                // Convert to degrees
-                float pitchDegrees = pitchRadians * (180.0f / 3.141592654f);
-
-                logger::info("Camera pitch: {} degrees", pitchDegrees);
-
-                // Since looking up gave -68°, we need to check for negative values
-                // (or invert the sign if you prefer positive values for looking up)
-                if (pitchDegrees < -85.0f) {  // Looking up more than 45°
-                    logger::info("Override by explicit camera pitch");
-                    listenerPtr = narrator->getActor();
-                    listener.assign(NARRATOR_NAME);
-                    agentPointer = narrator;
-                    directedChat = true;
+            if (REL::Module::IsVR()) {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto* nodeData = player ? player->GetVRNodeData() : nullptr;
+                auto hmd = (nodeData && nodeData->UprightHmdNode) ?
+                               nodeData->UprightHmdNode.get() :
+                               nullptr;
+                if (hmd) {
+                    const RE::NiMatrix3& rot = hmd->world.rotate;
+                    const float fz = std::clamp(rot.entry[2][1], -1.0f, 1.0f);
+                    const float pitchRadians = -std::asin(fz);
+                    pitchDegrees = pitchRadians * (180.0f / 3.141592654f);
+                    pitchValid = std::isfinite(pitchDegrees);
+                    logger::info("VR HMD pitch: {} degrees (forward.z={})", pitchDegrees, fz);
+                } else {
+                    logger::info("Skipping pitch-up narrator override: VR UprightHmdNode unavailable");
                 }
+            } else {
+                auto camera = RE::PlayerCamera::GetSingleton();
+                auto cameraState = camera ? camera->currentState.get() : nullptr;
+                if (cameraState) {
+                    RE::NiQuaternion rotation;
+                    cameraState->GetRotation(rotation);
+                    float pitchRadians = GetPitchFromQuaternionDebug(rotation);
+                    pitchRadians = GetPitchFromQuaternion(rotation);
+                    pitchDegrees = pitchRadians * (180.0f / 3.141592654f);
+                    pitchValid = true;
+                    logger::info("Camera pitch: {} degrees", pitchDegrees);
+                }
+            }
+
+            if (pitchValid && pitchDegrees < -85.0f) {
+                logger::info("Override by explicit camera pitch");
+                listenerPtr = narrator->getActor();
+                listener.assign(NARRATOR_NAME);
+                agentPointer = narrator;
+                directedChat = true;
             }
         }
 

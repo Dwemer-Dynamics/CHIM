@@ -4629,9 +4629,14 @@ R"CHIM(
             return;
         }
 
+        // Hidden panel: skip the per-agent navmesh Dijkstra unless caller forces a refresh.
+        if (!force && g_chatboxState.load() == 0) {
+            return;
+        }
+
         auto now = std::chrono::steady_clock::now();
         if (!force &&
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastChatboxControlsCheck).count() < 200) {
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastChatboxControlsCheck).count() < 500) {
             return;
         }
         g_lastChatboxControlsCheck = now;

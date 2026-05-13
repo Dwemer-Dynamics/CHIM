@@ -280,7 +280,7 @@ void MusicManager::playSong(AIAgent *singer) {
         std::string lastStem = "";
         auto lastCamChanged = std::chrono::steady_clock::now()-std::chrono::seconds(5);
         auto lastAnimCalled = std::chrono::steady_clock::now();
-        auto am = AudioManagerController::GetInstance();
+        auto& am = AudioManagerController::GetInstance();
         if (am.LoadWAV(reinterpret_cast<BYTE*>(currentSong.audioBuffer.data()), currentSong.audioBuffer.size())) {
             float currentVolume = am.defaultVolume;
             am.setVolume(currentVolume * 100.0f);
@@ -740,7 +740,7 @@ void MusicManager::stopSong() {
     if (playThread.joinable()) {
         playThread.join();
     }
-    auto am = AudioManagerController::GetInstance();
+    auto& am = AudioManagerController::GetInstance();
     am.Stop();
     isPlaying = false;
     
