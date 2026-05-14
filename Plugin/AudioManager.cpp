@@ -6,6 +6,7 @@
 #include <vector>
 #include <chrono>
 #include <cstdint>
+#include <new>
 #include <string>
 
 #pragma comment(lib, "xaudio2.lib")
@@ -64,8 +65,9 @@ AudioManager::~AudioManager() {
 
 
 void AudioManager::Stop() {
+    std::lock_guard<std::mutex> lock(voiceMtx);
     logger::debug("[AudioManager] Stopping playback");
-    
+
     if (pSourceVoice) {
         HRESULT hr = pSourceVoice->Stop(0);
         if (SUCCEEDED(hr)) {
@@ -97,6 +99,7 @@ void AudioManager::setDistanceScaler(float cds) {
 
 void AudioManager::setMuffledPlayback(bool enabled)
 {
+    std::lock_guard<std::mutex> lock(voiceMtx);
     if (!pSourceVoice) {
         return;
     }
@@ -173,7 +176,9 @@ bool AudioManager::Initialize() {
     // Emitter
 
     emitter.ChannelCount = 1;
-    emitter.CurveDistanceScaler = 8.0;
+    // 8.0 forced MCM slider >100% which clipped XAudio2 → callback deadlock.
+    // 2.0 stays audible without amplification. Runtime override: setDistanceScaler.
+    emitter.CurveDistanceScaler = 2.0;
     emitter.Position = {0.0f, 0.0f, 0.0f};
     emitter.Velocity = {0.0f, 0.0f, 0.0f};
     emitter.OrientFront = {0.0f, 1.0f, 0.0f};
@@ -193,28 +198,29 @@ bool AudioManager::Initialize() {
 
 bool AudioManager::LoadWAV(BYTE* originalbuffer, size_t dataSize) {
     logger::debug("[AudioManager] Starting WAV loading - Data size: {} bytes", dataSize);
-    
-    // Delete any existing data
-    if (copiedData) {
-        delete[] copiedData;
-        copiedData = nullptr;
+
+    // Atomic-swap: build new voice in locals, briefly take voiceMtx to swap pointers,
+    // DestroyVoice the old one OUTSIDE the lock. Prevents Update/LoadWAV race that
+    // landed SetVolume on a freshly-destroyed voice → XAudio2 deadlock.
+
+    if (dataSize < sizeof(_WAVEDESCR)) {
+        logger::error("[AudioManager] WAV data too small ({} bytes)", dataSize);
+        return false;
     }
-    
-    copiedData = new BYTE[dataSize];
-    if (copiedData == nullptr) {
+
+    BYTE* newCopiedData = new (std::nothrow) BYTE[dataSize];
+    if (newCopiedData == nullptr) {
         logger::error("[AudioManager] Failed to allocate memory for audio data");
         return false;
     }
 
-    memcpy(copiedData, originalbuffer, dataSize);
+    memcpy(newCopiedData, originalbuffer, dataSize);
     logger::debug("[AudioManager] Audio data copied to internal buffer");
 
-    _WAVEDESCR* waveDescr = (_WAVEDESCR*)copiedData;
-
-    if (dataSize < sizeof(_WAVEDESCR) || memcmp(waveDescr->riff, "RIFF", 4) != 0 || memcmp(waveDescr->wave, "WAVE", 4) != 0) {
+    _WAVEDESCR* waveDescr = (_WAVEDESCR*)newCopiedData;
+    if (memcmp(waveDescr->riff, "RIFF", 4) != 0 || memcmp(waveDescr->wave, "WAVE", 4) != 0) {
         logger::error("[AudioManager] Invalid WAV file header");
-        delete[] copiedData;  // Clean up on error
-        copiedData = nullptr;
+        delete[] newCopiedData;
         return false;
     }
 
@@ -232,27 +238,25 @@ bool AudioManager::LoadWAV(BYTE* originalbuffer, size_t dataSize) {
 
     size_t offset = sizeof(_WAVEDESCR);
     while (offset + sizeof(_DATA_CHUNK) <= dataSize) {
-        auto* chunk = reinterpret_cast<_DATA_CHUNK*>(copiedData + offset);
+        auto* chunk = reinterpret_cast<_DATA_CHUNK*>(newCopiedData + offset);
         const size_t chunkDataOffset = offset + sizeof(_DATA_CHUNK);
         const size_t chunkSize = static_cast<size_t>(chunk->ckSize);
 
         if (chunkDataOffset + chunkSize > dataSize) {
-            logger::error("[AudioManager] Invalid WAV chunk '{}' size {} exceeds buffer {}", 
+            logger::error("[AudioManager] Invalid WAV chunk '{}' size {} exceeds buffer {}",
                          std::string(reinterpret_cast<char*>(chunk->ckID), 4), chunkSize, dataSize);
-            delete[] copiedData;
-            copiedData = nullptr;
+            delete[] newCopiedData;
             return false;
         }
 
         if (memcmp(chunk->ckID, "fmt ", 4) == 0) {
             if (chunkSize < 16) {
                 logger::error("[AudioManager] WAV fmt chunk too small: {}", chunkSize);
-                delete[] copiedData;
-                copiedData = nullptr;
+                delete[] newCopiedData;
                 return false;
             }
 
-            BYTE* fmtData = copiedData + chunkDataOffset;
+            BYTE* fmtData = newCopiedData + chunkDataOffset;
             formatTag = *reinterpret_cast<std::uint16_t*>(fmtData + 0);
             channels = *reinterpret_cast<std::uint16_t*>(fmtData + 2);
             sampleRate = *reinterpret_cast<std::uint32_t*>(fmtData + 4);
@@ -264,7 +268,7 @@ bool AudioManager::LoadWAV(BYTE* originalbuffer, size_t dataSize) {
             }
             foundFmtChunk = true;
         } else if (memcmp(chunk->ckID, "data", 4) == 0) {
-            audioData = copiedData + chunkDataOffset;
+            audioData = newCopiedData + chunkDataOffset;
             audioDataSize = chunkSize;
             foundDataChunk = true;
         }
@@ -275,48 +279,77 @@ bool AudioManager::LoadWAV(BYTE* originalbuffer, size_t dataSize) {
     if (!foundFmtChunk || !foundDataChunk || !audioData || audioDataSize == 0) {
         logger::error("[AudioManager] Missing WAV fmt/data chunks (fmt={}, data={}, audioSize={})",
                      foundFmtChunk ? 1 : 0, foundDataChunk ? 1 : 0, audioDataSize);
-        delete[] copiedData;
-        copiedData = nullptr;
+        delete[] newCopiedData;
         return false;
     }
 
     logger::debug("[AudioManager] WAV format - Tag: {}, Channels: {}, Sample Rate: {}, Bits: {}, Data: {} bytes",
                  formatTag, channels, sampleRate, bitsPerSample, audioDataSize);
 
-    // Prepare the XAUDIO2_BUFFER structure using the audio data
     XAUDIO2_BUFFER buffer = {};
     buffer.AudioBytes = static_cast<UINT32>(audioDataSize);
-    buffer.pAudioData = audioData; // Set to the audio data (excluding the header)
+    buffer.pAudioData = audioData;
     buffer.Flags = XAUDIO2_END_OF_STREAM;
 
-    wfx.wFormatTag = formatTag;
-    wfx.nChannels = channels;
-    wfx.nSamplesPerSec = sampleRate;
-    wfx.wBitsPerSample = bitsPerSample;
-    wfx.nBlockAlign = blockAlign ? blockAlign : static_cast<WORD>((wfx.nChannels * wfx.wBitsPerSample) / 8);
-    wfx.nAvgBytesPerSec = byteRate ? byteRate : (wfx.nSamplesPerSec * wfx.nBlockAlign);
-    wfx.cbSize = extraSize;
+    WAVEFORMATEX newWfx = {};
+    newWfx.wFormatTag = formatTag;
+    newWfx.nChannels = channels;
+    newWfx.nSamplesPerSec = sampleRate;
+    newWfx.wBitsPerSample = bitsPerSample;
+    newWfx.nBlockAlign = blockAlign ? blockAlign : static_cast<WORD>((newWfx.nChannels * newWfx.wBitsPerSample) / 8);
+    newWfx.nAvgBytesPerSec = byteRate ? byteRate : (newWfx.nSamplesPerSec * newWfx.nBlockAlign);
+    newWfx.cbSize = extraSize;
 
+    IXAudio2SourceVoice* newSourceVoice = nullptr;
     HRESULT hr =
-        pXAudio2->CreateSourceVoice(&pSourceVoice, &wfx, XAUDIO2_VOICE_USEFILTER, XAUDIO2_DEFAULT_FREQ_RATIO, 0, nullptr, nullptr);
+        pXAudio2->CreateSourceVoice(&newSourceVoice, &newWfx, XAUDIO2_VOICE_USEFILTER, XAUDIO2_DEFAULT_FREQ_RATIO, 0, nullptr, nullptr);
     if (FAILED(hr)) {
         logger::error("[AudioManager] Failed to create source voice: {}", hr);
+        delete[] newCopiedData;
         return false;
     }
 
-    hr = pSourceVoice->SubmitSourceBuffer(&buffer);
+    hr = newSourceVoice->SubmitSourceBuffer(&buffer);
     if (FAILED(hr)) {
         logger::error("[AudioManager] Failed to submit source buffer: {}", hr);
+        newSourceVoice->DestroyVoice();
+        delete[] newCopiedData;
         return false;
     }
 
-    logger::info("[AudioManager] Successfully loaded WAV file - Duration: ~{:.2f} seconds", 
-                 static_cast<float>(audioDataSize) / (wfx.nAvgBytesPerSec));
+    // Atomic swap. After this critical section, any concurrent Update()
+    // calling under voiceMtx will see the new voice; old pointers are now
+    // ours alone to dispose of below.
+    IXAudio2SourceVoice* oldSourceVoice = nullptr;
+    BYTE* oldCopiedData = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(voiceMtx);
+        oldSourceVoice = pSourceVoice;
+        oldCopiedData = copiedData;
+        pSourceVoice = newSourceVoice;
+        copiedData = newCopiedData;
+        wfx = newWfx;
+    }
+
+    // Cleanup OUTSIDE the lock — DestroyVoice can grab XAudio2's internal
+    // cleanup spinlock; holding voiceMtx during that would re-create the
+    // exact deadlock scenario we're trying to avoid.
+    if (oldSourceVoice) {
+        oldSourceVoice->Stop(0);
+        oldSourceVoice->DestroyVoice();
+    }
+    if (oldCopiedData) {
+        delete[] oldCopiedData;
+    }
+
+    logger::info("[AudioManager] Successfully loaded WAV file - Duration: ~{:.2f} seconds",
+                 static_cast<float>(audioDataSize) / (newWfx.nAvgBytesPerSec));
     return true;
 }
 
 
 void AudioManager::Pause() {
+    std::lock_guard<std::mutex> lock(voiceMtx);
     //logger::debug("[AudioManager] Pausing playback");
 
     if (pSourceVoice) {
@@ -333,6 +366,7 @@ void AudioManager::Pause() {
 }
 
 void AudioManager::Resume() {
+    std::lock_guard<std::mutex> lock(voiceMtx);
     //logger::debug("[AudioManager] Resuming playback");
 
     if (pSourceVoice) {
@@ -349,6 +383,7 @@ void AudioManager::Resume() {
 }
 
 bool AudioManager::Play() {
+    std::lock_guard<std::mutex> lock(voiceMtx);
     if (!pSourceVoice) {
         logger::error("[AudioManager] Play called with null source voice");
         return false;
@@ -374,45 +409,50 @@ bool AudioManager::Play() {
 }
 
 void AudioManager::setVolume(float vol) {
-
-    defaultVolume = vol / 100;
+    // Clamp [0,1]: XAudio2 clips above 1.0 and can deadlock the audio callback.
+    float normalized = vol / 100.0f;
+    if (normalized < 0.0f) normalized = 0.0f;
+    else if (normalized > 1.0f) normalized = 1.0f;
+    defaultVolume.store(normalized, std::memory_order_relaxed);
 }
 
 
 void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition, const X3DAUDIO_VECTOR& listenerPosition,
                           const X3DAUDIO_VECTOR& lookingAt, float headingAngle) {
+    // try_to_lock: 90Hz from playback loop. Skip frame if Stop/LoadWAV is rebuilding
+    // the voice — blocking starves Stop and races LoadWAV's swap → audio deadlock.
+    std::unique_lock<std::mutex> lock(voiceMtx, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;
+    }
+
     if (!pSourceVoice) {
         //logger::warn("[AudioManager] Update called with null source voice");
         return;
     }
 
     // Handle volume ramping
+    const float dv = defaultVolume.load(std::memory_order_relaxed);
     if (isRamping) {
         auto currentTime = std::chrono::steady_clock::now();
         float elapsedSeconds = std::chrono::duration<float>(currentTime - rampStartTime).count();
-        
+
         if (elapsedSeconds < rampDuration) {
-            // Calculate ramped volume
-            float newVolume = (elapsedSeconds / rampDuration) * defaultVolume;
-            if (std::abs(newVolume - currentVolume) > 0.01f) {  // Only update if change is significant
+            float newVolume = (elapsedSeconds / rampDuration) * dv;
+            if (std::abs(newVolume - currentVolume) > 0.01f) {
                 currentVolume = newVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                //logger::debug("[AudioManager] Ramping volume to: {}", currentVolume);
             }
         } else {
-            // Ramping complete
-            if (std::abs(defaultVolume - currentVolume) > 0.01f) {
-                currentVolume = defaultVolume;
+            if (std::abs(dv - currentVolume) > 0.01f) {
+                currentVolume = dv;
                 pSourceVoice->SetVolume(currentVolume);
-                //logger::debug("[AudioManager] Volume ramp complete, set to: {}", currentVolume);
             }
             isRamping = false;
         }
-    } else if (std::abs(defaultVolume - currentVolume) > 0.01f) {
-        // Only update volume if it has changed significantly
-        currentVolume = defaultVolume;
+    } else if (std::abs(dv - currentVolume) > 0.01f) {
+        currentVolume = dv;
         pSourceVoice->SetVolume(currentVolume);
-        //logger::debug("[AudioManager] Set volume to: {}", defaultVolume);
     }
 
     if (!spatialUpdatesEnabled) {

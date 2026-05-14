@@ -1286,6 +1286,15 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    // 200ms throttle: fires from TESSceneEvent which storms in towns; was hitting 17/sec.
+    static std::chrono::steady_clock::time_point lastRun;
+    static std::mutex lastRunMtx;
+    {
+        std::lock_guard<std::mutex> lk(lastRunMtx);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastRun < std::chrono::milliseconds(200)) return;
+        lastRun = now;
+    }
     auto* sm = RE::SubtitleManager::GetSingleton();
     logger::info("[ProcedureListenToScene] start");
     for (auto s : sm->subtitles) {
@@ -6027,10 +6036,22 @@ EventHandlers {
         
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         RE::TESObjectCELL *cell = event->cell;
+        // Town entry can fire 26+ cell-load events in 1s, saturating Papyrus VM.
+        {
+            static std::chrono::steady_clock::time_point lastDispatch;
+            static std::mutex lastDispatchMtx;
+            std::lock_guard<std::mutex> lk(lastDispatchMtx);
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastDispatch < std::chrono::milliseconds(500)) {
+                logger::info("[TESCellFullyLoadedEvent] Throttled cell <{:#x}>", cell->GetFormID());
+                return;
+            }
+            lastDispatch = now;
+        }
         auto args = RE::MakeFunctionArguments(std::move(cell));
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SendCellInfo",
                                                                                    args, callback);
-        
+
         logger::info("[TESCellFullyLoadedEvent] Cell loaded event for cell <{:#x}>", cell->GetFormID());
         
     }
