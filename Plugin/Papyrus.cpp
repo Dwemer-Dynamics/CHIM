@@ -418,6 +418,7 @@ void openMicMonitoringLoop() {
     
     auto lastVoiceActivity = std::chrono::steady_clock::now();
     bool voiceDetected = false;
+    double peakRmsSinceLastLog = 0.0;
     
     while (openMicMonitoringActive) {
         if (OpenMicMuted || !OpenMicEnabled) {
@@ -427,6 +428,7 @@ void openMicMonitoringLoop() {
         
         // Debug logging every 5 seconds
         static auto lastDebugLog = std::chrono::steady_clock::now();
+        static auto lastAudioLevelLog = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - lastDebugLog).count() >= 5) {
             logger::debug("Open mic monitoring active - enabled: {}, muted: {}, sensitivity: {}", 
@@ -448,9 +450,17 @@ void openMicMonitoringLoop() {
                 }
                 rms = sqrt(rms / numSamples);
                 
-                // Check if audio level exceeds sensitivity threshold
-                logger::debug("Open mic audio level: {}, threshold: {}", rms, OpenMicSensitivity);
-                
+                // Keep audio-level diagnostics useful without logging every input buffer.
+                if (rms > peakRmsSinceLastLog) {
+                    peakRmsSinceLastLog = rms;
+                }
+                if (std::chrono::duration_cast<std::chrono::seconds>(now - lastAudioLevelLog).count() >= 5) {
+                    logger::debug("Open mic audio level - current: {}, peak: {}, threshold: {}",
+                                 rms, peakRmsSinceLastLog, OpenMicSensitivity);
+                    lastAudioLevelLog = now;
+                    peakRmsSinceLastLog = 0.0;
+                }
+
                 if (rms > OpenMicSensitivity) {
                     lastVoiceActivity = std::chrono::steady_clock::now();
                     
