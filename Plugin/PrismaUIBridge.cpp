@@ -1223,9 +1223,9 @@ R"CHIM(
     // ===== Crosshair Target Functions =====
 
     void CheckAndUpdateCrosshairTarget() {
-        // Only check every 100ms for performance
+        // Throttle to 1000ms — was 100ms but iterates all AI agents twice; 10Hz × N agents stalled game thread in busy cells
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastCrosshairCheck).count() < 100) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastCrosshairCheck).count() < 1000) {
             return;
         }
         g_lastCrosshairCheck = now;
@@ -2686,9 +2686,9 @@ R"CHIM(
     // ===== AI View Functions =====
     
     void CheckAndUpdateAIView() {
-        // Only check every 100ms for performance (same as overlay)
+        // Throttle to 1000ms — was 100ms but iterates AI agents per tick; matched crosshair throttle
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastAIViewCheck).count() < 100) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastAIViewCheck).count() < 1000) {
             return;
         }
         g_lastAIViewCheck = now;
@@ -4137,9 +4137,9 @@ R"CHIM(
     }
 
     void CheckAndUpdateStatusHUDTarget() {
-        // Only check every 100ms for performance
+        // Throttle to 1000ms — was 100ms but iterates AI agents per tick; matched crosshair throttle
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastStatusHUDTargetCheck).count() < 100) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastStatusHUDTargetCheck).count() < 1000) {
             return;
         }
         g_lastStatusHUDTargetCheck = now;
