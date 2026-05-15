@@ -17,6 +17,7 @@
 #include <unordered_map>
 
 #include "Commands.h"
+#include "PrismaUIBridge.h"
 #include "Globals.h"
 #include "Misc.h"
 #include "Replacements.h"
@@ -897,6 +898,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     const float baseLineVolumeMultiplier = std::max(0.0f, volumeBoost);
     float runtimeLineVolumeMultiplier = baseLineVolumeMultiplier;
     bool runtimeMuffleFilter = applyMuffleFilter;
+
+    // Restore Player TTS volume scaling per CHIM mode (e.g. SHOUT 1.5x).
+    // Removed inadvertently in PR #1; addresses unanswered Copilot comment on SpeakManager.cpp:903.
+    if (speaker == "Player") {
+        runtimeLineVolumeMultiplier *= PrismaUIBridge::GetPlayerSpeechPlaybackVolumeMultiplier();
+    }
 
     auto* playbackListenerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
     const bool dynamicSpatialPlayback =
