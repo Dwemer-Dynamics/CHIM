@@ -39,6 +39,8 @@
 #include "AudioManager.h"
 #include "md5.h"
 #include "PrismaUIBridge.h"
+#include "SpatialAwareness.h"
+#include "SpatialSnapshotManager.h"
 
 using json = nlohmann::json;
 
@@ -96,6 +98,29 @@ static std::chrono::high_resolution_clock::time_point controlLastDynamicProfileT
 static std::chrono::high_resolution_clock::time_point controlLastWalkToTargetCheckTS = std::chrono::high_resolution_clock::now();
 static std::unordered_map<uint32_t, std::chrono::high_resolution_clock::time_point> lastReanimateEventByTarget;
 static bool playerPartyCombatActive = false;
+static void InvalidateSpatialCachesForDoor(RE::TESObjectREFR* doorRef, const char* source)
+{
+    if (!doorRef) {
+        return;
+    }
+
+    const auto doorFormId = doorRef->GetFormID();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(2000));
+    logger::info("[SpatialSnapshot] Door activation invalidated spatial caches source={} door={:08X}",
+                 source ? source : "unknown", doorFormId);
+
+    ThreadPool::getInstance().enqueue(
+        "SpatialDoorInvalidation",
+        [doorFormId]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+            SpatialAwareness::InvalidateCache();
+            SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(800));
+            logger::debug("[SpatialSnapshot] Door delayed invalidation completed door={:08X}", doorFormId);
+        },
+        std::format("{:08X}", doorFormId),
+        std::chrono::milliseconds(3000));
+}
 
 
 static std::mutex makeShotMutex;
@@ -1912,7 +1937,6 @@ private:
         
         auto lastStatusReport = std::chrono::steady_clock::now();
         const auto statusReportInterval = std::chrono::minutes(1); // Report every 1 minute
-        
         while (threadRunning) {
             // Report thread pool status periodically
             auto now = std::chrono::steady_clock::now();
@@ -2007,6 +2031,11 @@ private:
                             PrismaUIBridge::CheckAndUpdateStatusHUDTarget();
                             PrismaUIBridge::CheckAndUpdateChatboxControls();
                         }
+
+                        if (!VoiceRecordControl::getInstance().getRecording() &&
+                            !SpeakManager::getInstance().getProcessing()) {
+                            SpatialSnapshotManager::UpdatePlayerSnapshotIncremental("manager_incremental_refresh", 2);
+                        }
                         
                         // logger::trace("[ManagerMainQueue] Sending HTTP request for location: {}", GetPlayerLocation());
                         HTTPManager::log(std::format("request|{}|{}|(Context location: {}, {})|{}", getCurrentTimeMillis(),
@@ -2016,25 +2045,36 @@ private:
                         auto timeSinceLastInfo = currentTime - controlLastInfoSent;
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - controlLastInfoSent);
 
-                        if (elapsed > std::chrono::seconds(10)) {
-                            // Add timing/logging for navmesh-based close NPC inspection in the periodic block
+                        if (elapsed > std::chrono::seconds(3)) {
                             logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
                             auto player = RE::PlayerCharacter::GetSingleton();
 
-                            auto legacyStartTime = std::chrono::high_resolution_clock::now();
-                            auto legacyResult =
-                                InspectSurroundings(player->AsReference(), true, 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-                            auto legacyEndTime = std::chrono::high_resolution_clock::now();
-                            auto legacyDurationMs =
-                                std::chrono::duration_cast<std::chrono::milliseconds>(legacyEndTime - legacyStartTime)
-                                    .count();
-
                             auto startTime = std::chrono::high_resolution_clock::now();
-                            auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
+                            auto spatialSnapshot =
+                                SpatialSnapshotManager::GetPlayerSnapshot(false, "periodic_infonpc_close");
+                            std::string result;
+                            auto rankedTargets =
+                                SpatialSnapshotManager::GetPlayerConversationTargets("periodic_infonpc_close", true);
+                            for (const auto& target : rankedTargets) {
+                                if (target.name.empty()) {
+                                    continue;
+                                }
+                                if (!result.empty()) {
+                                    result.append("/");
+                                }
+                                result.append(target.name);
+                                if (!target.status.empty() && target.status != "Audible") {
+                                    result.append(" (" + target.status + ")");
+                                }
+                            }
+                            if (result.empty()) {
+                                result = InspectManagedAgents(player->AsReference(), 3000, "/",
+                                                              DISTANCE_ACTIVATING_NPC_OUT);
+                            }
                             auto endTime = std::chrono::high_resolution_clock::now();
                             auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-                            logger::info("[ManagerMainQueue] InspectSurroundings legacy took {} ms", legacyDurationMs);
-                            logger::info("[ManagerMainQueue] InspectSurroundingsNavmesh took {} ms", durationMs);
+                            logger::info("[ManagerMainQueue] Cached NPC context took {} ms (audible={}, targets={})",
+                                         durationMs, spatialSnapshot.audibleActors.size(), rankedTargets.size());
                             // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
                             std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
                             if (!itemsResult.empty()) {
@@ -2042,7 +2082,10 @@ private:
                                                              GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
                             }
                             
-                            result.append("/" + AIAgentManager::getInstance().getPlayerName());
+                            if (!result.empty()) {
+                                result.append("/");
+                            }
+                            result.append(AIAgentManager::getInstance().getPlayerName());
                             HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(),
                                                          GetGameTimeStamp(), result));
                             PostNearbyActivityStatus(player, 3000.0f);
@@ -2155,10 +2198,16 @@ private:
                         parseCommand(newResponse.text, newResponse.actor);
                     }
 
-                    newResponse = spgResponse.getFirstItem("rolecommand");
-                    if (!newResponse.text.empty()) {
-                        logger::info("Rolemaster in action {}", newResponse.text);
-                        parseRoleCommand(newResponse.text);
+                    const bool playerSpeechSuppressActive = now < controlPlayerSpeechSuppressUntilTS;
+
+                    if (!playerSpeechSuppressActive) {
+                        newResponse = spgResponse.getFirstItem("rolecommand");
+                        if (!newResponse.text.empty()) {
+                            logger::info("Rolemaster in action {}", newResponse.text);
+                            parseRoleCommand(newResponse.text);
+                        }
+                    } else {
+                        logger::debug("[PLAYER_SPEECH] Deferring rolecommand processing during player speech window");
                     }
 
                     auto boredElapsedSeconds =
@@ -2181,7 +2230,7 @@ private:
                         playerInDialog = true;
                     }
 
-                    avoidBored = player->IsInCombat() || player->IsAttacking() || player->IsSneaking() 
+                    avoidBored = playerSpeechSuppressActive || player->IsInCombat() || player->IsAttacking() || player->IsSneaking()
                         || CheckScene(player->GetCurrentScene()) || playerInDialog;
 
                     if (boredElapsedSeconds >= std::chrono::seconds(GlobalBoredEventTimeOut) && !avoidBored) {
@@ -2199,8 +2248,8 @@ private:
                             float maxDistance = DISTANCE_ACTIVATING_NPC_OUT;
                             if (localPlayerCell->IsInteriorCell()) maxDistance = DISTANCE_ACTIVATING_NPC_IN;
 
-                            std::string beings = InspectSurroundings(player->AsReference(), false, maxDistance, ",",
-                                                                     DISTANCE_ACTIVATING_NPC_OUT);
+                            std::string beings = InspectManagedAgents(player->AsReference(), maxDistance, ",",
+                                                                      DISTANCE_ACTIVATING_NPC_OUT);
 
                             auto randomActor = aiam.getLessBoredAgentNearby(beings);
                             if (randomActor) {
@@ -2254,8 +2303,8 @@ private:
 
                         AIAgentManager& aiam = AIAgentManager::getInstance();
                         auto player = RE::PlayerCharacter::GetSingleton();
-                        std::string beings = InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE,
-                                                                 ",", DISTANCE_ACTIVATING_NPC_OUT);
+                        std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
+                                                                  ",", DISTANCE_ACTIVATING_NPC_OUT);
                         
                         // Collect all nearby NPC names for batch processing
                         std::vector<std::string> nearbyNPCs;
@@ -2468,16 +2517,24 @@ private:
                     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now() ;
                 }
 
-               
+                const bool deferAgentMaintenance =
+                    std::chrono::high_resolution_clock::now() < controlPlayerSpeechSuppressUntilTS ||
+                    SpeakManager::getInstance().getProcessing();
+
+                if (deferAgentMaintenance) {
+                    logger::debug("[AGENT_MAINT] Deferred during active player/NPC speech");
+                } else {  // Run agent maintenance only when player/NPC speech is not active.
                 AIAgentManager& aiam = AIAgentManager::getInstance();
-                std::string beings = InspectSurroundings(RE::PlayerCharacter::GetSingleton(), false, 15000,",",
-                                                         DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
+                std::string beings = InspectManagedAgents(RE::PlayerCharacter::GetSingleton(), 15000, ",",
+                                                          DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
+                constexpr int kPrecleanerMissingPresenceDeletePasses = 120;  // 60s at the 500ms manager cadence.
 
                 // Delete dead actors
                 //logger::debug("[PRECLEANER] Evaluating");
                 std::vector<std::string> agentsToDelete;
                 for (const auto& agent : aiam.getAgents()) {
                     if (agent->isPresent(beings)) {
+                        agent->resetMissingPresenceCounter();
                         if (agent->mustBeDeleted()) {
                             agentsToDelete.push_back(agent->getActorName());
                             logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
@@ -2499,8 +2556,17 @@ private:
                         if (ENABLE_AUTOADDNPC) {
                             if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
                                 !agent->isManuallyAdded()) {
-                                agentsToDelete.push_back(agent->getActorName());
-                                logger::debug("[PRECLEANER] Actor is gonna be deleted because not present: {}", agent->getActorName());
+                                agent->increaseMissingPresenceCounter();
+                                const int missingPasses = agent->getMissingPresenceCounter();
+                                if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
+                                    agentsToDelete.push_back(agent->getActorName());
+                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
+                                                  missingPasses, agent->getActorName());
+                                } else if (missingPasses == 1 || missingPasses % 30 == 0) {
+                                    logger::debug("[PRECLEANER] Actor not present yet retained ({}/{}): {}",
+                                                  missingPasses, kPrecleanerMissingPresenceDeletePasses,
+                                                  agent->getActorName());
+                                }
                             }
                         }
                     }
@@ -2617,9 +2683,6 @@ private:
                                 agent->setRestored(true);
 
                             } else {
-                                std::string beings = InspectSurroundings(RE::PlayerCharacter::GetSingleton(), true,
-                                                        HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
-
                                 if (agent->isPresent(beings)) {
                                     if (agent->getActor()) {
                                         if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
@@ -2702,8 +2765,10 @@ private:
                     }
                 }
 
-                if (ENABLE_AUTOADDNPC) 
+                if (ENABLE_AUTOADDNPC) {
                     addAllNPC();
+                }
+                }  // !deferAgentMaintenance
 
 
                 //logger::debug("[RESTORE] END OF ITERATION");
@@ -4742,12 +4807,6 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
         return;
     }
 
-    auto* processLists = RE::ProcessLists::GetSingleton();
-    if (!processLists) {
-        logger::warn("[ACTIVITY_STATUS] ProcessLists unavailable for nearby batch");
-        return;
-    }
-
     json batchPayload;
     batchPayload["type"] = "activity_status_bulk";
     batchPayload["timestamp"] = getCurrentTimeMillis();
@@ -4759,9 +4818,16 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
     transformationBatchPayload["gamets"] = GetGameTimeStamp();
     transformationBatchPayload["states"] = json::array();
 
-    for (auto& targetHandle : processLists->highActorHandles) {
-        auto targetPtr = targetHandle.get().get();
-        auto* actor = targetPtr ? targetPtr->As<RE::Actor>() : nullptr;
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent) {
+            continue;
+        }
+
+        auto* actor = agent->getActor();
+        if (!actor) {
+            actor = agent->getActorByFormId();
+        }
         if (!actor || actor->GetFormID() == player->GetFormID()) {
             continue;
         }
@@ -4774,7 +4840,10 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
             continue;
         }
 
-        const std::string actorName = trim(actor->GetDisplayFullName());
+        std::string actorName = trim(agent->getActorName());
+        if (actorName.empty()) {
+            actorName = trim(actor->GetDisplayFullName());
+        }
         if (actorName.empty()) {
             continue;
         }
@@ -5630,11 +5699,15 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
-        auto resultClose =
-            InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
-        auto legacyResultClose =
-            InspectSurroundings(player->AsReference(), true, 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-        result.append(AIAgentManager::getInstance().getPlayerName());
+        auto loadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "loaded_game_infonpc_close");
+        auto resultClose = loadSnapshot.Describe("/");
+        if (resultClose.empty()) {
+            resultClose = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
+        }
+        if (!resultClose.empty()) {
+            resultClose.append("/");
+        }
+        resultClose.append(AIAgentManager::getInstance().getPlayerName());
         HTTPManager::log(
             std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose));
         PostNearbyActivityStatus(player, 3000.0f);
@@ -5712,11 +5785,15 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
-        auto resultClose =
-            InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
-        auto legacyResultClose =
-            InspectSurroundings(player->AsReference(), true, 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-        result.append(AIAgentManager::getInstance().getPlayerName());
+        auto reloadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "reloaded_game_infonpc_close");
+        auto resultClose = reloadSnapshot.Describe("/");
+        if (resultClose.empty()) {
+            resultClose = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
+        }
+        if (!resultClose.empty()) {
+            resultClose.append("/");
+        }
+        resultClose.append(AIAgentManager::getInstance().getPlayerName());
         HTTPManager::log(
             std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose));
         PostNearbyActivityStatus(player, 3000.0f);
@@ -6028,10 +6105,14 @@ EventHandlers {
                                              GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
             }
             
-            auto result =
-                InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
-            auto legacyResult =
-                InspectSurroundings(player->AsReference(), true, 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
+            auto locationSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "location_infonpc_close");
+            auto result = locationSnapshot.Describe("/");
+            if (result.empty()) {
+                result = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
+            }
+            if (!result.empty()) {
+                result.append("/");
+            }
             result.append(AIAgentManager::getInstance().getPlayerName());
             HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
             PostNearbyActivityStatus(player, 3000.0f);
@@ -6462,6 +6543,8 @@ EventHandlers {
                 }
 
             } else if (activated2->formType == RE::FormType::Door) {
+                InvalidateSpatialCachesForDoor(event->objectActivated.get(), "activate_event");
+
                 if (refObjActivator->GetFormID() ==
                     RE::PlayerCharacter::GetSingleton()->GetFormID()) {  // Player activates something
                     std::string name(activated);
@@ -6560,8 +6643,8 @@ EventHandlers {
 
                     AIAgentManager& aiam = AIAgentManager::getInstance();
                     auto player = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
-                    std::string beings = InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",",
-                                                             DISTANCE_ACTIVATING_NPC_OUT);
+                    std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE, ",",
+                                                              DISTANCE_ACTIVATING_NPC_OUT);
 
                     if (victim->GetLevel() > player->GetLevel()) {
                         victimLegend.append("(powerful enemy)");
@@ -6819,8 +6902,8 @@ EventHandlers {
                             
                             // Find nearby AI agents in combat to pick one for the bark
                             AIAgentManager& aiam = AIAgentManager::getInstance();
-                            std::string beings = InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE,
-                                                                     ",", DISTANCE_ACTIVATING_NPC_OUT);
+                            std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
+                                                                      ",", DISTANCE_ACTIVATING_NPC_OUT);
                             std::vector<AIAgent*> nearbyAgents;
                             
                             for (const auto& agent : aiam.getAgents()) {
@@ -7286,8 +7369,8 @@ EventHandlers {
                              }
 
                              auto result =
-                                 InspectSurroundings(RE::PlayerCharacter::GetSingleton()->AsReference(), true,
-                                                     HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+                                 InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
+                                                      HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
                              HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
                                                           GetGameTimeStamp(), "(beings in range:" + result + ")"));
                          } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
