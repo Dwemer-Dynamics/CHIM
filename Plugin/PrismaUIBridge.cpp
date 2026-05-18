@@ -7,13 +7,15 @@
 #include "Globals.h"
 #include "SpeakManager.h"
 #include "SPGResponse.h"
-#include "SpatialAwareness.h"
+#include "SpatialSnapshotManager.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <list>
 #include <sstream>
 #include <vector>
@@ -45,8 +47,21 @@ namespace PrismaUIBridge {
     
     // Crosshair target state (for overlay)
     static std::string g_lastCrosshairTarget = "";
+    static std::string g_lastCrosshairTargetStatus = "";
     static uint32_t g_lastCrosshairFormId = 0;
     static std::chrono::steady_clock::time_point g_lastCrosshairCheck;
+    static std::string g_lastOverlayAgentsPayload = "";
+    static uint32_t g_stickyPrismaTargetFormId = 0;
+    static std::chrono::steady_clock::time_point g_stickyPrismaTargetAt;
+    constexpr auto kPrismaTargetStickyTtl = std::chrono::seconds(3);
+    constexpr float kPrismaTargetSwitchMarginMeters = 1.5f;
+    struct PrismaDisplayStatusEntry {
+        std::string status;
+        std::string reason;
+        std::chrono::steady_clock::time_point timestamp{};
+    };
+    static std::unordered_map<uint32_t, PrismaDisplayStatusEntry> g_prismaDisplayStatusCache;
+    constexpr auto kPrismaDisplayStatusHoldTtl = std::chrono::seconds(2);
 
     // CHIM chatbox control state
     static std::string g_chatboxCurrentMode = "STANDARD";
@@ -74,6 +89,30 @@ namespace PrismaUIBridge {
     static std::string g_lastAIViewTarget = "";
     static uint32_t g_lastAIViewFormId = 0;
     static std::chrono::steady_clock::time_point g_lastAIViewCheck;
+
+    static std::string EscapePrismaJSArg(const std::string& raw)
+    {
+        std::string escaped = raw;
+        size_t pos = 0;
+        while ((pos = escaped.find('\\', pos)) != std::string::npos) {
+            escaped.replace(pos, 1, "\\\\");
+            pos += 2;
+        }
+        pos = 0;
+        while ((pos = escaped.find('\'', pos)) != std::string::npos) {
+            escaped.replace(pos, 1, "\\'");
+            pos += 2;
+        }
+        pos = 0;
+        while ((pos = escaped.find('\n', pos)) != std::string::npos) {
+            escaped.replace(pos, 1, " ");
+        }
+        pos = 0;
+        while ((pos = escaped.find('\r', pos)) != std::string::npos) {
+            escaped.replace(pos, 1, " ");
+        }
+        return escaped;
+    }
 
     // Settings Menu state
     static PrismaView g_settingsMenuView = 0;
@@ -131,7 +170,9 @@ namespace PrismaUIBridge {
     static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
     static std::string FetchDiariesFromServer(const std::string& url);
-    static void UpdateCrosshairTargetUI(const std::string& name, float distance);
+    static void UpdateCrosshairTargetUI(const std::string& name, float distance, const std::string& status = "",
+                                        bool targetable = true);
+    static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId);
     static std::string EscapeForJS(const std::string& raw);
     static bool ApplyModeSelection(const std::string& actionId, const char* sourceTag, bool showNotification);
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification);
@@ -1222,10 +1263,135 @@ R"CHIM(
 
     // ===== Crosshair Target Functions =====
 
+    static bool IsSelectablePrismaCandidate(const PlayerSpatialCandidate& candidate)
+    {
+        return candidate.autoEligible || candidate.targetable || candidate.lookTarget;
+    }
+
+    static bool IsStablePrismaSpatialReason(const std::string& reason)
+    {
+        return reason == "immediate_proximity" ||
+               reason == "line_of_sight_clear" ||
+               reason == "line_of_sight_blocked" ||
+               reason == "closed_door_between" ||
+               reason == "path_fallback_clear" ||
+               reason == "path_ratio_blocked" ||
+               reason == "path_ratio_los_blocked" ||
+               reason == "path_ratio_distance_blocked" ||
+               reason == "navmesh_no_path" ||
+               reason == "different_area" ||
+               reason == "different_interior_cells" ||
+               reason == "interior_exterior_boundary" ||
+               reason == "too_far" ||
+               reason == "too_quiet";
+    }
+
+    static bool IsTransientPrismaSpatialReason(const std::string& reason)
+    {
+        return reason.empty() ||
+               reason == "distance_cell_clear" ||
+               reason == "pending_spatial" ||
+               reason == "vertical_separation" ||
+               reason == "unknown";
+    }
+
+    static std::string GetPrismaDisplayStatus(const PlayerSpatialCandidate& candidate)
+    {
+        if (candidate.formId == 0) {
+            return candidate.status;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (IsStablePrismaSpatialReason(candidate.reason) && !candidate.status.empty()) {
+            g_prismaDisplayStatusCache[candidate.formId] = {
+                candidate.status,
+                candidate.reason,
+                now
+            };
+            return candidate.status;
+        }
+
+        if (IsTransientPrismaSpatialReason(candidate.reason)) {
+            const auto cached = g_prismaDisplayStatusCache.find(candidate.formId);
+            if (cached != g_prismaDisplayStatusCache.end() &&
+                now - cached->second.timestamp <= kPrismaDisplayStatusHoldTtl) {
+                return cached->second.status;
+            }
+
+            if (candidate.reason == "distance_cell_clear") {
+                return "Checking hearing";
+            }
+        }
+
+        return candidate.status;
+    }
+
+    static PlayerSpatialTargetStatus ResolvePrimaryPrismaTarget(const std::vector<PlayerSpatialCandidate>& candidates)
+    {
+        PlayerSpatialTargetStatus resolved{};
+        if (candidates.empty()) {
+            resolved.status = "No target";
+            return resolved;
+        }
+
+        auto selected = std::find_if(candidates.begin(), candidates.end(),
+            [](const PlayerSpatialCandidate& candidate) {
+                return candidate.autoEligible;
+            });
+        if (selected == candidates.end()) {
+            selected = std::find_if(candidates.begin(), candidates.end(),
+                [](const PlayerSpatialCandidate& candidate) {
+                    return candidate.targetable;
+                });
+        }
+        if (selected == candidates.end()) {
+            selected = candidates.begin();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (!selected->lookTarget && g_stickyPrismaTargetFormId != 0 &&
+            now - g_stickyPrismaTargetAt <= kPrismaTargetStickyTtl) {
+            auto sticky = std::find_if(candidates.begin(), candidates.end(),
+                [](const PlayerSpatialCandidate& candidate) {
+                    return candidate.formId == g_stickyPrismaTargetFormId &&
+                        IsSelectablePrismaCandidate(candidate);
+                });
+            if (sticky != candidates.end() &&
+                sticky->distanceMeters <= selected->distanceMeters + kPrismaTargetSwitchMarginMeters) {
+                selected = sticky;
+            }
+        }
+
+        if (IsSelectablePrismaCandidate(*selected)) {
+            g_stickyPrismaTargetFormId = selected->formId;
+            g_stickyPrismaTargetAt = now;
+        } else if (now - g_stickyPrismaTargetAt > kPrismaTargetStickyTtl) {
+            g_stickyPrismaTargetFormId = 0;
+        }
+
+        resolved.hasTarget = true;
+        resolved.name = selected->name;
+        resolved.formId = selected->formId;
+        resolved.distanceMeters = selected->distanceMeters;
+        resolved.source = selected->lookTarget ? selected->source : "nearest_" + selected->source;
+        resolved.reason = selected->reason;
+        resolved.targetable = selected->targetable;
+        const std::string prefix = selected->lookTarget ? "Crosshair" : "Nearest";
+        const auto displayStatus = GetPrismaDisplayStatus(*selected);
+        resolved.status = displayStatus.empty() ? prefix : prefix + ": " + displayStatus;
+        return resolved;
+    }
+
+    static PlayerSpatialTargetStatus GetPrimaryPrismaTarget(const std::string& reason)
+    {
+        const auto candidates = SpatialSnapshotManager::GetPlayerConversationTargets(reason, true);
+        return ResolvePrimaryPrismaTarget(candidates);
+    }
+
     void CheckAndUpdateCrosshairTarget() {
-        // Only check every 100ms for performance
+        // Poll UI target state quickly; SpatialSnapshotManager owns the heavier cache/TTL.
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastCrosshairCheck).count() < 100) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastCrosshairCheck).count() < 250) {
             return;
         }
         g_lastCrosshairCheck = now;
@@ -1235,109 +1401,77 @@ R"CHIM(
             return;
         }
         
-        RE::Actor* targetActor = nullptr;
-        std::string targetSource = "none";
-        
-        // STEP 1: Try crosshair target first
-        auto crosshairTarget = RE::CrosshairPickData::GetSingleton()->target;
-        
-        if (crosshairTarget && crosshairTarget.get()->GetFormType() == RE::FormType::ActorCharacter) {
-            auto potentialTarget = crosshairTarget.get()->As<RE::Actor>();
-            
-            // Check if this actor is an AI agent
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            for (const auto& agent : aiam.getAgents()) {
-                if (agent->getActor() && agent->getActor()->GetFormID() == potentialTarget->GetFormID()) {
-                    targetActor = potentialTarget;
-                    targetSource = "crosshair";
-                    break;
-                }
-            }
-        }
-        
-        // STEP 2: If no crosshair target, find closest AI agent
-        if (!targetActor) {
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            auto player = RE::PlayerCharacter::GetSingleton();
-            auto playerPos = player->GetPosition();
-            
-            float closestDistance = 500.0f; // Maximum distance to consider (Skyrim units)
-            
-            for (const auto& agent : aiam.getAgents()) {
-                auto agentActor = agent->getActor();
-                if (!agentActor) continue;
-                if (agentActor->IsDead()) continue;
-                
-                // Skip narrator/player
-                if (agent->isNarrator()) continue;
-                
-                // Check if in same cell
-                if (agentActor->GetParentCell() != player->GetParentCell()) continue;
-                
-                float distance = playerPos.GetDistance(agentActor->GetPosition());
-                
-                if (distance < closestDistance) {
-                    closestDistance = distance;
-                    targetActor = agentActor;
-                    targetSource = "closest";
-                }
-            }
-        }
-        
-        // Update UI if target changed
-        if (targetActor) {
-            std::string targetName = targetActor->GetDisplayFullName();
-            uint32_t targetFormId = targetActor->GetFormID();
-            
-            // Only update if changed
-            if (targetName != g_lastCrosshairTarget || targetFormId != g_lastCrosshairFormId) {
-                auto player = RE::PlayerCharacter::GetSingleton();
-                float distance = player->GetPosition().GetDistance(targetActor->GetPosition());
-                distance = distance * 0.0142857f; // Convert to meters (Skyrim units to meters)
-                
-                logger::debug("[PrismaUIBridge] Crosshair target: {} ({}) - distance: {:.1f}m", 
-                             targetName, targetSource, distance);
-                
-                UpdateCrosshairTargetUI(targetName, distance);
-                g_lastCrosshairTarget = targetName;
-                g_lastCrosshairFormId = targetFormId;
+        const auto candidates = SpatialSnapshotManager::GetPlayerConversationTargets("prismaui_overlay", true);
+        const auto target = ResolvePrimaryPrismaTarget(candidates);
+        UpdateOverlayAgentsUI(candidates, target.formId);
+
+        if (target.hasTarget) {
+            if (target.name != g_lastCrosshairTarget || target.formId != g_lastCrosshairFormId ||
+                target.status != g_lastCrosshairTargetStatus) {
+                logger::debug("[PrismaUIBridge] Overlay target: {} ({}, reason={}, distance={:.1f}m)",
+                              target.name, target.source, target.reason, target.distanceMeters);
+
+                UpdateCrosshairTargetUI(target.name, target.distanceMeters, target.status, target.targetable);
+                g_lastCrosshairTarget = target.name;
+                g_lastCrosshairFormId = target.formId;
+                g_lastCrosshairTargetStatus = target.status;
             }
         } else {
-            // No valid target found - clear if we had one before
-            if (!g_lastCrosshairTarget.empty()) {
-                logger::debug("[PrismaUIBridge] Crosshair target cleared");
-                UpdateCrosshairTargetUI("", 0.0f);
+            if (!g_lastCrosshairTarget.empty() || target.status != g_lastCrosshairTargetStatus) {
+                logger::debug("[PrismaUIBridge] Overlay spatial target cleared");
+                UpdateCrosshairTargetUI("", 0.0f, target.status, false);
                 g_lastCrosshairTarget.clear();
                 g_lastCrosshairFormId = 0;
+                g_lastCrosshairTargetStatus = target.status;
             }
         }
     }
 
-    static void UpdateCrosshairTargetUI(const std::string& name, float distance) {
+    static void UpdateCrosshairTargetUI(const std::string& name, float distance, const std::string& status,
+                                        bool targetable) {
         if (!g_prismaUI || !g_overlayCreated.load()) {
             return;
         }
         
         std::string jsCall;
         if (name.empty()) {
-            jsCall = "window.updateCrosshairTarget('', 0)";
+            jsCall = "window.updateCrosshairTarget('', 0, '" + EscapePrismaJSArg(status) + "', false)";
         } else {
-            // Escape the name for JavaScript
-            std::string escaped = name;
-            size_t pos = 0;
-            while ((pos = escaped.find('\\', pos)) != std::string::npos) {
-                escaped.replace(pos, 1, "\\\\");
-                pos += 2;
-            }
-            pos = 0;
-            while ((pos = escaped.find('\'', pos)) != std::string::npos) {
-                escaped.replace(pos, 1, "\\'");
-                pos += 2;
-            }
-            
-            jsCall = "window.updateCrosshairTarget('" + escaped + "', " + std::to_string(distance) + ")";
+            jsCall = "window.updateCrosshairTarget('" + EscapePrismaJSArg(name) + "', " +
+                std::to_string(distance) + ", '" + EscapePrismaJSArg(status) + "', " +
+                (targetable ? "true" : "false") + ")";
         }
         
+        g_prismaUI->Invoke(g_overlayView, jsCall.c_str(), nullptr);
+    }
+
+    static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId) {
+        if (!g_prismaUI || !g_overlayCreated.load()) {
+            return;
+        }
+
+        json agents = json::array();
+        for (const auto& candidate : candidates) {
+            json item;
+            item["name"] = candidate.name.empty() ? "Unknown Target" : candidate.name;
+            item["form_id"] = candidate.formId;
+            item["distance"] = candidate.distanceMeters;
+            item["status"] = GetPrismaDisplayStatus(candidate);
+            item["source"] = candidate.source;
+            item["reason"] = candidate.reason;
+            item["targetable"] = candidate.targetable || candidate.autoEligible;
+            item["active"] = candidate.formId != 0 && candidate.formId == activeFormId;
+            item["look_target"] = candidate.lookTarget;
+            agents.push_back(item);
+        }
+
+        const std::string payload = agents.dump();
+        if (payload == g_lastOverlayAgentsPayload) {
+            return;
+        }
+
+        g_lastOverlayAgentsPayload = payload;
+        const std::string jsCall = "window.updateSpatialAgents('" + EscapePrismaJSArg(payload) + "')";
         g_prismaUI->Invoke(g_overlayView, jsCall.c_str(), nullptr);
     }
 
@@ -2686,9 +2820,9 @@ R"CHIM(
     // ===== AI View Functions =====
     
     void CheckAndUpdateAIView() {
-        // Only check every 100ms for performance (same as overlay)
+        // Poll UI target state quickly; SpatialSnapshotManager owns the heavier cache/TTL.
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastAIViewCheck).count() < 100) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastAIViewCheck).count() < 250) {
             return;
         }
         g_lastAIViewCheck = now;
@@ -2698,78 +2832,26 @@ R"CHIM(
             return;
         }
         
-        RE::Actor* targetActor = nullptr;
-        std::string targetSource = "none";
-        
-        // STEP 1: Try crosshair target first
-        auto crosshairTarget = RE::CrosshairPickData::GetSingleton()->target;
-        
-        if (crosshairTarget && crosshairTarget.get()->GetFormType() == RE::FormType::ActorCharacter) {
-            auto potentialTarget = crosshairTarget.get()->As<RE::Actor>();
-            
-            // Check if this actor is an AI agent
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            for (const auto& agent : aiam.getAgents()) {
-                if (agent->getActor() && agent->getActor()->GetFormID() == potentialTarget->GetFormID()) {
-                    targetActor = potentialTarget;
-                    targetSource = "crosshair";
-                    break;
-                }
-            }
-        }
-        
-        // STEP 2: If no crosshair target, find closest AI agent
-        if (!targetActor) {
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            auto player = RE::PlayerCharacter::GetSingleton();
-            auto playerPos = player->GetPosition();
-            
-            float closestDistance = 500.0f; // Maximum distance to consider (Skyrim units)
-            
-            for (const auto& agent : aiam.getAgents()) {
-                auto agentActor = agent->getActor();
-                if (!agentActor) continue;
-                if (agentActor->IsDead()) continue;
-                
-                // Skip narrator/player
-                if (agent->isNarrator()) continue;
-                
-                // Check if in same cell
-                if (agentActor->GetParentCell() != player->GetParentCell()) continue;
-                
-                float distance = playerPos.GetDistance(agentActor->GetPosition());
-                
-                if (distance < closestDistance) {
-                    closestDistance = distance;
-                    targetActor = agentActor;
-                    targetSource = "closest";
-                }
-            }
-        }
-        
-        // Update UI if target changed
-        if (targetActor) {
-            std::string targetName = targetActor->GetDisplayFullName();
-            uint32_t targetFormId = targetActor->GetFormID();
-            
-            // Only update if changed
-            if (targetName != g_lastAIViewTarget || targetFormId != g_lastAIViewFormId) {
+        const auto target = GetPrimaryPrismaTarget("prismaui_ai_view");
+
+        if (target.hasTarget && target.targetable) {
+            if (target.name != g_lastAIViewTarget || target.formId != g_lastAIViewFormId) {
                 // Get RefID as hex string
                 std::stringstream ss;
-                ss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << targetFormId;
+                ss << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << target.formId;
                 std::string targetRefId = ss.str();
                 
-                logger::debug("[PrismaUIBridge] AI View target: {} ({}) - RefID: {}", 
-                             targetName, targetSource, targetRefId);
+                logger::debug("[PrismaUIBridge] AI View target: {} ({}, reason={}) - RefID: {}",
+                              target.name, target.source, target.reason, targetRefId);
                 
-                FetchAndUpdateAIView(targetName, targetRefId);
-                g_lastAIViewTarget = targetName;
-                g_lastAIViewFormId = targetFormId;
+                FetchAndUpdateAIView(target.name, targetRefId);
+                g_lastAIViewTarget = target.name;
+                g_lastAIViewFormId = target.formId;
             }
         } else {
             // No valid target found - clear if we had one before
             if (!g_lastAIViewTarget.empty()) {
-                logger::debug("[PrismaUIBridge] AI View target cleared");
+                logger::debug("[PrismaUIBridge] AI View spatial target cleared");
                 // Clear the UI
                 if (g_prismaUI && g_aiviewDomReady.load()) {
                     g_prismaUI->Invoke(g_aiviewView, "window.clearTarget()", nullptr);
@@ -4020,11 +4102,13 @@ R"CHIM(
     
     // Status HUD target state
     static std::string g_lastStatusHUDTarget = "";
+    static std::string g_lastStatusHUDTargetStatus = "";
     static uint32_t g_lastStatusHUDFormId = 0;
     static std::chrono::steady_clock::time_point g_lastStatusHUDTargetCheck;
 
     static void OnStatusHUDDomReady(PrismaView view);
-    static void UpdateStatusHUDTarget(const std::string& name, float distance);
+    static void UpdateStatusHUDTarget(const std::string& name, float distance, const std::string& status = "",
+                                      bool targetable = true);
 
     void CreateStatusHUDPanel() {
         if (!g_prismaUI) {
@@ -4137,9 +4221,9 @@ R"CHIM(
     }
 
     void CheckAndUpdateStatusHUDTarget() {
-        // Only check every 100ms for performance
+        // Poll UI target state quickly; SpatialSnapshotManager owns the heavier cache/TTL.
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastStatusHUDTargetCheck).count() < 100) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastStatusHUDTargetCheck).count() < 250) {
             return;
         }
         g_lastStatusHUDTargetCheck = now;
@@ -4149,99 +4233,42 @@ R"CHIM(
             return;
         }
         
-        RE::Actor* targetActor = nullptr;
-        
-        // STEP 1: Try crosshair target first
-        auto crosshairTarget = RE::CrosshairPickData::GetSingleton()->target;
-        
-        if (crosshairTarget && crosshairTarget.get()->GetFormType() == RE::FormType::ActorCharacter) {
-            auto potentialTarget = crosshairTarget.get()->As<RE::Actor>();
-            
-            // Check if this actor is an AI agent
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            for (const auto& agent : aiam.getAgents()) {
-                if (agent->getActor() && agent->getActor()->GetFormID() == potentialTarget->GetFormID()) {
-                    targetActor = potentialTarget;
-                    break;
-                }
-            }
-        }
-        
-        // STEP 2: If no crosshair target, find closest AI agent
-        if (!targetActor) {
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            auto player = RE::PlayerCharacter::GetSingleton();
-            auto playerPos = player->GetPosition();
-            
-            float closestDistance = 500.0f; // Maximum distance to consider (Skyrim units)
-            
-            for (const auto& agent : aiam.getAgents()) {
-                auto agentActor = agent->getActor();
-                if (!agentActor) continue;
-                if (agentActor->IsDead()) continue;
-                
-                // Skip narrator/player
-                if (agent->isNarrator()) continue;
-                
-                // Check if in same cell
-                if (agentActor->GetParentCell() != player->GetParentCell()) continue;
-                
-                float distance = playerPos.GetDistance(agentActor->GetPosition());
-                
-                if (distance < closestDistance) {
-                    closestDistance = distance;
-                    targetActor = agentActor;
-                }
-            }
-        }
-        
-        // Update UI if target changed
-        if (targetActor) {
-            std::string targetName = targetActor->GetDisplayFullName();
-            uint32_t targetFormId = targetActor->GetFormID();
-            
-            // Only update if changed
-            if (targetName != g_lastStatusHUDTarget || targetFormId != g_lastStatusHUDFormId) {
-                auto player = RE::PlayerCharacter::GetSingleton();
-                float distance = player->GetPosition().GetDistance(targetActor->GetPosition());
-                distance = distance * 0.0142857f; // Convert to meters
-                
-                UpdateStatusHUDTarget(targetName, distance);
-                g_lastStatusHUDTarget = targetName;
-                g_lastStatusHUDFormId = targetFormId;
+        const auto target = GetPrimaryPrismaTarget("prismaui_status_hud");
+
+        if (target.hasTarget) {
+            if (target.name != g_lastStatusHUDTarget || target.formId != g_lastStatusHUDFormId ||
+                target.status != g_lastStatusHUDTargetStatus) {
+                logger::debug("[PrismaUIBridge] Status HUD target: {} ({}, reason={}, distance={:.1f}m)",
+                              target.name, target.source, target.reason, target.distanceMeters);
+
+                UpdateStatusHUDTarget(target.name, target.distanceMeters, target.status, target.targetable);
+                g_lastStatusHUDTarget = target.name;
+                g_lastStatusHUDFormId = target.formId;
+                g_lastStatusHUDTargetStatus = target.status;
             }
         } else {
-            // No valid target found - clear if we had one before
-            if (!g_lastStatusHUDTarget.empty()) {
-                UpdateStatusHUDTarget("", 0.0f);
+            if (!g_lastStatusHUDTarget.empty() || target.status != g_lastStatusHUDTargetStatus) {
+                UpdateStatusHUDTarget("", 0.0f, target.status, false);
                 g_lastStatusHUDTarget.clear();
                 g_lastStatusHUDFormId = 0;
+                g_lastStatusHUDTargetStatus = target.status;
             }
         }
     }
 
-    static void UpdateStatusHUDTarget(const std::string& name, float distance) {
+    static void UpdateStatusHUDTarget(const std::string& name, float distance, const std::string& status,
+                                      bool targetable) {
         if (!g_prismaUI || !g_statusHUDCreated.load() || !g_statusHUDDomReady.load()) {
             return;
         }
         
         std::string jsCall;
         if (name.empty()) {
-            jsCall = "window.updateStatusHUDTarget('', 0)";
+            jsCall = "window.updateStatusHUDTarget('', 0, '" + EscapePrismaJSArg(status) + "', false)";
         } else {
-            // Escape the name for JavaScript
-            std::string escaped = name;
-            size_t pos = 0;
-            while ((pos = escaped.find('\\', pos)) != std::string::npos) {
-                escaped.replace(pos, 1, "\\\\");
-                pos += 2;
-            }
-            pos = 0;
-            while ((pos = escaped.find('\'', pos)) != std::string::npos) {
-                escaped.replace(pos, 1, "\\'");
-                pos += 2;
-            }
-            jsCall = "window.updateStatusHUDTarget('" + escaped + "', " + std::to_string(distance) + ")";
+            jsCall = "window.updateStatusHUDTarget('" + EscapePrismaJSArg(name) + "', " +
+                std::to_string(distance) + ", '" + EscapePrismaJSArg(status) + "', " +
+                (targetable ? "true" : "false") + ")";
         }
         
         g_prismaUI->Invoke(g_statusHUDView, jsCall.c_str(), nullptr);
@@ -4264,6 +4291,10 @@ R"CHIM(
         float distanceMeters;
         uint32_t formId;
         bool isNarrator;
+        std::string status;
+        int sortBucket = 0;
+        bool targetable = true;
+        bool autoEligible = true;
     };
 
     static bool IsChatboxSpawnMode()
@@ -4374,47 +4405,40 @@ R"CHIM(
                 narratorTarget.formId = narratorTarget.actor ? narratorTarget.actor->GetFormID() : 0;
                 narratorTarget.distanceMeters = 0.0f;
                 narratorTarget.isNarrator = true;
+                narratorTarget.status = "Narrator";
+                narratorTarget.sortBucket = 0;
+                narratorTarget.targetable = true;
+                narratorTarget.autoEligible = true;
                 nearbyAgents.push_back(narratorTarget);
             }
             return nearbyAgents;
         }
 
-        const auto audibleActors = CollectAudibleActors(player->AsReference(), HERIKA_MAX_VISION_RANGE);
-        std::unordered_map<RE::FormID, const AudibleActorDescriptor*> audibleActorsByFormId;
-        audibleActorsByFormId.reserve(audibleActors.size());
-        for (const auto& audibleActor : audibleActors) {
-            audibleActorsByFormId[audibleActor.formId] = &audibleActor;
-        }
-
-        for (const auto& agent : aiam.getAgents()) {
-            auto agentActor = agent->getActor();
-            if (!agentActor) continue;
-            if (agentActor->IsDead()) continue;
-            if (agent->isNarrator()) continue;
-            if (!agent->isAvailableforDialog(AllowActorsOnScene)) continue;
-
-            auto* agentCell = agentActor->GetParentCell();
-            if (!agentCell) continue;
-            const bool sameCell = agentCell == playerCell;
-            const bool bothExterior = agentCell->IsExteriorCell() && playerCell->IsExteriorCell();
-            if (!sameCell && !bothExterior) continue;
-
-            const auto audibleIt = audibleActorsByFormId.find(agentActor->GetFormID());
-            if (audibleIt == audibleActorsByFormId.end()) continue;
-            const auto* audibleActor = audibleIt->second;
-
+        const auto candidates = SpatialSnapshotManager::GetPlayerConversationTargets("chatbox_targets", true);
+        for (const auto& candidate : candidates) {
             ChatboxNearbyAgent nearby{};
-            nearby.actor = agentActor;
-            nearby.name = audibleActor->label.empty() ? agentActor->GetDisplayFullName() : audibleActor->label;
-            nearby.formId = audibleActor->formId;
-            nearby.distanceMeters = audibleActor->airDistance * 0.0142857f;
-            nearby.isNarrator = false;
+            nearby.actor = candidate.actor;
+            nearby.name = candidate.name;
+            nearby.formId = candidate.formId;
+            nearby.distanceMeters = candidate.distanceMeters;
+            nearby.isNarrator = candidate.narrator;
+            nearby.status = GetPrismaDisplayStatus(candidate);
+            nearby.sortBucket = candidate.sortBucket;
+            nearby.targetable = candidate.targetable;
+            nearby.autoEligible = candidate.autoEligible;
+
             nearbyAgents.push_back(nearby);
         }
 
         std::sort(nearbyAgents.begin(), nearbyAgents.end(),
             [](const ChatboxNearbyAgent& lhs, const ChatboxNearbyAgent& rhs) {
-                return lhs.distanceMeters < rhs.distanceMeters;
+                if (lhs.sortBucket != rhs.sortBucket) {
+                    return lhs.sortBucket < rhs.sortBucket;
+                }
+                if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+                    return lhs.distanceMeters < rhs.distanceMeters;
+                }
+                return lhs.name < rhs.name;
             });
 
         return nearbyAgents;
@@ -4678,7 +4702,7 @@ R"CHIM(
                 if (potentialTarget) {
                     uint32_t crosshairFormId = potentialTarget->GetFormID();
                     for (const auto& nearbyAgent : nearbyAgents) {
-                        if (nearbyAgent.formId == crosshairFormId) {
+                        if (nearbyAgent.formId == crosshairFormId && nearbyAgent.targetable) {
                             autoTarget = nearbyAgent;
                             hasAutoTarget = true;
                             break;
@@ -4687,9 +4711,17 @@ R"CHIM(
                 }
             }
 
-            if (!hasAutoTarget && !nearbyAgents.empty()) {
-                autoTarget = nearbyAgents[0];
-                hasAutoTarget = true;
+            if (!hasAutoTarget) {
+                auto eligibleIt = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.autoEligible;
+                    });
+                if (eligibleIt != nearbyAgents.end()) {
+                    autoTarget = *eligibleIt;
+                    hasAutoTarget = true;
+                }
             }
         }
 
@@ -4706,12 +4738,14 @@ R"CHIM(
                 const bool nameMatch = !g_chatboxTargetOverrideName.empty() &&
                     nearbyAgent.name == g_chatboxTargetOverrideName;
                 if (formMatch || nameMatch) {
-                    overrideTarget = &nearbyAgent;
-                    if (g_chatboxTargetOverrideFormId == 0 && nearbyAgent.formId != 0) {
-                        g_chatboxTargetOverrideFormId = nearbyAgent.formId;
-                    }
-                    if (g_chatboxTargetOverrideName.empty()) {
-                        g_chatboxTargetOverrideName = nearbyAgent.name;
+                    if (nearbyAgent.targetable) {
+                        overrideTarget = &nearbyAgent;
+                        if (g_chatboxTargetOverrideFormId == 0 && nearbyAgent.formId != 0) {
+                            g_chatboxTargetOverrideFormId = nearbyAgent.formId;
+                        }
+                        if (g_chatboxTargetOverrideName.empty()) {
+                            g_chatboxTargetOverrideName = nearbyAgent.name;
+                        }
                     }
                     break;
                 }
@@ -4771,6 +4805,8 @@ R"CHIM(
             target["form_id"] = nearbyAgent.formId;
             target["name"] = nearbyAgent.name;
             target["distance"] = nearbyAgent.distanceMeters;
+            target["status"] = nearbyAgent.status;
+            target["targetable"] = nearbyAgent.targetable;
             target["active"] = (selectedFormId != 0 && nearbyAgent.formId == selectedFormId) ||
                 (!selectedName.empty() && nearbyAgent.name == selectedName);
             target["override"] = overrideTarget &&
@@ -4979,7 +5015,7 @@ R"CHIM(
                         nearbyAgents.begin(),
                         nearbyAgents.end(),
                         [&](const ChatboxNearbyAgent& nearbyAgent) {
-                            return nearbyAgent.formId == agent->getActor()->GetFormID();
+                            return nearbyAgent.formId == agent->getActor()->GetFormID() && nearbyAgent.targetable;
                         }) != nearbyAgents.end();
                 if (targetIsNearby) {
                     SetChatboxTargetOverride(agent->getActor()->GetFormID(), agent->getActorName());
