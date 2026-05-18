@@ -36,6 +36,7 @@ struct AudibleActorDescriptor {
     bool busy = false;
     bool inCombat = false;
     bool restrained = false;
+    bool canCommunicate = false;
 };
 #endif
 
