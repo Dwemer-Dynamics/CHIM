@@ -41,7 +41,6 @@
 
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
-extern std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS;
 void SkipNextPlayerMenuTopicLocalPlayback();
 #include "json.hpp"
 
@@ -1783,8 +1782,7 @@ void addAllNPC() {
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
 
-    if (std::chrono::high_resolution_clock::now() < controlPlayerSpeechSuppressUntilTS ||
-        SpeakManager::getInstance().getProcessing()) {
+    if (IsPlayerSpeechMaintenanceSuppressed() || SpeakManager::getInstance().getProcessing()) {
         lastAutoAddAttempt = now;
         logger::debug("[AUTOADD] Deferred during active/recent player or NPC speech");
         return;
@@ -1874,8 +1872,7 @@ void addAllNPC() {
                     if (distance > maxDistance) continue;
 
                     const bool deferAutoAdd =
-                        std::chrono::high_resolution_clock::now() < controlPlayerSpeechSuppressUntilTS ||
-                        SpeakManager::getInstance().getProcessing();
+                        IsPlayerSpeechMaintenanceSuppressed() || SpeakManager::getInstance().getProcessing();
                     if (deferAutoAdd) {
                         logger::debug("[AUTOADD] Deferred {} during active player/NPC speech", actorLabel);
                         continue;
