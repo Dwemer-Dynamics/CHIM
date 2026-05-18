@@ -62,6 +62,7 @@ public:
 
     std::atomic<float> defaultVolume{1.0f};
     bool spatialUpdatesEnabled = true;
+    bool forceSpatialMatrixUpdate = true;
 
     // Volume ramping members
     float currentVolume = 0.0f;
