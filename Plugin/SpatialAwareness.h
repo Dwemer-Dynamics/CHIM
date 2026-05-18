@@ -47,6 +47,7 @@ namespace SpatialAwareness
         bool navmeshPathUsed = false;
         bool navmeshPathFound = false;
         bool losFallbackUsed = false;
+        bool losQueryOk = false;
         bool hasLineOfSight = false;
         std::string reason = "unknown";
     };

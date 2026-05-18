@@ -1,3 +1,6 @@
+#pragma once
+
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -11,6 +14,8 @@ namespace logger = SKSE::log;
 
 
 extern std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange,std::string separator,float farAwayLimit);
+extern void ExtendPlayerSpeechMaintenanceSuppress(std::chrono::milliseconds duration);
+extern bool IsPlayerSpeechMaintenanceSuppressed();
 #ifndef AUDIBLE_ACTOR_DESCRIPTOR_DEFINED
 #define AUDIBLE_ACTOR_DESCRIPTOR_DEFINED
 struct AudibleActorDescriptor {

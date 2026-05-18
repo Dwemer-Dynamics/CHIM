@@ -46,14 +46,10 @@ extern int GlobalConfiguredTimeout;
 extern int GlobalRechatPolicyAsap;
 
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
-extern std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS;
 
 static void ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds duration)
 {
-    const auto until = std::chrono::high_resolution_clock::now() + duration;
-    if (controlPlayerSpeechSuppressUntilTS < until) {
-        controlPlayerSpeechSuppressUntilTS = until;
-    }
+    ExtendPlayerSpeechMaintenanceSuppress(std::chrono::duration_cast<std::chrono::milliseconds>(duration));
 }
 
 // Get the actor's actual 3D head position for audio spatialization.
@@ -423,9 +419,9 @@ static PlaybackSpatialAudioState EvaluatePlaybackSpatialAudioForPlayer(RE::Actor
         }
     }
 
-    state.losQueryOk = spatial.losFallbackUsed;
-    state.hasLineOfSight = spatial.losFallbackUsed && spatial.hasLineOfSight;
-    state.losBlocked = spatial.losFallbackUsed && !spatial.hasLineOfSight;
+    state.losQueryOk = spatial.losQueryOk;
+    state.hasLineOfSight = spatial.losQueryOk && spatial.hasLineOfSight;
+    state.losBlocked = spatial.losQueryOk && !spatial.hasLineOfSight;
     if (state.losBlocked) {
         state.muffled = true;
         state.losPenalty = 0.85f;

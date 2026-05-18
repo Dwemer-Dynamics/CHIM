@@ -2,6 +2,7 @@
 #include <SkyrimScripting/Plugin.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -55,8 +56,38 @@ extern int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, 
 
 
 std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
-std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS =
-    std::chrono::high_resolution_clock::now();
+namespace
+{
+    std::int64_t ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::time_point value)
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(value.time_since_epoch()).count();
+    }
+}
+
+static std::atomic<std::int64_t> controlPlayerSpeechSuppressUntilTicks{
+    ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now())};
+
+void ExtendPlayerSpeechMaintenanceSuppress(std::chrono::milliseconds duration)
+{
+    if (duration <= std::chrono::milliseconds(0)) {
+        return;
+    }
+
+    const auto untilTicks =
+        ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now() + duration);
+    auto current = controlPlayerSpeechSuppressUntilTicks.load(std::memory_order_acquire);
+    while (current < untilTicks &&
+           !controlPlayerSpeechSuppressUntilTicks.compare_exchange_weak(
+               current, untilTicks, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    }
+}
+
+bool IsPlayerSpeechMaintenanceSuppressed()
+{
+    const auto nowTicks = ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now());
+    return nowTicks < controlPlayerSpeechSuppressUntilTicks.load(std::memory_order_acquire);
+}
+
 static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();

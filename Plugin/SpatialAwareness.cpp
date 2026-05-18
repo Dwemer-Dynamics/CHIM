@@ -577,8 +577,11 @@ namespace SpatialAwareness
             return;
         }
 
-        std::lock_guard<std::mutex> lock(g_settingsMutex);
-        g_settings.interiorMaxDistance = interiorMaxDistance;
+        {
+            std::lock_guard<std::mutex> lock(g_settingsMutex);
+            g_settings.interiorMaxDistance = interiorMaxDistance;
+        }
+        InvalidateCache();
         logger::info("[SPATIAL_V1L] interiorMaxDistance set to {:.1f}", interiorMaxDistance);
     }
 
@@ -588,8 +591,11 @@ namespace SpatialAwareness
             return;
         }
 
-        std::lock_guard<std::mutex> lock(g_settingsMutex);
-        g_settings.exteriorMaxDistance = exteriorMaxDistance;
+        {
+            std::lock_guard<std::mutex> lock(g_settingsMutex);
+            g_settings.exteriorMaxDistance = exteriorMaxDistance;
+        }
+        InvalidateCache();
         logger::info("[SPATIAL_V1L] exteriorMaxDistance set to {:.1f}", exteriorMaxDistance);
     }
 
@@ -811,8 +817,9 @@ namespace SpatialAwareness
         auto evaluateLosFallback = [&](const char* blockedReason, const char* blockedTier) -> bool {
             bool hasLineOfSight = false;
             const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
-            result.hasLineOfSight = losQueryOk && hasLineOfSight;
             result.losFallbackUsed = true;
+            result.losQueryOk = losQueryOk;
+            result.hasLineOfSight = losQueryOk && hasLineOfSight;
             if (result.hasLineOfSight) {
                 result.reason = std::string(blockedReason) + "_los_recovered";
                 return true;
@@ -860,8 +867,9 @@ namespace SpatialAwareness
                 if (shouldConfirmBorderlineInteriorPath) {
                     bool hasLineOfSight = false;
                     const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
+                    result.losFallbackUsed = true;
+                    result.losQueryOk = losQueryOk;
                     if (losQueryOk) {
-                        result.losFallbackUsed = true;
                         result.hasLineOfSight = hasLineOfSight;
                         if (!hasLineOfSight) {
                             result.reason = "path_ratio_los_blocked";

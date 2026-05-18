@@ -32,7 +32,6 @@ using json = nlohmann::json;
 namespace logger = SKSE::log;
 
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
-extern std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS;
 
 namespace {
     void HardStopDialogueForPlayerVoiceInput() {
@@ -40,7 +39,7 @@ namespace {
 
         const auto now = std::chrono::high_resolution_clock::now();
         controlLastBoredTriggerTS = now;
-        controlPlayerSpeechSuppressUntilTS = now + std::chrono::seconds(10);
+        ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
         PrismaUIBridge::BumpDialogueStopGeneration();
 
         SpeakManager& speakManager = SpeakManager::getInstance();
@@ -256,7 +255,7 @@ std::string makeSTT(std::string wavData) {
 
     logger::info("Response received from STT service (size: {} bytes)", buffer.size());
 
-    controlPlayerSpeechSuppressUntilTS = std::chrono::high_resolution_clock::now() + std::chrono::seconds(10);
+    ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
 
     auto player = RE::PlayerCharacter::GetSingleton();
     logger::debug("Processing response and gathering context information...");
