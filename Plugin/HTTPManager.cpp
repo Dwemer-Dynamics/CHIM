@@ -1425,7 +1425,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 continue;
             }
 
-            auto isVampireKW = RE::BGSKeyword::LookupByID(0x000A82BB)->As<RE::BGSKeyword>();
+            auto* vampireForm = RE::BGSKeyword::LookupByID(0x000A82BB);
+            auto* isVampireKW = vampireForm ? vampireForm->As<RE::BGSKeyword>() : nullptr;
             bool isVampire = isVampireKW && targetActor->HasKeyword(isVampireKW);
             std::string playerinfo =
                 std::format("\"level\":{},\"name\":\"{}\",\"race\":\"{}\",\"gender\":\"{}\",\"isVampire\":\"{}\"",

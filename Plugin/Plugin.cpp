@@ -2045,6 +2045,8 @@ private:
                         auto timeSinceLastInfo = currentTime - controlLastInfoSent;
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - controlLastInfoSent);
 
+                        // Snapshot-backed context is bounded/cached now, so 3s keeps nearby context responsive
+                        // without re-running the old full spatial inspection path every cycle.
                         if (elapsed > std::chrono::seconds(3)) {
                             logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
                             auto player = RE::PlayerCharacter::GetSingleton();
@@ -2198,7 +2200,7 @@ private:
                         parseCommand(newResponse.text, newResponse.actor);
                     }
 
-                    const bool playerSpeechSuppressActive = now < controlPlayerSpeechSuppressUntilTS;
+                    const bool playerSpeechSuppressActive = IsPlayerSpeechMaintenanceSuppressed();
 
                     if (!playerSpeechSuppressActive) {
                         newResponse = spgResponse.getFirstItem("rolecommand");
@@ -2518,8 +2520,7 @@ private:
                 }
 
                 const bool deferAgentMaintenance =
-                    std::chrono::high_resolution_clock::now() < controlPlayerSpeechSuppressUntilTS ||
-                    SpeakManager::getInstance().getProcessing();
+                    IsPlayerSpeechMaintenanceSuppressed() || SpeakManager::getInstance().getProcessing();
 
                 if (deferAgentMaintenance) {
                     logger::debug("[AGENT_MAINT] Deferred during active player/NPC speech");
