@@ -143,6 +143,9 @@ body {
     text-align: center;
     padding-top: 4px;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
 .target-name {
@@ -154,4 +157,16 @@ body {
 
 .target-row.has-target .target-name {
     color: #fbbf24;
+}
+
+.target-row.blocked-target .target-name {
+    color: #fdba74;
+}
+
+.target-status {
+    font-size: 9px;
+    font-weight: 500;
+    color: #888;
+    line-height: 1.15;
+    max-width: 180px;
 }

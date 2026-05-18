@@ -142,10 +142,21 @@ body {
     font-style: italic;
 }
 
+.target-name.blocked-target {
+    color: #d98c53;
+}
+
 .target-distance {
     color: #999;
     font-size: 0.85em;
     margin-left: 8px;
+}
+
+.target-status {
+    color: #aaa;
+    font-size: 0.78em;
+    margin-top: 4px;
+    line-height: 1.25;
 }
 
 .info-section:last-child {
@@ -285,28 +296,62 @@ body {
 }
 
 .agents-list {
-    max-height: 180px;
-    overflow-y: auto;
-    padding-right: 4px;
+    max-height: 240px;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    scrollbar-width: auto;
+    padding-right: 8px;
 }
 
 .agents-list::-webkit-scrollbar {
-    width: 3px;
+    width: 12px;
+}
+
+.agents-list::-webkit-scrollbar-track {
+    background: rgba(20, 20, 25, 0.5);
+    border-radius: 6px;
 }
 
 .agents-list::-webkit-scrollbar-thumb {
-    background: rgba(242, 124, 17, 0.3);
-    border-radius: 2px;
+    background: rgba(242, 124, 17, 0.45);
+    border-radius: 6px;
 }
 
 .agent-item {
-    padding: 4px 8px;
+    padding: 6px 8px;
     margin: 3px 0;
     background: rgba(30, 30, 40, 0.6);
     border-left: 2px solid rgba(242, 124, 17, 0.5);
     border-radius: 3px;
     font-size: 0.85em;
     color: #ccc;
+}
+
+.agent-item.active {
+    background: rgba(242, 124, 17, 0.12);
+    border-left-color: rgba(242, 124, 17, 0.95);
+}
+
+.agent-item.blocked {
+    opacity: 0.68;
+    border-left-color: rgba(150, 150, 160, 0.45);
+}
+
+.agent-item.look-target {
+    border-left-style: solid;
+}
+
+.agent-name {
+    color: #e2e2e6;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.agent-meta {
+    color: #999;
+    font-size: 0.78em;
+    line-height: 1.25;
+    margin-top: 2px;
 }
 
 .empty-agents {
