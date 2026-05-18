@@ -44,7 +44,6 @@ namespace
     constexpr float kPlayerConversationTargetsMoveTolerance = 96.0f;
     constexpr std::size_t kMaxPlayerConversationTargets = 16;
     constexpr auto kCellEntrySpatialSettleTime = std::chrono::seconds(6);
-    constexpr auto kIncrementalFailureCooldown = std::chrono::seconds(30);
     constexpr auto kTargetRefinementTtl = std::chrono::seconds(30);
     constexpr auto kLosRefinementMinInterval = std::chrono::milliseconds(750);
     constexpr auto kPriorityPathFallbackMinInterval = std::chrono::milliseconds(1000);
@@ -53,12 +52,12 @@ namespace
     constexpr auto kDistantPathFallbackMinInterval = std::chrono::milliseconds(4000);
     constexpr float kTargetRefinementMoveTolerance = 64.0f;
     constexpr float kDifferentLevelVerticalDelta = 160.0f;
+    constexpr float kSkyrimUnitsToMeters = 1.0f / 70.0f;
     constexpr std::size_t kTargetRefinementCacheMaxEntries = 64;
 
     RE::FormID g_observedPlayerCellFormId = 0;
     std::chrono::steady_clock::time_point g_observedPlayerCellAt{};
     std::chrono::steady_clock::time_point g_environmentSpatialSettleUntil{};
-    std::unordered_map<RE::FormID, std::chrono::steady_clock::time_point> g_incrementalFailureCooldownUntil;
 
     std::mutex g_playerConversationTargetsMutex;
     std::vector<PlayerSpatialCandidate> g_playerConversationTargetsCache;
@@ -126,6 +125,20 @@ namespace
     {
         return state == RE::BGSOpenCloseForm::OPEN_STATE::kOpen ||
                state == RE::BGSOpenCloseForm::OPEN_STATE::kOpening;
+    }
+
+    std::string ActorLabel(RE::Actor* actor)
+    {
+        if (!actor) {
+            return {};
+        }
+
+        const char* name = actor->GetName();
+        if (name && name[0] != '\0') {
+            return name;
+        }
+
+        return std::format("form_{:08X}", actor->GetFormID());
     }
 
     DoorBarrierScan ScanDoorBarrierBetween(RE::Actor* player, RE::Actor* target,
@@ -460,15 +473,8 @@ namespace
             return audibleActor;
         }
 
-        std::string actorLabel;
-        try {
-            actorLabel = target->GetDisplayFullName();
-        } catch (...) {
-            actorLabel = std::format("form_{:08X}", target->GetFormID());
-        }
-
         audibleActor.formId = target->GetFormID();
-        audibleActor.label = std::move(actorLabel);
+        audibleActor.label = ActorLabel(target);
         audibleActor.airDistance = spatialResult.airDistance;
         audibleActor.volume = spatialResult.volume;
         audibleActor.pathDistance = spatialResult.pathDistance;
@@ -675,7 +681,8 @@ namespace
 
             bool hasLineOfSight = false;
             const bool losQueryOk = playerActor->HasLineOfSight(targetActor->AsReference(), hasLineOfSight);
-            result.losFallbackUsed = losQueryOk;
+            result.losFallbackUsed = true;
+            result.losQueryOk = losQueryOk;
             result.hasLineOfSight = losQueryOk && hasLineOfSight;
             if (result.hasLineOfSight) {
                 result.canCommunicate = true;
@@ -933,14 +940,6 @@ namespace
 
             if (!target || target->GetFormID() == player->GetFormID()) {
                 continue;
-            }
-
-            const auto cooldownIt = g_incrementalFailureCooldownUntil.find(target->GetFormID());
-            if (cooldownIt != g_incrementalFailureCooldownUntil.end()) {
-                if (now < cooldownIt->second) {
-                    continue;
-                }
-                g_incrementalFailureCooldownUntil.erase(cooldownIt);
             }
 
             if (!target->GetActorRuntimeData().currentProcess || !target->Is3DLoaded() || target->IsDead()) {
@@ -1273,10 +1272,11 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
             QueueTargetRefinement(player, crosshairActor, spatialSettings, spatial, reason, true);
         }
         resolved.hasTarget = true;
-        resolved.name = crosshairAgent->getActorName().empty() ? crosshairActor->GetDisplayFullName()
+        resolved.name = crosshairAgent->getActorName().empty() ? ActorLabel(crosshairActor)
                                                                 : crosshairAgent->getActorName();
         resolved.formId = crosshairActor->GetFormID();
-        resolved.distanceMeters = spatial.airDistance * 0.0142857f;
+        resolved.airDistance = spatial.airDistance;
+        resolved.distanceMeters = spatial.airDistance * kSkyrimUnitsToMeters;
         const std::string sourcePrefix = usedLookFallback ? "look" : "crosshair";
         resolved.source = sourcePrefix + (spatial.canCommunicate ? "_audible" : "_blocked");
         resolved.reason = spatial.reason;
@@ -1375,9 +1375,9 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         target.agent = std::const_pointer_cast<AIAgent>(agent);
         target.actor = actor;
         target.formId = actor->GetFormID();
-        target.name = agent->getActorName().empty() ? actor->GetDisplayFullName() : agent->getActorName();
+        target.name = agent->getActorName().empty() ? ActorLabel(actor) : agent->getActorName();
         target.airDistance = airDistance;
-        target.distanceMeters = airDistance * 0.0142857f;
+        target.distanceMeters = airDistance * kSkyrimUnitsToMeters;
         target.source = "managed";
 
         const bool isLookTarget = lookTarget.hasTarget && lookTarget.formId == target.formId;
@@ -1385,15 +1385,15 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         if (evaluated) {
             target.name = evaluated->label.empty() ? target.name : evaluated->label;
             target.airDistance = evaluated->airDistance;
-            target.distanceMeters = evaluated->airDistance * 0.0142857f;
+            target.distanceMeters = evaluated->airDistance * kSkyrimUnitsToMeters;
             target.reason = evaluated->reason;
             target.targetable = evaluated->canCommunicate || spatialSnapshot.FindAudible(target.formId) != nullptr;
             target.status = FormatTargetStatus(target.reason, target.targetable, verticalDelta);
             target.source = "snapshot";
             target.sortBucket = target.targetable ? 1 : 3;
         } else if (isLookTarget) {
+            target.airDistance = lookTarget.airDistance;
             target.distanceMeters = lookTarget.distanceMeters;
-            target.airDistance = lookTarget.distanceMeters / 0.0142857f;
             target.reason = lookTarget.reason;
             target.status = lookTarget.status.empty()
                 ? FormatTargetStatus(lookTarget.reason, lookTarget.targetable, verticalDelta)
@@ -1460,10 +1460,9 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             continue;
         }
 
-        auto spatial = EvaluateCheapPlayerSpatial(player, target.actor, spatialSettings);
         SpatialAwareness::Result cachedRefinement{};
         if (TryGetCachedTargetRefinement(player, target.actor, cachedRefinement, now)) {
-            spatial = cachedRefinement;
+            const auto& spatial = cachedRefinement;
             const float verticalDelta = target.actor->GetPosition().z - playerPosition.z;
             target.reason = spatial.reason;
             target.targetable = spatial.canCommunicate;
@@ -1474,6 +1473,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             target.autoEligible = target.targetable;
             continue;
         } else {
+            auto spatial = EvaluateCheapPlayerSpatial(player, target.actor, spatialSettings);
             QueueTargetRefinement(player, target.actor, spatialSettings, spatial, reason, target.lookTarget);
         }
         break;
@@ -1517,7 +1517,6 @@ void SpatialSnapshotManager::InvalidatePlayerSnapshot()
         g_playerSnapshot = {};
         g_observedPlayerCellFormId = 0;
         g_observedPlayerCellAt = {};
-        g_incrementalFailureCooldownUntil.clear();
         g_incrementalCandidates.clear();
         g_incrementalCandidateIndex = 0;
         g_incrementalScanComplete = true;
