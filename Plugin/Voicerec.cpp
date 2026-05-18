@@ -32,12 +32,15 @@ using json = nlohmann::json;
 namespace logger = SKSE::log;
 
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
+extern std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS;
 
 namespace {
     void HardStopDialogueForPlayerVoiceInput() {
         logger::info("[VOICERECORD] Hard-stopping active dialogue before recording");
 
-        controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
+        const auto now = std::chrono::high_resolution_clock::now();
+        controlLastBoredTriggerTS = now;
+        controlPlayerSpeechSuppressUntilTS = now + std::chrono::seconds(10);
         PrismaUIBridge::BumpDialogueStopGeneration();
 
         SpeakManager& speakManager = SpeakManager::getInstance();
@@ -46,7 +49,9 @@ namespace {
         speakManager.deleteQueue();
         speakManager.deleteQueuedPlayerLines();
         if (speakManager.getProcessing()) {
+            logger::warn("[VOICERECORD] SpeakManager was still processing during hard stop; forcing processing state clear");
             speakManager.abortPlay(true);
+            speakManager.setProcessing(false);
         }
         speakManager.stopRechatForNseconds(3);
 
@@ -251,10 +256,11 @@ std::string makeSTT(std::string wavData) {
 
     logger::info("Response received from STT service (size: {} bytes)", buffer.size());
 
+    controlPlayerSpeechSuppressUntilTS = std::chrono::high_resolution_clock::now() + std::chrono::seconds(10);
+
     auto player = RE::PlayerCharacter::GetSingleton();
     logger::debug("Processing response and gathering context information...");
     
-    RE::TESObjectCELL* cell = player->GetParentCell();
     auto result = InspectLocations(player->AsReference());
 
     char timeDateString[200];
@@ -263,10 +269,6 @@ std::string makeSTT(std::string wavData) {
     HTTPManager::log(std::format("infoloc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(Context location: " + std::string(GetPlayerLocation()) + ", Buildings to go:" +
                                      result + ", Current Date in Skyrim World: " + timeDateString + ")"));
-
-    result = InspectAudibleActors(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",");
-    HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                 "(beings in range:" + result + ")"));
 
     std::string type;
     

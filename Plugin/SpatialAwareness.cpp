@@ -83,6 +83,26 @@ namespace SpatialAwareness
         std::unordered_map<std::uint64_t, SpatialEvalLogState> g_spatialEvalLogState;
         constexpr auto kSpatialEvalLogHeartbeat = std::chrono::seconds(5);
 
+        // Per-pair Result cache. HasLineOfSight needs the Havok world lock; without this,
+        // the audience-builder loop fires N raycasts per playback and stalls on physics contention.
+        struct EvalCacheEntry
+        {
+            Result result{};
+            std::chrono::steady_clock::time_point expiresAt{};
+        };
+
+        std::mutex g_evalCacheMutex;
+        std::unordered_map<std::uint64_t, EvalCacheEntry> g_evalCache;
+        constexpr auto kEvalCacheTtl = std::chrono::milliseconds(750);
+        constexpr std::size_t kEvalCacheMaxEntries = 4096;
+
+        std::uint64_t EvalCacheKey(RE::Actor* speaker, RE::Actor* listener)
+        {
+            const auto speakerId = speaker ? static_cast<std::uint64_t>(speaker->GetFormID()) : 0ULL;
+            const auto listenerId = listener ? static_cast<std::uint64_t>(listener->GetFormID()) : 0ULL;
+            return (speakerId << 32U) | listenerId;
+        }
+
         int QuantizeForLog(float value, float scale, int fallback)
         {
             if (!std::isfinite(value)) {
@@ -573,6 +593,12 @@ namespace SpatialAwareness
         logger::info("[SPATIAL_V1L] exteriorMaxDistance set to {:.1f}", exteriorMaxDistance);
     }
 
+    void InvalidateCache()
+    {
+        std::lock_guard<std::mutex> lock(g_evalCacheMutex);
+        g_evalCache.clear();
+    }
+
     PathResult EvaluatePath(RE::Actor* speaker, RE::Actor* listener, const Settings& settings)
     {
         PathResult result{};
@@ -640,6 +666,18 @@ namespace SpatialAwareness
         Result result{};
         const std::string speakerName = ActorLabel(speaker);
         const std::string listenerName = ActorLabel(listener);
+        // Cache lookup: avoid duplicate HasLineOfSight raycasts within the TTL window.
+        const std::uint64_t cacheKey =
+            (speaker && listener) ? EvalCacheKey(speaker, listener) : 0ULL;
+        if (speaker && listener) {
+            const auto cacheNow = std::chrono::steady_clock::now();
+            std::lock_guard<std::mutex> lock(g_evalCacheMutex);
+            const auto it = g_evalCache.find(cacheKey);
+            if (it != g_evalCache.end() && it->second.expiresAt > cacheNow) {
+                return it->second.result;
+            }
+        }
+
         const auto finalize = [&](const char* tier) -> Result {
             if (ShouldEmitSpatialEvalLog(speaker, listener, tier, result)) {
                 logger::info(
@@ -648,6 +686,16 @@ namespace SpatialAwareness
                     result.airDistance, result.pathDistance, result.pathRatio, result.navmeshPathUsed ? 1 : 0,
                     result.navmeshPathFound ? 1 : 0, result.losFallbackUsed ? 1 : 0, result.hasLineOfSight ? 1 : 0,
                     result.detectionLevel, result.openDoorCount, result.closedDoorCount);
+            }
+            if (speaker && listener) {
+                const auto expiresAt = std::chrono::steady_clock::now() + kEvalCacheTtl;
+                std::lock_guard<std::mutex> lock(g_evalCacheMutex);
+                if (g_evalCache.size() >= kEvalCacheMaxEntries) {
+                    // Bounded eviction: drop everything when we hit the ceiling rather than
+                    // tracking LRU. Cache repopulates within one TTL window.
+                    g_evalCache.clear();
+                }
+                g_evalCache[cacheKey] = EvalCacheEntry{result, expiresAt};
             }
             return result;
         };
@@ -802,6 +850,23 @@ namespace SpatialAwareness
                     airDistance >= settings.pathRatioDistanceRejectMinAir) {
                     if (!evaluateLosFallback("path_ratio_distance_blocked", "tier2_ratio_distance_blocked")) {
                         return result;
+                    }
+                }
+
+                const bool shouldConfirmBorderlineInteriorPath =
+                    speakerInterior && openDoorCount == 0 && !result.losFallbackUsed &&
+                    result.pathRatio >= settings.losConfirmPathRatio &&
+                    airDistance >= settings.losConfirmMinAirDistance;
+                if (shouldConfirmBorderlineInteriorPath) {
+                    bool hasLineOfSight = false;
+                    const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
+                    if (losQueryOk) {
+                        result.losFallbackUsed = true;
+                        result.hasLineOfSight = hasLineOfSight;
+                        if (!hasLineOfSight) {
+                            result.reason = "path_ratio_los_blocked";
+                            return finalize("tier2_ratio_los_confirm");
+                        }
                     }
                 }
             }

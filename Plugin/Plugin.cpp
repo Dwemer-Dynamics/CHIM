@@ -55,6 +55,8 @@ extern int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, 
 
 
 std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
+std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS =
+    std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();
