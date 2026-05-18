@@ -26,6 +26,8 @@ namespace SpatialAwareness
         float pathRatioReject = 4.0f;
         float pathRatioDistanceReject = 2.5f;
         float pathRatioDistanceRejectMinAir = 500.0f;
+        float losConfirmPathRatio = 2.0f;
+        float losConfirmMinAirDistance = 400.0f;
         float pathComplexityStartRatio = 1.2f;
         float pathComplexityScale = 0.6f;
         float pathComplexityMin = 0.3f;
@@ -66,6 +68,7 @@ namespace SpatialAwareness
     Settings GetSettings();
     void SetInteriorMaxDistance(float interiorMaxDistance);
     void SetExteriorMaxDistance(float exteriorMaxDistance);
+    void InvalidateCache();
 
     PathResult EvaluatePath(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());
     Result Evaluate(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());
