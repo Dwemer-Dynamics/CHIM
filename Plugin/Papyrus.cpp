@@ -1,5 +1,6 @@
 #include "Papyrus.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // Windows audio includes
 #include <windows.h>
@@ -39,6 +41,7 @@
 
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
+extern std::chrono::high_resolution_clock::time_point controlPlayerSpeechSuppressUntilTS;
 void SkipNextPlayerMenuTopicLocalPlayback();
 #include "json.hpp"
 
@@ -1756,15 +1759,91 @@ int sendMessageReal(std::string msg, std::string type) {
 
 void addAllNPC() {
     static std::mutex mtx;
+    static auto lastAutoAddAttempt = std::chrono::steady_clock::time_point{};
+    constexpr auto kAutoAddCooldown = std::chrono::seconds(1);
+    constexpr int kMaxAutoAddsPerPass = 1;
+    constexpr int kMaxNearbyAutoManagedAgents = 16;
+    constexpr float kAutoAddLookConeCosine = 0.92f;
+
+    struct AutoAddCandidate {
+        RE::Actor* actor = nullptr;
+        std::string label;
+        float distance = 0.0f;
+        float lookScore = -1.0f;
+        bool targeted = false;
+    };
+
     std::lock_guard<std::mutex> lock(mtx);  // Lock the function, unlocks at the end
+
+    const auto now = std::chrono::steady_clock::now();
+    if (lastAutoAddAttempt.time_since_epoch().count() != 0 && now - lastAutoAddAttempt < kAutoAddCooldown) {
+        return;
+    }
 
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
+
+    if (std::chrono::high_resolution_clock::now() < controlPlayerSpeechSuppressUntilTS ||
+        SpeakManager::getInstance().getProcessing()) {
+        lastAutoAddAttempt = now;
+        logger::debug("[AUTOADD] Deferred during active/recent player or NPC speech");
+        return;
+    }
 
     auto cell = RE::PlayerCharacter::GetSingleton()->GetParentCell();
     if (!cell) return;
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
+    std::vector<AutoAddCandidate> candidates;
+    const bool playerInterior = cell->IsInteriorCell();
+    const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
+    int nearbyManagedAgents = 0;
+    RE::FormID crosshairFormId = 0;
+    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
+        crosshairPickData && crosshairPickData->target) {
+        if (auto crosshairTarget = crosshairPickData->target.get();
+            crosshairTarget && crosshairTarget->GetFormType() == RE::FormType::ActorCharacter) {
+            crosshairFormId = crosshairTarget->GetFormID();
+        }
+    }
+
+    const auto playerPosition = player->GetPosition();
+    const float yaw = player->GetAngleZ();
+    RE::NiPoint3 playerForward(std::sin(yaw), std::cos(yaw), 0.0f);
+    const float forwardLength = playerForward.Length();
+    if (forwardLength > 0.0f) {
+        playerForward /= forwardLength;
+    }
+
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent || agent->isNarrator()) {
+            continue;
+        }
+
+        auto* managedActor = agent->getActor();
+        if (!managedActor) {
+            managedActor = agent->getActorByFormId();
+        }
+        if (!managedActor || managedActor->IsDead() || !managedActor->Is3DLoaded()) {
+            continue;
+        }
+
+        auto* managedCell = managedActor->GetParentCell();
+        if (!managedCell || !managedCell->IsAttached()) {
+            continue;
+        }
+        if (playerInterior != managedCell->IsInteriorCell()) {
+            continue;
+        }
+        if (playerInterior && managedCell != cell) {
+            continue;
+        }
+
+        const float managedDistance = playerPosition.GetDistance(managedActor->GetPosition());
+        if (std::isfinite(managedDistance) && managedDistance <= maxDistance) {
+            ++nearbyManagedAgents;
+        }
+    }
 
     // Actors lurking around
     if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
@@ -1791,24 +1870,80 @@ void addAllNPC() {
 
                     
 
-                    float distance = player->GetPosition().GetDistance(actor->GetPosition());
-                    float maxDistance = DISTANCE_ACTIVATING_NPC_OUT;
-                    if (player->GetParentCell()->IsInteriorCell()) maxDistance = DISTANCE_ACTIVATING_NPC_IN;
-
+                    float distance = playerPosition.GetDistance(actor->GetPosition());
                     if (distance > maxDistance) continue;
-                    logger::info("Auto-adding {}", actorLabel); 
 
-                    
+                    const bool deferAutoAdd =
+                        std::chrono::high_resolution_clock::now() < controlPlayerSpeechSuppressUntilTS ||
+                        SpeakManager::getInstance().getProcessing();
+                    if (deferAutoAdd) {
+                        logger::debug("[AUTOADD] Deferred {} during active player/NPC speech", actorLabel);
+                        continue;
+                    }
 
-                    ThreadPool::getInstance().enqueue(
-                        "AddAllNPC", [actor]() { setDrivenByAIReal(actor->GetHandle(), false, false, false, false); },
-                        actorLabel);
-                    
+                    float lookScore = -1.0f;
+                    if (forwardLength > 0.0f && distance > 0.0f) {
+                        RE::NiPoint3 toActor = actor->GetPosition() - playerPosition;
+                        toActor.z = 0.0f;
+                        const float toActorLength = toActor.Length();
+                        if (toActorLength > 0.0f) {
+                            toActor /= toActorLength;
+                            lookScore = playerForward.Dot(toActor);
+                        }
+                    }
+                    const bool targeted = actor->GetFormID() == crosshairFormId ||
+                        (lookScore >= kAutoAddLookConeCosine && distance <= maxDistance);
+
+                    candidates.push_back(AutoAddCandidate{actor, actorLabel, distance, lookScore, targeted});
+
                     // Add NPC
 
                     // return RE::BSContainer::ForEachResult::kStop;
                 }
             }
+        }
+    }
+
+    if (candidates.empty()) {
+        return;
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const AutoAddCandidate& lhs,
+                                                       const AutoAddCandidate& rhs) {
+        if (lhs.targeted != rhs.targeted) {
+            return lhs.targeted;
+        }
+        if (lhs.targeted && std::abs(lhs.lookScore - rhs.lookScore) > 0.001f) {
+            return lhs.lookScore > rhs.lookScore;
+        }
+        if (std::abs(lhs.distance - rhs.distance) > 0.001f) {
+            return lhs.distance < rhs.distance;
+        }
+        return lhs.label < rhs.label;
+    });
+
+    if (nearbyManagedAgents >= kMaxNearbyAutoManagedAgents && !candidates.front().targeted) {
+        lastAutoAddAttempt = now;
+        logger::debug("[AUTOADD] Nearby managed cap reached ({}/{}); skipping non-targeted add",
+                      nearbyManagedAgents, kMaxNearbyAutoManagedAgents);
+        return;
+    }
+
+    int autoAddsQueued = 0;
+    for (const auto& candidate : candidates) {
+        logger::info("Auto-adding {}{} dist={:.0f} lookScore={:.2f}",
+                     candidate.label, candidate.targeted ? " (target priority)" : "",
+                     candidate.distance, candidate.lookScore);
+
+        auto actorHandle = candidate.actor->GetHandle();
+        ThreadPool::getInstance().enqueue(
+            "AddAllNPC",
+            [actorHandle]() { setDrivenByAIReal(actorHandle, false, false, false, false); },
+            candidate.label);
+        lastAutoAddAttempt = now;
+        ++autoAddsQueued;
+        if (autoAddsQueued >= kMaxAutoAddsPerPass) {
+            return;
         }
     }
 }
@@ -2330,6 +2465,11 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     SpeakManager::getInstance().setLastUsedTime();  // To avoid trigger bored event from now
     SpeakManager::getInstance().deleteQueue();
     SPGResponse::getInstance().clearAllQueues();  // To avoid trigger bored event from now
+    if (SpeakManager::getInstance().getProcessing()) {
+        logger::warn("[RECORDSOUND] SpeakManager was still processing during record start; forcing processing state clear");
+        SpeakManager::getInstance().abortPlay(true);
+        SpeakManager::getInstance().setProcessing(false);
+    }
 
     // New. Must evaluate impact. Anyway, the queue was being deleted
     logger::info("[RECORDSOUND] Cancelling all ongoing HTTP stream messages before sendMessage");
@@ -2337,6 +2477,8 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
     AudioManagerController::GetInstance().Stop();
 
+    // Disabled: froze game thread on STT press; makeSTT() does the same logging post-STT off-thread.
+    /*
     auto player = RE::PlayerCharacter::GetSingleton();
     if (player) {
         char timeDateString[200];
@@ -2352,6 +2494,7 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "beings in range:" + result + ")"));
     }
+    */
 
     VoiceRecordControl::getInstance().setRecording(true);
 
