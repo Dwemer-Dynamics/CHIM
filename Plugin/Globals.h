@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -785,7 +787,7 @@ public:
                                                   HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT, false);
         for (const auto& agent : localAgents) {
             if (agent) {  // Check if the pointer is not null
-                if (beings.find(agent->getActorName()) != std::string::npos) {
+                if (agent->isPresent(beings)) {
                     agentNames.push_back(agent->getActorName());
                 }
             }

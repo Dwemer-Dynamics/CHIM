@@ -2492,7 +2492,7 @@ private:
 
                 if (deferAgentMaintenance) {
                     logger::debug("[AGENT_MAINT] Deferred during active player/NPC speech");
-                } else {
+                } else {  // Run agent maintenance only when player/NPC speech is not active.
                 AIAgentManager& aiam = AIAgentManager::getInstance();
                 std::string beings = InspectManagedAgents(RE::PlayerCharacter::GetSingleton(), 15000, ",",
                                                           DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
@@ -2734,9 +2734,10 @@ private:
                     }
                 }
 
-                if (ENABLE_AUTOADDNPC) 
+                if (ENABLE_AUTOADDNPC) {
                     addAllNPC();
                 }
+                }  // !deferAgentMaintenance
 
 
                 //logger::debug("[RESTORE] END OF ITERATION");

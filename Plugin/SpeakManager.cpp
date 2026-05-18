@@ -2819,7 +2819,6 @@ void SpeakManager::process(AIAgent *agent) {
                             audienceSnapshotCompanions = audibleCompanions;
                             audienceSnapshotReady = !audienceSnapshotCompanions.empty();
                         }
-                    } else {
                     }
 
                     if (!speakerName.empty() &&
