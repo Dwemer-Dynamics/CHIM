@@ -26,6 +26,7 @@ struct PlayerSpatialTargetStatus {
     bool hasTarget = false;
     std::string name;
     RE::FormID formId = 0;
+    float airDistance = 0.0f;
     float distanceMeters = 0.0f;
     std::string source;
     std::string reason;
