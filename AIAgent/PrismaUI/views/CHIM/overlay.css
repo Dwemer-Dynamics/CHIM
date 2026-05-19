@@ -18,14 +18,14 @@ body {
     top: 20px;
     right: 20px;
     width: 320px;
-    background: rgba(10, 10, 15, 0.92);
+    background: rgba(10, 10, 15, 0.97);
     border: 1px solid rgba(242, 124, 17, 0.5);
     border-radius: 8px;
     box-shadow: 
         0 4px 20px rgba(0, 0, 0, 0.7),
         0 0 20px rgba(242, 124, 17, 0.2);
     overflow: hidden;
-    backdrop-filter: blur(8px);
+    /* No backdrop-filter: Ultralight blur triggered ASW stalls in VR. */
 }
 
 /* Corner placement - driven by layout.js */

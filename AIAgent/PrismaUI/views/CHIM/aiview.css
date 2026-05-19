@@ -44,7 +44,7 @@ body {
     box-shadow: 
         0 2px 15px rgba(0, 0, 0, 0.8),
         0 0 20px rgba(242, 124, 17, 0.2);
-    backdrop-filter: blur(10px);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
     padding: 12px 18px;
     display: flex;
     justify-content: space-between;
@@ -135,7 +135,34 @@ body {
     box-shadow: 
         0 2px 15px rgba(0, 0, 0, 0.8),
         0 0 20px rgba(242, 124, 17, 0.2);
-    backdrop-filter: blur(10px);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* settings-panel: default top-right */
+.settings-panel.chim-corner-top-left     { top: 20px !important;    left: 20px !important;  bottom: auto !important; right: auto !important; }
+.settings-panel.chim-corner-top-right    { top: 20px !important;    right: 20px !important; bottom: auto !important; left: auto !important;  }
+.settings-panel.chim-corner-bottom-left  { bottom: 20px !important; left: 20px !important;  top: auto !important;    right: auto !important; }
+.settings-panel.chim-corner-bottom-right { bottom: 20px !important; right: 20px !important; top: auto !important;    left: auto !important;  }
+
+/* =========================
+   SETTINGS PANEL - Top Right
+   ========================= */
+.settings-panel {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    width: 330px;
+    max-height: calc(50vh - 40px);
+    background: rgba(10, 10, 15, 0.97);
+    border: 1px solid rgba(242, 124, 17, 0.5);
+    border-radius: 6px;
+    box-shadow:
+        0 2px 15px rgba(0, 0, 0, 0.8),
+        0 0 20px rgba(242, 124, 17, 0.2);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -163,7 +190,7 @@ body {
     box-shadow: 
         0 2px 15px rgba(0, 0, 0, 0.8),
         0 0 20px rgba(242, 124, 17, 0.2);
-    backdrop-filter: blur(10px);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -591,6 +618,10 @@ body {
         width: 350px;
     }
 
+    .settings-panel {
+        width: 310px;
+    }
+
     .bio-panel {
         width: calc(100vw - 390px);
         max-width: calc(100vw - 390px);
@@ -613,6 +644,11 @@ body {
     .left-panel {
         top: 60px;
         max-height: calc(100vh - 75px);
+    }
+
+    .settings-panel {
+        top: 60px;
+        max-height: calc(50vh - 70px);
     }
 
     .bio-panel {

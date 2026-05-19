@@ -44,6 +44,10 @@ namespace PrismaUIBridge {
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
     static std::mutex g_mutex;
+    static std::mutex g_overlayFetchMutex;
+    static std::chrono::steady_clock::time_point g_lastOverlayFetchAt{};
+    static bool g_overlayFetchInFlight = false;
+    constexpr auto kOverlayFetchMinInterval = std::chrono::seconds(8);
     
     // Crosshair target state (for overlay)
     static std::string g_lastCrosshairTarget = "";
@@ -1274,11 +1278,13 @@ R"CHIM(
                reason == "line_of_sight_clear" ||
                reason == "line_of_sight_blocked" ||
                reason == "closed_door_between" ||
+               reason == "open_door_muffled" ||
                reason == "path_fallback_clear" ||
                reason == "path_ratio_blocked" ||
                reason == "path_ratio_los_blocked" ||
                reason == "path_ratio_distance_blocked" ||
                reason == "navmesh_no_path" ||
+               reason == "path_unavailable" ||
                reason == "different_area" ||
                reason == "different_interior_cells" ||
                reason == "interior_exterior_boundary" ||
@@ -1334,10 +1340,19 @@ R"CHIM(
             return resolved;
         }
 
+        // Prisma is feedback first: if the player is looking at an NPC, show that NPC
+        // immediately even when spatial says blocked. Listener routing still only uses
+        // autoEligible/targetable candidates, so this does not make blocked NPCs receive STT.
         auto selected = std::find_if(candidates.begin(), candidates.end(),
+            [](const PlayerSpatialCandidate& candidate) {
+                return candidate.lookTarget;
+            });
+        if (selected == candidates.end()) {
+            selected = std::find_if(candidates.begin(), candidates.end(),
             [](const PlayerSpatialCandidate& candidate) {
                 return candidate.autoEligible;
             });
+        }
         if (selected == candidates.end()) {
             selected = std::find_if(candidates.begin(), candidates.end(),
                 [](const PlayerSpatialCandidate& candidate) {
@@ -1408,9 +1423,6 @@ R"CHIM(
         if (target.hasTarget) {
             if (target.name != g_lastCrosshairTarget || target.formId != g_lastCrosshairFormId ||
                 target.status != g_lastCrosshairTargetStatus) {
-                logger::debug("[PrismaUIBridge] Overlay target: {} ({}, reason={}, distance={:.1f}m)",
-                              target.name, target.source, target.reason, target.distanceMeters);
-
                 UpdateCrosshairTargetUI(target.name, target.distanceMeters, target.status, target.targetable);
                 g_lastCrosshairTarget = target.name;
                 g_lastCrosshairFormId = target.formId;
@@ -1418,7 +1430,6 @@ R"CHIM(
             }
         } else {
             if (!g_lastCrosshairTarget.empty() || target.status != g_lastCrosshairTargetStatus) {
-                logger::debug("[PrismaUIBridge] Overlay spatial target cleared");
                 UpdateCrosshairTargetUI("", 0.0f, target.status, false);
                 g_lastCrosshairTarget.clear();
                 g_lastCrosshairFormId = 0;
@@ -1520,6 +1531,7 @@ R"CHIM(
         HTTPManager::log(std::format("setconf|{}|{}|chim_mode@{}",
             getCurrentTimeMillis(), GetGameTimeStamp(), modeStr));
 
+        const std::string previousMode = g_chatboxCurrentMode;
         g_chatboxCurrentMode = modeStr;
         logger::info("[{}] Set mode to: {}", sourceTag, modeStr);
 
@@ -1527,15 +1539,15 @@ R"CHIM(
             RE::DebugNotification(("Mode: " + modeStr).c_str());
         }
 
-        if (modeStr == "WHISPER") {
-            Papyrus::setConfReal("_max_distance_inside", 200.0f, 200, "200");
-            Papyrus::setConfReal("_max_distance_outside", 200.0f, 200, "200");
-        } else if (modeStr == "SHOUT") {
-            Papyrus::setConfReal("_max_distance_inside", 2400.0f, 2400, "2400");
-            Papyrus::setConfReal("_max_distance_outside", 4800.0f, 4800, "4800");
-        } else {
-            Papyrus::setConfReal("_max_distance_inside", 1200.0f, 1200, "1200");
-            Papyrus::setConfReal("_max_distance_outside", 2400.0f, 2400, "2400");
+        if (previousMode != modeStr) {
+            // Voice mode changes should affect player speech reach without rewriting
+            // the user's MCM auto-activation distances. Clear cached spatial state so
+            // listener routing and Prisma UI immediately use the new runtime multiplier.
+            SpatialSnapshotManager::InvalidatePlayerSnapshot();
+            g_prismaDisplayStatusCache.clear();
+            g_lastOverlayAgentsPayload.clear();
+            logger::info("[{}] Player speech spatial multiplier now {:.2f}", sourceTag,
+                         GetPlayerSpeechDistanceMultiplier());
         }
 
         return true;
@@ -1763,10 +1775,30 @@ R"CHIM(
             return;
         }
 
+        {
+            std::lock_guard<std::mutex> lock(g_overlayFetchMutex);
+            const auto now = std::chrono::steady_clock::now();
+            if (g_overlayFetchInFlight ||
+                (g_lastOverlayFetchAt.time_since_epoch().count() != 0 &&
+                 now - g_lastOverlayFetchAt < kOverlayFetchMinInterval)) {
+                return;
+            }
+            g_overlayFetchInFlight = true;
+            g_lastOverlayFetchAt = now;
+        }
+
         // Queue the fetch on the thread pool
         ThreadPool::getInstance().enqueue(
             "PrismaUIOverlayFetch",
             []() {
+                struct OverlayFetchGuard {
+                    ~OverlayFetchGuard()
+                    {
+                        std::lock_guard<std::mutex> lock(g_overlayFetchMutex);
+                        g_overlayFetchInFlight = false;
+                    }
+                } guard;
+
                 try {
                     // Fetch from server
                     std::string response = FetchOverlayFromServer();
@@ -4238,9 +4270,6 @@ R"CHIM(
         if (target.hasTarget) {
             if (target.name != g_lastStatusHUDTarget || target.formId != g_lastStatusHUDFormId ||
                 target.status != g_lastStatusHUDTargetStatus) {
-                logger::debug("[PrismaUIBridge] Status HUD target: {} ({}, reason={}, distance={:.1f}m)",
-                              target.name, target.source, target.reason, target.distanceMeters);
-
                 UpdateStatusHUDTarget(target.name, target.distanceMeters, target.status, target.targetable);
                 g_lastStatusHUDTarget = target.name;
                 g_lastStatusHUDFormId = target.formId;
@@ -5267,7 +5296,21 @@ R"CHIM(
     }
 
     float GetPlayerSpeechDistanceMultiplier() {
-        return g_chatboxCurrentMode == "SHOUT" ? 2.0f : 1.0f;
+        float multiplier = 1.0f;
+        if (g_chatboxCurrentMode == "WHISPER") {
+            multiplier = 0.35f;
+        } else if (g_chatboxCurrentMode == "SHOUT") {
+            multiplier = 2.0f;
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (player && player->IsSneaking()) {
+            // Sneak is a physical state modifier, not a UI mode switch. Keep the
+            // selected mode visible, but make player speech carry less while crouched.
+            multiplier *= 0.5f;
+        }
+
+        return multiplier;
     }
 
     float GetPlayerSpeechPlaybackVolumeMultiplier() {
