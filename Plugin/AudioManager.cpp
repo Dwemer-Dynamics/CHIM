@@ -77,6 +77,8 @@ void AudioManager::Stop() {
         } else {
             logger::error("[AudioManager] Failed to stop source voice: {}", hr);
         }
+    } else {
+        logger::debug("[AudioManager] Stop called with null source voice (idle/already stopped)");
     }
 
     // Always free the buffer when stopping, regardless of pause state
