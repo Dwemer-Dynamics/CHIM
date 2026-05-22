@@ -1457,6 +1457,50 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                          listener, source, target.source, target.status, target.distanceMeters);
             return true;
         };
+        auto validatePlayerInputTarget = [&](const PlayerSpatialCandidate& target, const char* source) {
+            if (!playerInputMessage || !target.actor) {
+                return true;
+            }
+
+            // VoiceRecord runs on a worker thread. Do not call full SpatialAwareness::Evaluate here:
+            // LOS/navmesh/door/game-ref reads belong on the game-thread snapshot path and can throw SEH
+            // if actor refs move or unload while STT is handing off. For final STT routing, only accept
+            // targets whose cached/ranked status already came from a stable spatial result.
+            const bool stableAudibleReason =
+                target.reason == "immediate_proximity" ||
+                target.reason == "line_of_sight_clear" ||
+                target.reason == "path_fallback_clear" ||
+                target.reason == "open_door_muffled";
+            const bool actualCrosshairTarget = target.source.starts_with("crosshair_");
+            const bool closeLookTarget = target.lookTarget && target.reason == "distance_cell_clear" &&
+                                         target.distanceMeters <= 4.0f;
+            const bool directCheapTarget = target.targetable && (actualCrosshairTarget || closeLookTarget);
+
+            if (!target.targetable || (!stableAudibleReason && !directCheapTarget)) {
+                logger::info(
+                    "[LISTENER-RESOLVE] Rejecting '{}' via {}: STT routing requires cached stable spatial "
+                    "(source={}, status={}, reason={}, targetable={}, dist={:.1f}m)",
+                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                    source, target.source, target.status, target.reason, target.targetable ? 1 : 0,
+                    target.distanceMeters);
+                return false;
+            }
+
+            if (stableAudibleReason) {
+                logger::info(
+                    "[LISTENER-RESOLVE] Confirmed '{}' via {} using cached stable spatial "
+                    "(source={}, status={}, reason={}, dist={:.1f}m)",
+                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                    source, target.source, target.status, target.reason, target.distanceMeters);
+            } else {
+                logger::info(
+                    "[LISTENER-RESOLVE] Confirmed '{}' via {} using direct cheap target "
+                    "(source={}, status={}, reason={}, dist={:.1f}m)",
+                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                    source, target.source, target.status, target.reason, target.distanceMeters);
+            }
+            return true;
+        };
 
         uint32_t chatboxOverrideFormId = 0;
         std::string chatboxOverrideName;
@@ -1468,8 +1512,12 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     return (formMatch || nameMatch) && target.targetable;
             });
             if (overrideIt != rankedTargets.end()) {
-                if (selectTarget(*overrideIt, "chatbox_override")) {
+                if (validatePlayerInputTarget(*overrideIt, "chatbox_override") &&
+                    selectTarget(*overrideIt, "chatbox_override")) {
                     directedChat = true;
+                } else {
+                    logger::info("[LISTENER-RESOLVE] Chatbox target override cannot hear player input; clearing override");
+                    PrismaUIBridge::ClearChatboxTargetOverride();
                 }
             } else {
                 logger::warn("[LISTENER-RESOLVE] Clearing unavailable chatbox target override formId={} name='{}'",
@@ -1484,7 +1532,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     return target.autoEligible;
                 });
             if (autoIt != rankedTargets.end()) {
-                selectTarget(*autoIt, "ranked_targets");
+                if (!validatePlayerInputTarget(*autoIt, "ranked_targets")) {
+                    logger::info("[LISTENER-RESOLVE] Top ranked target failed final spatial check; falling back instead of scanning all candidates");
+                } else {
+                    selectTarget(*autoIt, "ranked_targets");
+                }
             }
         }
 

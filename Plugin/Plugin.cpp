@@ -47,6 +47,8 @@ using json = nlohmann::json;
 #define PLUGIN_VERSION "2.8.0"
 #define PLUGIN_RELEASE_DATE "2026-05-10"
 
+static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
+
 /* Plugin Globals */
 
 extern void ProcedureTakeShot();
@@ -67,6 +69,8 @@ namespace
 }
 
 static std::atomic<std::int64_t> controlPlayerSpeechSuppressUntilTicks{
+    ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now())};
+static std::atomic<std::int64_t> controlWorldMaintenanceSuppressUntilTicks{
     ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now())};
 
 void ExtendPlayerSpeechMaintenanceSuppress(std::chrono::milliseconds duration)
@@ -90,6 +94,27 @@ bool IsPlayerSpeechMaintenanceSuppressed()
     return nowTicks < controlPlayerSpeechSuppressUntilTicks.load(std::memory_order_acquire);
 }
 
+static void ExtendWorldMaintenanceSuppress(std::chrono::milliseconds duration)
+{
+    if (duration <= std::chrono::milliseconds(0)) {
+        return;
+    }
+
+    const auto untilTicks =
+        ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now() + duration);
+    auto current = controlWorldMaintenanceSuppressUntilTicks.load(std::memory_order_acquire);
+    while (current < untilTicks &&
+           !controlWorldMaintenanceSuppressUntilTicks.compare_exchange_weak(
+               current, untilTicks, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    }
+}
+
+static bool IsWorldMaintenanceSuppressed()
+{
+    const auto nowTicks = ToPlayerSpeechSuppressTicks(std::chrono::high_resolution_clock::now());
+    return nowTicks < controlWorldMaintenanceSuppressUntilTicks.load(std::memory_order_acquire);
+}
+
 static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();
@@ -98,6 +123,55 @@ static std::chrono::high_resolution_clock::time_point controlLastDynamicProfileT
 static std::chrono::high_resolution_clock::time_point controlLastWalkToTargetCheckTS = std::chrono::high_resolution_clock::now();
 static std::unordered_map<uint32_t, std::chrono::high_resolution_clock::time_point> lastReanimateEventByTarget;
 static bool playerPartyCombatActive = false;
+static std::mutex spatialDoorInvalidationMutex;
+static bool spatialDoorInvalidationQueued = false;
+static std::uint32_t spatialDoorInvalidationCoalescedEvents = 0;
+static RE::FormID spatialDoorInvalidationLastDoor = 0;
+
+static bool QueueCoalescedDoorInvalidation(RE::FormID doorFormId)
+{
+    bool shouldQueue = false;
+    {
+        std::lock_guard<std::mutex> lock(spatialDoorInvalidationMutex);
+        ++spatialDoorInvalidationCoalescedEvents;
+        spatialDoorInvalidationLastDoor = doorFormId;
+        if (!spatialDoorInvalidationQueued) {
+            spatialDoorInvalidationQueued = true;
+            shouldQueue = true;
+        }
+    }
+
+    if (!shouldQueue) {
+        return false;
+    }
+
+    ThreadPool::getInstance().enqueue(
+        "SpatialDoorInvalidation",
+        []() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            std::uint32_t eventCount = 0;
+            RE::FormID lastDoorFormId = 0;
+            {
+                std::lock_guard<std::mutex> lock(spatialDoorInvalidationMutex);
+                eventCount = spatialDoorInvalidationCoalescedEvents;
+                lastDoorFormId = spatialDoorInvalidationLastDoor;
+                spatialDoorInvalidationCoalescedEvents = 0;
+                spatialDoorInvalidationLastDoor = 0;
+                spatialDoorInvalidationQueued = false;
+            }
+
+            SpatialAwareness::InvalidateCache();
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+            logger::debug("[SpatialSnapshot] Coalesced door invalidation completed events={} lastDoor={:08X}",
+                          eventCount, lastDoorFormId);
+        },
+        "coalesced",
+        std::chrono::milliseconds(2000));
+
+    return true;
+}
+
 static void InvalidateSpatialCachesForDoor(RE::TESObjectREFR* doorRef, const char* source)
 {
     if (!doorRef) {
@@ -105,21 +179,22 @@ static void InvalidateSpatialCachesForDoor(RE::TESObjectREFR* doorRef, const cha
     }
 
     const auto doorFormId = doorRef->GetFormID();
-    SpatialAwareness::InvalidateCache();
-    SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(2000));
-    logger::info("[SpatialSnapshot] Door activation invalidated spatial caches source={} door={:08X}",
-                 source ? source : "unknown", doorFormId);
+    auto* doorCell = doorRef->GetParentCell();
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* playerCell = player ? player->GetParentCell() : nullptr;
+    if (!doorCell || !playerCell || !doorCell->IsInteriorCell() || doorCell != playerCell) {
+        return;
+    }
 
-    ThreadPool::getInstance().enqueue(
-        "SpatialDoorInvalidation",
-        [doorFormId]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-            SpatialAwareness::InvalidateCache();
-            SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(800));
-            logger::debug("[SpatialSnapshot] Door delayed invalidation completed door={:08X}", doorFormId);
-        },
-        std::format("{:08X}", doorFormId),
-        std::chrono::milliseconds(3000));
+    const bool queued = QueueCoalescedDoorInvalidation(doorFormId);
+    if (queued) {
+        // Door state affects refined audibility, not the cheap active-agent/air-distance list.
+        // Do not enter world-settling here; that caused cadence freezes in busy interiors.
+        SpatialAwareness::InvalidateCache();
+        SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        logger::info("[SpatialSnapshot] Door activation queued spatial refinement refresh source={} door={:08X}",
+                     source ? source : "unknown", doorFormId);
+    }
 }
 
 
@@ -1400,6 +1475,7 @@ void ProcedureListenToScene() {
                     sData["location"] = GetPlayerLocation();
                     sData["speech"] = s.subtitle.c_str();
                     sData["listener"] = "unknown";
+                    AddCachedSpeechAudience(sData, "background_dialogue_speech");
                     HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), sData.dump()));
                 } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
                     logger::info("Error sending speech. Review encoding, {}", ex.what());
@@ -1864,6 +1940,43 @@ void RefreshAIAgentTransformationState(RE::Actor* npc, const std::string& agentN
 void RefreshAIAgentFurniture(RE::Actor* npc, const std::string& agentName, std::string furniture);
 void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius);
 
+static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason)
+{
+    auto snapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, reason);
+    std::set<std::string> seen;
+    json companions = json::array();
+
+    auto appendCompanion = [&](const std::string& rawName) {
+        const std::string name = trim(rawName);
+        if (name.empty() || seen.find(name) != seen.end()) {
+            return;
+        }
+        seen.insert(name);
+        companions.push_back(name);
+    };
+
+    for (const auto& audibleActor : snapshot.audibleActors) {
+        appendCompanion(audibleActor.label);
+    }
+
+    if (speechPayload.contains("listener") && speechPayload["listener"].is_string()) {
+        appendCompanion(speechPayload["listener"].get<std::string>());
+    }
+    if (speechPayload.contains("speaker") && speechPayload["speaker"].is_string()) {
+        appendCompanion(speechPayload["speaker"].get<std::string>());
+    }
+
+    if (companions.empty()) {
+        return;
+    }
+
+    speechPayload["companions"] = companions;
+    if (!snapshot.audibleActors.empty()) {
+        speechPayload["spatial_reason"] = "cached_dialogue_scope";
+        speechPayload["spatial_volume"] = 1.0f;
+    }
+}
+
     // Forward declarations for player metadata refresh functions
 void RefreshPlayerEquipment(bool forceUpdate = false);
 void RefreshPlayerInventory(bool forceUpdate = false);
@@ -1933,10 +2046,16 @@ private:
     void threadFunction() {
         logger::info("[ManagerMainQueue] Thread function started");
         auto lastHealthCheck = std::chrono::high_resolution_clock::now();
+        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
+        auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+        auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
+        std::size_t agentMaintenanceCursor = 0;
         int consecutiveErrors = 0;
         
         auto lastStatusReport = std::chrono::steady_clock::now();
-        const auto statusReportInterval = std::chrono::minutes(1); // Report every 1 minute
+        // Full thread-pool dumps write one line per worker thread. Keep them out of normal gameplay cadence;
+        // queue-full paths still dump immediately when there is an actual overload.
+        const auto statusReportInterval = std::chrono::minutes(10);
         while (threadRunning) {
             // Report thread pool status periodically
             auto now = std::chrono::steady_clock::now();
@@ -2019,81 +2138,81 @@ private:
 
                 UpdatePlayerMenuDialogueGate();
 
+                const bool recordingActive = VoiceRecordControl::getInstance().getRecording();
+                const bool hardWorldMaintenanceSuppressed = IsWorldMaintenanceSuppressed();
+                const bool spatialRefinementSuppressed = SpatialSnapshotManager::IsPlayerSpatialSettling();
+                const bool worldMaintenanceSuppressed =
+                    hardWorldMaintenanceSuppressed || spatialRefinementSuppressed;
+
                 if (!game->GameIsPaused()) {
                     if (!RE::UI::GetSingleton()->IsApplicationMenuOpen()) {
                         // logger::debug("[ManagerMainQueue] Processing cycle starting - Game active and menu closed");
                         
-                        // Update crosshair target for CHIM Overlay, AI View, and Status HUD
-                        if (PrismaUIBridge::IsAvailable()) {
-                            PrismaUIBridge::CheckAndUpdateCrosshairTarget();
-                            PrismaUIBridge::CheckAndUpdateAIView();
-                            PrismaUIBridge::CheckAndUpdateDebugger();
-                            PrismaUIBridge::CheckAndUpdateStatusHUDTarget();
-                            PrismaUIBridge::CheckAndUpdateChatboxControls();
-                        }
+                        if (recordingActive) {
+                            // STT capture is latency-sensitive in VR. Do not run overlay refresh,
+                            // context logging, item scans, status posts, or spatial refresh while
+                            // the mic is held; the voice thread owns the player-input path until it
+                            // flips recording false after STT dispatch.
+                            logger::trace("[ManagerMainQueue] Recording active; skipping background context maintenance");
+                        } else {
+                            // Cheap Prisma/status reads stay live during cell-entry settling. The snapshot manager
+                            // only queues expensive LOS/navmesh refinement after the settle window drains.
+                            if (PrismaUIBridge::IsAvailable()) {
+                                PrismaUIBridge::CheckAndUpdateCrosshairTarget();
+                                PrismaUIBridge::CheckAndUpdateAIView();
+                                PrismaUIBridge::CheckAndUpdateDebugger();
+                                PrismaUIBridge::CheckAndUpdateStatusHUDTarget();
+                                PrismaUIBridge::CheckAndUpdateChatboxControls();
+                            }
 
-                        if (!VoiceRecordControl::getInstance().getRecording() &&
-                            !SpeakManager::getInstance().getProcessing()) {
-                            SpatialSnapshotManager::UpdatePlayerSnapshotIncremental("manager_incremental_refresh", 2);
-                        }
-                        
-                        // logger::trace("[ManagerMainQueue] Sending HTTP request for location: {}", GetPlayerLocation());
-                        HTTPManager::log(std::format("request|{}|{}|(Context location: {}, {})|{}", getCurrentTimeMillis(),
-                                                     GetGameTimeStamp(), GetPlayerLocation(), BuildCurrentWorldContextDetails(),
-                                                     RE::PlayerCharacter::GetSingleton()->GetParentCell()->GetFormID()));
-                        
-                        auto timeSinceLastInfo = currentTime - controlLastInfoSent;
-                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - controlLastInfoSent);
+                            if (!SpeakManager::getInstance().getProcessing()) {
+                                SpatialSnapshotManager::UpdatePlayerSnapshotIncremental("manager_incremental_refresh", 2);
+                            }
 
-                        // Snapshot-backed context is bounded/cached now, so 3s keeps nearby context responsive
-                        // without re-running the old full spatial inspection path every cycle.
-                        if (elapsed > std::chrono::seconds(3)) {
-                            logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
-                            auto player = RE::PlayerCharacter::GetSingleton();
+                            if (!worldMaintenanceSuppressed) {
+                                // logger::trace("[ManagerMainQueue] Sending HTTP request for location: {}", GetPlayerLocation());
+                                HTTPManager::log(std::format("request|{}|{}|(Context location: {}, {})|{}", getCurrentTimeMillis(),
+                                                             GetGameTimeStamp(), GetPlayerLocation(), BuildCurrentWorldContextDetails(),
+                                                             RE::PlayerCharacter::GetSingleton()->GetParentCell()->GetFormID()));
 
-                            auto startTime = std::chrono::high_resolution_clock::now();
-                            auto spatialSnapshot =
-                                SpatialSnapshotManager::GetPlayerSnapshot(false, "periodic_infonpc_close");
-                            std::string result;
-                            auto rankedTargets =
-                                SpatialSnapshotManager::GetPlayerConversationTargets("periodic_infonpc_close", true);
-                            for (const auto& target : rankedTargets) {
-                                if (target.name.empty()) {
-                                    continue;
+                                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - controlLastInfoSent);
+
+                                // infonpc_close is a compatibility/context feed, not conversation routing.
+                                // Keep it dumb: read the already-built spatial snapshot if present, otherwise fall back to
+                                // the old managed-agent air-distance list. This path must not queue fresh LOS/navmesh work.
+                                // Snapshot-backed context is cached, but nearby item/activity scans still touch game refs.
+                                // Keep this off the short Prisma/UI cadence to avoid steady interior micro-stutters.
+                                if (elapsed > std::chrono::seconds(8)) {
+                                    logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
+                                    auto player = RE::PlayerCharacter::GetSingleton();
+
+                                    auto contextSnapshot =
+                                        SpatialSnapshotManager::GetPlayerSnapshot(false, "periodic_infonpc_close_cached");
+                                    auto result = contextSnapshot.Describe("/");
+                                    if (result.empty()) {
+                                        result = InspectManagedAgents(player->AsReference(), 3000, "/",
+                                                                      DISTANCE_ACTIVATING_NPC_OUT);
+                                    }
+                                    // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
+                                    std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+                                    if (!itemsResult.empty()) {
+                                        HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(),
+                                                                     GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+                                    }
+
+                                    if (!result.empty()) {
+                                        result.append("/");
+                                    }
+                                    result.append(AIAgentManager::getInstance().getPlayerName());
+                                    HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(),
+                                                                 GetGameTimeStamp(), result));
+                                    PostNearbyActivityStatus(player, 3000.0f);
+
+                                    controlLastInfoSent = std::chrono::high_resolution_clock::now();
                                 }
-                                if (!result.empty()) {
-                                    result.append("/");
-                                }
-                                result.append(target.name);
-                                if (!target.status.empty() && target.status != "Audible") {
-                                    result.append(" (" + target.status + ")");
-                                }
+                            } else if (!hardWorldMaintenanceSuppressed) {
+                                logger::trace("[ManagerMainQueue] Spatial settling; deferring broad context maintenance");
                             }
-                            if (result.empty()) {
-                                result = InspectManagedAgents(player->AsReference(), 3000, "/",
-                                                              DISTANCE_ACTIVATING_NPC_OUT);
-                            }
-                            auto endTime = std::chrono::high_resolution_clock::now();
-                            auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-                            logger::info("[ManagerMainQueue] Cached NPC context took {} ms (audible={}, targets={})",
-                                         durationMs, spatialSnapshot.audibleActors.size(), rankedTargets.size());
-                            // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
-                            std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-                            if (!itemsResult.empty()) {
-                                HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), 
-                                                             GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
-                            }
-                            
-                            if (!result.empty()) {
-                                result.append("/");
-                            }
-                            result.append(AIAgentManager::getInstance().getPlayerName());
-                            HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), result));
-                            PostNearbyActivityStatus(player, 3000.0f);
-                             
-                            controlLastInfoSent = std::chrono::high_resolution_clock::now();
-
                         }
                     }
 
@@ -2200,7 +2319,7 @@ private:
                         parseCommand(newResponse.text, newResponse.actor);
                     }
 
-                    const bool playerSpeechSuppressActive = IsPlayerSpeechMaintenanceSuppressed();
+                    const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
 
                     if (!playerSpeechSuppressActive) {
                         newResponse = spgResponse.getFirstItem("rolecommand");
@@ -2519,27 +2638,73 @@ private:
                     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now() ;
                 }
 
-                const bool deferAgentMaintenance =
-                    IsPlayerSpeechMaintenanceSuppressed() || SpeakManager::getInstance().getProcessing();
+                const auto maintenanceNow = std::chrono::steady_clock::now();
+                bool ranAgentMaintenance = false;
+                const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
+                const bool speechProcessing = SpeakManager::getInstance().getProcessing();
+                const bool deferHeavyAgentMaintenance =
+                    speechMaintenanceSuppressed || speechProcessing || worldMaintenanceSuppressed;
 
-                if (deferAgentMaintenance) {
-                    logger::debug("[AGENT_MAINT] Deferred during active player/NPC speech");
+                if (deferHeavyAgentMaintenance) {
+                    if (maintenanceNow - lastAgentMaintenanceDeferLogAt >= std::chrono::seconds(5)) {
+                        lastAgentMaintenanceDeferLogAt = maintenanceNow;
+                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={}",
+                                      speechMaintenanceSuppressed,
+                                      speechProcessing,
+                                      worldMaintenanceSuppressed);
+                    }
                 } else {  // Run agent maintenance only when player/NPC speech is not active.
-                AIAgentManager& aiam = AIAgentManager::getInstance();
-                std::string beings = InspectManagedAgents(RE::PlayerCharacter::GetSingleton(), 15000, ",",
-                                                          DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
-                constexpr int kPrecleanerMissingPresenceDeletePasses = 120;  // 60s at the 500ms manager cadence.
+                    // Heavy cleanup touches actor state, packages, and voice types. Keep it slower and budgeted;
+                    // cheap auto-add below stays responsive so NPC detection does not depend on this pass.
+                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(20)) {
+                        lastAgentMaintenanceAt = maintenanceNow;
+                        ranAgentMaintenance = true;
+                        AIAgentManager& aiam = AIAgentManager::getInstance();
+                        std::string beings = InspectManagedAgents(RE::PlayerCharacter::GetSingleton(), 15000, ",",
+                                                                  DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
+                        auto allAgentsForMaintenance = aiam.getAgents();
+                        std::vector<std::shared_ptr<AIAgent>> maintenanceAgents;
+                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 6;
+                        if (!allAgentsForMaintenance.empty()) {
+                            if (agentMaintenanceCursor >= allAgentsForMaintenance.size()) {
+                                agentMaintenanceCursor = 0;
+                            }
+
+                            const std::size_t startCursor = agentMaintenanceCursor;
+                            std::size_t visited = 0;
+                            while (visited < allAgentsForMaintenance.size() &&
+                                   maintenanceAgents.size() < kMaxAgentMaintenanceChecksPerPass) {
+                                auto agent = allAgentsForMaintenance[(startCursor + visited) %
+                                                                     allAgentsForMaintenance.size()];
+                                if (agent) {
+                                    maintenanceAgents.push_back(agent);
+                                }
+                                ++visited;
+                            }
+                            agentMaintenanceCursor = (startCursor + visited) % allAgentsForMaintenance.size();
+                        }
+
+                        constexpr int kPrecleanerMissingPresenceDeletePasses = 30;
+                        constexpr std::size_t kMaxPrecleanerDeletesPerPass = 1;
+                        std::vector<std::string> agentsToDelete;
+                        auto queueAgentDelete = [&](const std::string& agentName) -> bool {
+                            if (agentsToDelete.size() < kMaxPrecleanerDeletesPerPass) {
+                                agentsToDelete.push_back(agentName);
+                                return true;
+                            }
+                            return false;
+                        };
 
                 // Delete dead actors
                 //logger::debug("[PRECLEANER] Evaluating");
-                std::vector<std::string> agentsToDelete;
-                for (const auto& agent : aiam.getAgents()) {
-                    if (agent->isPresent(beings)) {
-                        agent->resetMissingPresenceCounter();
-                        if (agent->mustBeDeleted()) {
-                            agentsToDelete.push_back(agent->getActorName());
-                            logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
-                                          agent->getActorName());
+                for (const auto& agent : maintenanceAgents) {
+                        if (agent->isPresent(beings)) {
+                            agent->resetMissingPresenceCounter();
+                            if (agent->mustBeDeleted()) {
+                                if (queueAgentDelete(agent->getActorName())) {
+                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
+                                                  agent->getActorName());
+                                }
                         } else {
                             if (agent->getActor()) {
                                 // We must ensure actor is really dead
@@ -2547,8 +2712,10 @@ private:
                                 if (!actorForm) continue;
                                 auto actor = RE::TESForm::LookupByID(agent->GetFormId())->As<RE::Actor>();
                                 if (actor && actor->IsDead() && !agent->isNarrator()) {
-                                    agentsToDelete.push_back(agent->getActorName());
-                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}", agent->getActorName());
+                                    if (queueAgentDelete(agent->getActorName())) {
+                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}",
+                                                      agent->getActorName());
+                                    }
                                 }
                             }
                         }
@@ -2557,12 +2724,21 @@ private:
                         if (ENABLE_AUTOADDNPC) {
                             if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
                                 !agent->isManuallyAdded()) {
+                                if (agent->mustBeDeleted()) {
+                                    if (queueAgentDelete(agent->getActorName())) {
+                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because auto-managed stale: {}",
+                                                      agent->getActorName());
+                                    }
+                                    continue;
+                                }
+
                                 agent->increaseMissingPresenceCounter();
                                 const int missingPasses = agent->getMissingPresenceCounter();
                                 if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
-                                    agentsToDelete.push_back(agent->getActorName());
-                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
-                                                  missingPasses, agent->getActorName());
+                                    if (queueAgentDelete(agent->getActorName())) {
+                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
+                                                      missingPasses, agent->getActorName());
+                                    }
                                 } else if (missingPasses == 1 || missingPasses % 30 == 0) {
                                     logger::debug("[PRECLEANER] Actor not present yet retained ({}/{}): {}",
                                                   missingPasses, kPrecleanerMissingPresenceDeletePasses,
@@ -2579,7 +2755,8 @@ private:
                     aiam.deleteAgentByName(name);
                 }
 
-                auto agents = aiam.getAgents(); // Get a copy of agents to avoid holding lock
+                auto agents = maintenanceAgents;
+                bool performedActorCleanupThisPass = !agentsToDelete.empty();
 
                 //logger::debug("[RESTORE] Evaluating {} agents ", agents.size());
                 for (const auto& agent : agents) {
@@ -2618,6 +2795,10 @@ private:
                             isClean = agent->isClean();
                            
                             if (isClean && !isRestored) {
+                                if (performedActorCleanupThisPass) {
+                                    agent->SetLastTimeTalk();
+                                    continue;
+                                }
                                 if (!game->GameIsPaused()) {    // We're gonna call some papyrus functions, make sure game is running
                                     if (elapsed >=
                                         std::chrono::seconds(91)) {  // To restore packages override after 30 seconds of no speech
@@ -2685,6 +2866,12 @@ private:
 
                             } else {
                                 if (agent->isPresent(beings)) {
+                                    if (performedActorCleanupThisPass) {
+                                        agent->SetLastTimeTalk();
+                                        continue;
+                                    }
+                                    performedActorCleanupThisPass = true;
+
                                     if (agent->getActor()) {
                                         if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
                                             auto fgen = agent->getActor()->GetFaceGenAnimationData();
@@ -2732,6 +2919,12 @@ private:
 
                                     agent->increaseForgetCleanCounter();
                                     if (agent->getForgetCleanCounter() > 12) {  // Dirty clean
+                                        if (performedActorCleanupThisPass) {
+                                            agent->SetLastTimeTalk();
+                                            continue;
+                                        }
+                                        performedActorCleanupThisPass = true;
+
                                         logger::info("[CLEANER] Dirty clean {}, not present. ", agent->getActorName());
                                         auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
                                         if (actorByForm) {
@@ -2766,10 +2959,17 @@ private:
                     }
                 }
 
-                if (ENABLE_AUTOADDNPC) {
+                }
+
+                }  // !deferHeavyAgentMaintenance
+
+                // Auto-add handles spatial settling internally so close/crosshair NPCs can promote quickly.
+                if (!speechMaintenanceSuppressed && !speechProcessing && !hardWorldMaintenanceSuppressed &&
+                    !ranAgentMaintenance && ENABLE_AUTOADDNPC &&
+                    maintenanceNow - lastAutoAddMaintenanceAt >= std::chrono::milliseconds(500)) {
+                    lastAutoAddMaintenanceAt = maintenanceNow;
                     addAllNPC();
                 }
-                }  // !deferAgentMaintenance
 
 
                 //logger::debug("[RESTORE] END OF ITERATION");
@@ -5700,6 +5900,8 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
+        // infonpc_close is a compatibility/context feed. It may read an existing spatial snapshot, but it
+        // must fall back to the simple managed-agent list instead of forcing conversation spatial work.
         auto loadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "loaded_game_infonpc_close");
         auto resultClose = loadSnapshot.Describe("/");
         if (resultClose.empty()) {
@@ -5786,6 +5988,8 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
+        // infonpc_close is a compatibility/context feed. It may read an existing spatial snapshot, but it
+        // must fall back to the simple managed-agent list instead of forcing conversation spatial work.
         auto reloadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "reloaded_game_infonpc_close");
         auto resultClose = reloadSnapshot.Describe("/");
         if (resultClose.empty()) {
@@ -6061,6 +6265,10 @@ EventHandlers {
             return;
         }
 
+        // Cell streaming can fire in bursts. Keep broad context scans out of
+        // the same window as Papyrus sendCellInfo/equipment detach storms.
+        ExtendWorldMaintenanceSuppress(std::chrono::seconds(6));
+
         if (pendingLoadedPluginManifestSync) {
             if (PostLoadedPluginManifest()) {
                 pendingLoadedPluginManifestSync = false;
@@ -6099,24 +6307,15 @@ EventHandlers {
                                          "(beings in range:" + result + ")"));
             */
 
-            // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
-            std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-            if (!itemsResult.empty()) {
-                HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), 
-                                             GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
-            }
-            
+            // Cell-load already runs Papyrus sendCellInfo and other mod detach work.
+            // Do not add item/activity scans here; the periodic pass sends them after the settle window.
             auto locationSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "location_infonpc_close");
             auto result = locationSnapshot.Describe("/");
-            if (result.empty()) {
-                result = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-            }
             if (!result.empty()) {
                 result.append("/");
+                result.append(AIAgentManager::getInstance().getPlayerName());
+                HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
             }
-            result.append(AIAgentManager::getInstance().getPlayerName());
-            HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
-            PostNearbyActivityStatus(player, 3000.0f);
 
 
             BackGroundDialogueQueue.clear();
@@ -6449,12 +6648,13 @@ EventHandlers {
             }
 
             auto activatorS = event->actionRef->GetBaseObject();
-            auto activator = event->actionRef->GetBaseObject()->GetName();
-
-            auto activated = event->objectActivated->GetBaseObject()->GetName();
-
-            auto npc = event->actionRef->GetBaseObject();
             auto activated2 = event->objectActivated->GetBaseObject();
+            if (!activatorS || !activated2) {
+                return;
+            }
+
+            auto activator = activatorS->GetName();
+            auto activated = activated2->GetName();
 
             RE::TESObjectREFR* objectPointer = nullptr;
 
@@ -6535,10 +6735,15 @@ EventHandlers {
                     AIAgentManager& aiam = AIAgentManager::getInstance();
 
                     for (const auto& agent : aiam.getAgents()) {
-                        if (refObjActivator->GetFormID() ==
-                            agent->getActor()->GetFormID()) {  // Agent activates something
+                        if (!agent) {
+                            continue;
+                        }
+
+                        auto* agentActor = agent->getActorByFormId();
+                        if (agentActor && refObjActivator->GetFormID() ==
+                            agentActor->GetFormID()) {  // Agent activates something
                             logger::trace("[ACTIVITY_STATUS] Suppressing legacy furniture event text for agent {}",
-                                          agent->getActor()->GetDisplayFullName());
+                                          agentActor->GetDisplayFullName());
                         }
                     }
                 }
@@ -7319,12 +7524,10 @@ EventHandlers {
                           // Do not queue Player TTS from this late topic-event path. By this point vanilla dialogue has
                           // already advanced, so playback would overlap NPC dialogue and show delayed player subtitles.
                           // The supported traditional-dialogue Player TTS path is the optional SWF -> Papyrus bridge.
-                         const bool whisperModeActive =
-                             (DISTANCE_ACTIVATING_NPC_IN <= 200.0f && DISTANCE_ACTIVATING_NPC_OUT <= 200.0f);
                          const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
                          const char* dialogueVerb = currentChatboxMode == "SHOUT"
                              ? "Shouting to"
-                             : (whisperModeActive ? "Whispering to" : "Talking to");
+                             : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
 
                          HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
                                                       getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
@@ -7340,6 +7543,7 @@ EventHandlers {
                              sData["speech"] = DialogueLastStringSay;
                              sData["speaker"] = aiam.getPlayerName();
                              sData["debug"] = (event->flag) ? "true" : "false";
+                             AddCachedSpeechAudience(sData, "traditional_player_speech");
                              HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
                                                           GetGameTimeStamp(), sData.dump()));
 
@@ -7485,6 +7689,7 @@ EventHandlers {
                                 sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
                                 sData["audios"] = audioPaths;
                                 sData["debug"] = (event->flag) ? "true" : "false";
+                                AddCachedSpeechAudience(sData, "traditional_npc_speech");
                                 HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                                              sData.dump()));
 

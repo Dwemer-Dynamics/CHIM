@@ -35,8 +35,6 @@ extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 
 namespace {
     void HardStopDialogueForPlayerVoiceInput() {
-        logger::info("[VOICERECORD] Hard-stopping active dialogue before recording");
-
         const auto now = std::chrono::high_resolution_clock::now();
         controlLastBoredTriggerTS = now;
         ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
@@ -48,7 +46,6 @@ namespace {
         speakManager.deleteQueue();
         speakManager.deleteQueuedPlayerLines();
         if (speakManager.getProcessing()) {
-            logger::warn("[VOICERECORD] SpeakManager was still processing during hard stop; forcing processing state clear");
             speakManager.abortPlay(true);
             speakManager.setProcessing(false);
         }
@@ -416,7 +413,11 @@ int VoiceRecordThread(int bindedKey) {
                     windowsKeyCode = bindedKey;
                     logger::debug("Using direct key code: {}", bindedKey);
                 } else {
-                    logger::error("Unsupported key code: {}", bindedKey);
+                    // Skyrim VR controller codes do not always map to Windows VK codes.
+                    // VR recording is stopped through VoiceRecordControl, so this fallback is expected.
+                    if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+                        logger::warn("Unsupported key code: {}", bindedKey);
+                    }
                     windowsKeyCode = bindedKey;  // Fall back to original code
                 }
         }
@@ -582,7 +583,14 @@ int VoiceRecordThread(int bindedKey) {
 }
 
 int VoiceRecord(int bindedKey) {
-    ThreadPool::getInstance().enqueue("VoiceRecord", [bindedKey]() { 
+    ThreadPool::getInstance().enqueue("VoiceRecord", [bindedKey]() {
+        struct RecordingStateGuard {
+            ~RecordingStateGuard()
+            {
+                VoiceRecordControl::getInstance().setRecording(false);
+            }
+        } recordingStateGuard;
+
         VoiceRecordThread(bindedKey);
         logger::info("Voice thread ended");
     }, "", std::chrono::seconds(60));
