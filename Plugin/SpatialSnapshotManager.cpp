@@ -28,8 +28,8 @@ namespace
     bool g_incrementalScanComplete = true;
     RE::NiPoint3 g_incrementalAnchorPosition{};
     RE::FormID g_incrementalAnchorCellFormId = 0;
+    float g_incrementalAnchorEffectiveVisionRange = 0.0f;
     constexpr float kIncrementalSnapshotMoveTolerance = 384.0f;
-    constexpr std::size_t kMaxIncrementalCandidates = 16;
 
     std::mutex g_playerCrosshairTargetMutex;
     PlayerSpatialTargetStatus g_playerCrosshairTarget;
@@ -39,15 +39,19 @@ namespace
     constexpr auto kPlayerSnapshotMaxStaleReadTtl = std::chrono::seconds(15);
     constexpr auto kIncrementalSnapshotRescanInterval = std::chrono::seconds(2);
     constexpr float kPlayerSnapshotMoveTolerance = 128.0f;
-    constexpr auto kPlayerCrosshairTargetTtl = std::chrono::milliseconds(750);
+    // Prisma polls target state at 250ms. Keep these TTLs above that cadence so
+    // UI reads do not rebuild/fallback-scan the managed actor list every pulse.
+    constexpr auto kPlayerCrosshairTargetTtl = std::chrono::milliseconds(250);
     constexpr auto kPlayerConversationTargetsTtl = std::chrono::milliseconds(250);
-    constexpr float kPlayerConversationTargetsMoveTolerance = 96.0f;
-    constexpr std::size_t kMaxPlayerConversationTargets = 16;
+    constexpr float kPlayerConversationTargetsMoveTolerance = 48.0f;
     constexpr auto kCellEntrySpatialSettleTime = std::chrono::seconds(6);
-    constexpr auto kTargetRefinementTtl = std::chrono::seconds(30);
-    constexpr auto kLosRefinementMinInterval = std::chrono::milliseconds(750);
-    constexpr auto kPriorityPathFallbackMinInterval = std::chrono::milliseconds(1000);
-    constexpr auto kClosePathFallbackMinInterval = std::chrono::milliseconds(1500);
+    constexpr auto kPositiveTargetRefinementTtl = std::chrono::seconds(10);
+    constexpr auto kNegativeTargetRefinementTtl = std::chrono::milliseconds(750);
+    constexpr auto kClosedDoorTargetRefinementTtl = std::chrono::seconds(10);
+    constexpr auto kPriorityLosRefinementMinInterval = std::chrono::milliseconds(250);
+    constexpr auto kBackgroundLosRefinementMinInterval = std::chrono::milliseconds(750);
+    constexpr auto kPriorityPathFallbackMinInterval = std::chrono::milliseconds(750);
+    constexpr auto kClosePathFallbackMinInterval = std::chrono::milliseconds(1250);
     constexpr auto kPathFallbackMinInterval = std::chrono::milliseconds(2500);
     constexpr auto kDistantPathFallbackMinInterval = std::chrono::milliseconds(4000);
     constexpr float kTargetRefinementMoveTolerance = 64.0f;
@@ -80,7 +84,8 @@ namespace
     std::mutex g_targetRefinementMutex;
     std::unordered_map<std::uint64_t, TargetRefinementCacheEntry> g_targetRefinementCache;
     bool g_targetRefinementTaskQueued = false;
-    std::chrono::steady_clock::time_point g_nextLosRefinementAt{};
+    std::chrono::steady_clock::time_point g_nextPriorityLosRefinementAt{};
+    std::chrono::steady_clock::time_point g_nextBackgroundLosRefinementAt{};
     std::chrono::steady_clock::time_point g_nextPriorityPathFallbackAt{};
     std::chrono::steady_clock::time_point g_nextPathFallbackAt{};
 
@@ -339,10 +344,20 @@ namespace
     std::string FormatTargetStatus(const std::string& reason, bool canCommunicate, float verticalDelta = 0.0f)
     {
         const auto verticalStatus = DescribeVerticalSeparation(verticalDelta);
+        const auto withVertical = [&](const std::string& base) {
+            return verticalStatus.empty() ? base : base + ", " + verticalStatus;
+        };
+
+        if (reason == "closed_door_between") {
+            return "Can't hear you: closed door";
+        }
 
         if (canCommunicate) {
-            if (reason == "open_door_muffled" || reason == "closed_door_between") {
+            if (reason == "open_door_muffled") {
                 return "Can hear you, muffled";
+            }
+            if (reason == "path_fallback_clear") {
+                return withVertical("Can hear you: around a wall");
             }
             if (!verticalStatus.empty()) {
                 return "Can hear you: " + verticalStatus;
@@ -350,12 +365,9 @@ namespace
             return "Can hear you";
         }
 
-        if (reason == "closed_door_between") {
-            return "Can't hear you: closed door";
-        }
         if (reason == "path_ratio_los_blocked" || reason == "path_ratio_blocked" ||
             reason == "path_ratio_distance_blocked" || reason == "navmesh_no_path") {
-            return verticalStatus.empty() ? "Can't hear you: around a wall" : "Can't hear you: " + verticalStatus;
+            return withVertical("Can't hear you: around a wall");
         }
         if (reason == "different_interior_cells" || reason == "interior_exterior_boundary") {
             return "Can't hear you: different area";
@@ -367,7 +379,7 @@ namespace
             return "Too far away";
         }
         if (reason == "line_of_sight_blocked") {
-            return verticalStatus.empty() ? "Can't hear you: around a wall" : "Can't hear you: " + verticalStatus;
+            return withVertical("Can't hear you: around a wall");
         }
         if (reason == "vertical_separation") {
             return verticalStatus.empty() ? "Checking hearing" : "Checking: " + verticalStatus;
@@ -519,7 +531,9 @@ namespace
             entry.cellFormId != cell->GetFormID()) {
             return false;
         }
-        if (now - entry.timestamp > kTargetRefinementTtl) {
+        const auto ttl = entry.result.reason == "closed_door_between" ? kClosedDoorTargetRefinementTtl :
+                         (entry.result.canCommunicate ? kPositiveTargetRefinementTtl : kNegativeTargetRefinementTtl);
+        if (now - entry.timestamp > ttl) {
             return false;
         }
         if (entry.playerPosition.GetDistance(player->GetPosition()) > kTargetRefinementMoveTolerance ||
@@ -631,11 +645,13 @@ namespace
         RE::FormID targetFormId = target->GetFormID();
         {
             std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
-            if (g_targetRefinementTaskQueued || now < g_nextLosRefinementAt) {
+            auto& nextLosRefinementAt = priorityTarget ? g_nextPriorityLosRefinementAt : g_nextBackgroundLosRefinementAt;
+            const auto losInterval = priorityTarget ? kPriorityLosRefinementMinInterval : kBackgroundLosRefinementMinInterval;
+            if (g_targetRefinementTaskQueued || now < nextLosRefinementAt) {
                 return;
             }
             g_targetRefinementTaskQueued = true;
-            g_nextLosRefinementAt = now + kLosRefinementMinInterval;
+            nextLosRefinementAt = now + losInterval;
         }
 
         auto* taskInterface = SKSE::GetTaskInterface();
@@ -674,8 +690,6 @@ namespace
                 result.volume = 0.0f;
                 result.reason = "closed_door_between";
                 StoreTargetRefinement(playerActor, targetActor, result);
-                logger::debug("[SpatialSnapshot] Door refinement blocked reason='{}' target={:08X} closedDoors={}",
-                              reason, targetFormId, doorScan.closedDoorCount);
                 return;
             }
 
@@ -688,8 +702,6 @@ namespace
                 result.canCommunicate = true;
                 result.reason = "line_of_sight_clear";
                 StoreTargetRefinement(playerActor, targetActor, result);
-                logger::debug("[SpatialSnapshot] LOS refinement clear reason='{}' target={:08X}",
-                              reason, targetFormId);
                 return;
             }
 
@@ -698,8 +710,6 @@ namespace
                 result.volume = 0.0f;
                 result.reason = "line_of_sight_blocked";
                 StoreTargetRefinement(playerActor, targetActor, result);
-                logger::debug("[SpatialSnapshot] Vertical separation blocked by LOS reason='{}' target={:08X}",
-                              reason, targetFormId);
                 return;
             }
 
@@ -719,9 +729,6 @@ namespace
 
             if (runPathFallback) {
                 result = EvaluatePathFallbackForTarget(playerActor, targetActor, settings, result);
-                logger::debug("[SpatialSnapshot] Path fallback refinement reason='{}' target={:08X} lane='{}' interval={}ms result='{}'",
-                              reason, targetFormId, usePriorityPathLane ? "priority" : "background",
-                              pathInterval.count(), result.reason);
             } else {
                 result.canCommunicate = false;
                 result.volume = 0.0f;
@@ -821,8 +828,9 @@ namespace
             return best;
         }
 
-        constexpr float kLookFallbackMaxDistance = 2500.0f;
-        constexpr float kLookFallbackCosine = 0.78f;
+        // Look fallback is target selection, not scene population. Keep it tied to
+        // spatial hearing distance so MCM hearing range is the single speech boundary.
+        constexpr float kLookFallbackCosine = 0.86f;
         const auto playerPosition = player->GetPosition();
         const float yaw = player->GetAngleZ();
         RE::NiPoint3 playerForward(std::sin(yaw), std::cos(yaw), 0.0f);
@@ -833,6 +841,16 @@ namespace
         playerForward /= forwardLength;
 
         const bool playerInterior = playerCell->IsInteriorCell();
+        const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
+        float lookFallbackMaxDistance =
+            playerInterior ? spatialSettings.interiorMaxDistance : spatialSettings.exteriorMaxDistance;
+        if (spatialSettings.maxAirDistance > 0.0f) {
+            lookFallbackMaxDistance = std::min(lookFallbackMaxDistance, spatialSettings.maxAirDistance);
+        }
+        if (!std::isfinite(lookFallbackMaxDistance) || lookFallbackMaxDistance <= 0.0f) {
+            return best;
+        }
+
         float bestScore = -(std::numeric_limits<float>::max)();
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
@@ -866,7 +884,7 @@ namespace
 
             RE::NiPoint3 toActor = actor->GetPosition() - playerPosition;
             const float distance = toActor.Length();
-            if (!std::isfinite(distance) || distance <= 0.0f || distance > kLookFallbackMaxDistance) {
+            if (!std::isfinite(distance) || distance <= 0.0f || distance > lookFallbackMaxDistance) {
                 continue;
             }
             toActor /= distance;
@@ -876,7 +894,7 @@ namespace
                 continue;
             }
 
-            const float distancePenalty = distance / kLookFallbackMaxDistance;
+            const float distancePenalty = distance / lookFallbackMaxDistance;
             const float score = (dot * 2.0f) - distancePenalty;
             if (score > bestScore) {
                 bestScore = score;
@@ -889,7 +907,8 @@ namespace
         return best;
     }
 
-    bool NeedsNewIncrementalCandidateSet(RE::Actor* player, RE::TESObjectCELL* cell)
+    bool NeedsNewIncrementalCandidateSet(RE::Actor* player, RE::TESObjectCELL* cell,
+                                         float effectiveVisionRange)
     {
         if (!player || !cell) {
             return false;
@@ -897,6 +916,10 @@ namespace
 
         if (g_incrementalAnchorCellFormId == 0 ||
             g_incrementalAnchorCellFormId != cell->GetFormID()) {
+            return true;
+        }
+
+        if (std::abs(g_incrementalAnchorEffectiveVisionRange - effectiveVisionRange) > 0.001f) {
             return true;
         }
 
@@ -924,7 +947,7 @@ namespace
         const bool playerInterior = playerCell->IsInteriorCell();
         const auto playerPosition = player->GetPosition();
         const auto now = std::chrono::steady_clock::now();
-        candidates.reserve(16);
+        candidates.reserve(32);
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         for (const auto& agent : aiam.getAgents()) {
@@ -973,10 +996,6 @@ namespace
             return lhs.airDistance < rhs.airDistance;
         });
 
-        if (candidates.size() > kMaxIncrementalCandidates) {
-            candidates.resize(kMaxIncrementalCandidates);
-        }
-
         return candidates;
     }
 
@@ -993,9 +1012,53 @@ namespace
         return true;
     }
 
+    bool IsIncrementalCandidate(const std::vector<IncrementalSnapshotCandidate>& candidates, RE::FormID formId)
+    {
+        return std::any_of(candidates.begin(), candidates.end(), [formId](const auto& candidate) {
+            return candidate.formId == formId;
+        });
+    }
+
+    void RetainCandidateDescriptors(std::vector<AudibleActorDescriptor>& actors,
+                                    const std::vector<IncrementalSnapshotCandidate>& candidates)
+    {
+        actors.erase(std::remove_if(actors.begin(), actors.end(), [&](const auto& actor) {
+            return !IsIncrementalCandidate(candidates, actor.formId);
+        }), actors.end());
+    }
+
+    void RemoveDescriptor(std::vector<AudibleActorDescriptor>& actors, RE::FormID formId)
+    {
+        actors.erase(std::remove_if(actors.begin(), actors.end(), [formId](const auto& actor) {
+            return actor.formId == formId;
+        }), actors.end());
+    }
+
+    void PrepareSnapshotForIncrementalRescan(PlayerSpatialSnapshot& snapshot,
+                                             const std::vector<IncrementalSnapshotCandidate>& candidates,
+                                             RE::Actor* player, RE::TESObjectCELL* cell,
+                                             float visionRange,
+                                             const std::chrono::steady_clock::time_point now,
+                                             const std::string& reason)
+    {
+        snapshot.playerFormId = player ? player->GetFormID() : 0;
+        snapshot.cellFormId = cell ? cell->GetFormID() : 0;
+        snapshot.playerPosition = player ? player->GetPosition() : RE::NiPoint3{};
+        snapshot.visionRange = visionRange;
+        snapshot.timestamp = now;
+        snapshot.refreshReason = reason;
+        RetainCandidateDescriptors(snapshot.audibleActors, candidates);
+        RetainCandidateDescriptors(snapshot.evaluatedActors, candidates);
+    }
+
     bool UpsertAudibleActor(PlayerSpatialSnapshot& snapshot, AudibleActorDescriptor actor)
     {
         return UpsertDescriptor(snapshot.audibleActors, std::move(actor));
+    }
+
+    void RemoveAudibleActor(PlayerSpatialSnapshot& snapshot, RE::FormID formId)
+    {
+        RemoveDescriptor(snapshot.audibleActors, formId);
     }
 
     bool UpsertEvaluatedActor(PlayerSpatialSnapshot& snapshot, AudibleActorDescriptor actor)
@@ -1048,28 +1111,24 @@ PlayerSpatialSnapshot SpatialSnapshotManager::GetPlayerSnapshot(bool forceRefres
     constexpr float visionRange = HERIKA_MAX_VISION_RANGE;
     const auto position = player->GetPosition();
     const auto now = std::chrono::steady_clock::now();
+    const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, visionRange);
+    const float effectiveVisionRange = spatialSettings.maxAirDistance;
 
-    if (ShouldDeferPlayerSpatialForCell(cell, now, reason)) {
-        return {};
-    }
+    // Cell entry settling is only a refinement throttle. Keep the cheap
+    // air-distance candidate snapshot warm so UI and routing do not go blind
+    // for the full settle window after cell-load event bursts.
+    ShouldDeferPlayerSpatialForCell(cell, now, reason);
 
     {
         std::lock_guard<std::mutex> lock(g_playerSnapshotMutex);
-        if (!forceRefresh && CanReusePlayerSnapshot(player, cell, visionRange, position, now)) {
+        if (!forceRefresh && CanReusePlayerSnapshot(player, cell, effectiveVisionRange, position, now)) {
             return g_playerSnapshot;
         }
         if (!forceRefresh) {
-            if (CanReadCachedPlayerSnapshot(player, cell, visionRange, now)) {
-                logger::debug("[SpatialSnapshot] Returning stale cached player snapshot reason='{}' age={}ms audible={}",
-                              reason,
-                              std::chrono::duration_cast<std::chrono::milliseconds>(now - g_playerSnapshot.timestamp)
-                                  .count(),
-                              g_playerSnapshot.audibleActors.size());
+            if (CanReadCachedPlayerSnapshot(player, cell, effectiveVisionRange, now)) {
                 return g_playerSnapshot;
             }
 
-            logger::debug("[SpatialSnapshot] No cached player snapshot available for non-blocking request '{}'",
-                          reason);
             return {};
         }
     }
@@ -1078,10 +1137,9 @@ PlayerSpatialSnapshot SpatialSnapshotManager::GetPlayerSnapshot(bool forceRefres
     refreshed.playerFormId = player->GetFormID();
     refreshed.cellFormId = cell->GetFormID();
     refreshed.playerPosition = position;
-    refreshed.visionRange = visionRange;
+    refreshed.visionRange = effectiveVisionRange;
     refreshed.timestamp = now;
     refreshed.refreshReason = reason;
-    const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, visionRange);
     const auto candidates = BuildIncrementalCandidates(player, visionRange);
     refreshed.audibleActors.reserve(candidates.size());
     refreshed.evaluatedActors.reserve(candidates.size());
@@ -1099,9 +1157,6 @@ PlayerSpatialSnapshot SpatialSnapshotManager::GetPlayerSnapshot(bool forceRefres
             UpsertAudibleActor(refreshed, std::move(descriptor));
         }
     }
-
-    logger::debug("[SpatialSnapshot] Refreshed player snapshot reason='{}' audible={} evaluated={} force={}",
-                  reason, refreshed.audibleActors.size(), refreshed.evaluatedActors.size(), forceRefresh);
 
     {
         std::lock_guard<std::mutex> lock(g_playerSnapshotMutex);
@@ -1123,31 +1178,27 @@ bool SpatialSnapshotManager::UpdatePlayerSnapshotIncremental(const std::string& 
     }
 
     constexpr float visionRange = HERIKA_MAX_VISION_RANGE;
+    const auto initialSpatialSettings = GetPlayerSpeechSpatialSettings(player, visionRange);
+    const float effectiveVisionRange = initialSpatialSettings.maxAirDistance;
     const auto now = std::chrono::steady_clock::now();
 
-    if (ShouldDeferPlayerSpatialForCell(cell, now, reason)) {
-        return false;
-    }
+    // This pass only builds/evaluates the cheap air-distance snapshot. Do not
+    // starve it during cell-entry settling; expensive LOS/navmesh refinement is
+    // throttled by the target-refinement queue.
+    ShouldDeferPlayerSpatialForCell(cell, now, reason);
 
     {
         std::lock_guard<std::mutex> lock(g_playerSnapshotMutex);
-        if (NeedsNewIncrementalCandidateSet(player, cell)) {
+        if (NeedsNewIncrementalCandidateSet(player, cell, effectiveVisionRange)) {
             g_incrementalCandidates = BuildIncrementalCandidates(player, visionRange);
             g_incrementalCandidateIndex = 0;
             g_incrementalScanComplete = g_incrementalCandidates.empty();
             g_incrementalAnchorPosition = player->GetPosition();
             g_incrementalAnchorCellFormId = cell->GetFormID();
+            g_incrementalAnchorEffectiveVisionRange = effectiveVisionRange;
 
-            g_playerSnapshot = {};
-            g_playerSnapshot.playerFormId = player->GetFormID();
-            g_playerSnapshot.cellFormId = cell->GetFormID();
-            g_playerSnapshot.playerPosition = player->GetPosition();
-            g_playerSnapshot.visionRange = visionRange;
-            g_playerSnapshot.timestamp = now;
-            g_playerSnapshot.refreshReason = reason;
-
-            logger::debug("[SpatialSnapshot] Incremental candidate set reason='{}' candidates={}",
-                          reason, g_incrementalCandidates.size());
+            PrepareSnapshotForIncrementalRescan(g_playerSnapshot, g_incrementalCandidates, player, cell,
+                                                effectiveVisionRange, now, reason);
         } else if (g_incrementalScanComplete) {
             return false;
         }
@@ -1186,6 +1237,8 @@ bool SpatialSnapshotManager::UpdatePlayerSnapshotIncremental(const std::string& 
             UpsertEvaluatedActor(g_playerSnapshot, audibleActor);
             if (audibleActor.canCommunicate) {
                 UpsertAudibleActor(g_playerSnapshot, std::move(audibleActor));
+            } else {
+                RemoveAudibleActor(g_playerSnapshot, audibleActor.formId);
             }
         }
     }
@@ -1195,10 +1248,6 @@ bool SpatialSnapshotManager::UpdatePlayerSnapshotIncremental(const std::string& 
         if (g_incrementalCandidateIndex >= g_incrementalCandidates.size()) {
             g_incrementalScanComplete = true;
         }
-        logger::debug("[SpatialSnapshot] Incremental refresh reason='{}' advanced={} evaluated={} index={}/{} audible={} candidates={} complete={}",
-                      reason, advanced, evaluations, g_incrementalCandidateIndex, g_incrementalCandidates.size(),
-                      g_playerSnapshot.audibleActors.size(), g_playerSnapshot.evaluatedActors.size(),
-                      g_incrementalScanComplete);
     }
 
     return advanced > 0;
@@ -1219,28 +1268,35 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (ShouldDeferPlayerSpatialForCell(playerCell, now, reason)) {
-        resolved.status = "Checking area";
-        {
-            std::lock_guard<std::mutex> lock(g_playerCrosshairTargetMutex);
-            g_playerCrosshairTarget = resolved;
-            g_playerCrosshairTargetFormId = 0;
-            g_playerCrosshairTargetAt = now;
-        }
-        return resolved;
-    }
+    // Observe cell changes, but do not suppress the cheap crosshair/look
+    // status. Only the queued LOS/navmesh refinement below is blocked during
+    // the settle window.
+    const bool spatialRefinementSettling = ShouldDeferPlayerSpatialForCell(playerCell, now, reason);
 
     RE::FormID crosshairFormId = 0;
-    std::shared_ptr<AIAgent> crosshairAgent = nullptr;
-    RE::Actor* targetActorOverride = nullptr;
-    bool usedLookFallback = false;
     if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
         crosshairPickData && crosshairPickData->target) {
         if (auto crosshairTarget = crosshairPickData->target.get();
             crosshairTarget && crosshairTarget->GetFormType() == RE::FormType::ActorCharacter) {
             crosshairFormId = crosshairTarget->GetFormID();
-            crosshairAgent = FindDisplayAgentByFormId(crosshairFormId);
         }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_playerCrosshairTargetMutex);
+        if (!forceRefresh && g_playerCrosshairTargetAt.time_since_epoch().count() != 0 &&
+            now - g_playerCrosshairTargetAt < kPlayerCrosshairTargetTtl) {
+            if (crosshairFormId == 0 || crosshairFormId == g_playerCrosshairTargetFormId) {
+                return g_playerCrosshairTarget;
+            }
+        }
+    }
+
+    std::shared_ptr<AIAgent> crosshairAgent = nullptr;
+    RE::Actor* targetActorOverride = nullptr;
+    bool usedLookFallback = false;
+    if (crosshairFormId != 0) {
+        crosshairAgent = FindDisplayAgentByFormId(crosshairFormId);
     }
     if (!crosshairAgent) {
         const auto fallback = FindLookFallbackTarget(player);
@@ -1252,15 +1308,6 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(g_playerCrosshairTargetMutex);
-        if (!forceRefresh && g_playerCrosshairTargetAt.time_since_epoch().count() != 0 &&
-            crosshairFormId == g_playerCrosshairTargetFormId &&
-            now - g_playerCrosshairTargetAt < kPlayerCrosshairTargetTtl) {
-            return g_playerCrosshairTarget;
-        }
-    }
-
     if (crosshairAgent && (targetActorOverride || crosshairAgent->getActor())) {
         auto* crosshairActor = targetActorOverride ? targetActorOverride : crosshairAgent->getActor();
         const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
@@ -1268,7 +1315,7 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
         SpatialAwareness::Result cachedRefinement{};
         if (TryGetCachedTargetRefinement(player, crosshairActor, cachedRefinement, now)) {
             spatial = cachedRefinement;
-        } else {
+        } else if (!spatialRefinementSettling) {
             QueueTargetRefinement(player, crosshairActor, spatialSettings, spatial, reason, true);
         }
         resolved.hasTarget = true;
@@ -1297,8 +1344,6 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
         g_playerCrosshairTargetAt = now;
     }
 
-    logger::debug("[SpatialSnapshot] Crosshair target reason='{}' form={:08X} status='{}'",
-                  reason, resolved.formId, resolved.status);
     return resolved;
 }
 
@@ -1334,7 +1379,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
     const auto lookTarget = GetPlayerCrosshairTargetStatus(false, reason + "_look");
     const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
     const bool playerInterior = playerCell->IsInteriorCell();
-    const bool environmentSettling = playerInterior && IsEnvironmentSpatialSettling(now);
+    const bool spatialRefinementSettling = IsPlayerSpatialSettling();
     const float displayHardLimit = std::max(spatialSettings.maxAirDistance, spatialSettings.exteriorMaxDistance) * 2.0f;
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -1384,10 +1429,8 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         const auto* evaluated = spatialSnapshot.FindEvaluated(target.formId);
         if (evaluated) {
             target.name = evaluated->label.empty() ? target.name : evaluated->label;
-            target.airDistance = evaluated->airDistance;
-            target.distanceMeters = evaluated->airDistance * kSkyrimUnitsToMeters;
             target.reason = evaluated->reason;
-            target.targetable = evaluated->canCommunicate || spatialSnapshot.FindAudible(target.formId) != nullptr;
+            target.targetable = evaluated->canCommunicate;
             target.status = FormatTargetStatus(target.reason, target.targetable, verticalDelta);
             target.source = "snapshot";
             target.sortBucket = target.targetable ? 1 : 3;
@@ -1405,10 +1448,8 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             const auto cheapSpatial = EvaluateCheapPlayerSpatial(player, actor, spatialSettings);
             target.reason = cheapSpatial.reason;
             target.targetable = cheapSpatial.canCommunicate;
-            if (environmentSettling && cheapSpatial.canCommunicate) {
-                target.reason = "pending_spatial";
-                target.targetable = false;
-            }
+            // Cheap air/cell eligibility stays live during settle windows. Only
+            // the expensive LOS/navmesh refinement queue is paused below.
             target.status = FormatTargetStatus(target.reason, target.targetable, verticalDelta);
             target.source = target.targetable ? "distance_cell" : "distance_cell_blocked";
             target.sortBucket = target.targetable ? 1 : (target.reason == "too_far" ? 4 : 3);
@@ -1472,7 +1513,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             target.sortBucket = target.targetable ? (target.lookTarget ? 0 : 1) : 3;
             target.autoEligible = target.targetable;
             continue;
-        } else {
+        } else if (!spatialRefinementSettling) {
             auto spatial = EvaluateCheapPlayerSpatial(player, target.actor, spatialSettings);
             QueueTargetRefinement(player, target.actor, spatialSettings, spatial, reason, target.lookTarget);
         }
@@ -1493,10 +1534,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         return lhs.name < rhs.name;
     });
 
-    if (targets.size() > kMaxPlayerConversationTargets) {
-        targets.resize(kMaxPlayerConversationTargets);
-    }
-
     {
         std::lock_guard<std::mutex> lock(g_playerConversationTargetsMutex);
         g_playerConversationTargetsCache = targets;
@@ -1510,6 +1547,27 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
     return targets;
 }
 
+bool SpatialSnapshotManager::IsPlayerSpatialSettling()
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* cell = player ? player->GetParentCell() : nullptr;
+    if (!cell || !cell->IsAttached()) {
+        return true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_playerSnapshotMutex);
+    if (now < g_environmentSpatialSettleUntil) {
+        return true;
+    }
+    if (g_observedPlayerCellFormId == cell->GetFormID() &&
+        now - g_observedPlayerCellAt < kCellEntrySpatialSettleTime) {
+        return true;
+    }
+
+    return false;
+}
+
 void SpatialSnapshotManager::InvalidatePlayerSnapshot()
 {
     {
@@ -1520,6 +1578,7 @@ void SpatialSnapshotManager::InvalidatePlayerSnapshot()
         g_incrementalCandidates.clear();
         g_incrementalCandidateIndex = 0;
         g_incrementalScanComplete = true;
+        g_incrementalAnchorEffectiveVisionRange = 0.0f;
     }
     {
         std::lock_guard<std::mutex> lock(g_playerCrosshairTargetMutex);
@@ -1539,7 +1598,41 @@ void SpatialSnapshotManager::InvalidatePlayerSnapshot()
         std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
         g_targetRefinementCache.clear();
         g_targetRefinementTaskQueued = false;
-        g_nextLosRefinementAt = {};
+        g_nextPriorityLosRefinementAt = {};
+        g_nextBackgroundLosRefinementAt = {};
+        g_nextPriorityPathFallbackAt = {};
+        g_nextPathFallbackAt = {};
+    }
+}
+
+void SpatialSnapshotManager::InvalidateDynamicSpatialState()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_playerSnapshotMutex);
+        // Keep the cheap air-distance population list warm. Dynamic barriers only
+        // invalidate refined audibility status, not who exists near the player.
+        g_playerSnapshot.evaluatedActors.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_playerCrosshairTargetMutex);
+        g_playerCrosshairTarget = {};
+        g_playerCrosshairTargetFormId = 0;
+        g_playerCrosshairTargetAt = {};
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_playerConversationTargetsMutex);
+        g_playerConversationTargetsCache.clear();
+        g_playerConversationTargetsAt = {};
+        g_playerConversationTargetsCellFormId = 0;
+        g_playerConversationTargetsPlayerPosition = {};
+        g_playerConversationTargetsCacheValid = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
+        g_targetRefinementCache.clear();
+        g_targetRefinementTaskQueued = false;
+        g_nextPriorityLosRefinementAt = {};
+        g_nextBackgroundLosRefinementAt = {};
         g_nextPriorityPathFallbackAt = {};
         g_nextPathFallbackAt = {};
     }
@@ -1559,6 +1652,7 @@ void SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::millise
         g_incrementalScanComplete = true;
         g_incrementalAnchorPosition = {};
         g_incrementalAnchorCellFormId = cell ? cell->GetFormID() : 0;
+        g_incrementalAnchorEffectiveVisionRange = 0.0f;
         if (cell && cell->IsAttached()) {
             g_observedPlayerCellFormId = cell->GetFormID();
             g_observedPlayerCellAt = now - kCellEntrySpatialSettleTime;
@@ -1583,7 +1677,8 @@ void SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::millise
         std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
         g_targetRefinementCache.clear();
         g_targetRefinementTaskQueued = false;
-        g_nextLosRefinementAt = {};
+        g_nextPriorityLosRefinementAt = {};
+        g_nextBackgroundLosRefinementAt = {};
         g_nextPriorityPathFallbackAt = {};
         g_nextPathFallbackAt = {};
     }
