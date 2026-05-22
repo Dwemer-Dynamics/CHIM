@@ -672,7 +672,7 @@ namespace SpatialAwareness
         Result result{};
         const std::string speakerName = ActorLabel(speaker);
         const std::string listenerName = ActorLabel(listener);
-        // Cache lookup: avoid duplicate HasLineOfSight raycasts within the TTL window.
+        // Cache lookup: avoid duplicate spatial work within the TTL window.
         const std::uint64_t cacheKey =
             (speaker && listener) ? EvalCacheKey(speaker, listener) : 0ULL;
         if (speaker && listener) {
@@ -761,6 +761,16 @@ namespace SpatialAwareness
             return finalize("tier1_too_far");
         }
 
+        // Speech audibility should be governed by the active interior/exterior
+        // hearing distance, not the broader maxAirDistance safety ceiling. If
+        // the pair is already outside the MCM hearing range, do not spend work
+        // on door scans, LOS, or navmesh pathing.
+        const float audibleMaxDistance = speakerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
+        if (audibleMaxDistance > 0.0f && airDistance > audibleMaxDistance) {
+            result.reason = "too_far";
+            return finalize("tier1_hearing_range");
+        }
+
         int openDoorCount = 0;
         int closedDoorCount = 0;
 
@@ -814,85 +824,68 @@ namespace SpatialAwareness
             return finalize("tier1_immediate_pass");
         }
 
-        auto evaluateLosFallback = [&](const char* blockedReason, const char* blockedTier) -> bool {
-            bool hasLineOfSight = false;
-            const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
-            result.losFallbackUsed = true;
-            result.losQueryOk = losQueryOk;
-            result.hasLineOfSight = losQueryOk && hasLineOfSight;
-            if (result.hasLineOfSight) {
-                result.reason = std::string(blockedReason) + "_los_recovered";
-                return true;
-            }
-
-            result.reason = blockedReason;
-            (void) finalize(blockedTier);
-            return false;
-        };
-
-        const auto navPath = QueryNavPathDistance(speakerCell, speakerPosition, listenerPosition, settings);
-        if (navPath.status == NavPathStatus::kNoPath) {
-            result.navmeshPathUsed = true;
-            result.navmeshPathFound = false;
-            if (!evaluateLosFallback("navmesh_no_path", "tier2_navmesh_no_path")) {
-                return result;
-            }
-        }
-
-        if (navPath.status == NavPathStatus::kSuccess) {
-            result.navmeshPathUsed = true;
-            result.navmeshPathFound = true;
-            result.pathDistance = navPath.pathDistance;
-
-            if (airDistance > 0.001f && std::isfinite(navPath.pathDistance) && navPath.pathDistance >= 0.0f) {
-                result.pathRatio = navPath.pathDistance / airDistance;
-
-                if (result.pathRatio >= settings.pathRatioReject) {
-                    if (!evaluateLosFallback("path_ratio_blocked", "tier2_ratio_blocked")) {
-                        return result;
-                    }
-                }
-
-                if (result.pathRatio >= settings.pathRatioDistanceReject &&
-                    airDistance >= settings.pathRatioDistanceRejectMinAir) {
-                    if (!evaluateLosFallback("path_ratio_distance_blocked", "tier2_ratio_distance_blocked")) {
-                        return result;
-                    }
-                }
-
-                const bool shouldConfirmBorderlineInteriorPath =
-                    speakerInterior && openDoorCount == 0 && !result.losFallbackUsed &&
-                    result.pathRatio >= settings.losConfirmPathRatio &&
-                    airDistance >= settings.losConfirmMinAirDistance;
-                if (shouldConfirmBorderlineInteriorPath) {
-                    bool hasLineOfSight = false;
-                    const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
-                    result.losFallbackUsed = true;
-                    result.losQueryOk = losQueryOk;
-                    if (losQueryOk) {
-                        result.hasLineOfSight = hasLineOfSight;
-                        if (!hasLineOfSight) {
-                            result.reason = "path_ratio_los_blocked";
-                            return finalize("tier2_ratio_los_confirm");
-                        }
-                    }
-                }
-            }
-        }
-
-        // LOS is intentionally not used for hearing checks in this mode.
-        // 360-degree audibility is determined by world/cell gating, door barriers, navmesh pathing, and distance volume.
-        const bool aroundCornerPass = openDoorCount > 0;
-        result.reason = aroundCornerPass ? "open_door_muffled" : "distance_navmesh_clear";
-
         const float maxDistance = speakerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
         const float distanceFactor = std::clamp(1.0f - (airDistance / std::max(maxDistance, 1.0f)),
                                                 settings.minDistanceFactor, 1.0f);
         const float environmentModifier = speakerInterior ? settings.interiorBaseModifier : settings.exteriorBaseModifier;
         const float openDoorModifier = std::pow(settings.openDoorPenaltyBase, static_cast<float>(openDoorCount));
-        const float cornerModifier = aroundCornerPass ? settings.aroundCornerPenalty : 1.0f;
+
+        bool hasLineOfSight = false;
+        const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
+        result.losFallbackUsed = true;
+        result.losQueryOk = losQueryOk;
+        result.hasLineOfSight = losQueryOk && hasLineOfSight;
+        if (result.hasLineOfSight) {
+            result.reason = openDoorCount > 0 ? "open_door_muffled" : "line_of_sight_clear";
+            result.volume = std::clamp(distanceFactor * environmentModifier * openDoorModifier, 0.0f, 1.0f);
+            if (result.volume < settings.minimumAudibleVolume) {
+                result.reason = "too_quiet";
+                return finalize("tier4_los_too_quiet");
+            }
+
+            result.canCommunicate = true;
+            return finalize("tier4_los_pass");
+        }
+
+        const auto navPath = QueryNavPathDistance(speakerCell, speakerPosition, listenerPosition, settings);
+        result.navmeshPathUsed = true;
+
+        if (navPath.status == NavPathStatus::kNoPath) {
+            result.navmeshPathFound = false;
+            result.reason = "navmesh_no_path";
+            return finalize("tier5_navmesh_no_path");
+        }
+
+        if (navPath.status != NavPathStatus::kSuccess ||
+            !std::isfinite(navPath.pathDistance) || navPath.pathDistance < 0.0f) {
+            result.navmeshPathFound = false;
+            result.reason = "path_unavailable";
+            return finalize("tier5_path_unavailable");
+        }
+
+        result.navmeshPathFound = true;
+        result.pathDistance = navPath.pathDistance;
+
+        if (airDistance > 0.001f) {
+            result.pathRatio = navPath.pathDistance / airDistance;
+
+            if (result.pathRatio >= settings.pathRatioReject) {
+                result.reason = "path_ratio_blocked";
+                return finalize("tier5_ratio_blocked");
+            }
+
+            if (result.pathRatio >= settings.pathRatioDistanceReject &&
+                airDistance >= settings.pathRatioDistanceRejectMinAir) {
+                result.reason = "path_ratio_distance_blocked";
+                return finalize("tier5_ratio_distance_blocked");
+            }
+        }
+
+        result.reason = openDoorCount > 0 ? "open_door_muffled" : "path_fallback_clear";
+
+        const float cornerModifier = openDoorCount > 0 ? settings.aroundCornerPenalty : 1.0f;
         float pathModifier = 1.0f;
-        if (!result.losFallbackUsed && result.navmeshPathFound && result.pathRatio > settings.pathComplexityStartRatio) {
+        if (result.navmeshPathFound && result.pathRatio > settings.pathComplexityStartRatio) {
             pathModifier = std::clamp(1.0f / std::max(result.pathRatio * settings.pathComplexityScale, 0.01f),
                                       settings.pathComplexityMin, 1.0f);
         }
