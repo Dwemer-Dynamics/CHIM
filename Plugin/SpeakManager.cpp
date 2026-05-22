@@ -28,6 +28,7 @@
 #include "AudioManager.h"
 #include "SPGResponse.h"
 #include "HTTPManager.h"
+#include "PrismaUIBridge.h"
 #include "SpatialAwareness.h"
 #include <winhttp.h>
 #include "ThreadPool.h"
@@ -2219,9 +2220,41 @@ void SpeakManager::process(AIAgent *agent) {
         // Reset bored
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
 
-        if (!scriptLine.action.empty() && !agent->isNarrator()) {
-            auto explicitListenerAgent = aiam.getAgentByName(scriptLine.action);
+        const auto clearCurrentPlayback = [&]() {
+            std::lock_guard<std::mutex> lock(mtx);
+            currentPlaybackUtteranceId.clear();
+            currentPlaybackActor.clear();
+            currentPlaybackUtteranceConfirmed = false;
+        };
+
+        if (!agent->isNarrator()) {
+            const std::string listenerHint = TrimCopy(scriptLine.action);
+            auto explicitListenerAgent = !listenerHint.empty() ? aiam.getAgentByName(listenerHint) : nullptr;
             auto* explicitListenerActor = explicitListenerAgent ? explicitListenerAgent->getActor() : nullptr;
+            const bool listenerIsPlayer =
+                (explicitListenerActor && explicitListenerActor == player) ||
+                IsDirectlyAddressingPlayer(listenerHint, aiam);
+
+            if (player && npc && (listenerHint.empty() || listenerIsPlayer)) {
+                // Air-distance-only gate; full SpatialAwareness::Evaluate from this worker thread SEH-crashed at 0x58 (LOS/navmesh/door scan touch game-thread refs).
+                const float airDistance = npc->GetPosition().GetDistance(player->GetPosition());
+                const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
+                const auto* playerCell = player->GetParentCell();
+                const bool playerInterior = playerCell && playerCell->IsInteriorCell();
+                const float hearingMax = playerInterior ? spatialSettings.interiorMaxDistance :
+                                                          spatialSettings.exteriorMaxDistance;
+                if (std::isfinite(hearingMax) && hearingMax > 0.0f && airDistance > hearingMax) {
+                    logger::info(
+                        "[SpeakManager] Skipping NPC->Player playback: {} -> player (target='{}', air_dist={:.1f} > hearing_max={:.1f})",
+                        agent->getActorName(), listenerHint, airDistance, hearingMax);
+                    dequeueFirstItem();
+                    releasePendingPlayerSubtitle();
+                    clearVisibleSubtitles();
+                    clearCurrentPlayback();
+                    setProcessing(false);
+                    return;
+                }
+            }
 
             if (explicitListenerActor && explicitListenerActor != player && explicitListenerActor != npc) {
                 const SpatialAwareness::Result spatialGate =
@@ -2232,12 +2265,9 @@ void SpeakManager::process(AIAgent *agent) {
                         agent->getActorName(), explicitListenerAgent->getActorName(), spatialGate.reason,
                         spatialGate.airDistance, spatialGate.pathRatio, spatialGate.closedDoorCount);
                     dequeueFirstItem();
-                    {
-                        std::lock_guard<std::mutex> lock(mtx);
-                        currentPlaybackUtteranceId.clear();
-                        currentPlaybackActor.clear();
-                        currentPlaybackUtteranceConfirmed = false;
-                    }
+                    releasePendingPlayerSubtitle();
+                    clearVisibleSubtitles();
+                    clearCurrentPlayback();
                     setProcessing(false);
                     return;
                 }
@@ -2516,8 +2546,7 @@ void SpeakManager::process(AIAgent *agent) {
             // Dynamic attenuation/muffle is handled during playback in DownloadAndPlay so
             // door/LOS/navmesh changes can update while the line is still playing.
 
-            const bool whisperModeActive =
-                (DISTANCE_ACTIVATING_NPC_IN <= 200.0f && DISTANCE_ACTIVATING_NPC_OUT <= 200.0f);
+            const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
             const bool directedToPlayer = IsDirectlyAddressingPlayer(scriptLine.action, aiam);
             if (whisperModeActive && directedToPlayer && !agent->isNarrator()) {
                 playbackVolumeBoost = 0.25f;
@@ -2751,12 +2780,19 @@ void SpeakManager::process(AIAgent *agent) {
                     }
 
                     if (!reusedAudienceSnapshot) {
-                        float audienceMaxDistance = DISTANCE_ACTIVATING_NPC_OUT;
+                        // Audience scope is speech audibility, not auto-activate population.
+                        // Auto-activate can keep broader scene agents alive, but NPC speech fanout
+                        // should use the MCM spatial hearing distances before running Evaluate().
+                        const auto spatialSettings = SpatialAwareness::GetSettings();
+                        float audienceMaxDistance = spatialSettings.exteriorMaxDistance;
                         if (audibilitySource) {
                             auto* sourceCell = audibilitySource->GetParentCell();
                             if (sourceCell && sourceCell->IsInteriorCell()) {
-                                audienceMaxDistance = DISTANCE_ACTIVATING_NPC_IN;
+                                audienceMaxDistance = spatialSettings.interiorMaxDistance;
                             }
+                        }
+                        if (spatialSettings.maxAirDistance > 0.0f) {
+                            audienceMaxDistance = std::min(audienceMaxDistance, spatialSettings.maxAirDistance);
                         }
 
                         struct AudienceCandidate {
@@ -2768,9 +2804,7 @@ void SpeakManager::process(AIAgent *agent) {
                         std::vector<AudienceCandidate> audienceCandidates;
                         audienceCandidates.reserve(8);
 
-                        // Build companions based on cheap distance first, then spatially
-                        // evaluate only the nearest candidates. This keeps NPC chatter from
-                        // evaluating a whole palace/city every time one line plays.
+                        // Build companions by cheap distance first; the MCM hearing radius is the hard fanout guard.
                         for (const auto& candidateAgent : aiam.getAgents()) {
                             if (!candidateAgent) {
                                 continue;
@@ -2805,12 +2839,9 @@ void SpeakManager::process(AIAgent *agent) {
                                       return lhs.distance < rhs.distance;
                                   });
 
-                        constexpr std::size_t kMaxNpcAudienceSpatialEvaluations = 3;
                         std::size_t audienceEvaluations = 0;
+                        const auto audienceEvaluateStartedAt = std::chrono::steady_clock::now();
                         for (const auto& candidate : audienceCandidates) {
-                            if (audienceEvaluations >= kMaxNpcAudienceSpatialEvaluations) {
-                                break;
-                            }
                             ++audienceEvaluations;
 
                             const auto& candidateAgent = candidate.agent;
@@ -2835,9 +2866,14 @@ void SpeakManager::process(AIAgent *agent) {
                             }
                         }
 
-                        if (audienceCandidates.size() > kMaxNpcAudienceSpatialEvaluations) {
-                            logger::debug("[SpeakManager] NPC audience snapshot evaluated {} of {} nearest candidates",
-                                          audienceEvaluations, audienceCandidates.size());
+                        if (!audienceCandidates.empty()) {
+                            const auto audienceEvaluateMs =
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - audienceEvaluateStartedAt).count();
+                            logger::debug(
+                                "[SpeakManager] NPC audience snapshot evaluated {}/{} in {:.2f}ms, audible={}",
+                                audienceEvaluations, audienceCandidates.size(), audienceEvaluateMs,
+                                audibleCompanions.size());
                         }
 
                         {
@@ -2995,6 +3031,13 @@ void SpeakManager::processPlayer() {
 
         dequeueFirstItem();
         setProcessing(false);
+        if (isTextOnlyPlayerLine) {
+            // Text-only STT captions are a short echo of what the player said.
+            // If no NPC/Narrator subtitle replaces them, release the pending state so
+            // clearVisibleSubtitles() can remove the echo instead of refreshing it forever.
+            releasePendingPlayerSubtitle();
+            clearVisibleSubtitles();
+        }
         if (hasTalked) {
             ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
         }

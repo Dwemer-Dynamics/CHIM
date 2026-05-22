@@ -111,6 +111,23 @@ EndFunction
 function sendCellInfo(Cell localCell,Location fromLocation,bool detailed = false) global
 
 	
+	if (!localCell || !fromLocation)
+		Debug.Trace("[CHIM] sendCellInfo skipped because cell/location is missing")
+		return
+	endif
+
+	; Exterior streaming can call this alongside DLL cell-load events and other mods' detach handlers.
+	; Space out the full door scan so entering large worldspaces does not stack several ref scans at once.
+	float nowRealTime = Utility.GetCurrentRealTime()
+	float lastFullScanRealTime = StorageUtil.GetFloatValue(None, "CHIM_LastFullCellInfoRealTime", -999.0)
+	if (!localCell.IsInterior() && nowRealTime - lastFullScanRealTime < 4.0)
+		Debug.Trace("[CHIM] sendCellInfo throttled for exterior cell <0x"+DecToHex(localCell.GetFormId())+">")
+		return
+	endif
+	StorageUtil.SetFloatValue(None, "CHIM_LastFullCellInfoRealTime", nowRealTime)
+	if (!localCell.IsInterior())
+		Utility.Wait(1.0)
+	endif
 	
 	Debug.Trace("[CHIM] sendCellInfo START for <0x"+DecToHex(localCell.GetFormId())+">")
 
