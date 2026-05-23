@@ -48,6 +48,7 @@ namespace PrismaUIBridge {
     static std::chrono::steady_clock::time_point g_lastOverlayFetchAt{};
     static bool g_overlayFetchInFlight = false;
     constexpr auto kOverlayFetchMinInterval = std::chrono::seconds(8);
+    constexpr auto kChatboxControlsMinInterval = std::chrono::milliseconds(250);
     
     // Crosshair target state (for overlay)
     static std::string g_lastCrosshairTarget = "";
@@ -61,11 +62,11 @@ namespace PrismaUIBridge {
     constexpr float kPrismaTargetSwitchMarginMeters = 1.5f;
     struct PrismaDisplayStatusEntry {
         std::string status;
-        std::string reason;
-        std::chrono::steady_clock::time_point timestamp{};
+        std::chrono::steady_clock::time_point updatedAt;
     };
     static std::unordered_map<uint32_t, PrismaDisplayStatusEntry> g_prismaDisplayStatusCache;
-    constexpr auto kPrismaDisplayStatusHoldTtl = std::chrono::seconds(2);
+    constexpr auto kPrismaDisplayStatusHoldTtl = std::chrono::milliseconds(1500);
+    constexpr size_t kPrismaDisplayStatusMaxEntries = 128;
 
     // CHIM chatbox control state
     static std::string g_chatboxCurrentMode = "STANDARD";
@@ -1301,34 +1302,131 @@ R"CHIM(
                reason == "unknown";
     }
 
+    static bool IsHiddenPrismaStatus(const std::string& status)
+    {
+        return status.empty() ||
+               status == "Busy" ||
+               status == "Hostile" ||
+               status == "Restrained" ||
+               status == "Unavailable" ||
+               status == "In range" ||
+               status == "Can't hear you: different area";
+    }
+
+    static bool IsGenericPrismaHearingStatus(const std::string& status)
+    {
+        return status == "Can hear you" || status == "Can't hear you";
+    }
+
+    static bool IsVerticalPrismaStatus(const std::string& status)
+    {
+        return status.find("above you") != std::string::npos ||
+               status.find("below you") != std::string::npos;
+    }
+
+    static void PrunePrismaDisplayStatusCache(std::chrono::steady_clock::time_point now)
+    {
+        if (g_prismaDisplayStatusCache.size() <= kPrismaDisplayStatusMaxEntries) {
+            return;
+        }
+
+        for (auto it = g_prismaDisplayStatusCache.begin(); it != g_prismaDisplayStatusCache.end();) {
+            if (now - it->second.updatedAt > kPrismaDisplayStatusHoldTtl) {
+                it = g_prismaDisplayStatusCache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        while (g_prismaDisplayStatusCache.size() > kPrismaDisplayStatusMaxEntries) {
+            g_prismaDisplayStatusCache.erase(g_prismaDisplayStatusCache.begin());
+        }
+    }
+
+    static void CachePrismaDisplayStatus(uint32_t formId, const std::string& status,
+                                         std::chrono::steady_clock::time_point now)
+    {
+        if (formId == 0 || IsHiddenPrismaStatus(status)) {
+            return;
+        }
+
+        PrunePrismaDisplayStatusCache(now);
+        g_prismaDisplayStatusCache[formId] = { status, now };
+    }
+
+    static std::string GetCachedPrismaDisplayStatus(uint32_t formId, std::chrono::steady_clock::time_point now)
+    {
+        auto it = g_prismaDisplayStatusCache.find(formId);
+        if (it == g_prismaDisplayStatusCache.end()) {
+            return "";
+        }
+
+        if (now - it->second.updatedAt > kPrismaDisplayStatusHoldTtl) {
+            g_prismaDisplayStatusCache.erase(it);
+            return "";
+        }
+
+        return IsHiddenPrismaStatus(it->second.status) ? "" : it->second.status;
+    }
+
+    static std::string PreserveVerticalPrismaStatus(uint32_t formId, const std::string& status,
+                                                    std::chrono::steady_clock::time_point now)
+    {
+        if (!IsGenericPrismaHearingStatus(status)) {
+            return status;
+        }
+
+        const auto cachedStatus = GetCachedPrismaDisplayStatus(formId, now);
+        return IsVerticalPrismaStatus(cachedStatus) ? cachedStatus : status;
+    }
+
     static std::string GetPrismaDisplayStatus(const PlayerSpatialCandidate& candidate)
     {
         if (candidate.formId == 0) {
-            return candidate.status;
+            return IsHiddenPrismaStatus(candidate.status) ? "" : candidate.status;
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if (IsStablePrismaSpatialReason(candidate.reason) && !candidate.status.empty()) {
-            g_prismaDisplayStatusCache[candidate.formId] = {
-                candidate.status,
-                candidate.reason,
-                now
-            };
+
+        if (candidate.status == "In combat") {
+            CachePrismaDisplayStatus(candidate.formId, candidate.status, now);
             return candidate.status;
         }
 
-        if (IsTransientPrismaSpatialReason(candidate.reason)) {
-            const auto cached = g_prismaDisplayStatusCache.find(candidate.formId);
-            if (cached != g_prismaDisplayStatusCache.end() &&
-                now - cached->second.timestamp <= kPrismaDisplayStatusHoldTtl) {
-                return cached->second.status;
-            }
-
-            if (candidate.reason == "distance_cell_clear") {
-                return "Checking hearing";
-            }
+        if (IsStablePrismaSpatialReason(candidate.reason) && !IsHiddenPrismaStatus(candidate.status)) {
+            const auto displayStatus = PreserveVerticalPrismaStatus(candidate.formId, candidate.status, now);
+            CachePrismaDisplayStatus(candidate.formId, displayStatus, now);
+            return displayStatus;
+        } else if (IsStablePrismaSpatialReason(candidate.reason)) {
+            g_prismaDisplayStatusCache.erase(candidate.formId);
+            return "";
         }
 
+        if (IsTransientPrismaSpatialReason(candidate.reason)) {
+            if (candidate.reason == "distance_cell_clear" &&
+                (candidate.targetable || candidate.autoEligible || candidate.lookTarget)) {
+                const auto displayStatus = PreserveVerticalPrismaStatus(candidate.formId, "Can hear you", now);
+                CachePrismaDisplayStatus(candidate.formId, displayStatus, now);
+                return displayStatus;
+            }
+
+            if (candidate.reason == "vertical_separation" && !IsHiddenPrismaStatus(candidate.status)) {
+                CachePrismaDisplayStatus(candidate.formId, candidate.status, now);
+                return candidate.status;
+            }
+
+            const auto cachedStatus = GetCachedPrismaDisplayStatus(candidate.formId, now);
+            if (!cachedStatus.empty()) {
+                return cachedStatus;
+            }
+            return "";
+        }
+
+        if (IsHiddenPrismaStatus(candidate.status)) {
+            g_prismaDisplayStatusCache.erase(candidate.formId);
+            return "";
+        }
+
+        CachePrismaDisplayStatus(candidate.formId, candidate.status, now);
         return candidate.status;
     }
 
@@ -1544,8 +1642,9 @@ R"CHIM(
             // the user's MCM auto-activation distances. Clear cached spatial state so
             // listener routing and Prisma UI immediately use the new runtime multiplier.
             SpatialSnapshotManager::InvalidatePlayerSnapshot();
-            g_prismaDisplayStatusCache.clear();
             g_lastOverlayAgentsPayload.clear();
+            g_lastChatboxTargetsPayload.clear();
+            g_prismaDisplayStatusCache.clear();
             logger::info("[{}] Player speech spatial multiplier now {:.2f}", sourceTag,
                          GetPlayerSpeechDistanceMultiplier());
         }
@@ -4689,7 +4788,7 @@ R"CHIM(
 
         auto now = std::chrono::steady_clock::now();
         if (!force &&
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastChatboxControlsCheck).count() < 500) {
+            now - g_lastChatboxControlsCheck < kChatboxControlsMinInterval) {
             return;
         }
         g_lastChatboxControlsCheck = now;
@@ -4924,6 +5023,7 @@ R"CHIM(
         logger::info("[PrismaUIBridge] Chatbox panel DOM ready");
         g_chatboxDomReady.store(true);
         g_lastChatboxTargetsPayload.clear();
+        g_prismaDisplayStatusCache.clear();
         
         // Push welcome system message with configuration info
         char timeDateString[200];
