@@ -49,9 +49,9 @@ namespace
     constexpr auto kNegativeTargetRefinementTtl = std::chrono::milliseconds(750);
     constexpr auto kClosedDoorTargetRefinementTtl = std::chrono::seconds(10);
     constexpr auto kPriorityLosRefinementMinInterval = std::chrono::milliseconds(250);
-    constexpr auto kBackgroundLosRefinementMinInterval = std::chrono::milliseconds(750);
-    constexpr auto kPriorityPathFallbackMinInterval = std::chrono::milliseconds(750);
-    constexpr auto kClosePathFallbackMinInterval = std::chrono::milliseconds(1250);
+    constexpr auto kBackgroundLosRefinementMinInterval = std::chrono::milliseconds(500);
+    constexpr auto kPriorityPathFallbackMinInterval = std::chrono::milliseconds(500);
+    constexpr auto kClosePathFallbackMinInterval = std::chrono::milliseconds(750);
     constexpr auto kPathFallbackMinInterval = std::chrono::milliseconds(2500);
     constexpr auto kDistantPathFallbackMinInterval = std::chrono::milliseconds(4000);
     constexpr float kTargetRefinementMoveTolerance = 64.0f;
@@ -344,9 +344,6 @@ namespace
     std::string FormatTargetStatus(const std::string& reason, bool canCommunicate, float verticalDelta = 0.0f)
     {
         const auto verticalStatus = DescribeVerticalSeparation(verticalDelta);
-        const auto withVertical = [&](const std::string& base) {
-            return verticalStatus.empty() ? base : base + ", " + verticalStatus;
-        };
 
         if (reason == "closed_door_between") {
             return "Can't hear you: closed door";
@@ -354,10 +351,10 @@ namespace
 
         if (canCommunicate) {
             if (reason == "open_door_muffled") {
-                return "Can hear you, muffled";
+                return "Can hear you, muffled by door";
             }
             if (reason == "path_fallback_clear") {
-                return withVertical("Can hear you: around a wall");
+                return "Can hear you: around a wall";
             }
             if (!verticalStatus.empty()) {
                 return "Can hear you: " + verticalStatus;
@@ -367,30 +364,29 @@ namespace
 
         if (reason == "path_ratio_los_blocked" || reason == "path_ratio_blocked" ||
             reason == "path_ratio_distance_blocked" || reason == "navmesh_no_path") {
-            return withVertical("Can't hear you: around a wall");
+            return "Can't hear you: around a wall";
         }
-        if (reason == "different_interior_cells" || reason == "interior_exterior_boundary") {
-            return "Can't hear you: different area";
+        if (reason == "different_area" || reason == "different_interior_cells" ||
+            reason == "interior_exterior_boundary") {
+            return "";
         }
         if (reason == "too_quiet") {
-            return verticalStatus.empty() ? "Can't hear you clearly" : "Can't hear you clearly: " + verticalStatus;
+            return "Can't hear you clearly";
         }
         if (reason == "too_far") {
             return "Too far away";
         }
         if (reason == "line_of_sight_blocked") {
-            return withVertical("Can't hear you: around a wall");
+            return "Can't hear you: around a wall";
         }
         if (reason == "vertical_separation") {
-            return verticalStatus.empty() ? "Checking hearing" : "Checking: " + verticalStatus;
+            return verticalStatus.empty() ? "Can't hear you" : "Can't hear you: " + verticalStatus;
         }
         if (reason.empty() || reason == "pending_spatial") {
-            return verticalStatus.empty() ? "Checking hearing" : "Checking: " + verticalStatus;
+            return "";
         }
 
-        std::string label = reason;
-        std::replace(label.begin(), label.end(), '_', ' ');
-        return "Can't hear you: " + label;
+        return "";
     }
 
     SpatialAwareness::Result EvaluateCheapPlayerSpatial(RE::Actor* player, RE::Actor* target,
@@ -905,6 +901,41 @@ namespace
         }
 
         return best;
+    }
+
+    bool IsBehindPlayerFacing(RE::Actor* player, const RE::NiPoint3& targetPosition)
+    {
+        constexpr float kBehindPlayerCosine = -0.5f;
+        if (!player) {
+            return false;
+        }
+
+        const auto playerPosition = player->GetPosition();
+        RE::NiPoint3 toTarget(targetPosition.x - playerPosition.x, targetPosition.y - playerPosition.y, 0.0f);
+        const float distance = toTarget.Length();
+        if (!std::isfinite(distance) || distance <= 0.0f) {
+            return false;
+        }
+        toTarget /= distance;
+
+        const float yaw = player->GetAngleZ();
+        RE::NiPoint3 playerForward(std::sin(yaw), std::cos(yaw), 0.0f);
+        const float forwardLength = playerForward.Length();
+        if (!std::isfinite(forwardLength) || forwardLength <= 0.0f) {
+            return false;
+        }
+        playerForward /= forwardLength;
+
+        return playerForward.Dot(toTarget) <= kBehindPlayerCosine;
+    }
+
+    void ApplyBehindPlayerClearLosStatus(RE::Actor* player, const RE::NiPoint3& actorPosition,
+                                         PlayerSpatialCandidate& target)
+    {
+        if (target.targetable && target.reason == "line_of_sight_clear" &&
+            IsBehindPlayerFacing(player, actorPosition)) {
+            target.status = "Can hear you: behind you";
+        }
     }
 
     bool NeedsNewIncrementalCandidateSet(RE::Actor* player, RE::TESObjectCELL* cell,
@@ -1474,6 +1505,8 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             target.autoEligible = target.targetable;
         }
 
+        ApplyBehindPlayerClearLosStatus(player, actorPosition, target);
+
         if (target.targetable || includeUnavailable) {
             targets.push_back(std::move(target));
         }
@@ -1493,6 +1526,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         return lhs.name < rhs.name;
     });
 
+    bool nearestAutoEligibleSeen = false;
     for (auto& target : targets) {
         if (!target.actor) {
             continue;
@@ -1512,10 +1546,19 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
                             (spatial.losFallbackUsed ? "refined_los" : target.source);
             target.sortBucket = target.targetable ? (target.lookTarget ? 0 : 1) : 3;
             target.autoEligible = target.targetable;
+            ApplyBehindPlayerClearLosStatus(player, target.actor->GetPosition(), target);
+            if (!target.lookTarget && target.autoEligible && !nearestAutoEligibleSeen) {
+                nearestAutoEligibleSeen = true;
+            }
             continue;
         } else if (!spatialRefinementSettling) {
             auto spatial = EvaluateCheapPlayerSpatial(player, target.actor, spatialSettings);
-            QueueTargetRefinement(player, target.actor, spatialSettings, spatial, reason, target.lookTarget);
+            const bool nearestAutoEligible = !target.lookTarget && target.autoEligible && !nearestAutoEligibleSeen;
+            if (!target.lookTarget && target.autoEligible) {
+                nearestAutoEligibleSeen = true;
+            }
+            QueueTargetRefinement(player, target.actor, spatialSettings, spatial, reason,
+                                  target.lookTarget || nearestAutoEligible);
         }
         break;
     }
