@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -38,6 +39,10 @@
 namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
+
+constexpr auto kVisemeTaskMinInterval = std::chrono::milliseconds(50);
+constexpr auto kVisemeTaskStaleDisableAfter = std::chrono::milliseconds(500);
+constexpr auto kVisemeTaskGuardLogInterval = std::chrono::seconds(5);
 
 extern bool GlobalEnable3DAudioPlayback;
 extern bool GlobalInvertHeadingState;
@@ -1002,13 +1007,13 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     float intensityDecal = 0;
 
     auto fgen = speakerActorPointer->GetFaceGenAnimationData();
-
-    if (fgen) {
-        logger::debug("[SpeakManager] Attempting to acquire FaceGen lock for animation frame");
-        RE::BSSpinLockGuard locker(fgen->lock);
-        logger::debug("[SpeakManager] FaceGen lock acquired for animation frame");
-    }
     auto lastTime = std::chrono::steady_clock::now();
+    auto lastVisemeTaskQueued = startTime - kVisemeTaskMinInterval;
+    auto lastVisemeTaskGuardLog = startTime - kVisemeTaskGuardLogInterval;
+    auto visemeTaskInFlightSince = startTime;
+    auto visemeTaskInFlight = std::make_shared<std::atomic<bool>>(false);
+    bool visemeTaskGuardDisabled = false;
+    int skippedVisemeTasks = 0;
 
     auto game = RE::UI::GetSingleton();
 
@@ -1297,35 +1302,67 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
                 if (intensity > 0.99) intensity = 1.00f;
 
-                if (fgen) {
-                    // Worker-side fgen->lock removed: 90Hz worker contention with main-thread
-                    // morpher tick on the same BSSpinLock starved render thread → 5min freeze.
-                    // All viseme mutation now dispatched to main thread via SKSE TaskInterface.
-                    setPhase("write_voice_timer");
-                    speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
+                if (fgen && !visemeTaskGuardDisabled) {
+                    // Viseme frames are disposable; never let lip sync stack game-thread work in VR.
+                    const auto visemeTaskNow = std::chrono::steady_clock::now();
+                    if (visemeTaskNow - lastVisemeTaskQueued >= kVisemeTaskMinInterval) {
+                        bool expected = false;
+                        if (!visemeTaskInFlight->compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                            ++skippedVisemeTasks;
+                            const auto stuckFor = visemeTaskNow - visemeTaskInFlightSince;
+                            if (stuckFor >= kVisemeTaskStaleDisableAfter) {
+                                visemeTaskGuardDisabled = true;
+                                logger::warn(
+                                    "[SpeakManager] Viseme freeze guard disabled lip updates for {}: previous task stuck {}ms, skipped {} frames",
+                                    speaker,
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(stuckFor).count(),
+                                    skippedVisemeTasks);
+                            } else if (visemeTaskNow - lastVisemeTaskGuardLog >= kVisemeTaskGuardLogInterval) {
+                                lastVisemeTaskGuardLog = visemeTaskNow;
+                                logger::debug(
+                                    "[SpeakManager] Viseme freeze guard skipped {} queued frames for {}",
+                                    skippedVisemeTasks, speaker);
+                            }
+                            setPhase("viseme_task_skipped_inflight");
+                        } else {
+                            lastVisemeTaskQueued = visemeTaskNow;
+                            visemeTaskInFlightSince = visemeTaskNow;
 
-                    setPhase("queue_viseme_task");
-                    auto* taskInterface = SKSE::GetTaskInterface();
-                    if (taskInterface) {
-                        auto actorHandle = speakerActorPointer->GetHandle();
-                        taskInterface->AddTask(
-                            [actorHandle, lastViseme, visemeCode, intensity, intensityStepDecal]() {
-                                auto* actor = actorHandle.get().get();
-                                if (!actor || !actor->Is3DLoaded()) {
-                                    return;
-                                }
+                            setPhase("write_voice_timer");
+                            speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
 
-                                auto deferredFgen = actor->GetFaceGenAnimationData();
-                                if (!deferredFgen) {
-                                    return;
-                                }
+                            setPhase("queue_viseme_task");
+                            auto* taskInterface = SKSE::GetTaskInterface();
+                            if (taskInterface) {
+                                auto actorHandle = speakerActorPointer->GetHandle();
+                                auto inFlight = visemeTaskInFlight;
+                                taskInterface->AddTask(
+                                    [actorHandle, lastViseme, visemeCode, intensity, intensityStepDecal, inFlight]() {
+                                        struct VisemeTaskReset {
+                                            std::shared_ptr<std::atomic<bool>> flag;
+                                            ~VisemeTaskReset() { flag->store(false, std::memory_order_release); }
+                                        } reset{inFlight};
 
-                                RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                ApplyVisemeFrame(deferredFgen, lastViseme, visemeCode, intensity,
-                                                 intensityStepDecal);
-                            });
-                    } else {
-                        logger::warn("[SpeakManager] Task interface unavailable for viseme update");
+                                        auto* actor = actorHandle.get().get();
+                                        if (!actor || !actor->Is3DLoaded()) {
+                                            return;
+                                        }
+
+                                        auto deferredFgen = actor->GetFaceGenAnimationData();
+                                        if (!deferredFgen) {
+                                            return;
+                                        }
+
+                                        RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                        ApplyVisemeFrame(deferredFgen, lastViseme, visemeCode, intensity,
+                                                         intensityStepDecal);
+                                    });
+                                setPhase("viseme_task_queued");
+                            } else {
+                                visemeTaskInFlight->store(false, std::memory_order_release);
+                                logger::warn("[SpeakManager] Task interface unavailable for viseme update");
+                            }
+                        }
                     }
                 } else {
                     // logger::warn("[SpeakManager] Failed to get FaceGen animation data for animation update");
