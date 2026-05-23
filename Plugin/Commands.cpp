@@ -14,6 +14,9 @@
 #include "json.hpp"
 #include "RE/Skyrim.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <mutex>
 
 
@@ -3812,7 +3815,7 @@ std::string InspectLocations(RE::TESObjectREFR* reference) {
 }
 
 std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange, std::string separator,
-                                float farAwayLimit) {
+                                 float farAwayLimit) {
     std::vector<std::string> results;
 
     // logger::info("InspectSurroundings: running");
@@ -3917,6 +3920,124 @@ std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, flo
     return buffer;
 }
 
+std::string InspectManagedAgents(RE::TESObjectREFR* reference, float visionRange, const std::string& separator,
+                                 float farAwayLimit, bool includeNarrator) {
+    struct ManagedAgentContext {
+        float distance = 0.0f;
+        std::string label;
+    };
+
+    std::vector<ManagedAgentContext> results;
+
+    RE::Actor* source = reference ? reference->As<RE::Actor>() : nullptr;
+    if (!source) {
+        source = RE::PlayerCharacter::GetSingleton();
+    }
+    if (!source) {
+        logger::error("InspectManagedAgents: source actor is null.");
+        return "";
+    }
+
+    auto* sourceCell = source->GetParentCell();
+    if (!sourceCell || !sourceCell->IsAttached()) {
+        logger::warn("InspectManagedAgents: source cell is unavailable or detached.");
+        return "";
+    }
+
+    const bool sourceInterior = sourceCell->IsInteriorCell();
+    const auto sourcePosition = source->GetPosition();
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent) {
+            continue;
+        }
+
+        if (agent->isNarrator() && !includeNarrator) {
+            continue;
+        }
+
+        auto* target = agent->getActor();
+        if (!target) {
+            target = agent->getActorByFormId();
+        }
+        if (!target || target->GetFormID() == source->GetFormID()) {
+            continue;
+        }
+
+        if (target->IsDeleted() || target->IsDisabled()) {
+            continue;
+        }
+
+        if (!target->GetActorRuntimeData().currentProcess) {
+            continue;
+        }
+
+        auto* targetCell = target->GetParentCell();
+        if (!targetCell || !targetCell->IsAttached()) {
+            continue;
+        }
+
+        const bool targetInterior = targetCell->IsInteriorCell();
+        if (sourceInterior != targetInterior) {
+            continue;
+        }
+        if (sourceInterior && targetCell != sourceCell) {
+            continue;
+        }
+
+        const float distance = sourcePosition.GetDistance(target->GetPosition());
+        if (!std::isfinite(distance) || distance >= visionRange) {
+            continue;
+        }
+
+        std::string actorLabel = agent->getActorName();
+        if (actorLabel.empty()) {
+            try {
+                actorLabel = target->GetDisplayFullName();
+            } catch (...) {
+                actorLabel.clear();
+            }
+        }
+        if (actorLabel.empty()) {
+            continue;
+        }
+
+        if (target->IsDead()) {
+            actorLabel += " (dead)";
+        } else if (target->IsHostileToActor(source)) {
+            actorLabel += " (hostile)";
+        } else if (target->GetCurrentScene()) {
+            actorLabel += " (busy)";
+        } else if (target->IsInCombat()) {
+            actorLabel += " (in combat)";
+        } else if (distance > farAwayLimit) {
+            actorLabel += " (far away)";
+        } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
+            actorLabel += " (restrained)";
+        }
+
+        results.push_back({distance, std::move(actorLabel)});
+    }
+
+    std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.distance == rhs.distance) {
+            return lhs.label < rhs.label;
+        }
+        return lhs.distance < rhs.distance;
+    });
+
+    std::string buffer;
+    for (size_t i = 0; i < results.size(); ++i) {
+        buffer += results[i].label;
+        if (i + 1 < results.size()) {
+            buffer += separator;
+        }
+    }
+
+    return buffer;
+}
+
 SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, float visionRange) {
     SpatialAwareness::Settings spatialSettings = SpatialAwareness::GetSettings();
     if (visionRange > 0.0f) {
@@ -3946,10 +4067,16 @@ struct AudibleActorsCacheEntry {
     std::vector<AudibleActorDescriptor> actors;
 };
 
+struct AudibleActorCandidate {
+    RE::Actor* actor = nullptr;
+    float airDistance = 0.0f;
+};
+
 std::mutex g_audibleActorsCacheMutex;
 AudibleActorsCacheEntry g_audibleActorsCache;
-constexpr auto kAudibleActorsCacheTtl = std::chrono::milliseconds(200);
+constexpr auto kAudibleActorsCacheTtl = std::chrono::milliseconds(2500);
 constexpr float kAudibleActorsCacheMoveTolerance = 64.0f;
+constexpr std::size_t kMaxSpatialEvaluationsPerAudibleScan = 6;
 
 float GetAudibleActorsDistanceMultiplier(RE::Actor* speaker)
 {
@@ -4006,59 +4133,94 @@ std::vector<AudibleActorDescriptor> CollectAudibleActorsUncached(RE::Actor* spea
         return results;
     }
 
-    auto* processLists = RE::ProcessLists::GetSingleton();
-    if (!processLists) {
-        logger::warn("CollectAudibleActors: ProcessLists is null.");
-        return results;
-    }
-
     const SpatialAwareness::Settings spatialSettings = GetPlayerSpeechSpatialSettings(speaker, visionRange);
+    const bool speakerInterior = speakerCell->IsInteriorCell();
+    const RE::NiPoint3 speakerPosition = speaker->GetPosition();
+    std::vector<AudibleActorCandidate> candidates;
+    candidates.reserve(32);
 
-    for (auto& targetHandle : processLists->highActorHandles) {
-        if (!targetHandle || !targetHandle.get()) {
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent || agent->isNarrator()) {
             continue;
         }
 
-        targetHandle.get()->IncRefCount();
-        auto* target = targetHandle.get().get();
+        auto* target = agent->getActor();
         if (!target) {
-            targetHandle.get()->DecRefCount();
+            auto* targetForm = RE::TESForm::LookupByID(agent->GetFormId());
+            target = targetForm ? targetForm->As<RE::Actor>() : nullptr;
+        }
+
+        if (!target) {
             continue;
         }
 
         if (speaker->GetFormID() == target->GetFormID()) {
-            targetHandle.get()->DecRefCount();
             continue;
         }
 
         if (!target->GetActorRuntimeData().currentProcess || !target->Is3DLoaded()) {
-            targetHandle.get()->DecRefCount();
             continue;
         }
 
         auto* targetCell = target->GetParentCell();
         if (!targetCell || !targetCell->IsAttached()) {
-            targetHandle.get()->DecRefCount();
             continue;
         }
 
-        const float airDistance = speaker->GetPosition().GetDistance(target->GetPosition());
-        if (spatialSettings.maxAirDistance > 0.0f && airDistance >= spatialSettings.maxAirDistance) {
-            targetHandle.get()->DecRefCount();
+        const bool targetInterior = targetCell->IsInteriorCell();
+        if (speakerInterior != targetInterior) {
             continue;
         }
+
+        if (speakerInterior && targetCell != speakerCell) {
+            continue;
+        }
+
+        const float airDistance = speakerPosition.GetDistance(target->GetPosition());
+        if (spatialSettings.maxAirDistance > 0.0f && airDistance >= spatialSettings.maxAirDistance) {
+            continue;
+        }
+
+        candidates.push_back(AudibleActorCandidate{target, airDistance});
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.airDistance < rhs.airDistance;
+    });
+
+    std::size_t spatialEvaluations = 0;
+    std::size_t budgetSkipped = 0;
+
+    for (auto& candidate : candidates) {
+        auto* target = candidate.actor;
+        if (!target) {
+            continue;
+        }
+
+        const auto releaseTarget = [&]() {
+            target = nullptr;
+        };
+
+        if (spatialEvaluations >= kMaxSpatialEvaluationsPerAudibleScan) {
+            ++budgetSkipped;
+            releaseTarget();
+            continue;
+        }
+
+        ++spatialEvaluations;
 
         SpatialAwareness::Result spatialResult{};
         try {
             spatialResult = SpatialAwareness::Evaluate(speaker, target, spatialSettings);
         } catch (...) {
             logger::warn("CollectAudibleActors: spatial evaluation failed for {:08X}", target->GetFormID());
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
         if (!spatialResult.canCommunicate) {
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
@@ -4066,19 +4228,19 @@ std::vector<AudibleActorDescriptor> CollectAudibleActorsUncached(RE::Actor* spea
         try {
             actorLabel = target->GetDisplayFullName();
         } catch (...) {
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
         if (actorLabel.empty()) {
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
         AudibleActorDescriptor audibleActor{};
         audibleActor.formId = target->GetFormID();
         audibleActor.label = std::move(actorLabel);
-        audibleActor.airDistance = airDistance;
+        audibleActor.airDistance = candidate.airDistance;
         audibleActor.volume = spatialResult.volume;
         audibleActor.pathDistance = spatialResult.pathDistance;
         audibleActor.pathRatio = spatialResult.pathRatio;
@@ -4094,9 +4256,15 @@ std::vector<AudibleActorDescriptor> CollectAudibleActorsUncached(RE::Actor* spea
         audibleActor.inCombat = !audibleActor.hostile && !audibleActor.busy && target->IsInCombat();
         audibleActor.restrained = !audibleActor.hostile && !audibleActor.busy && !audibleActor.inCombat &&
                                   target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained;
+        audibleActor.canCommunicate = true;
 
         results.push_back(std::move(audibleActor));
-        targetHandle.get()->DecRefCount();
+        releaseTarget();
+    }
+
+    if (budgetSkipped > 0) {
+        logger::debug("CollectAudibleActors: skipped {} low-priority candidates after {} spatial evaluations",
+                      budgetSkipped, spatialEvaluations);
     }
 
     return results;

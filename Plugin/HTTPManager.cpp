@@ -17,6 +17,7 @@
 #include "Globals.h"
 #include "Misc.h"
 #include "PrismaUIBridge.h"
+#include "SpatialSnapshotManager.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
 #include "SpatialAwareness.h"
@@ -1383,31 +1384,16 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         // Determine speaker
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
-        int index = -1;
-        int i = 0;
 
         RE::Actor* listenerPtr = nullptr;
 
         auto player = RE::PlayerCharacter::GetSingleton();
-        const std::string chimMode = PrismaUIBridge::GetCurrentChatboxMode();
-
-        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-        std::string crosshairTargetName;
-        bool narratorFallbackSelected = false;
-        bool crosshairOverrideApplied = false;
-        bool chatboxOverrideApplied = false;
-        bool heyOverrideApplied = false;
-        std::string narratorOverrideReason;
-        std::string spatialSelectedName;
-
-        RE::TESObjectREFRPtr refUnderCrossHair;
-        if (cameraObject) {
-            refUnderCrossHair = cameraObject.get();
-            if (refUnderCrossHair) {
-                crosshairTargetName = trim(refUnderCrossHair->GetDisplayFullName());
-                logger::info("Ref under crosshair {} ", refUnderCrossHair->GetDisplayFullName());
-            }
+        if (!player) {
+            logger::warn("[LISTENER-RESOLVE] No player singleton");
+            return;
         }
+
+        std::string narratorOverrideReason;
         auto* localPlayerCell = player->GetParentCell();
         const auto playerSpatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
         const float spatialListenerDistanceLimit =
@@ -1415,311 +1401,194 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 ? playerSpatialSettings.interiorMaxDistance
                 : playerSpatialSettings.exteriorMaxDistance;
 
-        std::vector<AudibleActorDescriptor> audibleActors =
-            CollectAudibleActors(player->AsReference(), HERIKA_MAX_VISION_RANGE);
+        const bool playerInputMessage =
+            msg.starts_with("inputtext_s|") || msg.starts_with("inputtext|") ||
+            msg.starts_with("ginputtext_s|") || msg.starts_with("ginputtext|");
+        const auto spatialSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(
+            false, playerInputMessage ? "player_input_listener_resolve" : "listener_resolve");
+        const auto& audibleActors = spatialSnapshot.audibleActors;
         std::unordered_map<RE::FormID, const AudibleActorDescriptor*> audibleActorsByFormId;
         audibleActorsByFormId.reserve(audibleActors.size());
         for (const auto& audibleActor : audibleActors) {
             audibleActorsByFormId[audibleActor.formId] = &audibleActor;
         }
-        std::string beings = DescribeAudibleActors(audibleActors, ",");
-
-        static std::list<std::string> currentFollowers;
-        int n = aiam.getAgents().size();
-
         float minDistance = (std::numeric_limits<float>::max)();
-        std::shared_ptr<AIAgent> selectedAgent = nullptr;  // Store selected agent directly, not by index
-
-        bool uselos = false;
-
-        if (startsWithHey(msg)) {
-            uselos = true;
-        }
-
-        for (const auto& agent : aiam.getAgents()) {
-            logger::info("Checking Actor {} {}/{}", i, agent->getActorName(), n);
-
-            auto form = RE::TESForm::LookupByID(agent->GetFormId());
-            if (!form) {
-                logger::error("ERROR {} actor is unreachable for now", i, agent->getActorName());
-                i++;
-                continue;
-            }
-            
-            // auto debugActor = agent->getActor();
-            auto debugActor = form->As<RE::Actor>();
-
-            if (!debugActor) {
-                logger::error("ERROR {} {} actor is unreachable, try to readd", i, agent->getActorName());
-                i++;
-                continue;
-            }
-
-            const auto audibleIt = audibleActorsByFormId.find(debugActor->GetFormID());
-            if (audibleIt == audibleActorsByFormId.end()) {
-                logger::info("Discarding {} {} because actor is not in current audible set ({})",
-                             i, agent->getActorName(), beings);
-                i++;
-                continue;
-            }
-
-            const auto& audibleActor = *audibleIt->second;
-            float distance = audibleActor.airDistance;
-
-            /*
-            if (beings.find(agent->getActorName()) == std::string::npos) {
-                logger::info("Discarding {} {} because actor is not around", i, agent->getActorName());
-                i++;
-                continue;
-            }
-            */
-
-            if (debugActor->IsDead()) {
-                logger::info("Actor {} is dead. Marked for deletion", agent->getActorName());
-                i++;
-                agent->markToBeDeleted();
-                // aiam.deleteAgentByName(agent->getActorName());
-
-                continue;
-            }
-
-            auto localAgentCell = debugActor->GetParentCell();
-
-            if (agent->getActorName() == NARRATOR_NAME) {
-                logger::info("Discarding {} {} because actor is Narrator", i, NARRATOR_NAME);
-                i++;
-                continue;
-            }
-
-            if (!localAgentCell) {
-                logger::info("Discarding {} because no actor/no cell", i);
-                i++;
-                continue;
-            }
-
-            if (!agent->isAvailableforDialog(AllowActorsOnScene) ) {  // Discuss
-                logger::info("Discarding {} because not isAvailableforDialog", i);
-                i++;
-                continue;
-            }
-            bool whatisthisfor = false;
-
-            if (uselos ) {
-                bool los = false;
-
-                if (debugActor->Is3DLoaded()) {
-                    // Check if the actor is loaded in 3D
-                    //los = debugActor->HasLineOfSight(player, whatisthisfor);
-                    
-                    //los = player->HasLineOfSight(debugActor->AsReference(), whatisthisfor);
-
-                    los = IsInPlayerFOV(debugActor, DISTANCE_ACTIVATING_NPC_OUT);
-
-                } else {
-                    logger::info("Discarding {} because not 3d loaded", i);
-                    // If not loaded, we cannot check line of sight
-                    los = false;
-                }
-
-                if (!los) {
-                    logger::info("Discarding {} because not no line of sight", i);
-                    i++;
-                    continue;
-                }
-            }
-            
-
-           if (debugActor->IsPlayerTeammate()) {
-                auto isVampireKW = RE::BGSKeyword::LookupByID(0x000A82BB)->As<RE::BGSKeyword>();
-                bool isVampire = debugActor->HasKeyword(isVampireKW);
-
-                std::string playerinfo =
-                    std::format("\"level\":{},\"name\":\"{}\",\"race\":\"{}\",\"gender\":\"{}\",\"isVampire\":\"{}\"",
-                                debugActor->GetLevel(), EscapeJson(debugActor->GetDisplayFullName()),
-                                EscapeJson(debugActor->GetRace()->GetFullName()),
-                                (debugActor->GetActorBase()->GetSex() == RE::SEXES::kFemale) ? "female" : "male",
-                                isVampire ? "yes" : "no");
-
-                currentFollowers.push_back(playerinfo);
-            }
-
-            /*
-            if (localAgentCell != localPlayerCell) {
-
-                if (localAgentCell->IsExteriorCell() && localPlayerCell->IsExteriorCell()) {
-
-                } else {
-                    i++;
-                    logger::debug("Discarding {} because parent cell is not the same, and is not an exterior cell",
-                                 agent->getActor()->GetDisplayFullName());
-                    continue;
-                }
-
-            }
-            */
-
-            // Spatial awareness gate: check if NPC is acoustically reachable
-            // Uses navmesh pathing, door detection, and LOS to determine if
-            // the player's speech can actually reach this NPC.
-            if (distance < minDistance && distance >= 0) {  // O -> two actor animation
-                if (uselos && distance < 254) {
-                    logger::debug("Discarding {} because distance is too short and we're using los ({})", debugActor->GetDisplayFullName(),
-                                  distance);
-                } else {
-                    index = i;
-                    minDistance = distance;
-                    selectedAgent = std::const_pointer_cast<AIAgent>(agent);
-
-                    logger::info("Selecting {} (spatial: {} vol={:.2f} doors_closed={} air_dist={:.0f})",
-                        debugActor->GetDisplayFullName(), audibleActor.reason,
-                        audibleActor.volume, audibleActor.closedDoorCount, audibleActor.airDistance);
-                }
-            } else {
-                logger::debug("Discarding {} because distance ({})", debugActor->GetDisplayFullName(), distance);
-            }
-
-            i++;
-        }
+        bool directedChat = false;
+        const bool everyoneTargetOverride = PrismaUIBridge::IsChatboxEveryoneTargetOverrideActive();
+        auto rankedTargets = SpatialSnapshotManager::GetPlayerConversationTargets(
+            playerInputMessage ? "player_input_listener_resolve" : "listener_resolve", true);
 
         std::string currentParty = "";
+        for (const auto& target : rankedTargets) {
+            auto* targetActor = target.actor;
+            if (!targetActor || !targetActor->IsPlayerTeammate()) {
+                continue;
+            }
 
-        for (std::string follower : currentFollowers) {
-            currentParty.append("{" + follower + "},");
+            auto* vampireForm = RE::BGSKeyword::LookupByID(0x000A82BB);
+            auto* isVampireKW = vampireForm ? vampireForm->As<RE::BGSKeyword>() : nullptr;
+            bool isVampire = isVampireKW && targetActor->HasKeyword(isVampireKW);
+            std::string playerinfo =
+                std::format("\"level\":{},\"name\":\"{}\",\"race\":\"{}\",\"gender\":\"{}\",\"isVampire\":\"{}\"",
+                            targetActor->GetLevel(), EscapeJson(targetActor->GetDisplayFullName()),
+                            EscapeJson(targetActor->GetRace()->GetFullName()),
+                            (targetActor->GetActorBase()->GetSex() == RE::SEXES::kFemale) ? "female" : "male",
+                            isVampire ? "yes" : "no");
+            currentParty.append("{" + playerinfo + "},");
         }
-        currentFollowers.clear();
 
         HTTPManager::log(
             std::format("setconf|{}|{}|CurrentParty@{}", getCurrentTimeMillis(), GetGameTimeStamp(), currentParty));
         logger::debug("setconf|{}|{}|CurrentParty@{}", getCurrentTimeMillis(), GetGameTimeStamp(), currentParty);
 
         std::shared_ptr<AIAgent> agentPointer = nullptr;
-
-        if (!selectedAgent) {
-            logger::info("No agent available, trying {}", NARRATOR_NAME);
-            narratorFallbackSelected = true;
-
-            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
-            if (narrator) {
-                listenerPtr = narrator->getActor();
-                agentPointer = narrator;
-            }
-
-        } else {
-            listenerPtr = selectedAgent->getActor();
-            agentPointer = selectedAgent;
-            spatialSelectedName = selectedAgent->getActorName();
-            logger::info("[LISTENER-RESOLVE] Selected '{}' directly (no index lookup)", agentPointer->getActorName());
-        }
-
-        auto position = player->GetPosition();
-
         std::string listener;
-
-        // Overide if looking at someone
-
-        bool directedChat = false;
-        if (cameraObject) {
-            if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
-                auto targetActor = cameraObject.get()->As<RE::Actor>();
-
-                if (!targetActor->IsPlayerTeammate() && false) {
-                    logger::info("{} is not a PlayerTeammate", cameraObject.get()->GetName());
-                } else {
-                    AIAgentManager& aiam = AIAgentManager::getInstance();
-                    for (const auto& agent : aiam.getAgents()) {
-                        auto* candidateActor = agent->getActor();
-                        if (!candidateActor) {
-                            i++;
-                            continue;
-                        }
-
-                        if (candidateActor->GetFormID() == targetActor->GetFormID()) {
-                            if (candidateActor->GetParentCell() == localPlayerCell) {
-                                if (!candidateActor->IsDead()) {
-                                    listener.assign(candidateActor->GetDisplayFullName());
-                                    listenerPtr = candidateActor;
-                                    agentPointer = agent;
-                                    crosshairOverrideApplied = true;
-                                    logger::info("Overriding agent by cursor {}", listener);
-                                    directedChat = true;
-                                    break;
-                                }
-                            } else {
-                                logger::info("Discarded {} because not in the same cell", listener);
-                            }
-                        }
-
-                        i++;
-
-                        if (directedChat) break;
-                    }
-                    if (!directedChat) {
-                        logger::info("{} is not an agent", cameraObject.get()->GetName());
-                        
-                    }
-                }
-            } else {
-                logger::info("{} is not an NPC", cameraObject.get()->GetName());
+        const auto selectTarget = [&](const PlayerSpatialCandidate& target, const char* source) {
+            if (!target.agent || !target.actor) {
+                return false;
             }
-        } else {
-            logger::info("No NPC under cursor ");
-        }
 
-        const bool everyoneTargetOverride = PrismaUIBridge::IsChatboxEveryoneTargetOverrideActive();
+            listenerPtr = target.actor;
+            agentPointer = target.agent;
+            listener = target.name.empty() ? target.agent->getActorName() : target.name;
+            minDistance = target.airDistance;
+            directedChat = target.lookTarget;
+            logger::info("[LISTENER-RESOLVE] Selected '{}' via {} (source={}, status={}, dist={:.1f}m)",
+                         listener, source, target.source, target.status, target.distanceMeters);
+            return true;
+        };
+        auto validatePlayerInputTarget = [&](const PlayerSpatialCandidate& target, const char* source) {
+            if (!playerInputMessage || !target.actor) {
+                return true;
+            }
+
+            // VoiceRecord runs on a worker thread. Do not call full SpatialAwareness::Evaluate here:
+            // LOS/navmesh/door/game-ref reads belong on the game-thread snapshot path and can throw SEH
+            // if actor refs move or unload while STT is handing off. For final STT routing, only accept
+            // targets whose cached/ranked status already came from a stable spatial result.
+            const bool stableAudibleReason =
+                target.reason == "immediate_proximity" ||
+                target.reason == "line_of_sight_clear" ||
+                target.reason == "path_fallback_clear" ||
+                target.reason == "open_door_muffled";
+            const bool actualCrosshairTarget = target.source.starts_with("crosshair_");
+            const bool closeLookTarget = target.lookTarget && target.reason == "distance_cell_clear" &&
+                                         target.distanceMeters <= 4.0f;
+            const bool directCheapTarget = target.targetable && (actualCrosshairTarget || closeLookTarget);
+
+            if (!target.targetable || (!stableAudibleReason && !directCheapTarget)) {
+                logger::info(
+                    "[LISTENER-RESOLVE] Rejecting '{}' via {}: STT routing requires cached stable spatial "
+                    "(source={}, status={}, reason={}, targetable={}, dist={:.1f}m)",
+                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                    source, target.source, target.status, target.reason, target.targetable ? 1 : 0,
+                    target.distanceMeters);
+                return false;
+            }
+
+            if (stableAudibleReason) {
+                logger::info(
+                    "[LISTENER-RESOLVE] Confirmed '{}' via {} using cached stable spatial "
+                    "(source={}, status={}, reason={}, dist={:.1f}m)",
+                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                    source, target.source, target.status, target.reason, target.distanceMeters);
+            } else {
+                logger::info(
+                    "[LISTENER-RESOLVE] Confirmed '{}' via {} using direct cheap target "
+                    "(source={}, status={}, reason={}, dist={:.1f}m)",
+                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                    source, target.source, target.status, target.reason, target.distanceMeters);
+            }
+            return true;
+        };
+
         uint32_t chatboxOverrideFormId = 0;
         std::string chatboxOverrideName;
         if (PrismaUIBridge::GetChatboxTargetOverride(chatboxOverrideFormId, chatboxOverrideName)) {
-            std::shared_ptr<AIAgent> overrideAgent = nullptr;
-
-            if (chatboxOverrideFormId != 0) {
-                for (const auto& agent : aiam.getAgents()) {
-                    auto* candidateActor = agent ? agent->getActor() : nullptr;
-                    if (candidateActor && candidateActor->GetFormID() == chatboxOverrideFormId) {
-                        overrideAgent = agent;
-                        break;
-                    }
+            auto overrideIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
+                [&](const PlayerSpatialCandidate& target) {
+                    const bool formMatch = chatboxOverrideFormId != 0 && target.formId == chatboxOverrideFormId;
+                    const bool nameMatch = !chatboxOverrideName.empty() && target.name == chatboxOverrideName;
+                    return (formMatch || nameMatch) && target.targetable;
+            });
+            if (overrideIt != rankedTargets.end()) {
+                if (validatePlayerInputTarget(*overrideIt, "chatbox_override") &&
+                    selectTarget(*overrideIt, "chatbox_override")) {
+                    directedChat = true;
+                } else {
+                    logger::info("[LISTENER-RESOLVE] Chatbox target override cannot hear player input; clearing override");
+                    PrismaUIBridge::ClearChatboxTargetOverride();
                 }
-            }
-
-            if (!overrideAgent && !chatboxOverrideName.empty()) {
-                overrideAgent = aiam.getAgentByName(chatboxOverrideName);
-            }
-
-            bool overrideStillAudible = false;
-            if (overrideAgent && overrideAgent->getActor() && !overrideAgent->getActor()->IsDead()) {
-                overrideStillAudible =
-                    audibleActorsByFormId.find(overrideAgent->getActor()->GetFormID()) != audibleActorsByFormId.end();
-            }
-
-            if (overrideStillAudible) {
-                listenerPtr = overrideAgent->getActor();
-                agentPointer = overrideAgent;
-                listener.assign(overrideAgent->getActorName());
-                directedChat = true;
-                chatboxOverrideApplied = true;
-                logger::info("[LISTENER-RESOLVE] Overriding agent by chatbox target {}", listener);
             } else {
                 logger::warn("[LISTENER-RESOLVE] Clearing unavailable chatbox target override formId={} name='{}'",
-                    chatboxOverrideFormId, chatboxOverrideName);
+                             chatboxOverrideFormId, chatboxOverrideName);
                 PrismaUIBridge::ClearChatboxTargetOverride();
             }
-        } else if (everyoneTargetOverride) {
-            logger::info("[LISTENER-RESOLVE] Using Everyone chatbox target override");
+        }
+
+        if (!agentPointer) {
+            auto autoIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
+                [](const PlayerSpatialCandidate& target) {
+                    return target.autoEligible;
+                });
+            if (autoIt != rankedTargets.end()) {
+                if (!validatePlayerInputTarget(*autoIt, "ranked_targets")) {
+                    logger::info("[LISTENER-RESOLVE] Top ranked target failed final spatial check; falling back instead of scanning all candidates");
+                } else {
+                    selectTarget(*autoIt, "ranked_targets");
+                }
+            }
+        }
+
+        if (!agentPointer) {
+            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+            if (narrator) {
+                logger::info("[LISTENER-RESOLVE] Routing to Narrator: no targetable NPC in ranked spatial targets (audible={}, ranked={})",
+                             audibleActors.size(), rankedTargets.size());
+                listenerPtr = narrator->getActor();
+                agentPointer = narrator;
+                listener.assign(NARRATOR_NAME);
+                directedChat = true;
+                narratorOverrideReason = "no targetable NPCs";
+            }
         }
 
         if (!agentPointer) {
             logger::info("No agent available");
             return;
-        } else {
-            try {
-                if (agentPointer->getActor()) listener = agentPointer->getActor()->GetDisplayFullName();
-            } catch (const std::exception& e) {
-                logger::error("Error getting actor display name for {}: {}", agentPointer->getActorName(), e.what());
+        }
+
+        try {
+            if (agentPointer->getActor() && listener != NARRATOR_NAME) {
+                listener = agentPointer->getActor()->GetDisplayFullName();
+            }
+        } catch (const std::exception& e) {
+            logger::error("Error getting actor display name for {}: {}", agentPointer->getActorName(), e.what());
+            if (listener != NARRATOR_NAME) {
                 listener = agentPointer->getActorName();
             }
         }
 
-        // Check if agent is on conversation cooldown
+        if (startsWithHey(msg)) {
+            logger::info("Hey override detected in message: {}", msg);
+            for (std::string agentname : aiam.getAgentsNamesFollowing()) {
+                if (msg.contains(getFirstWord(agentname))) {
+                    auto heyAgent = aiam.getAgentByName(agentname);
+                    if (heyAgent && heyAgent->getActor()) {
+                        agentPointer = heyAgent;
+                        listenerPtr = heyAgent->getActor();
+                        listener.assign(heyAgent->getActorName());
+                        directedChat = true;
+                        logger::info("Override by Hey NPC {}", agentname);
+                    }
+                }
+            }
+        }
+
+        if (everyoneTargetOverride) {
+            logger::info("[LISTENER-RESOLVE] Using Everyone chatbox target override");
+        }
+
         if (agentPointer->hasConversationCooldown()) {
             logger::info("{} is on conversation cooldown, showing message", agentPointer->getActorName());
             std::string cooldownMsg = std::format("{} does not want to talk right now", agentPointer->getActorName());
@@ -1727,22 +1596,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             return;
         }
 
-        // Hey override
-        if (startsWithHey(msg)) {
-            logger::info("Hey override detected in message: {}", msg);
-            for (std::string agentname : aiam.getAgentsNamesFollowing()) {
-                if (msg.contains(getFirstWord(agentname))) {
-                    agentPointer = aiam.getAgentByName(agentname);
-                    if (agentPointer) {
-                        listenerPtr = agentPointer->getActor();
-                        listener.assign(agentPointer->getActorName());
-                        directedChat = true;
-                        heyOverrideApplied = true;
-                        logger::info("Override by Hey NPC {}",agentname);
-                    }
-                }
-            }
-        }
+        auto position = player->GetPosition();
         auto forceNarratorListener = [&](const char* reason) {
             auto narrator = aiam.getAgentByName(NARRATOR_NAME);
             if (!narrator) {
@@ -1840,19 +1694,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                              listener, msg.substr(0, msg.find('|')));
             }
         } else if (!directedChat) {
-            // Restore historical group-chat behavior for untargeted player text.
-            if (msg.starts_with("inputtext_s|")) {
-                msg.replace(0, 11, "ginputtext_s");
-                logger::info("[HTTPStream] Restored broadcast behavior for undirected stealth chat via ginputtext_s (listener {})",
-                             listener);
-            } else if (msg.starts_with("inputtext|")) {
-                msg.replace(0, 9, "ginputtext");
-                logger::info("[HTTPStream] Restored broadcast behavior for undirected chat via ginputtext (listener {})",
-                             listener);
-            } else {
-                logger::info("[HTTPStream] Undirected chat for listener {} is not inputtext; leaving request scoped",
-                             listener);
-            }
+            // Keep default STT scoped to the resolved listener. Implicit broadcast
+            // made the server keep continuing stale group context, so one NPC could
+            // monopolize player speech even after the player tried to address others.
+            logger::info("[HTTPStream] Undirected chat remains scoped to resolved listener {}. Use Everyone override for broadcast.",
+                         listener);
         }
         // listenerPtr->GetActorRuntimeData().currentProcess->SetHeadtrackTarget(listenerPtr, position);
 

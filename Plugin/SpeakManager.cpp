@@ -2123,12 +2123,9 @@ void SpeakManager::process(AIAgent *agent) {
         return;
     }
 
-    std::string beings = InspectSurroundings(RE::PlayerCharacter::GetSingleton(), true, HERIKA_MAX_VISION_RANGE, ",",
-                                             DISTANCE_ACTIVATING_NPC_OUT);
-    logger::debug("[SPEAKERMANAGER {}] Current surroundings inspection: {}", tid,beings);
-
-    if (!agent->isPresent(beings) && !agent->isNarrator()) {
-        logger::info("[SPEAKERMANAGER {}] Agent {} is not present in surroundings and is not narrator. Skipping.", tid,agent->getActorName());
+    if (!agent->isNarrator() && (!npc->GetActorRuntimeData().currentProcess || !npc->Is3DLoaded())) {
+        logger::info("[SPEAKERMANAGER {}] Agent {} is not currently loaded for dialogue. Skipping.", tid,
+                     agent->getActorName());
         dequeueFirstItem();
         setProcessing(false);
         return;
@@ -2590,9 +2587,10 @@ void SpeakManager::process(AIAgent *agent) {
             try {
                 json sData;
                 const std::string speakerName = agent->getActorName();
+                const bool speakerIsNarrator = agent->isNarrator() || speakerName == NARRATOR_NAME;
                 sData["speaker"] = speakerName;
                 sData["location"] = GetPlayerLocation();
-                sData["speech"] = toSay.subtitle;
+                sData["speech"] = scriptLine.subtitle;
                 sData["utterance_id"] = scriptLine.utteranceId;
                 const std::string resolvedListenerName =
                     speechListener.empty() ? RE::PlayerCharacter::GetSingleton()->GetName() : speechListener;
