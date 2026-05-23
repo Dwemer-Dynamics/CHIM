@@ -15,6 +15,7 @@
 
     // Update timer
     let updateInterval = null;
+    let lastSpatialAgentsAt = 0;
 
     // Mode display names and classes
     const modeConfig = {
@@ -55,8 +56,10 @@
             // Update focus chat
             updateFocusChat(overlay.focus_chat);
             
-            // Update active agents
-            updateActiveAgents(overlay.active_agents);
+            // Update active agents from server only until the DLL starts pushing local spatial truth.
+            if (!lastSpatialAgentsAt || Date.now() - lastSpatialAgentsAt > 5000) {
+                updateActiveAgents(overlay.active_agents);
+            }
             
             // Update profile slots
             updateProfileSlots(overlay.profile_slots, overlay.active_model_slot);
@@ -111,6 +114,7 @@
      */
     function updateActiveAgents(agents) {
         const countElement = document.querySelector('.agent-count');
+        const previousScrollTop = agentsListElement.scrollTop;
         
         if (!agents || agents.length === 0) {
             agentsListElement.innerHTML = '<div class="empty-agents">No agents nearby</div>';
@@ -122,11 +126,42 @@
         
         let html = '';
         agents.forEach(agent => {
-            html += `<div class="agent-item">${escapeHtml(agent)}</div>`;
+            if (typeof agent === 'string') {
+                html += `<div class="agent-item"><div class="agent-name">${escapeHtml(agent)}</div></div>`;
+                return;
+            }
+
+            const name = agent && agent.name ? agent.name : 'Unknown Target';
+            const distance = Number(agent && agent.distance ? agent.distance : 0).toFixed(1);
+            const status = agent && agent.status ? agent.status : '';
+            const meta = status ? `${distance}m - ${status}` : `${distance}m`;
+            const classes = ['agent-item'];
+            if (agent && agent.active) classes.push('active');
+            if (agent && agent.targetable === false) classes.push('blocked');
+            if (agent && agent.look_target) classes.push('look-target');
+
+            html += `
+                <div class="${classes.join(' ')}">
+                    <div class="agent-name">${escapeHtml(name)}</div>
+                    <div class="agent-meta">${escapeHtml(meta)}</div>
+                </div>
+            `;
         });
         
         agentsListElement.innerHTML = html;
+        agentsListElement.scrollTop = previousScrollTop;
     }
+
+    window.updateSpatialAgents = function(payloadJson) {
+        try {
+            const parsed = JSON.parse(payloadJson);
+            const agents = Array.isArray(parsed) ? parsed : [];
+            lastSpatialAgentsAt = Date.now();
+            updateActiveAgents(agents);
+        } catch (e) {
+            console.error('Error parsing spatial agents:', e);
+        }
+    };
 
     /**
      * Update the profile slots grid
@@ -191,16 +226,28 @@
      * Update the crosshair target display
      * @param {string} name - Name of the targeted NPC
      * @param {number} distance - Distance to the NPC in meters
+     * @param {string} status - Spatial targeting status
+     * @param {boolean} targetable - Whether this is an active valid target
      */
-    window.updateCrosshairTarget = function(name, distance) {
+    window.updateCrosshairTarget = function(name, distance, status, targetable) {
         const targetElement = document.getElementById('crosshair-target');
+        const safeStatus = status ? escapeHtml(status) : '';
+        const statusHtml = safeStatus ? `<div class="target-status">${safeStatus}</div>` : '';
+        const isTargetable = targetable !== false;
+
         if (name && name !== '') {
             targetElement.innerHTML = `
-                <span class="target-name">${escapeHtml(name)}</span>
-                <span class="target-distance">(${distance.toFixed(1)}m)</span>
+                <div>
+                    <span class="target-name ${isTargetable ? '' : 'blocked-target'}">${escapeHtml(name)}</span>
+                    <span class="target-distance">(${distance.toFixed(1)}m)</span>
+                </div>
+                ${statusHtml}
             `;
         } else {
-            targetElement.innerHTML = '<span class="target-name no-target">No target</span>';
+            targetElement.innerHTML = `
+                <div><span class="target-name no-target">No target</span></div>
+                ${statusHtml}
+            `;
         }
     };
 
@@ -215,7 +262,7 @@
     };
 
     /**
-     * Start auto-updating every 5 seconds
+     * Start auto-updating every 3 seconds
      */
     window.startAutoUpdate = function() {
         stopAutoUpdate(); // Clear any existing interval
@@ -224,7 +271,7 @@
             if (window.chimOverlayCommand) {
                 window.chimOverlayCommand('refresh');
             }
-        }, 5000); // 5 seconds
+        }, 3000); // 3 seconds
         console.log('CHIM Overlay auto-update started');
     };
 

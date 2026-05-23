@@ -27,6 +27,7 @@
 #include "AudioManager.h"
 #include "SPGResponse.h"
 #include "HTTPManager.h"
+#include "PrismaUIBridge.h"
 #include "SpatialAwareness.h"
 #include <winhttp.h>
 #include "ThreadPool.h"
@@ -2454,8 +2455,7 @@ void SpeakManager::process(AIAgent *agent) {
             // Dynamic attenuation/muffle is handled during playback in DownloadAndPlay so
             // door/LOS/navmesh changes can update while the line is still playing.
 
-            const bool whisperModeActive =
-                (DISTANCE_ACTIVATING_NPC_IN <= 200.0f && DISTANCE_ACTIVATING_NPC_OUT <= 200.0f);
+            const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
             const bool directedToPlayer = IsDirectlyAddressingPlayer(scriptLine.action, aiam);
             if (whisperModeActive && directedToPlayer && !agent->isNarrator()) {
                 playbackVolumeBoost = 0.25f;

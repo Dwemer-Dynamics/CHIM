@@ -18,6 +18,7 @@
     const focusIndicator = document.getElementById('focus-indicator');
     const targetRow = document.getElementById('target-row');
     const targetName = document.getElementById('target-name');
+    const targetStatus = document.getElementById('target-status');
     
     // Mode configuration
     const modeConfig = {
@@ -95,15 +96,23 @@
     /**
      * Update target NPC (called from C++)
      */
-    function updateTarget(name, distance) {
+    function updateTarget(name, distance, status, targetable) {
+        const isTargetable = targetable !== false;
+        const statusText = status || '';
+
         if (name && name.length > 0) {
             targetRow.classList.add('has-target');
+            targetRow.classList.toggle('blocked-target', !isTargetable);
             targetName.textContent = name;
-            targetName.title = distance > 0 ? name + ' (' + distance.toFixed(1) + 'm)' : name;
+            if (targetStatus) targetStatus.textContent = statusText;
+            targetName.title = (distance > 0 ? name + ' (' + distance.toFixed(1) + 'm)' : name) +
+                (statusText ? ' - ' + statusText : '');
         } else {
             targetRow.classList.remove('has-target');
-            targetName.textContent = '—';
-            targetName.title = '';
+            targetRow.classList.remove('blocked-target');
+            targetName.textContent = 'No target';
+            if (targetStatus) targetStatus.textContent = statusText;
+            targetName.title = statusText;
         }
     }
     

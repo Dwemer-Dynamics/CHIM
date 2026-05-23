@@ -459,6 +459,7 @@
         currentTargetOverrideMode = payload.override_mode || 'auto';
         currentTargetFormId = Number(payload.active_form_id || 0);
         currentTargetName = payload.active_name || '';
+        const previousScrollTop = targetsListElement.scrollTop;
 
         const parts = [];
         if (payload.show_auto) {
@@ -487,13 +488,15 @@
             const itemClasses = ['chatbox-target-item'];
             if (target.active) itemClasses.push('active');
             if (target.override) itemClasses.push('override');
+            if (target.targetable === false) itemClasses.push('blocked');
             const distanceLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
+            const statusLabel = target.status ? `${distanceLabel} - ${target.status}` : distanceLabel;
             parts.push(`
                 <button class="${itemClasses.join(' ')}" type="button" data-form-id="${formId}" data-target-name="${escapeHtml(target.name || '')}">
                     <span class="chatbox-target-meta">
                         <span class="chatbox-target-name">${escapeHtml(target.name || 'Unknown Target')}</span>
                     </span>
-                    <span class="chatbox-target-distance">${escapeHtml(distanceLabel)}</span>
+                    <span class="chatbox-target-distance">${escapeHtml(statusLabel)}</span>
                 </button>
             `);
         });
@@ -503,6 +506,7 @@
         }
 
         targetsListElement.innerHTML = parts.join('');
+        targetsListElement.scrollTop = previousScrollTop;
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
