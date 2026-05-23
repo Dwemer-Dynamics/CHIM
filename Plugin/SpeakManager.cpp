@@ -47,6 +47,11 @@ extern int GlobalRechatPolicyAsap;
 
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 
+static void ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds duration)
+{
+    ExtendPlayerSpeechMaintenanceSuppress(std::chrono::duration_cast<std::chrono::milliseconds>(duration));
+}
+
 // Get the actor's actual 3D head position for audio spatialization.
 // During OStim/animation scenes, GetPosition() returns the scene origin which is
 // often the player's position, causing NPC voice to come from inside the player's
@@ -2793,6 +2798,9 @@ void SpeakManager::process(AIAgent *agent) {
         }
 
         setProcessing(false);
+        if (hasTalked) {
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+        }
 
         // Narrator cleanup MUST run before checking for more queue items.
         // If the queue has items from other actors, the recursive process() call
@@ -2874,7 +2882,17 @@ void SpeakManager::processPlayer() {
         }
 
         dequeueFirstItem();
-        setProcessing(false);       
+        setProcessing(false);
+        if (isTextOnlyPlayerLine) {
+            // Text-only STT captions are a short echo of what the player said.
+            // If no NPC/Narrator subtitle replaces them, release the pending state so
+            // clearVisibleSubtitles() can remove the echo instead of refreshing it forever.
+            releasePendingPlayerSubtitle();
+            clearVisibleSubtitles();
+        }
+        if (hasTalked) {
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+        }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         auto originalName = aiam.getPlayerName();
