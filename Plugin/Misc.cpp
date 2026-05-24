@@ -594,7 +594,7 @@ void InterruptNPC(RE::Actor* actor, AIAgent* agent) {
         if (agent) agent->setOnScene(true);
     }
 
-    // Mark agent to restore voic eand states
+    // Mark agent to restore voice and states
     if (agent) {
         agent->setClean(false);
         agent->setRestored(false);
