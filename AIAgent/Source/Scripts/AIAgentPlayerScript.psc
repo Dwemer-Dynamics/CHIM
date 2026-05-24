@@ -116,17 +116,11 @@ function sendCellInfo(Cell localCell,Location fromLocation,bool detailed = false
 		return
 	endif
 
-	; Exterior streaming can call this alongside DLL cell-load events and other mods' detach handlers.
-	; Space out the full door scan so entering large worldspaces does not stack several ref scans at once.
-	float nowRealTime = Utility.GetCurrentRealTime()
-	float lastFullScanRealTime = StorageUtil.GetFloatValue(None, "CHIM_LastFullCellInfoRealTime", -999.0)
-	if (!localCell.IsInterior() && nowRealTime - lastFullScanRealTime < 4.0)
-		Debug.Trace("[CHIM] sendCellInfo throttled for exterior cell <0x"+DecToHex(localCell.GetFormId())+">")
-		return
-	endif
-	StorageUtil.SetFloatValue(None, "CHIM_LastFullCellInfoRealTime", nowRealTime)
 	if (!localCell.IsInterior())
-		Utility.Wait(1.0)
+		Debug.Trace("[CHIM] sendCellInfo using cheap exterior cell record for <0x"+DecToHex(localCell.GetFormId())+">")
+		sendCellInfoSingle(localCell, fromLocation, detailed)
+		QueueExteriorCellInfoEnrichment(localCell, fromLocation)
+		return
 	endif
 	
 	Debug.Trace("[CHIM] sendCellInfo START for <0x"+DecToHex(localCell.GetFormId())+">")
@@ -394,9 +388,136 @@ function sendCellInfoSingle(Cell localCell,Location fromLocation,bool detailed =
 	
 EndFunction
 
+function QueueExteriorCellInfoEnrichment(Cell localCell,Location fromLocation) global
+	if (!localCell || !fromLocation || localCell.IsInterior())
+		return
+	endif
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoCell", localCell)
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoLocation", fromLocation)
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoIndex", 0)
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoActive", 1)
+	StorageUtil.SetFloatValue(None, "CHIM_ExteriorCellInfoReadyAt", Utility.GetCurrentRealTime() + 2.0)
+	Debug.Trace("[CHIM] queued exterior cell info enrichment for <0x"+DecToHex(localCell.GetFormId())+">")
+EndFunction
+
+function ClearExteriorCellInfoEnrichment() global
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoActive", 0)
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoIndex", 0)
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoCell", None)
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoLocation", None)
+EndFunction
+
+function ProcessExteriorCellInfoEnrichment(int maxDoors = 2) global
+	if (StorageUtil.GetIntValue(None, "CHIM_ExteriorCellInfoActive", 0) == 0)
+		return
+	endif
+	if (Utility.GetCurrentRealTime() < StorageUtil.GetFloatValue(None, "CHIM_ExteriorCellInfoReadyAt", 0.0))
+		return
+	endif
+	ObjectReference player = Game.GetPlayer()
+	Cell localCell = StorageUtil.GetFormValue(None, "CHIM_ExteriorCellInfoCell", None) as Cell
+	Location curr = StorageUtil.GetFormValue(None, "CHIM_ExteriorCellInfoLocation", None) as Location
+	if (!player || !localCell || !curr || localCell.IsInterior())
+		ClearExteriorCellInfoEnrichment()
+		return
+	endif
+	if (player.GetParentCell() != localCell || !localCell.IsAttached())
+		ClearExteriorCellInfoEnrichment()
+		return
+	endif
+	int doorCount = localCell.GetNumRefs(29)
+	int index = StorageUtil.GetIntValue(None, "CHIM_ExteriorCellInfoIndex", 0)
+	int processed = 0
+	while (index < doorCount && processed < maxDoors)
+		ObjectReference doorRef = localCell.GetNthRef(index, 29)
+		index = index + 1
+		if (doorRef)
+			LogExteriorNamedCellDoor(doorRef, localCell, curr)
+			processed = processed + 1
+		endif
+	endwhile
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoIndex", index)
+	if (index >= doorCount)
+		Debug.Trace("[CHIM] exterior cell info enrichment complete for <0x"+DecToHex(localCell.GetFormId())+"> doors:"+doorCount)
+		ClearExteriorCellInfoEnrichment()
+	endif
+EndFunction
+
+function LogExteriorNamedCellDoor(ObjectReference sref, Cell localCell, Location curr) global
+	if (!sref || !curr)
+		return
+	endif
+	int doorToCell = 0
+	int doorToExterior = -1
+	int doorId = sref.GetFormId()
+	int closed = -1
+	Cell thisCell = sref.GetParentCell()
+	if (!thisCell)
+		thisCell = localCell
+	endif
+	if (!thisCell)
+		return
+	endif
+	ObjectReference doorDest = PO3_SKSEFunctions.GetDoorDestination(sref)
+	if (doorDest)
+		if (doorDest.GetParentCell())
+			doorToCell = doorDest.GetParentCell().GetFormId()
+			if (doorDest.GetParentCell().IsInterior())
+				doorToExterior = 0
+			else
+				doorToExterior = 1
+			endif
+		else
+			if (doorDest.IsInInterior())
+				doorToExterior = 0
+			else
+				doorToExterior = 1
+			endif
+		endif
+	else
+		ObjectReference lkRef = sref.GetLinkedRef()
+		if (lkRef)
+			if (lkRef.GetParentCell() == thisCell)
+				doorToExterior = -2
+				doorToCell = thisCell.GetFormId()
+			endif
+		else
+			doorToExterior = -2
+			doorToCell = thisCell.GetFormId()
+		endif
+	endif
+	int isInterior = 0
+	if (thisCell.IsInterior())
+		isInterior = 1
+	endif
+	string cellName = thisCell.GetName()
+	if (!cellName)
+		cellName = curr.GetName()+" area"
+	endif
+	if (sref.IsLocked() || sref.IsActivationBlocked())
+		closed = 1
+	endif
+	string doorName = AIAgentFunctions.GetDoorActivationText(sref)
+	string worldSpaceName = ""
+	if (sref.GetWorldspace())
+		worldSpaceName = sref.GetWorldspace().GetName()
+	endif
+	float northRotation = PO3_SKSEFunctions.GetCellNorthRotation(thisCell)
+	float dx = sref.x
+	float dy = sref.y
+	float xhint = dx * Math.Cos(northRotation) + dy * Math.Sin(northRotation)
+	float yhint = -dx * Math.Sin(northRotation) + dy * Math.Cos(northRotation)
+	Location currLoc = sref.GetCurrentLocation()
+	if (!currLoc)
+		currLoc = curr
+	endif
+	AIAgentFunctions.logMessage(cellName+ "/" + thisCell.GetFormID() + "/" + currLoc.GetFormId() + "/" +isInterior+ "/"+doorToCell+"/"+doorToExterior+"/"+doorId+"/"+worldSpaceName+"/"+closed+"/"+doorName+"/"+(xhint)+"/"+(yhint),"named_cell")
+EndFunction
+
 Event OnUpdate()
     ; Do some stuff
 	sendCellInfoPlayer()
+	ProcessExteriorCellInfoEnrichment(2)
 	Location currLoc = Game.GetPlayer().GetCurrentLocation()
 	if (currLoc != lastLoc)
 		lastLoc = currLoc
