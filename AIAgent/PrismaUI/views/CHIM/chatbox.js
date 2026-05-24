@@ -459,6 +459,7 @@
         currentTargetOverrideMode = payload.override_mode || 'auto';
         currentTargetFormId = Number(payload.active_form_id || 0);
         currentTargetName = payload.active_name || '';
+        const previousScrollTop = targetsListElement.scrollTop;
 
         const parts = [];
         if (payload.show_auto) {
@@ -482,18 +483,27 @@
             `);
         }
 
-        targets.forEach(function(target) {
+        const visibleTargets = targets.filter(function(target) {
+            if (target.override) return true;
+            return target.targetable !== false;
+        });
+        visibleTargets.sort(function(a, b) {
+            if (a.override && !b.override) return -1;
+            if (!a.override && b.override) return 1;
+            return 0;
+        });
+        visibleTargets.forEach(function(target) {
             const formId = Number(target.form_id || 0);
             const itemClasses = ['chatbox-target-item'];
             if (target.active) itemClasses.push('active');
             if (target.override) itemClasses.push('override');
-            const distanceLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
+            const statusLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
             parts.push(`
                 <button class="${itemClasses.join(' ')}" type="button" data-form-id="${formId}" data-target-name="${escapeHtml(target.name || '')}">
                     <span class="chatbox-target-meta">
                         <span class="chatbox-target-name">${escapeHtml(target.name || 'Unknown Target')}</span>
                     </span>
-                    <span class="chatbox-target-distance">${escapeHtml(distanceLabel)}</span>
+                    <span class="chatbox-target-distance">${escapeHtml(statusLabel)}</span>
                 </button>
             `);
         });
@@ -503,6 +513,7 @@
         }
 
         targetsListElement.innerHTML = parts.join('');
+        targetsListElement.scrollTop = previousScrollTop;
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
@@ -603,6 +614,10 @@
             const formId = targetButton.dataset.formId || '0';
             const targetName = targetButton.dataset.targetName || '';
             if (!targetName) return;
+            if (targetButton.classList.contains('override')) {
+                sendControlCommand('target_override_clear');
+                return;
+            }
             sendControlCommand(`target_override|${formId}|${targetName}`);
         });
     }
