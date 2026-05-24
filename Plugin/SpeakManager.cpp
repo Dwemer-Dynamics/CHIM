@@ -1378,10 +1378,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             }
         }
 
-        // Mark last time talk, so we don't restore actor voice (previously was updated only at the end of the process,
-        // causing issues with voice restoration when speech is still being played, so NPC will mix AI speech and vanilla speech)
-        currentActor->SetLastTimeTalk();
-
         setPhase("iter_sleep");
         std::this_thread::sleep_for(std::chrono::microseconds(animationDelayMicroSecs));
     }

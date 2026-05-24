@@ -1855,25 +1855,21 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
         // listenerPtr->GetActorRuntimeData().currentProcess->SetHeadtrackTarget(listenerPtr, position);
-        logger::info("Dispatching LookAt call for listener {} with message '{}'", listener, msg);
+
         if (listenerPtr) {
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             auto args = RE::MakeFunctionArguments(std::move(listenerPtr), std::move(player));
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "LookAt", args,
                                                                                        callback);
         }
-        logger::info("Dispatched LookAt call for listener {} with message '{}'", listener, msg);
-
         if (agentPointer) {
             agentPointer->setClean(false);
             agentPointer->setRestored(false);
         }
 
-        logger::info("About to refresh inventory for listener {} with message '{}'", listener, msg);
         if (listenerPtr && agentPointer && listener != NARRATOR_NAME) {
             RefreshAIAgentInventory(listenerPtr, agentPointer->getActorName(), false, true);
         }
-        logger::info("Finished refreshing inventory for listener {} with message '{}'", listener, msg);
 
         std::string outboundMsg = msg;
         json speechLogPayload;
@@ -1888,7 +1884,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         try {
             if (isPlayerInputRequest) {
-                logger::info("Preparing player audience snapshot for message: {}", msg);
                 const auto audienceSnapshotStartedAt = std::chrono::steady_clock::now();
                 float distance = minDistance;
                 bool hasSpatialContext = false;
@@ -1978,9 +1973,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 }
                 audienceSnapshotMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - audienceSnapshotStartedAt).count();
-
-                logger::info("Prepared player audience snapshot ({} companions, {} spatial audibility entries) in {:.2f} ms for message: {}",
-                    audibleCompanionCount, spatialAudibilityCount, audienceSnapshotMs, msg);
             }
         } catch (const std::exception& e) {
             logger::error("Exception preparing player audience snapshot: {}", e.what());
