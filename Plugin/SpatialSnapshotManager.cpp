@@ -44,9 +44,9 @@ namespace
     constexpr auto kPlayerCrosshairTargetTtl = std::chrono::milliseconds(250);
     constexpr auto kPlayerConversationTargetsTtl = std::chrono::milliseconds(250);
     constexpr float kPlayerConversationTargetsMoveTolerance = 48.0f;
-    constexpr auto kCellEntrySpatialSettleTime = std::chrono::seconds(6);
+    constexpr auto kCellEntrySpatialSettleTime = std::chrono::seconds(2);
     constexpr auto kPositiveTargetRefinementTtl = std::chrono::seconds(10);
-    constexpr auto kNegativeTargetRefinementTtl = std::chrono::milliseconds(750);
+    constexpr auto kNegativeTargetRefinementTtl = std::chrono::milliseconds(1200);
     constexpr auto kClosedDoorTargetRefinementTtl = std::chrono::seconds(10);
     constexpr auto kPriorityLosRefinementMinInterval = std::chrono::milliseconds(250);
     constexpr auto kBackgroundLosRefinementMinInterval = std::chrono::milliseconds(500);
@@ -678,15 +678,19 @@ namespace
                 return;
             }
 
-            const auto doorScan = ScanDoorBarrierBetween(playerActor, targetActor, settings);
-            result.openDoorCount = doorScan.openDoorCount;
-            result.closedDoorCount = doorScan.closedDoorCount;
-            if (doorScan.closedDoorCount > 0) {
-                result.canCommunicate = false;
-                result.volume = 0.0f;
-                result.reason = "closed_door_between";
-                StoreTargetRefinement(playerActor, targetActor, result);
-                return;
+            auto* refinementPlayerCell = playerActor->GetParentCell();
+            const bool playerInteriorForDoors = refinementPlayerCell && refinementPlayerCell->IsInteriorCell();
+            if (playerInteriorForDoors) {
+                const auto doorScan = ScanDoorBarrierBetween(playerActor, targetActor, settings);
+                result.openDoorCount = doorScan.openDoorCount;
+                result.closedDoorCount = doorScan.closedDoorCount;
+                if (doorScan.closedDoorCount > 0) {
+                    result.canCommunicate = false;
+                    result.volume = 0.0f;
+                    result.reason = "closed_door_between";
+                    StoreTargetRefinement(playerActor, targetActor, result);
+                    return;
+                }
             }
 
             bool hasLineOfSight = false;
@@ -726,9 +730,8 @@ namespace
             if (runPathFallback) {
                 result = EvaluatePathFallbackForTarget(playerActor, targetActor, settings, result);
             } else {
-                result.canCommunicate = false;
-                result.volume = 0.0f;
-                result.reason = "line_of_sight_blocked";
+                clearQueued();
+                return;
             }
 
             StoreTargetRefinement(playerActor, targetActor, result);
