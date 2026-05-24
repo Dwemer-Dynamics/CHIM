@@ -115,6 +115,19 @@ static bool IsWorldMaintenanceSuppressed()
     return nowTicks < controlWorldMaintenanceSuppressUntilTicks.load(std::memory_order_acquire);
 }
 
+static bool IsActorLoadedInPlayerCell(RE::Actor* actor)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!actor || !player || actor->IsDead() || !actor->Is3DLoaded() ||
+        !actor->GetActorRuntimeData().currentProcess) {
+        return false;
+    }
+
+    auto* actorCell = actor->GetParentCell();
+    auto* playerCell = player->GetParentCell();
+    return actorCell && playerCell && actorCell == playerCell;
+}
+
 static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();
@@ -1419,6 +1432,9 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    // Cell transitions can storm scene/subtitle events; skip until world maintenance settles.
+    if (IsWorldMaintenanceSuppressed()) return;
+
     // 200ms throttle: fires from TESSceneEvent which storms in towns; was hitting 17/sec.
     static std::chrono::steady_clock::time_point lastRun;
     static std::mutex lastRunMtx;
@@ -1429,7 +1445,6 @@ void ProcedureListenToScene() {
         lastRun = now;
     }
     auto* sm = RE::SubtitleManager::GetSingleton();
-    logger::info("[ProcedureListenToScene] start");
     for (auto s : sm->subtitles) {
         if (!s.speaker.get()) return;
         RE::Actor* actor = (s.speaker.get().get()->As<RE::Actor>());
@@ -1507,6 +1522,7 @@ void ProcedureListenToScene() {
 static std::unordered_map<std::string, std::string> g_lastSubtitleCache; // speaker+text -> timestamp
 
 void MonitorAllSubtitlesForChatbox() {
+    if (IsWorldMaintenanceSuppressed()) return;
     if (!PrismaUIBridge::IsAvailable()) return;
     
     auto* sm = RE::SubtitleManager::GetSingleton();
@@ -2565,7 +2581,7 @@ private:
                     extern bool CombatBarksEnabled;
                     extern bool CombatDialogueEnabled;
                     // logger::trace("[COMBAT_BARK_DEBUG] Checking: CombatBarksEnabled={} CombatDialogueEnabled={}", CombatBarksEnabled, CombatDialogueEnabled);
-                    if (CombatBarksEnabled && CombatDialogueEnabled) {
+                    if (!worldMaintenanceSuppressed && CombatBarksEnabled && CombatDialogueEnabled) {
                         static auto lastCombatBarkCheck = currentTime;
                         auto combatBarkElapsed = std::chrono::duration_cast<std::chrono::seconds>(currentTime - lastCombatBarkCheck);
                         //logger::trace("[COMBAT_BARK_DEBUG] Timer check: elapsed={}s, period={}s", combatBarkElapsed.count(), GlobalCombatBarksPeriod);
@@ -2578,13 +2594,11 @@ private:
                             std::vector<AIAgent*> combatAgents;
                                for (const auto& agent : aiam.getAgents()) {
                                    auto actor = agent->getActor();
-                                      if (actor && actor->IsInCombat() && !actor->IsDead()) {
+                                      if (actor && actor->IsInCombat() && IsActorLoadedInPlayerCell(actor)) {
                                         // Skip player/narrator
                                         if (actor->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
                                             continue;
                                         }
-                                        if (actor->GetCurrentLocation() != RE::PlayerCharacter::GetSingleton()->GetCurrentLocation())
-                                            continue; // Skip if not in same location as player
 
                                         combatAgents.push_back(agent.get());
                                       }
@@ -2664,7 +2678,7 @@ private:
                                                                   DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
                         auto allAgentsForMaintenance = aiam.getAgents();
                         std::vector<std::shared_ptr<AIAgent>> maintenanceAgents;
-                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 6;
+                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 8;
                         if (!allAgentsForMaintenance.empty()) {
                             if (agentMaintenanceCursor >= allAgentsForMaintenance.size()) {
                                 agentMaintenanceCursor = 0;
@@ -2684,7 +2698,7 @@ private:
                             agentMaintenanceCursor = (startCursor + visited) % allAgentsForMaintenance.size();
                         }
 
-                        constexpr int kPrecleanerMissingPresenceDeletePasses = 30;
+                        constexpr int kPrecleanerMissingPresenceDeletePasses = 2;
                         constexpr std::size_t kMaxPrecleanerDeletesPerPass = 1;
                         std::vector<std::string> agentsToDelete;
                         auto queueAgentDelete = [&](const std::string& agentName) -> bool {
@@ -4354,13 +4368,11 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
     
     // Check if actor has 3D loaded (critical for equipment access)
     if (!npc->Is3DLoaded()) {
-        logger::trace("[EQUIPMENT_SKIP] {} - 3D not loaded yet", agentName);
         return;
     }
     
     // Check if actor has a valid parent cell
     if (!npc->GetParentCell()) {
-        logger::trace("[EQUIPMENT_SKIP] {} - no parent cell", agentName);
         return;
     }
     
@@ -6356,7 +6368,7 @@ EventHandlers {
             static std::mutex lastDispatchMtx;
             std::lock_guard<std::mutex> lk(lastDispatchMtx);
             const auto now = std::chrono::steady_clock::now();
-            if (now - lastDispatch < std::chrono::milliseconds(500)) {
+            if (now - lastDispatch < std::chrono::milliseconds(6000)) {
                 logger::info("[TESCellFullyLoadedEvent] Throttled cell <{:#x}>", cell->GetFormID());
                 return;
             }
@@ -6993,6 +7005,7 @@ EventHandlers {
         if (!event->actor) return;
 
         auto activatorS = event->actor.get();
+        const bool worldMaintenanceSuppressed = IsWorldMaintenanceSuppressed();
 
         if (activatorS->formType == RE::FormType::ActorCharacter) {
             RE::Actor* target = activatorS->As<RE::Actor>();
@@ -7015,6 +7028,25 @@ EventHandlers {
                     auto narrator = aiam.getAgentByName(NARRATOR_NAME);
                     if (narrator) agentPointer = narrator->getActor();
                 }
+            }
+
+            auto playerSingleton = RE::PlayerCharacter::GetSingleton();
+            const bool targetIsPlayer = playerSingleton && target->GetFormID() == playerSingleton->GetFormID();
+
+            if (agentPointer && worldMaintenanceSuppressed) {
+                if (targetIsPlayer &&
+                    event->newState == RE::ACTOR_COMBAT_STATE::kNone) {
+                    playerPartyCombatActive = false;
+                }
+                ThreadPool::getInstance().cancelTasksByType("CombatBark");
+                ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                return;
+            }
+
+            if (agentPointer && !targetIsPlayer && !IsActorLoadedInPlayerCell(agentPointer)) {
+                ThreadPool::getInstance().cancelTasksByType("CombatBark");
+                ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                return;
             }
 
             if (agentPointer)
@@ -7114,7 +7146,9 @@ EventHandlers {
                             
                             for (const auto& agent : aiam.getAgents()) {
                                 if (agent->getActorName() == NARRATOR_NAME) continue; // Skip narrator
-                                if (beings.find(agent->getActorName()) != std::string::npos) {
+                                auto* actor = agent->getActor();
+                                if (actor && IsActorLoadedInPlayerCell(actor) &&
+                                    beings.find(agent->getActorName()) != std::string::npos) {
                                     nearbyAgents.push_back(agent.get());
                                 }
                             }
@@ -7175,6 +7209,8 @@ EventHandlers {
     });
 
     On<RE::TESHitEvent>([](const RE::TESHitEvent* event) {
+        if (IsWorldMaintenanceSuppressed()) return;
+
         // Update stats immediately when AI Agent is hit (for combat awareness)
         if (!event->target) return;
         
@@ -7748,8 +7784,8 @@ EventHandlers {
             }
         }
         
-        // Check if this is an AI Agent NPC equipping/unequipping something
-        if (true) {
+        // Cell streaming fires equip events before 3D settles; periodic refresh catches the final state.
+        if (!IsWorldMaintenanceSuppressed()) {
             AIAgentManager& aiam = AIAgentManager::getInstance();
             auto agent = aiam.getAgentByName(activatorS->GetDisplayFullName());
             if (agent) {
@@ -8494,45 +8530,37 @@ EventHandlers {
          
          if (false) return;
 
-         // Track inventory changes for AI Agents
-         AIAgentManager& aiam = AIAgentManager::getInstance();
-         RE::Actor* affectedAgent = nullptr;
-         std::string agentName;
-         
-         // Debug: Log the container change
-         auto sourceForm = RE::TESForm::LookupByID(source);
-         auto destForm = RE::TESForm::LookupByID(destination);
-         std::string sourceDebugName = sourceForm ? (sourceForm->As<RE::Actor>() ? sourceForm->As<RE::Actor>()->GetDisplayFullName() : "Container") : "None";
-         std::string destDebugName = destForm ? (destForm->As<RE::Actor>() ? destForm->As<RE::Actor>()->GetDisplayFullName() : "Container") : "None";
-         
-         logger::info("[CONTAINER_DEBUG] Item moved from {} ({:#x}) to {} ({:#x})", sourceDebugName, source, destDebugName, destination);
-         
-         // Detect item consumption: destination == 0 means item was consumed/destroyed
-         auto playerID = RE::PlayerCharacter::GetSingleton()->GetFormID();
-         if (destination == 0 && source != 0 && source != playerID) {
-             // Item consumed by someone other than player
-             for (const auto& agent : aiam.getAgents()) {
-                 
-                 auto actor = agent->getActorByFormId();
-                 if (!actor) continue;  // Actor might be dead or unloaded
-                 auto agentID = actor->GetFormID();
-                 if (agentID == playerID) continue; // Skip player
-                 
-                if (agentID == source) {
-                    // This AI Agent consumed an item
-                   // logger::info("[CONSUMPTION] {} consumed {} x{}", agent->getActorName(), itemName, event->itemCount);
-                    
-                    // Update inventory, equipment, and spells (spell tomes teach spells when consumed)
-                    RefreshAIAgentInventory(agent->getActor(), agent->getActorName(), false, false);
-                    RefreshAIAgentEquipment(agent->getActor(), agent->getActorName());
-                    RefreshAIAgentSpells(agent->getActor(), agent->getActorName());
-                    break;
+        // Track inventory changes for AI Agents
+        AIAgentManager& aiam = AIAgentManager::getInstance();
+        RE::Actor* affectedAgent = nullptr;
+        std::string agentName;
+
+        auto sourceAgentPtr = aiam.getAgentByFormId(source);     // Check if source is an AI Agent
+        auto destAgentPtr = aiam.getAgentByFormId(destination);  // Check if destination is an AI Agent
+        // Detect item consumption: destination == 0 means item was consumed/destroyed
+        auto playerID = RE::PlayerCharacter::GetSingleton()->GetFormID();
+        if (!sourceAgentPtr && !destAgentPtr && source != playerID && destination != playerID) {
+            return;
+        }
+
+        const bool worldMaintenanceSuppressed = IsWorldMaintenanceSuppressed();
+        if (worldMaintenanceSuppressed && source != playerID && destination != playerID) {
+            return;
+        }
+
+        if (destination == 0 && source != 0 && source != playerID) {
+            if (sourceAgentPtr && !sourceAgentPtr->isNarrator()) {
+                auto actor = sourceAgentPtr->getActorByFormId();
+                if (actor) {
+                    RefreshAIAgentInventory(actor, sourceAgentPtr->getActorName(), false, false);
+                    RefreshAIAgentEquipment(actor, sourceAgentPtr->getActorName());
+                    RefreshAIAgentSpells(actor, sourceAgentPtr->getActorName());
                 }
-             }
-         }
-         
-         // Check if source or destination is an AI Agent (exclude player)
-         // Also detect NPC-to-NPC transfers for itemtransfer logging
+            }
+        }
+        
+        // Check if source or destination is an AI Agent (exclude player)
+        // Also detect NPC-to-NPC transfers for itemtransfer logging
          
          RE::Actor* sourceAgent = nullptr;
          RE::Actor* destAgent = nullptr;
@@ -8540,10 +8568,7 @@ EventHandlers {
          std::string destAgentName;
          
 
-         auto sourceAgentPtr = aiam.getAgentByFormId(source);     // Check if source is an AI Agent
-         auto destAgentPtr = aiam.getAgentByFormId(destination);  // Check if destination is an AI Agent
-
-         if (sourceAgentPtr) {
+        if (sourceAgentPtr) {
              if (!sourceAgentPtr->isNarrator()) {
                  sourceAgent = sourceAgentPtr->getActorByFormId();
                  sourceAgentName = sourceAgentPtr->getActorName();
@@ -8580,7 +8605,7 @@ EventHandlers {
                                           destAgentName));
          }
          
-        if (affectedAgent) {
+        if (affectedAgent && !worldMaintenanceSuppressed) {
             // Refresh inventory, equipment, and spells
             // Hash-based diffing handles duplicate prevention automatically
             // Force spell update on inventory change (spell tomes might have been used)

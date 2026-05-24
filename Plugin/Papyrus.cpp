@@ -1760,10 +1760,10 @@ int sendMessageReal(std::string msg, std::string type) {
 void addAllNPC() {
     static std::mutex mtx;
     static auto lastAutoAddAttempt = std::chrono::steady_clock::time_point{};
-    constexpr auto kAutoAddCooldown = std::chrono::milliseconds(750);
+    constexpr auto kAutoAddCooldown = std::chrono::milliseconds(250);
     constexpr int kMaxAutoAddsPerPass = 1;
-    constexpr int kMaxTrackedAutoManagedAgents = 48;
-    constexpr int kMaxActiveAutoManagedAgents = kMaxTrackedAutoManagedAgents;
+    constexpr int kMaxTrackedAutoManagedAgents = 32;
+    constexpr int kMaxActiveAutoManagedAgents = 16;
     constexpr float kAutoAddLookConeCosine = 0.98f;
     constexpr float kAutoAddLookPriorityMaxDistance = 600.0f;
     constexpr float kAutoAddCloseOverrideDistance = 350.0f;
@@ -1807,11 +1807,13 @@ void addAllNPC() {
     const float hearingDistance = playerInterior ? spatialSettings.interiorMaxDistance :
         spatialSettings.exteriorMaxDistance;
     const float autoAddDistance = std::isfinite(hearingDistance) && hearingDistance > 0.0f ?
-        std::min(maxDistance, hearingDistance * 1.2f) : maxDistance;
+        std::min(maxDistance, hearingDistance) : maxDistance;
     int activeAutoManagedAgents = 0;
     int totalAutoManagedAgents = 0;
     std::string staleAutoManagedAgentToCleanup;
     float staleAutoManagedDistance = -1.0f;
+    std::string farthestAutoManagedAgentToEvict;
+    float farthestAutoManagedDistance = -1.0f;
     RE::FormID crosshairFormId = 0;
     if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
         crosshairPickData && crosshairPickData->target) {
@@ -1821,10 +1823,6 @@ void addAllNPC() {
         }
     }
 
-    if (autoAddCooldownActive && crosshairFormId == 0) {
-        return;
-    }
-
     const auto playerPosition = player->GetPosition();
     const float yaw = player->GetAngleZ();
     RE::NiPoint3 playerForward(std::sin(yaw), std::cos(yaw), 0.0f);
@@ -1832,6 +1830,70 @@ void addAllNPC() {
     if (forwardLength > 0.0f) {
         playerForward /= forwardLength;
     }
+
+    auto queueCandidate = [&](RE::Actor* actor) {
+        if (!actor) {
+            return;
+        }
+
+        std::string actorLabel(actor->GetDisplayFullName());
+        if (actorLabel.empty()) {
+            return;
+        }
+
+        auto already = aiam.getAgentByName(actorLabel);
+        if (already) return;
+
+        if (actor->IsDead())
+            return;
+        else if (!actor->Is3DLoaded())
+            return;
+        else if (!actor->GetRace()->AllowsPCDialogue() && AutoAddAllRaces==false) {
+            return;
+        } else if (actor->IsHostileToActor(player) && AutoAddHostile==false)
+            return;
+        else if (actor->GetRace()->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces==false)
+            return;
+
+        float distance = playerPosition.GetDistance(actor->GetPosition());
+        const bool directCrosshair = actor->GetFormID() == crosshairFormId;
+        if (!std::isfinite(distance) || (!directCrosshair && distance > autoAddDistance)) return;
+        if (directCrosshair && distance > maxDistance) return;
+
+        const bool deferAutoAdd =
+            IsPlayerSpeechMaintenanceSuppressed() || SpeakManager::getInstance().getProcessing();
+        if (deferAutoAdd) {
+            logger::debug("[AUTOADD] Deferred {} during active player/NPC speech", actorLabel);
+            return;
+        }
+
+        float lookScore = -1.0f;
+        if (forwardLength > 0.0f && distance > 0.0f) {
+            RE::NiPoint3 toActor = actor->GetPosition() - playerPosition;
+            toActor.z = 0.0f;
+            const float toActorLength = toActor.Length();
+            if (toActorLength > 0.0f) {
+                toActor /= toActorLength;
+                lookScore = playerForward.Dot(toActor);
+            }
+        }
+        const bool closeOverride = distance <= kAutoAddCloseOverrideDistance;
+        const bool targeted = directCrosshair ||
+            (lookScore >= kAutoAddLookConeCosine &&
+             distance <= std::min(autoAddDistance, kAutoAddLookPriorityMaxDistance));
+
+        if (autoAddCooldownActive && !directCrosshair && !targeted && !closeOverride) {
+            return;
+        }
+
+        if (spatialSettling && !directCrosshair && !targeted && !closeOverride &&
+            distance > kAutoAddSettlingMaxDistance) {
+            return;
+        }
+
+        candidates.push_back(AutoAddCandidate{actor, actorLabel, distance, lookScore, targeted,
+                                              directCrosshair, closeOverride});
+    };
 
     auto considerStaleAutoManaged = [&](const std::shared_ptr<AIAgent>& managedAgent, float distanceScore) {
         if (!managedAgent || managedAgent->isNarrator() || managedAgent->isManuallyAdded() ||
@@ -1882,6 +1944,11 @@ void addAllNPC() {
         const float managedDistance = playerPosition.GetDistance(managedActor->GetPosition());
         if (std::isfinite(managedDistance) && managedDistance <= autoAddDistance) {
             ++activeAutoManagedAgents;
+            if (autoManagedAgent && agent->isClean() && agent->isRestored() &&
+                managedActor->GetFormID() != crosshairFormId && managedDistance > farthestAutoManagedDistance) {
+                farthestAutoManagedDistance = managedDistance;
+                farthestAutoManagedAgentToEvict = agent->getActorName();
+            }
         } else if (std::isfinite(managedDistance)) {
             considerStaleAutoManaged(agent, managedDistance);
         } else {
@@ -1890,77 +1957,18 @@ void addAllNPC() {
     }
 
     // Actors lurking around
-    if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
-        for (auto& targetHandle : processLists->highActorHandles) {
-            if (auto target = targetHandle.get(); target && target->GetActorRuntimeData().currentProcess) {
-                std::string actorLabel(target->GetDisplayFullName());
-                if (!actorLabel.empty()) {
-                    auto actor = targetHandle.get().get();
-
-                    auto already = aiam.getAgentByName(actorLabel);
-                    if (already) continue;
-
-                    if (actor->IsDead())
-                        continue;
-                    else if (!actor->Is3DLoaded())
-                        continue;
-                    else if (!actor->GetRace()->AllowsPCDialogue() && AutoAddAllRaces==false) {
-                        // logger::info("NPC {} skipped as cannot talk to player", actorLabel);
-                        continue;
-                    } else if (actor->IsHostileToActor(player) && AutoAddHostile==false)
-                        continue;
-                    else if (actor->GetRace()->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces==false)
-                        continue;
-
-                    
-
-                    float distance = playerPosition.GetDistance(actor->GetPosition());
-                    if (!std::isfinite(distance) || distance > autoAddDistance) continue;
-
-                    if (autoAddCooldownActive && actor->GetFormID() != crosshairFormId) {
-                        continue;
-                    }
-
-                    const bool deferAutoAdd =
-                        IsPlayerSpeechMaintenanceSuppressed() || SpeakManager::getInstance().getProcessing();
-                    if (deferAutoAdd) {
-                        logger::debug("[AUTOADD] Deferred {} during active player/NPC speech", actorLabel);
-                        continue;
-                    }
-
-                    float lookScore = -1.0f;
-                    if (forwardLength > 0.0f && distance > 0.0f) {
-                        RE::NiPoint3 toActor = actor->GetPosition() - playerPosition;
-                        toActor.z = 0.0f;
-                        const float toActorLength = toActor.Length();
-                        if (toActorLength > 0.0f) {
-                            toActor /= toActorLength;
-                            lookScore = playerForward.Dot(toActor);
-                        }
-                    }
-                    const bool directCrosshair = actor->GetFormID() == crosshairFormId;
-                    const bool closeOverride = distance <= kAutoAddCloseOverrideDistance;
-                    if (spatialSettling && !directCrosshair && distance > kAutoAddSettlingMaxDistance) {
-                        continue;
-                    }
-
-                    const bool targeted = directCrosshair ||
-                        (lookScore >= kAutoAddLookConeCosine &&
-                         distance <= std::min(autoAddDistance, kAutoAddLookPriorityMaxDistance));
-
-                    candidates.push_back(AutoAddCandidate{actor, actorLabel, distance, lookScore, targeted,
-                                                          directCrosshair, closeOverride});
-
-                    // Add NPC
-
-                    // return RE::BSContainer::ForEachResult::kStop;
-                }
-            }
+    if (crosshairFormId != 0) {
+        if (auto* crosshairActor = RE::TESForm::LookupByID<RE::Actor>(crosshairFormId)) {
+            queueCandidate(crosshairActor);
         }
     }
 
-    if (candidates.empty()) {
-        return;
+    if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
+        for (auto& targetHandle : processLists->highActorHandles) {
+            if (auto target = targetHandle.get(); target && target->GetActorRuntimeData().currentProcess) {
+                queueCandidate(targetHandle.get().get());
+            }
+        }
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const AutoAddCandidate& lhs,
@@ -1977,34 +1985,17 @@ void addAllNPC() {
         return lhs.label < rhs.label;
     });
 
-    const bool candidateCanOverrideCaps = candidates.front().directCrosshair ||
-        candidates.front().closeOverride || candidates.front().targeted;
-    if (!staleAutoManagedAgentToCleanup.empty()) {
-        logger::debug("[AUTOADD] Marked stale auto-managed NPCs for cleanup; farthest={}",
-                      staleAutoManagedAgentToCleanup);
-        // Keep the tracked cap self-healing; the 20s cleaner is too slow for crowded exteriors.
-        aiam.deleteAgentByName(staleAutoManagedAgentToCleanup);
-        if (totalAutoManagedAgents > 0) {
-            --totalAutoManagedAgents;
-        }
-    }
+    const auto* bestCandidate = candidates.empty() ? nullptr : &candidates.front();
+    const bool candidateCanOverrideActiveCap = bestCandidate &&
+        (bestCandidate->directCrosshair || bestCandidate->closeOverride || bestCandidate->targeted);
+    const bool candidateCanOverrideTrackedCap = candidateCanOverrideActiveCap;
+    const bool candidateCanDisplaceFarthest = bestCandidate && !farthestAutoManagedAgentToEvict.empty() &&
+        (bestCandidate->directCrosshair || bestCandidate->targeted ||
+         bestCandidate->distance + 48.0f < farthestAutoManagedDistance);
+    const bool candidateIsPriority = bestCandidate &&
+        (bestCandidate->directCrosshair || bestCandidate->targeted || bestCandidate->closeOverride);
 
-    if (activeAutoManagedAgents >= kMaxActiveAutoManagedAgents && !candidateCanOverrideCaps) {
-        lastAutoAddAttempt = now;
-        logger::debug("[AUTOADD] Active managed cap reached ({}/{}); skipping non-priority add",
-                      activeAutoManagedAgents, kMaxActiveAutoManagedAgents);
-        return;
-    }
-
-    if (totalAutoManagedAgents >= kMaxTrackedAutoManagedAgents && !candidateCanOverrideCaps) {
-        lastAutoAddAttempt = now;
-        logger::debug("[AUTOADD] Tracked auto-managed cap reached ({}/{}); skipping non-priority add",
-                      totalAutoManagedAgents, kMaxTrackedAutoManagedAgents);
-        return;
-    }
-
-    int autoAddsQueued = 0;
-    for (const auto& candidate : candidates) {
+    auto enqueueAutoAddCandidate = [&](const AutoAddCandidate& candidate) {
         logger::info("Auto-adding {}{} dist={:.0f} lookScore={:.2f}",
                      candidate.label, candidate.targeted ? " (target priority)" : "",
                      candidate.distance, candidate.lookScore);
@@ -2015,6 +2006,53 @@ void addAllNPC() {
             [actorHandle]() { setDrivenByAIReal(actorHandle, false, false, false, false); },
             candidate.label);
         lastAutoAddAttempt = now;
+    };
+
+    if (candidateIsPriority && totalAutoManagedAgents < kMaxTrackedAutoManagedAgents) {
+        enqueueAutoAddCandidate(*bestCandidate);
+        return;
+    }
+
+    if (!staleAutoManagedAgentToCleanup.empty()) {
+        logger::debug("[AUTOADD] Marked stale auto-managed NPCs for cleanup; farthest={}",
+                      staleAutoManagedAgentToCleanup);
+        // One auto-managed mutation per pass keeps VR frame time stable.
+        aiam.deleteAgentByName(staleAutoManagedAgentToCleanup);
+        lastAutoAddAttempt = now;
+        return;
+    }
+
+    if (bestCandidate && totalAutoManagedAgents >= kMaxTrackedAutoManagedAgents &&
+        candidateCanDisplaceFarthest) {
+        logger::debug("[AUTOADD] Evicting farthest auto-managed NPC {} dist={:.0f} for {} dist={:.0f}",
+                      farthestAutoManagedAgentToEvict, farthestAutoManagedDistance,
+                      bestCandidate->label, bestCandidate->distance);
+        aiam.deleteAgentByName(farthestAutoManagedAgentToEvict);
+        lastAutoAddAttempt = now;
+        return;
+    }
+
+    if (!bestCandidate) {
+        return;
+    }
+
+    if (activeAutoManagedAgents >= kMaxActiveAutoManagedAgents && !candidateCanOverrideActiveCap) {
+        lastAutoAddAttempt = now;
+        logger::debug("[AUTOADD] Active managed cap reached ({}/{}); skipping non-priority add",
+                      activeAutoManagedAgents, kMaxActiveAutoManagedAgents);
+        return;
+    }
+
+    if (totalAutoManagedAgents >= kMaxTrackedAutoManagedAgents && !candidateCanOverrideTrackedCap) {
+        lastAutoAddAttempt = now;
+        logger::debug("[AUTOADD] Tracked auto-managed cap reached ({}/{}); skipping non-priority add",
+                      totalAutoManagedAgents, kMaxTrackedAutoManagedAgents);
+        return;
+    }
+
+    int autoAddsQueued = 0;
+    for (const auto& candidate : candidates) {
+        enqueueAutoAddCandidate(candidate);
         ++autoAddsQueued;
         if (autoAddsQueued >= kMaxAutoAddsPerPass) {
             return;
