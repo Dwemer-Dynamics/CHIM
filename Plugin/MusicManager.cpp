@@ -708,13 +708,14 @@ void MusicManager::playSong(AIAgent *singer) {
                     soundPlaying = false;
                 }
             }
-            auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
+            // AudioManager::Update only uses heading + listener position here.
+            // Avoid querying GetLookingAtLocation() in this playback loop.
             auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
 
             am.Update(
                 AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
                 AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(ppos), headingAngle);
+                headingAngle);
 
 
             std::this_thread::sleep_for(std::chrono::milliseconds(100));

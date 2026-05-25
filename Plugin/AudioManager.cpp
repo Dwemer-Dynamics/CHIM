@@ -417,8 +417,8 @@ void AudioManager::setVolume(float vol) {
 }
 
 
-void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition, const X3DAUDIO_VECTOR& listenerPosition,
-                          const X3DAUDIO_VECTOR& lookingAt, float headingAngle) {
+void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
+                          const X3DAUDIO_VECTOR& listenerPosition, float headingAngle) {
     // try_to_lock: 90Hz from playback loop. Skip frame if Stop/LoadWAV is rebuilding
     // the voice — blocking starves Stop and races LoadWAV's swap → audio deadlock.
     std::unique_lock<std::mutex> lock(voiceMtx, std::try_to_lock);

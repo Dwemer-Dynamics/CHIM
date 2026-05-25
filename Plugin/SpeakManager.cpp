@@ -1336,9 +1336,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("avoid_click_check");
         if (std::chrono::steady_clock::now() > avoidClick) {
             if (DXinitOK) {  // Only if audio being reproduced,
-                setPhase("player_looking_at");
-                auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
+                // Avoid GetLookingAtLocation() in this hot loop. AudioManager::Update
+                // only uses heading + listener position, and the engine query has
+                // shown up in freeze logs.
+                setPhase("player_get_angle_z");
                 auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
+                setPhase("player_get_camera_singleton");
                 auto camera = RE::PlayerCamera::GetSingleton();
 
                 if (GlobalCameraBasedAudio && camera) {
@@ -1366,14 +1369,14 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     setPhase("am_update_camera_target");
                     am.Update(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
                               AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(cameraTarget.get()->GetPosition()),
-                              AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(ppos), headingAngle);
+                              headingAngle);
 
                 } else {
                     setPhase("am_update_player_pos");
                     am.Update(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
                               AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(
                                   RE::PlayerCharacter::GetSingleton()->GetPosition()),
-                              AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(ppos), headingAngle);
+                              headingAngle);
                 }
             }
         }
