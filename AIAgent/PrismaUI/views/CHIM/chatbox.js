@@ -41,6 +41,7 @@
     let currentTargetOverrideMode = 'auto';
     let pendingDeleteConfirmButton = null;
     let pendingDeleteConfirmTimeoutId = null;
+    const targetRowsByKey = new Map();
     
     // Server URL
     const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
@@ -151,6 +152,100 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    function setHtmlIfChanged(element, html) {
+        if (!element || element.__chimLastHtml === html) return false;
+        element.innerHTML = html;
+        element.__chimLastHtml = html;
+        return true;
+    }
+
+    function setTextIfChanged(element, text) {
+        if (!element || element.__chimLastText === text) return false;
+        element.textContent = text;
+        element.__chimLastText = text;
+        return true;
+    }
+
+    function setClassNameIfChanged(element, className) {
+        if (!element || element.className === className) return false;
+        element.className = className;
+        return true;
+    }
+
+    function setDatasetValue(element, key, value) {
+        if (!element) return;
+        if (value === null || value === undefined || value === false) {
+            delete element.dataset[key];
+            return;
+        }
+
+        const text = String(value);
+        if (element.dataset[key] !== text) {
+            element.dataset[key] = text;
+        }
+    }
+
+    function makeTargetRow(isEmpty) {
+        const row = document.createElement(isEmpty ? 'div' : 'button');
+        if (isEmpty) {
+            row.className = 'chatbox-target-empty';
+            return row;
+        }
+
+        row.type = 'button';
+        row.className = 'chatbox-target-item';
+        row.__chimMetaElement = document.createElement('span');
+        row.__chimMetaElement.className = 'chatbox-target-meta';
+        row.__chimNameElement = document.createElement('span');
+        row.__chimNameElement.className = 'chatbox-target-name';
+        row.__chimDistanceElement = document.createElement('span');
+        row.__chimDistanceElement.className = 'chatbox-target-distance';
+        row.__chimMetaElement.appendChild(row.__chimNameElement);
+        row.appendChild(row.__chimMetaElement);
+        row.appendChild(row.__chimDistanceElement);
+        return row;
+    }
+
+    function updateTargetRow(row, spec) {
+        if (spec.empty) {
+            setClassNameIfChanged(row, 'chatbox-target-empty');
+            setTextIfChanged(row, spec.message);
+            return;
+        }
+
+        setClassNameIfChanged(row, spec.className);
+        setTextIfChanged(row.__chimNameElement, spec.name);
+        setTextIfChanged(row.__chimDistanceElement, spec.distance);
+        setDatasetValue(row, 'auto', spec.auto ? 'true' : null);
+        setDatasetValue(row, 'everyone', spec.everyone ? 'true' : null);
+        setDatasetValue(row, 'formId', spec.formId);
+        setDatasetValue(row, 'targetName', spec.targetName);
+    }
+
+    function syncTargetRows(specs) {
+        const seen = new Set();
+        specs.forEach(function(spec, index) {
+            seen.add(spec.key);
+            let row = targetRowsByKey.get(spec.key);
+            if (!row) {
+                row = makeTargetRow(!!spec.empty);
+                targetRowsByKey.set(spec.key, row);
+            }
+
+            updateTargetRow(row, spec);
+            if (targetsListElement.children[index] !== row) {
+                targetsListElement.insertBefore(row, targetsListElement.children[index] || null);
+            }
+        });
+
+        targetRowsByKey.forEach(function(row, key) {
+            if (!seen.has(key)) {
+                row.remove();
+                targetRowsByKey.delete(key);
+            }
+        });
     }
 
     function updateFocusIndicator(enabled) {
@@ -428,24 +523,29 @@
         currentTargetName = name || '';
         const suffix = currentTargetOverrideActive ? '<span class="target-distance">(Override)</span>' : '';
         if (currentTargetOverrideMode === 'everyone') {
-            currentTargetElement.innerHTML = `
+            setHtmlIfChanged(currentTargetElement, `
                 <span class="target-name">Everyone</span>
                 <span class="target-distance">(Broadcast)</span>
                 ${suffix}
-            `;
+            `);
         } else if (name && name !== '') {
-            currentTargetElement.innerHTML = `
+            setHtmlIfChanged(currentTargetElement, `
                 <span class="target-name">${escapeHtml(name)}</span>
                 <span class="target-distance">(${distance.toFixed(1)}m)</span>
                 ${suffix}
-            `;
+            `);
         } else {
-            currentTargetElement.innerHTML = '<span class="target-name no-target">No target</span>';
+            setHtmlIfChanged(currentTargetElement, '<span class="target-name no-target">No target</span>');
         }
     };
 
     window.updateChatboxTargets = function(payloadJson) {
         if (!targetsListElement) return;
+        // Freeze the target list while the chatbox is focused so NPCs don't
+        // flicker in/out mid-selection (worker threads keep updating the
+        // underlying agent set; we ignore those pushes until unfocus).
+        // Click handler applies .override locally for instant feedback.
+        if (isChatFocused) return;
 
         let payload = null;
         try {
@@ -459,50 +559,64 @@
         currentTargetOverrideMode = payload.override_mode || 'auto';
         currentTargetFormId = Number(payload.active_form_id || 0);
         currentTargetName = payload.active_name || '';
+        const previousScrollTop = targetsListElement.scrollTop;
 
-        const parts = [];
+        const specs = [];
         if (payload.show_auto) {
-            parts.push(`
-                <button class="chatbox-target-item auto-target ${payload.auto_active ? 'active' : ''}" type="button" data-auto="true">
-                    <span class="chatbox-target-meta">
-                        <span class="chatbox-target-name">Auto</span>
-                    </span>
-                    <span class="chatbox-target-distance">Mode</span>
-                </button>
-            `);
+            specs.push({
+                key: 'mode:auto',
+                className: `chatbox-target-item auto-target ${payload.auto_active ? 'active' : ''}`,
+                name: 'Auto',
+                distance: 'Mode',
+                auto: true
+            });
         }
         if (payload.show_everyone) {
-            parts.push(`
-                <button class="chatbox-target-item everyone-target ${payload.everyone_active ? 'active' : ''}" type="button" data-everyone="true">
-                    <span class="chatbox-target-meta">
-                        <span class="chatbox-target-name">Everyone</span>
-                    </span>
-                    <span class="chatbox-target-distance">Broadcast</span>
-                </button>
-            `);
+            specs.push({
+                key: 'mode:everyone',
+                className: `chatbox-target-item everyone-target ${payload.everyone_active ? 'active' : ''}`,
+                name: 'Everyone',
+                distance: 'Broadcast',
+                everyone: true
+            });
         }
 
-        targets.forEach(function(target) {
+        const visibleTargets = targets.filter(function(target) {
+            if (target.override) return true;
+            return target.targetable !== false;
+        });
+        visibleTargets.sort(function(a, b) {
+            if (a.override && !b.override) return -1;
+            if (!a.override && b.override) return 1;
+            return 0;
+        });
+        visibleTargets.forEach(function(target) {
             const formId = Number(target.form_id || 0);
             const itemClasses = ['chatbox-target-item'];
             if (target.active) itemClasses.push('active');
             if (target.override) itemClasses.push('override');
-            const distanceLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
-            parts.push(`
-                <button class="${itemClasses.join(' ')}" type="button" data-form-id="${formId}" data-target-name="${escapeHtml(target.name || '')}">
-                    <span class="chatbox-target-meta">
-                        <span class="chatbox-target-name">${escapeHtml(target.name || 'Unknown Target')}</span>
-                    </span>
-                    <span class="chatbox-target-distance">${escapeHtml(distanceLabel)}</span>
-                </button>
-            `);
+            const statusLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
+            const name = target.name || 'Unknown Target';
+            specs.push({
+                key: formId ? `form:${formId}` : `name:${name}`,
+                className: itemClasses.join(' '),
+                name,
+                distance: statusLabel,
+                formId,
+                targetName: target.name || ''
+            });
         });
 
-        if (parts.length === 0) {
-            parts.push(`<div class="chatbox-target-empty">${escapeHtml(payload.empty_message || 'No spatially available targets right now.')}</div>`);
+        if (specs.length === 0) {
+            specs.push({
+                key: 'empty',
+                empty: true,
+                message: payload.empty_message || 'No spatially available targets right now.'
+            });
         }
 
-        targetsListElement.innerHTML = parts.join('');
+        syncTargetRows(specs);
+        targetsListElement.scrollTop = previousScrollTop;
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
@@ -603,7 +717,18 @@
             const formId = targetButton.dataset.formId || '0';
             const targetName = targetButton.dataset.targetName || '';
             if (!targetName) return;
+            if (targetButton.classList.contains('override')) {
+                sendControlCommand('target_override_clear');
+                // Optimistic: clear local highlight since list is frozen while focused
+                targetsListElement.querySelectorAll('.chatbox-target-item.override')
+                    .forEach(function(el) { el.classList.remove('override'); });
+                return;
+            }
             sendControlCommand(`target_override|${formId}|${targetName}`);
+            // Optimistic: move local highlight to the clicked row
+            targetsListElement.querySelectorAll('.chatbox-target-item.override')
+                .forEach(function(el) { el.classList.remove('override'); });
+            targetButton.classList.add('override');
         });
     }
 

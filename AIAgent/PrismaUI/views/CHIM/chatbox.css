@@ -29,7 +29,7 @@ body {
     box-shadow: 
         0 4px 20px rgba(0, 0, 0, 0.7),
         0 0 15px rgba(242, 124, 17, 0.15);
-    backdrop-filter: blur(10px);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
     display: flex;
     flex-direction: column;
     animation: slideIn 0.3s ease;
@@ -634,11 +634,13 @@ body {
     gap: 8px;
     padding: 12px;
     min-height: 0;
-    overflow-y: auto;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    scrollbar-width: auto;
 }
 
 .chatbox-targets-list::-webkit-scrollbar {
-    width: 6px;
+    width: 12px;
 }
 
 .chatbox-targets-list::-webkit-scrollbar-track {
@@ -647,7 +649,7 @@ body {
 
 .chatbox-targets-list::-webkit-scrollbar-thumb {
     background: rgba(242, 124, 17, 0.35);
-    border-radius: 3px;
+    border-radius: 6px;
 }
 
 .chatbox-targets-list::-webkit-scrollbar-thumb:hover {
@@ -682,6 +684,14 @@ body {
 
 .chatbox-target-item.override {
     background: rgba(242, 124, 17, 0.16);
+}
+
+.chatbox-target-item.blocked {
+    opacity: 0.62;
+}
+
+.chatbox-target-item.blocked .chatbox-target-name {
+    color: #b9b9c4;
 }
 
 .chatbox-target-item.auto-target {
