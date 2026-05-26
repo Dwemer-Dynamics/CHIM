@@ -1,4 +1,10 @@
+#pragma once
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -11,6 +17,10 @@ namespace logger = SKSE::log;
 
 
 extern std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange,std::string separator,float farAwayLimit);
+extern void ExtendPlayerSpeechMaintenanceSuppress(std::chrono::milliseconds duration);
+extern bool IsPlayerSpeechMaintenanceSuppressed();
+extern std::string InspectManagedAgents(RE::TESObjectREFR* reference, float visionRange, const std::string& separator,
+                                        float farAwayLimit, bool includeNarrator);
 #ifndef AUDIBLE_ACTOR_DESCRIPTOR_DEFINED
 #define AUDIBLE_ACTOR_DESCRIPTOR_DEFINED
 struct AudibleActorDescriptor {
@@ -31,6 +41,7 @@ struct AudibleActorDescriptor {
     bool busy = false;
     bool inCombat = false;
     bool restrained = false;
+    bool canCommunicate = false;
 };
 #endif
 
@@ -110,21 +121,36 @@ public:
 
     }
 
-   bool isPresent(const std::string& presentActors) {
-        // Get the actor's name
+    bool isPresent(const std::string& presentActors) {
         std::string actorName = getActorName();
-
-        // Convert both strings to lowercase for case-insensitive comparison
-        std::string lowerActorName = actorName;
-        std::transform(lowerActorName.begin(), lowerActorName.end(), lowerActorName.begin(),
+        std::transform(actorName.begin(), actorName.end(), actorName.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-        std::string lowerPresentActors = presentActors;
-        std::transform(lowerPresentActors.begin(), lowerPresentActors.end(), lowerPresentActors.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
+        auto trim = [](std::string value) {
+            const auto first = value.find_first_not_of(" \t\r\n");
+            if (first == std::string::npos) return std::string{};
+            const auto last = value.find_last_not_of(" \t\r\n");
+            return value.substr(first, last - first + 1);
+        };
 
-        // Check if the lower case actor name is found in the lower case present actors
-        return lowerPresentActors.find(lowerActorName) != std::string::npos;
+        std::stringstream stream(presentActors);
+        std::string token;
+        while (std::getline(stream, token, ',')) {
+            std::transform(token.begin(), token.end(), token.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            token = trim(token);
+
+            if (token == actorName) {
+                return true;
+            }
+
+            const std::string statusPrefix = actorName + " (";
+            if (token.rfind(statusPrefix, 0) == 0) {
+                return token.find("(far away)") == std::string::npos;
+            }
+        }
+
+        return false;
     }
 
     bool isAvailableforAnimation() {
@@ -443,6 +469,21 @@ public:
         farAwayCounter = 0;
     }
 
+    void increaseMissingPresenceCounter() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        missingPresenceCounter++;
+    }
+
+    int getMissingPresenceCounter() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return missingPresenceCounter;
+    }
+
+    void resetMissingPresenceCounter() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        missingPresenceCounter = 0;
+    }
+
     int getForgetCleanCounter() {
         std::lock_guard<std::mutex> lock(mutex_);
         return forgetCleanCounter;
@@ -592,6 +633,7 @@ private:
     bool wasOnScene = false;
     bool manuallyAdded = false;
     int farAwayCounter = 0;
+    int missingPresenceCounter = 0;
     int forgetCleanCounter = 0;
     int boredEventsFired = 0;
     bool externalLocked = false;
@@ -738,14 +780,19 @@ public:
     }
 
     std::vector<std::string> getAgentsNamesFollowing() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::shared_ptr<AIAgent>> localAgents;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            localAgents = agents;
+        }
+
         std::vector<std::string> agentNames;
 
-        std::string beings = InspectAudibleActors(RE::PlayerCharacter::GetSingleton()->AsReference(), true,
-                                                  HERIKA_MAX_VISION_RANGE, ",");
-        for (const auto& agent : agents) {
+        std::string beings = InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
+                                                  HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT, false);
+        for (const auto& agent : localAgents) {
             if (agent) {  // Check if the pointer is not null
-                if (beings.find(agent->getActorName()) != std::string::npos) {
+                if (agent->isPresent(beings)) {
                     agentNames.push_back(agent->getActorName());
                 }
             }
@@ -802,11 +849,11 @@ public:
     }*/
 
     std::shared_ptr<AIAgent> getRandomAgentNearby(const std::string& beings) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        std::vector<std::shared_ptr<AIAgent>> localAgents = agents;
-        // unlock happens automatically after scope
-        // but localAgents remains valid
+        std::vector<std::shared_ptr<AIAgent>> localAgents;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            localAgents = agents;
+        }
 
         std::random_device rd;
         std::mt19937 rng(rd());
@@ -825,19 +872,23 @@ public:
 
 
     std::shared_ptr<AIAgent> getLessBoredAgentNearby(std::string beings) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::shared_ptr<AIAgent>> localAgents;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            localAgents = agents;
+        }
 
-        if (agents.empty()) {
+        if (localAgents.empty()) {
             return nullptr;  // Return nullptr if agents vector is empty
         }
 
         // Sort agents based on their "boredom" level (ascending order)
-        std::sort(agents.begin(), agents.end(),
+        std::sort(localAgents.begin(), localAgents.end(),
                   [](const std::shared_ptr<AIAgent>& a, const std::shared_ptr<AIAgent>& b) {
                       return a->getBoredEventsFired() < b->getBoredEventsFired();
                   });
 
-        for (const auto& agent : agents) {
+        for (const auto& agent : localAgents) {
             if (!agent->isPresent(beings)) continue;
             if (!agent->isAvailableforDialog(false)) continue;
             if (!agent->getActor()) continue;
