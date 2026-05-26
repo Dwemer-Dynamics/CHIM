@@ -3,6 +3,14 @@ Scriptname AIAgentPlayerScript extends ReferenceAlias
 ReferenceAlias Property PlayerRefAlias  Auto  
 
 Location lastLoc
+Cell pendingCellInfoCell
+Location pendingCellInfoLocation
+bool pendingCellInfoDetailed = false
+bool pendingCellInfoActive = false
+float pendingCellInfoReadyAt = 0.0
+Cell lastCellInfoPlayerCell
+Location lastCellInfoPlayerLocation
+float lastCellInfoPlayerSentAt = 0.0
 
 Event OnPlayerFastTravelEnd(float afTravelGameTimeHours)
 
@@ -46,8 +54,7 @@ Event OnLocationChange(Location oldLoc,Location newLoc)
 		AIAgentFunctions.logMessage(newLoc.getName(), "region")
 	endif;
 	Debug.Trace("[CHIM] AIAgentPlayerScript, OnLocationChange Location <0x"+DecToHex(newLoc.GetFormId())+"> from location <0x"+DecToHex(oldLoc.GetFormId())+">" );
-	sendCellInfo(Game.GetPlayer().getParentCell(),newLoc,false)
-	AIAgentPapyrusFunctions.sendLocation(Game.GetPlayer().GetCurrentLocation() ,"",Game.GetPlayer().getParentCell());
+	QueueDeferredCellInfo(Game.GetPlayer().getParentCell(),newLoc,false)
 endEvent
 
 ; DLL TESCellFullyLoadedEvent will take care
@@ -70,6 +77,7 @@ endEvent
 	UnregisterForUpdate()
 	RegisterForSingleUpdate(5)
 	sendCellInfo(currCell,currLoc,false)
+	MarkCellInfoPlayerSent(currCell,currLoc)
 	AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
 	
 endEvent
@@ -79,7 +87,7 @@ Event OnCellLoad()
 	Location currLoc = Game.GetPlayer().getCurrentLocation();
 	if (currCell && currLoc)
 		Debug.Trace("[CHIM] AIAgentPlayerScript OnCellLoad, cell <0x"+DecToHex(currCell.GetFormId())+"> location <0x"+DecToHex(currLoc.GetFormId())+">" );
-		sendCellInfo(currCell,currLoc,false)
+		QueueDeferredCellInfo(currCell,currLoc,false)
 	endif
 	
 EndEvent 
@@ -111,6 +119,17 @@ EndFunction
 function sendCellInfo(Cell localCell,Location fromLocation,bool detailed = false) global
 
 	
+	if (!localCell || !fromLocation)
+		Debug.Trace("[CHIM] sendCellInfo skipped because cell/location is missing")
+		return
+	endif
+
+	if (!localCell.IsInterior())
+		Debug.Trace("[CHIM] sendCellInfo using cheap exterior cell record for <0x"+DecToHex(localCell.GetFormId())+">")
+		sendCellInfoSingle(localCell, fromLocation, detailed)
+		QueueExteriorCellInfoEnrichment(localCell, fromLocation)
+		return
+	endif
 	
 	Debug.Trace("[CHIM] sendCellInfo START for <0x"+DecToHex(localCell.GetFormId())+">")
 
@@ -252,12 +271,12 @@ function sendCellInfo(Cell localCell,Location fromLocation,bool detailed = false
 	if (!cellName)
 		cellName = fromLocation+" area"
 	endif
-	ObjectReference randomRef = localCell.GetNthRef(0,0)
-	if (randomRef)
-		int lRes=AIAgentFunctions.logMessage(cellName+ "/" + localCell.GetFormID() + "/" + curr.GetFormId() + "/" +isInterior+ "/-1/-1/0/"+randomRef.getWorldspace().GetName()+"////","named_cell")
-	else
-		Debug.Trace("[CHIM] sendCellInfo cell with no refs <0x"+DecToHex(localCell.GetFormId())+">")
-	endIf
+	string worldSpaceName = ""
+	WorldSpace playerWorldSpace = player.GetWorldSpace()
+	if (playerWorldSpace)
+		worldSpaceName = playerWorldSpace.GetName()
+	endif
+	AIAgentFunctions.logMessage(cellName+ "/" + localCell.GetFormID() + "/" + curr.GetFormId() + "/" +isInterior+ "/-1/-1/0/"+worldSpaceName+"////","named_cell")
 	
 	; Rolemaster helper thingies; If interior, spawn and rolemastered activator
 	if (detailed)
@@ -340,6 +359,7 @@ function sendCellInfoPlayer()
 	
 	
 	AIAgentFunctions.logMessage(cellName+ "/0/" + currLoc.GetFormId() + "/" +isInterior+ "/-1/-1/0/"+worldSpaceName+"///"+(xhint)+"/"+(yhint),"named_cell")
+	MarkCellInfoPlayerSent(localCell,currLoc)
 	
 EndFunction
 
@@ -365,25 +385,216 @@ function sendCellInfoSingle(Cell localCell,Location fromLocation,bool detailed =
 	if (!cellName)
 		cellName = fromLocation+" area"
 	endif
-	ObjectReference randomRef = localCell.GetNthRef(0,0)
-	if (randomRef)
-		string worldSpaceName = randomRef.getWorldspace().GetName()
-		AIAgentFunctions.logMessage(cellName+ "/" + localCell.GetFormID() + "/" + curr.GetFormId() + "/" +isInterior+ "/-1/-1/0/"+worldSpaceName+"////","named_cell")
-	else
-		Debug.Trace("[CHIM] sendCellInfoSingle cell with no refs <0x"+DecToHex(localCell.GetFormId())+">")
-	endIf
+	string worldSpaceName = ""
+	WorldSpace playerWorldSpace = player.GetWorldSpace()
+	if (playerWorldSpace)
+		worldSpaceName = playerWorldSpace.GetName()
+	endif
+	AIAgentFunctions.logMessage(cellName+ "/" + localCell.GetFormID() + "/" + curr.GetFormId() + "/" +isInterior+ "/-1/-1/0/"+worldSpaceName+"////","named_cell")
 	
 	Debug.Trace("[CHIM] sendCellInfoSingle END for <0x"+DecToHex(localCell.GetFormId())+">")
 	
 EndFunction
 
+function QueueExteriorCellInfoEnrichment(Cell localCell,Location fromLocation) global
+	if (!localCell || !fromLocation || localCell.IsInterior())
+		return
+	endif
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoCell", localCell)
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoLocation", fromLocation)
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoIndex", 0)
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoActive", 1)
+	StorageUtil.SetFloatValue(None, "CHIM_ExteriorCellInfoReadyAt", Utility.GetCurrentRealTime() + 2.0)
+	Debug.Trace("[CHIM] queued exterior cell info enrichment for <0x"+DecToHex(localCell.GetFormId())+">")
+EndFunction
+
+function ClearExteriorCellInfoEnrichment() global
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoActive", 0)
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoIndex", 0)
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoCell", None)
+	StorageUtil.SetFormValue(None, "CHIM_ExteriorCellInfoLocation", None)
+EndFunction
+
+function QueueDeferredCellInfo(Cell localCell,Location fromLocation,bool detailed = false)
+	if (!localCell || !fromLocation)
+		return
+	endif
+	pendingCellInfoCell = localCell
+	pendingCellInfoLocation = fromLocation
+	pendingCellInfoDetailed = detailed
+	pendingCellInfoActive = true
+	pendingCellInfoReadyAt = Utility.GetCurrentRealTime() + 4.0
+	Debug.Trace("[CHIM] queued deferred cell info for <0x"+DecToHex(localCell.GetFormId())+">")
+	RegisterForSingleUpdate(4.0)
+EndFunction
+
+bool Function ProcessDeferredCellInfo()
+	if (!pendingCellInfoActive)
+		return false
+	endif
+	if (Utility.GetCurrentRealTime() < pendingCellInfoReadyAt)
+		return false
+	endif
+	ObjectReference player = Game.GetPlayer()
+	Cell localCell = pendingCellInfoCell
+	Location curr = pendingCellInfoLocation
+	bool detailed = pendingCellInfoDetailed
+	pendingCellInfoActive = false
+	pendingCellInfoCell = None
+	pendingCellInfoLocation = None
+	pendingCellInfoDetailed = false
+	if (!player || !localCell || !curr)
+		return false
+	endif
+	if (player.GetParentCell() != localCell)
+		Debug.Trace("[CHIM] skipped stale deferred cell info for <0x"+DecToHex(localCell.GetFormId())+">")
+		return false
+	endif
+	Debug.Trace("[CHIM] processing deferred cell info for <0x"+DecToHex(localCell.GetFormId())+">")
+	sendCellInfo(localCell,curr,detailed)
+	MarkCellInfoPlayerSent(localCell,curr)
+	AIAgentPapyrusFunctions.sendLocation(curr,"",localCell)
+	lastLoc = curr
+	return true
+EndFunction
+
+function MarkCellInfoPlayerSent(Cell localCell, Location currLoc)
+	lastCellInfoPlayerCell = localCell
+	lastCellInfoPlayerLocation = currLoc
+	lastCellInfoPlayerSentAt = Utility.GetCurrentRealTime()
+EndFunction
+
+bool Function ShouldSendCellInfoPlayer(Cell localCell, Location currLoc)
+	if (!localCell || !currLoc)
+		return false
+	endif
+	if (localCell != lastCellInfoPlayerCell || currLoc != lastCellInfoPlayerLocation)
+		return true
+	endif
+	return (Utility.GetCurrentRealTime() - lastCellInfoPlayerSentAt) >= 60.0
+EndFunction
+
+function ProcessExteriorCellInfoEnrichment(int maxDoors = 2) global
+	if (StorageUtil.GetIntValue(None, "CHIM_ExteriorCellInfoActive", 0) == 0)
+		return
+	endif
+	if (Utility.GetCurrentRealTime() < StorageUtil.GetFloatValue(None, "CHIM_ExteriorCellInfoReadyAt", 0.0))
+		return
+	endif
+	ObjectReference player = Game.GetPlayer()
+	Cell localCell = StorageUtil.GetFormValue(None, "CHIM_ExteriorCellInfoCell", None) as Cell
+	Location curr = StorageUtil.GetFormValue(None, "CHIM_ExteriorCellInfoLocation", None) as Location
+	if (!player || !localCell || !curr || localCell.IsInterior())
+		ClearExteriorCellInfoEnrichment()
+		return
+	endif
+	if (player.GetParentCell() != localCell || !localCell.IsAttached())
+		ClearExteriorCellInfoEnrichment()
+		return
+	endif
+	int doorCount = localCell.GetNumRefs(29)
+	int index = StorageUtil.GetIntValue(None, "CHIM_ExteriorCellInfoIndex", 0)
+	int processed = 0
+	while (index < doorCount && processed < maxDoors)
+		ObjectReference doorRef = localCell.GetNthRef(index, 29)
+		index = index + 1
+		if (doorRef)
+			LogExteriorNamedCellDoor(doorRef, localCell, curr)
+			processed = processed + 1
+		endif
+	endwhile
+	StorageUtil.SetIntValue(None, "CHIM_ExteriorCellInfoIndex", index)
+	if (index >= doorCount)
+		Debug.Trace("[CHIM] exterior cell info enrichment complete for <0x"+DecToHex(localCell.GetFormId())+"> doors:"+doorCount)
+		ClearExteriorCellInfoEnrichment()
+	endif
+EndFunction
+
+function LogExteriorNamedCellDoor(ObjectReference sref, Cell localCell, Location curr) global
+	if (!sref || !curr)
+		return
+	endif
+	int doorToCell = 0
+	int doorToExterior = -1
+	int doorId = sref.GetFormId()
+	int closed = -1
+	Cell thisCell = sref.GetParentCell()
+	if (!thisCell)
+		thisCell = localCell
+	endif
+	if (!thisCell)
+		return
+	endif
+	ObjectReference doorDest = PO3_SKSEFunctions.GetDoorDestination(sref)
+	if (doorDest)
+		if (doorDest.GetParentCell())
+			doorToCell = doorDest.GetParentCell().GetFormId()
+			if (doorDest.GetParentCell().IsInterior())
+				doorToExterior = 0
+			else
+				doorToExterior = 1
+			endif
+		else
+			if (doorDest.IsInInterior())
+				doorToExterior = 0
+			else
+				doorToExterior = 1
+			endif
+		endif
+	else
+		ObjectReference lkRef = sref.GetLinkedRef()
+		if (lkRef)
+			if (lkRef.GetParentCell() == thisCell)
+				doorToExterior = -2
+				doorToCell = thisCell.GetFormId()
+			endif
+		else
+			doorToExterior = -2
+			doorToCell = thisCell.GetFormId()
+		endif
+	endif
+	int isInterior = 0
+	if (thisCell.IsInterior())
+		isInterior = 1
+	endif
+	string cellName = thisCell.GetName()
+	if (!cellName)
+		cellName = curr.GetName()+" area"
+	endif
+	if (sref.IsLocked() || sref.IsActivationBlocked())
+		closed = 1
+	endif
+	string doorName = AIAgentFunctions.GetDoorActivationText(sref)
+	string worldSpaceName = ""
+	if (sref.GetWorldspace())
+		worldSpaceName = sref.GetWorldspace().GetName()
+	endif
+	float northRotation = PO3_SKSEFunctions.GetCellNorthRotation(thisCell)
+	float dx = sref.x
+	float dy = sref.y
+	float xhint = dx * Math.Cos(northRotation) + dy * Math.Sin(northRotation)
+	float yhint = -dx * Math.Sin(northRotation) + dy * Math.Cos(northRotation)
+	Location currLoc = sref.GetCurrentLocation()
+	if (!currLoc)
+		currLoc = curr
+	endif
+	AIAgentFunctions.logMessage(cellName+ "/" + thisCell.GetFormID() + "/" + currLoc.GetFormId() + "/" +isInterior+ "/"+doorToCell+"/"+doorToExterior+"/"+doorId+"/"+worldSpaceName+"/"+closed+"/"+doorName+"/"+(xhint)+"/"+(yhint),"named_cell")
+EndFunction
+
 Event OnUpdate()
     ; Do some stuff
-	sendCellInfoPlayer()
-	Location currLoc = Game.GetPlayer().GetCurrentLocation()
-	if (currLoc != lastLoc)
+	bool hadPendingCellInfo = pendingCellInfoActive
+	bool processedDeferredCellInfo = ProcessDeferredCellInfo()
+	ObjectReference player = Game.GetPlayer()
+	Cell currCell = player.GetParentCell()
+	Location currLoc = player.GetCurrentLocation()
+	if (!processedDeferredCellInfo && ShouldSendCellInfoPlayer(currCell,currLoc))
+		sendCellInfoPlayer()
+	endif
+	ProcessExteriorCellInfoEnrichment(1)
+	if (!hadPendingCellInfo && !processedDeferredCellInfo && currLoc != lastLoc)
 		lastLoc = currLoc
-		AIAgentPapyrusFunctions.sendLocation( currLoc,"",Game.GetPlayer().getParentCell());
+		AIAgentPapyrusFunctions.sendLocation( currLoc,"",currCell);
 	endif
     RegisterForSingleUpdate(5)
 endEvent
