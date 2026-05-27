@@ -40,7 +40,7 @@ body {
     box-shadow: 
         0 4px 20px rgba(0, 0, 0, 0.9),
         0 0 30px rgba(242, 124, 17, 0.3);
-    backdrop-filter: blur(12px);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
     display: flex;
     flex-direction: column;
     overflow: hidden;

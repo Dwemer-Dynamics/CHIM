@@ -18,6 +18,10 @@
     const emptyBio = document.getElementById('empty-message-bio');
     const contentBio = document.getElementById('content-bio');
 
+    const loadingSettings = document.getElementById('loading-indicator-settings');
+    const emptySettings = document.getElementById('empty-message-settings');
+    const contentSettings = document.getElementById('content-settings');
+
     // State
     let currentNpc = null;
 
@@ -68,6 +72,7 @@
             hideLoading();
             hideEmpty();
             contentLeft.classList.remove('hidden');
+            contentSettings.classList.remove('hidden');
             contentBio.classList.remove('hidden');
             
             console.log('AI View updated successfully');
@@ -347,10 +352,13 @@
      */
     function showLoading() {
         loadingLeft.classList.remove('hidden');
+        loadingSettings.classList.remove('hidden');
         loadingBio.classList.remove('hidden');
         emptyLeft.classList.add('hidden');
+        emptySettings.classList.add('hidden');
         emptyBio.classList.add('hidden');
         contentLeft.classList.add('hidden');
+        contentSettings.classList.add('hidden');
         contentBio.classList.add('hidden');
     }
 
@@ -359,6 +367,7 @@
      */
     function hideLoading() {
         loadingLeft.classList.add('hidden');
+        loadingSettings.classList.add('hidden');
         loadingBio.classList.add('hidden');
     }
 
@@ -368,8 +377,10 @@
     function showEmpty() {
         hideLoading();
         emptyLeft.classList.remove('hidden');
+        emptySettings.classList.remove('hidden');
         emptyBio.classList.remove('hidden');
         contentLeft.classList.add('hidden');
+        contentSettings.classList.add('hidden');
         contentBio.classList.add('hidden');
         updateTargetBar(null);
     }
@@ -379,6 +390,7 @@
      */
     function hideEmpty() {
         emptyLeft.classList.add('hidden');
+        emptySettings.classList.add('hidden');
         emptyBio.classList.add('hidden');
     }
 
@@ -423,10 +435,13 @@
         
         // Show error in all panels
         emptyLeft.querySelector('p').textContent = message;
+        emptySettings.querySelector('p').textContent = message;
         emptyBio.querySelector('p').textContent = message;
         emptyLeft.classList.remove('hidden');
+        emptySettings.classList.remove('hidden');
         emptyBio.classList.remove('hidden');
         contentLeft.classList.add('hidden');
+        contentSettings.classList.add('hidden');
         contentBio.classList.add('hidden');
         
         // Keep the target name in the header if we have one
@@ -436,6 +451,7 @@
     // Apply corner placement via shared layout manager
     if (window.chimLayout) {
         window.chimLayout.apply(document.getElementById('left-panel'),  'aiview_identity');
+        window.chimLayout.apply(document.getElementById('settings-panel'), 'aiview_settings');
         window.chimLayout.apply(document.getElementById('bio-panel'),   'aiview_bio');
     }
 
