@@ -541,11 +541,9 @@
 
     window.updateChatboxTargets = function(payloadJson) {
         if (!targetsListElement) return;
-        // Freeze the target list while the chatbox is focused so NPCs don't
-        // flicker in/out mid-selection (worker threads keep updating the
-        // underlying agent set; we ignore those pushes until unfocus).
-        // Click handler applies .override locally for instant feedback.
-        if (isChatFocused) return;
+        // Keep spatial targets live while focused so the quick chat UI reflects
+        // the current audience snapshot. Scroll position is preserved below to
+        // avoid jumpiness while the player is selecting a target.
 
         let payload = null;
         try {
@@ -719,13 +717,13 @@
             if (!targetName) return;
             if (targetButton.classList.contains('override')) {
                 sendControlCommand('target_override_clear');
-                // Optimistic: clear local highlight since list is frozen while focused
+                // Optimistic: clear local highlight before the next bridge refresh lands
                 targetsListElement.querySelectorAll('.chatbox-target-item.override')
                     .forEach(function(el) { el.classList.remove('override'); });
                 return;
             }
             sendControlCommand(`target_override|${formId}|${targetName}`);
-            // Optimistic: move local highlight to the clicked row
+            // Optimistic: move local highlight immediately before the bridge refresh lands
             targetsListElement.querySelectorAll('.chatbox-target-item.override')
                 .forEach(function(el) { el.classList.remove('override'); });
             targetButton.classList.add('override');
