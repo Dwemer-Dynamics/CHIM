@@ -21,8 +21,9 @@
     const currentModelElement = document.getElementById('chatbox-current-model');
     const modelSelectElement = document.getElementById('chatbox-model-select');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
-    const focusPositionSelect = document.getElementById('chatbox-position-select');
-    const deleteEventButtons = document.querySelectorAll('.focus-btn-delete-events');
+    const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
+    const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
+    const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
 
     // State
     let currentTab = 'chat';
@@ -39,7 +40,7 @@
     let currentTargetFormId = 0;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
-    let pendingDeleteConfirmButton = null;
+    let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
     const targetRowsByKey = new Map();
     
@@ -225,6 +226,7 @@
     }
 
     function syncTargetRows(specs) {
+        if (!targetsListElement) return;
         const seen = new Set();
         specs.forEach(function(spec, index) {
             seen.add(spec.key);
@@ -255,6 +257,14 @@
         focusToggleButton.textContent = enabled ? 'ON' : 'OFF';
         focusToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
         focusToggleButton.title = enabled ? 'Disable Focus Chat' : 'Enable Focus Chat';
+    }
+
+    function updateFocusPositionButtons() {
+        focusPositionButtons.forEach(function(button) {
+            const isActive = button.dataset.position === currentFocusPosition;
+            button.classList.toggle('active', isActive);
+            button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
     }
 
     function normalizeFocusPosition(position) {
@@ -291,40 +301,60 @@
             focusModal.classList.remove(className);
         });
         focusModal.classList.add('focus-position-' + currentFocusPosition);
-        if (focusPositionSelect) {
-            focusPositionSelect.value = currentFocusPosition;
+        updateFocusPositionButtons();
+    }
+
+    function setDeleteEventControlsBusy(isBusy) {
+        if (deleteEventSelect) {
+            deleteEventSelect.disabled = !!isBusy;
+        }
+        if (deleteEventConfirmButton) {
+            deleteEventConfirmButton.disabled = !!isBusy;
         }
     }
 
-    function setDeleteEventButtonsBusy(isBusy) {
-        deleteEventButtons.forEach(function(button) {
-            button.disabled = !!isBusy;
-        });
-    }
-
     function clearPendingDeleteConfirmation() {
+        pendingDeleteCount = 0;
         if (pendingDeleteConfirmTimeoutId) {
             window.clearTimeout(pendingDeleteConfirmTimeoutId);
             pendingDeleteConfirmTimeoutId = null;
         }
 
-        if (pendingDeleteConfirmButton) {
-            pendingDeleteConfirmButton.textContent = pendingDeleteConfirmButton.dataset.defaultLabel || pendingDeleteConfirmButton.textContent;
-            pendingDeleteConfirmButton.removeAttribute('data-confirm-armed');
-            pendingDeleteConfirmButton = null;
+        if (deleteEventConfirmButton) {
+            deleteEventConfirmButton.textContent = 'Delete';
         }
     }
 
-    function armDeleteConfirmation(button, deleteCount) {
+    function armDeleteConfirmation(deleteCount) {
         clearPendingDeleteConfirmation();
-        button.dataset.defaultLabel = button.dataset.defaultLabel || button.textContent;
-        button.textContent = `Confirm Delete ${deleteCount}`;
-        button.setAttribute('data-confirm-armed', 'true');
-        pendingDeleteConfirmButton = button;
-        pushChatboxSystemMessage(`Click the button again within 5 seconds to delete the last ${deleteCount} visible events.`);
+        pendingDeleteCount = deleteCount;
+        if (deleteEventConfirmButton) {
+            deleteEventConfirmButton.textContent = 'Confirm Delete';
+        }
         pendingDeleteConfirmTimeoutId = window.setTimeout(function() {
             clearPendingDeleteConfirmation();
         }, 5000);
+    }
+
+    function resetTargetSelectionForModeChange() {
+        if (!targetsListElement) {
+            sendControlCommand('target_override_clear');
+            return;
+        }
+
+        const hasAutoTarget = !!targetsListElement.querySelector('.chatbox-target-item[data-auto="true"]');
+        if (hasAutoTarget) {
+            sendControlCommand('target_override_clear');
+            return;
+        }
+
+        const hasEveryoneTarget = !!targetsListElement.querySelector('.chatbox-target-item[data-everyone="true"]');
+        if (hasEveryoneTarget) {
+            sendControlCommand('target_override_everyone');
+            return;
+        }
+
+        sendControlCommand('target_override_clear');
     }
 
     /**
@@ -433,7 +463,7 @@
         const deleteCount = Number(count || 0);
         if (![20, 50, 100].includes(deleteCount)) return;
 
-        setDeleteEventButtonsBusy(true);
+        setDeleteEventControlsBusy(true);
         try {
             const formData = new FormData();
             formData.append('count', String(deleteCount));
@@ -463,24 +493,10 @@
         } catch (_err) {
             pushChatboxSystemMessage(`Failed to delete the last ${deleteCount} events.`);
         } finally {
-            setDeleteEventButtonsBusy(false);
+            setDeleteEventControlsBusy(false);
             clearPendingDeleteConfirmation();
         }
     };
-
-    deleteEventButtons.forEach(function(button) {
-        button.addEventListener('click', function() {
-            const deleteCount = Number(button.dataset.deleteCount || 0);
-            if (![20, 50, 100].includes(deleteCount)) return;
-
-            if (pendingDeleteConfirmButton === button && button.getAttribute('data-confirm-armed') === 'true') {
-                window.deleteRecentEvents(deleteCount);
-                return;
-            }
-
-            armDeleteConfirmation(button, deleteCount);
-        });
-    });
 
     if (focusInput) {
         focusInput.addEventListener('keydown', function(e) {
@@ -540,7 +556,6 @@
     };
 
     window.updateChatboxTargets = function(payloadJson) {
-        if (!targetsListElement) return;
         // Keep spatial targets live while focused so the quick chat UI reflects
         // the current audience snapshot. Scroll position is preserved below to
         // avoid jumpiness while the player is selecting a target.
@@ -557,7 +572,7 @@
         currentTargetOverrideMode = payload.override_mode || 'auto';
         currentTargetFormId = Number(payload.active_form_id || 0);
         currentTargetName = payload.active_name || '';
-        const previousScrollTop = targetsListElement.scrollTop;
+        const previousScrollTop = targetsListElement ? targetsListElement.scrollTop : 0;
 
         const specs = [];
         if (payload.show_auto) {
@@ -583,11 +598,6 @@
             if (target.override) return true;
             return target.targetable !== false;
         });
-        visibleTargets.sort(function(a, b) {
-            if (a.override && !b.override) return -1;
-            if (!a.override && b.override) return 1;
-            return 0;
-        });
         visibleTargets.forEach(function(target) {
             const formId = Number(target.form_id || 0);
             const itemClasses = ['chatbox-target-item'];
@@ -605,16 +615,10 @@
             });
         });
 
-        if (specs.length === 0) {
-            specs.push({
-                key: 'empty',
-                empty: true,
-                message: payload.empty_message || 'No spatially available targets right now.'
-            });
+        if (targetsListElement) {
+            syncTargetRows(specs);
+            targetsListElement.scrollTop = previousScrollTop;
         }
-
-        syncTargetRows(specs);
-        targetsListElement.scrollTop = previousScrollTop;
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
@@ -673,6 +677,7 @@
         modeSelectElement.addEventListener('change', function() {
             const action = modeSelectElement.value;
             if (!action || action === currentModeAction) return;
+            resetTargetSelectionForModeChange();
             sendControlCommand(action);
         });
     }
@@ -691,10 +696,30 @@
         });
     }
 
-    if (focusPositionSelect) {
-        focusPositionSelect.addEventListener('change', function() {
-            applyFocusPosition(focusPositionSelect.value);
+    focusPositionButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            const nextPosition = button.dataset.position || 'center';
+            applyFocusPosition(nextPosition);
             saveFocusPosition(currentFocusPosition);
+        });
+    });
+
+    if (deleteEventConfirmButton) {
+        deleteEventConfirmButton.addEventListener('click', function() {
+            const deleteCount = Number(deleteEventSelect ? deleteEventSelect.value : 0);
+            if (![20, 50, 100].includes(deleteCount)) return;
+            if (pendingDeleteCount === deleteCount) {
+                window.deleteRecentEvents(deleteCount);
+                return;
+            }
+
+            armDeleteConfirmation(deleteCount);
+        });
+    }
+
+    if (deleteEventSelect) {
+        deleteEventSelect.addEventListener('change', function() {
+            clearPendingDeleteConfirmation();
         });
     }
 
