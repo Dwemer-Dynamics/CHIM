@@ -708,8 +708,7 @@ void MusicManager::playSong(AIAgent *singer) {
                     soundPlaying = false;
                 }
             }
-            // AudioManager::Update only uses heading + listener position here.
-            // Avoid querying GetLookingAtLocation() in this playback loop.
+            // AudioManager::Update only needs listener position and heading; avoid GetLookingAtLocation in this playback loop.
             auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
 
             am.Update(

@@ -78,7 +78,7 @@ void AudioManager::Stop() {
             logger::error("[AudioManager] Failed to stop source voice: {}", hr);
         }
     } else {
-        logger::warn("[AudioManager] Stop called with null source voice");
+        logger::debug("[AudioManager] Stop called with null source voice (idle/already stopped)");
     }
 
     // Always free the buffer when stopping, regardless of pause state
@@ -122,7 +122,11 @@ void AudioManager::setMuffledPlayback(bool enabled)
 
 void AudioManager::setSpatialUpdatesEnabled(bool enabled)
 {
+    std::lock_guard<std::mutex> lock(voiceMtx);
     spatialUpdatesEnabled = enabled;
+    if (enabled) {
+        forceSpatialMatrixUpdate = true;
+    }
 }
 
 bool AudioManager::Initialize() {
@@ -329,6 +333,7 @@ bool AudioManager::LoadWAV(BYTE* originalbuffer, size_t dataSize) {
         pSourceVoice = newSourceVoice;
         copiedData = newCopiedData;
         wfx = newWfx;
+        forceSpatialMatrixUpdate = true;
     }
 
     // Cleanup OUTSIDE the lock — DestroyVoice can grab XAudio2's internal
@@ -409,10 +414,10 @@ bool AudioManager::Play() {
 }
 
 void AudioManager::setVolume(float vol) {
-    // Clamp [0,1]: XAudio2 clips above 1.0 and can deadlock the audio callback.
+    // Clamp upper bound raised to 5.0 to match MCM AI Voice Volume slider; protection no longer needed.
     float normalized = vol / 100.0f;
     if (normalized < 0.0f) normalized = 0.0f;
-    else if (normalized > 1.0f) normalized = 1.0f;
+    else if (normalized > 5.0f) normalized = 5.0f;
     defaultVolume.store(normalized, std::memory_order_relaxed);
 }
 
@@ -459,14 +464,10 @@ void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
         return;
     }
 
-    const float PI = 3.14159265358979323846f;
-
     X3DAUDIO_VECTOR relativePosition;
     relativePosition.x = emitterPosition.x - listenerPosition.x;
     relativePosition.y = emitterPosition.y - listenerPosition.y;
     relativePosition.z = emitterPosition.z - listenerPosition.z;
-
-    float angle_rad = headingAngle * (PI / 180.0f);
 
     X3DAUDIO_VECTOR rotatedPosition;
     rotatedPosition.x = relativePosition.x * cos(headingAngle) - relativePosition.y * sin(headingAngle);
@@ -476,7 +477,7 @@ void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
 
     // Only update position if change is significant
     const float positionThreshold = 0.1f;
-    bool positionChanged = false;
+    bool positionChanged = forceSpatialMatrixUpdate;
     
     if (std::abs(emitter.Position.x - round(rotatedPosition.x)/100) > positionThreshold ||
         std::abs(emitter.Position.y - round(rotatedPosition.y)/100) > positionThreshold ||
@@ -507,9 +508,20 @@ void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
             X3DAudioCalculate(x3DInstance, &listener, &emitter, X3DAUDIO_CALCULATE_MATRIX, &dspSettings);
 
             HRESULT hr = pSourceVoice->SetOutputMatrix(pMasterVoice, wfx.nChannels, dspSettings.DstChannelCount,
-                                          dspSettings.pMatrixCoefficients);
+                                           dspSettings.pMatrixCoefficients);
             if (FAILED(hr)) {
-                logger::error("[AudioManager] Failed to set output matrix: {}", hr);
+                static HRESULT lastLoggedOutputMatrixHr = S_OK;
+                static auto lastOutputMatrixFailureLogTime = std::chrono::steady_clock::time_point{};
+                const auto now = std::chrono::steady_clock::now();
+
+                if (hr != lastLoggedOutputMatrixHr ||
+                    now - lastOutputMatrixFailureLogTime > std::chrono::seconds(5)) {
+                    logger::warn("[AudioManager] Failed to set output matrix: {}", hr);
+                    lastLoggedOutputMatrixHr = hr;
+                    lastOutputMatrixFailureLogTime = now;
+                }
+            } else {
+                forceSpatialMatrixUpdate = false;
             }
         } catch (...) {
             // Voice was destroyed mid-update, safe to ignore

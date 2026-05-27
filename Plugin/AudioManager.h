@@ -62,6 +62,8 @@ public:
 
     std::atomic<float> defaultVolume{1.0f};
     bool spatialUpdatesEnabled = true;
+    // Dirty flag: forces next Update() to recompute X3DAudio matrix even if emitter position hasn't moved past threshold. Set on Play/setSpatialUpdatesEnabled, cleared after successful SetOutputMatrix.
+    bool forceSpatialMatrixUpdate = true;
 
     // Volume ramping members
     float currentVolume = 0.0f;
