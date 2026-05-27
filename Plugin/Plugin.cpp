@@ -44,8 +44,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "2.8.0"
-#define PLUGIN_RELEASE_DATE "2026-05-10"
+#define PLUGIN_VERSION "2.8.1"
+#define PLUGIN_RELEASE_DATE "2026-05-26"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
