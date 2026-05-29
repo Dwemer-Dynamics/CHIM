@@ -41,7 +41,8 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
-constexpr auto kVisemeTaskMinInterval = std::chrono::milliseconds(33);
+constexpr auto kFlatVisemeTaskMinInterval = std::chrono::milliseconds(16);
+constexpr auto kVrVisemeTaskMinInterval = std::chrono::milliseconds(33);
 constexpr auto kVisemeTaskStaleDisableAfter = std::chrono::milliseconds(500);
 constexpr auto kVisemeTaskGuardLogInterval = std::chrono::seconds(5);
 constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
@@ -1112,7 +1113,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     auto fgen = speakerActorPointer->GetFaceGenAnimationData();
     auto lastTime = std::chrono::steady_clock::now();
-    auto lastVisemeTaskQueued = startTime - kVisemeTaskMinInterval;
+    const bool useVrVisemeGuard = REL::Module::IsVR();
+    const auto visemeTaskMinInterval = useVrVisemeGuard ? kVrVisemeTaskMinInterval : kFlatVisemeTaskMinInterval;
+    auto lastVisemeTaskQueued = startTime - visemeTaskMinInterval;
     auto lastVisemeTaskGuardLog = startTime - kVisemeTaskGuardLogInterval;
     auto visemeTaskInFlightSince = startTime;
     auto visemeTaskInFlight = std::make_shared<std::atomic<bool>>(false);
@@ -1384,16 +1387,32 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                 }
 
                 float intensityStep = 0.02 * (elapsedSeconds2 / 0.0019) * intensityModifier;
-                float intensityStepDecal = std::min(intensityStep * 1.25f, 0.12f);
+                float intensityStepDecal = useVrVisemeGuard ? std::min(intensityStep * 1.25f, 0.12f) : intensityStep;
 
                 //if (visemeCode == -1) visemeCode = 7;
 
-                const float visemeMaxIntensity =
-                    std::min(GetVisemeMaxIntensity(visemeCode) * lipIntensityBaseline, kVisemeAbsoluteMaxIntensity);
-                const int candidateLastViseme = visemeCode;
+                int candidateLastViseme = visemeCode;
                 float candidateIntensity = intensity;
-                if (lastViseme == visemeCode) {
-                    candidateIntensity = candidateIntensity + intensityStep;
+                if (useVrVisemeGuard) {
+                    const float visemeMaxIntensity =
+                        std::min(GetVisemeMaxIntensity(visemeCode) * lipIntensityBaseline, kVisemeAbsoluteMaxIntensity);
+                    if (lastViseme == visemeCode) {
+                        candidateIntensity = candidateIntensity + intensityStep;
+                    } else {
+                        /*
+                        logger::info("At time {} segment: {} (Duration:{} seconds)", elapsedSeconds,
+                            currentSegment.sourcetext, currentSegment.duration);
+
+                        logger::info("Viseme code {}, label:{}, last intensity (last viseme ended at) {}", visemeCode, getVISEMEName(visemeCode),
+                                        intensity);
+                        */
+                        const float attackFloor = 0.10f * lipIntensityBaseline;
+                        candidateIntensity = visemeCode >= 0 ? std::min(std::max(intensityStep, attackFloor), visemeMaxIntensity) : 0.0f;
+                    }
+
+                    if (candidateIntensity > visemeMaxIntensity) candidateIntensity = visemeMaxIntensity;
+                } else if (lastViseme == visemeCode) {
+                    candidateIntensity = (candidateIntensity + intensityStep) * 1.01f;
                 } else {
                     /*
                     logger::info("At time {} segment: {} (Duration:{} seconds)", elapsedSeconds,
@@ -1402,11 +1421,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     logger::info("Viseme code {}, label:{}, last intensity (last viseme ended at) {}", visemeCode, getVISEMEName(visemeCode),
                                     intensity);
                     */
-                    const float attackFloor = 0.10f * lipIntensityBaseline;
-                    candidateIntensity = visemeCode >= 0 ? std::min(std::max(intensityStep, attackFloor), visemeMaxIntensity) : 0.0f;
+                    candidateLastViseme = visemeCode;
+                    candidateIntensity = 0.0f;
                 }
-
-                if (candidateIntensity > visemeMaxIntensity) candidateIntensity = visemeMaxIntensity;
 
                 auto commitVisemeCandidate = [&]() {
                     lastViseme = candidateLastViseme;
@@ -1414,11 +1431,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                 };
 
                 if (fgen && !visemeTaskGuardDisabled) {
-                    // Viseme frames are disposable; never let lip sync stack game-thread work in VR.
                     const auto visemeTaskNow = std::chrono::steady_clock::now();
-                    if (visemeTaskNow - lastVisemeTaskQueued >= kVisemeTaskMinInterval) {
+                    if (visemeTaskNow - lastVisemeTaskQueued >= visemeTaskMinInterval) {
                         bool expected = false;
-                        if (!visemeTaskInFlight->compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                        if (useVrVisemeGuard &&
+                            !visemeTaskInFlight->compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
                             ++skippedVisemeTasks;
                             const auto stuckFor = visemeTaskNow - visemeTaskInFlightSince;
                             if (stuckFor >= kVisemeTaskStaleDisableAfter) {
@@ -1440,7 +1457,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             if (taskInterface) {
                                 commitVisemeCandidate();
                                 lastVisemeTaskQueued = visemeTaskNow;
-                                visemeTaskInFlightSince = visemeTaskNow;
+                                if (useVrVisemeGuard) {
+                                    visemeTaskInFlightSince = visemeTaskNow;
+                                }
 
                                 setPhase("write_voice_timer");
                                 speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
@@ -1451,11 +1470,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                                 const int queuedLastViseme = lastViseme;
                                 const float queuedIntensity = intensity;
                                 taskInterface->AddTask(
-                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, inFlight]() {
+                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, inFlight, useVrVisemeGuard]() {
                                         struct VisemeTaskReset {
                                             std::shared_ptr<std::atomic<bool>> flag;
-                                            ~VisemeTaskReset() { flag->store(false, std::memory_order_release); }
-                                        } reset{inFlight};
+                                            bool enabled;
+                                            ~VisemeTaskReset() {
+                                                if (enabled) {
+                                                    flag->store(false, std::memory_order_release);
+                                                }
+                                            }
+                                        } reset{inFlight, useVrVisemeGuard};
 
                                         auto* actor = actorHandle.get().get();
                                         if (!actor || !actor->Is3DLoaded()) {
@@ -1473,7 +1497,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                                     });
                                 setPhase("viseme_task_queued");
                             } else {
-                                visemeTaskInFlight->store(false, std::memory_order_release);
+                                if (useVrVisemeGuard) {
+                                    visemeTaskInFlight->store(false, std::memory_order_release);
+                                }
                                 logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                             }
                         }
