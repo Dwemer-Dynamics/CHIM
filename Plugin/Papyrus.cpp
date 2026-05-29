@@ -1872,7 +1872,7 @@ void addAllNPC() {
             (lookScore >= kAutoAddLookConeCosine &&
              distance <= std::min(autoAddDistance, kAutoAddLookPriorityMaxDistance));
 
-        if (speechRestricted && !directCrosshair && !targeted && !closeOverride) {
+        if (speechRestricted && !directCrosshair && !targeted) {
             return;
         }
 
