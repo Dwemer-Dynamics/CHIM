@@ -2649,12 +2649,21 @@ private:
                                 logger::info("[COMBAT_BARK] Triggering bark for {} ({} agents in combat)", 
                                             selectedAgent->getActorName(), combatAgents.size());
                                 
-                                ThreadPool::getInstance().enqueue("CombatBark", [selectedActor]() {
+                                auto selectedActorHandle = selectedActor->GetHandle();
+                                ThreadPool::getInstance().enqueue("CombatBark", [selectedActorHandle]() {
+                                    auto selectedActorRef = selectedActorHandle.get();
+                                    auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
+                                    if (!resolvedActor || resolvedActor->IsDead() || !resolvedActor->IsInCombat() ||
+                                        !IsActorLoadedInPlayerCell(resolvedActor)) {
+                                        logger::debug("[COMBAT_BARK] Skipped stale or no-longer-combat actor");
+                                        return;
+                                    }
+
                                     HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
                                                                    getCurrentTimeMillis(),
                                                                    GetGameTimeStamp(), 
                                                                    GetPlayerLocation()),
-                                                       selectedActor);
+                                                       resolvedActor);
                                 });
                             } else {
                                 if (!combatAgents.empty()) {
@@ -7201,12 +7210,20 @@ EventHandlers {
                                 logger::info("[COMBAT_BARK_START] Selected {} for combat start bark ({} nearby agents)", 
                                             selectedAgent->getActorName(), nearbyAgents.size());
                                 
-                                ThreadPool::getInstance().enqueue("CombatBarkStart", [selectedActor]() {
+                                auto selectedActorHandle = selectedActor->GetHandle();
+                                ThreadPool::getInstance().enqueue("CombatBarkStart", [selectedActorHandle]() {
+                                    auto selectedActorRef = selectedActorHandle.get();
+                                    auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
+                                    if (!resolvedActor || resolvedActor->IsDead() || !IsActorLoadedInPlayerCell(resolvedActor)) {
+                                        logger::debug("[COMBAT_BARK_START] Skipped stale combat-start actor");
+                                        return;
+                                    }
+
                                     HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
                                                                    getCurrentTimeMillis(),
                                                                    GetGameTimeStamp(), 
                                                                    GetPlayerLocation()),
-                                                       selectedActor);
+                                                       resolvedActor);
                                 });
                             } else {
                                 logger::info("[COMBAT_BARK_START] No nearby AI agents available for combat bark");
