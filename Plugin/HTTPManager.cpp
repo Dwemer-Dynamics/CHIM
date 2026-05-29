@@ -78,6 +78,34 @@ static bool IsPlayerStreamActor(const std::string& actorName)
     return !configuredPlayerName.empty() && EqualsIgnoreCaseHttp(normalizedActorName, configuredPlayerName);
 }
 
+static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, const std::string& listener)
+{
+    if (!actor || !agent || listener == NARRATOR_NAME) {
+        return;
+    }
+
+    auto actorHandle = actor->GetHandle();
+    SKSE::GetTaskInterface()->AddTask([actorHandle, agent, listener]() {
+        auto* resolvedActor = actorHandle.get().get() ? actorHandle.get().get()->As<RE::Actor>() : nullptr;
+        if (!resolvedActor || resolvedActor->IsDead()) {
+            logger::debug("[HTTPStream] Skipping interrupt for {}; actor no longer valid", listener);
+            return;
+        }
+
+        struct SEHTranslatorScope {
+            _se_translator_function previous;
+            SEHTranslatorScope() : previous(_set_se_translator(SEHTranslator)) {}
+            ~SEHTranslatorScope() { _set_se_translator(previous); }
+        } sehScope;
+
+        try {
+            InterruptNPC(resolvedActor, agent.get());
+        } catch (const std::exception& e) {
+            logger::error("[HTTPStream] InterruptNPC failed for {}: {}", listener, e.what());
+        }
+    });
+}
+
 static const std::string base64_chars =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
@@ -1888,9 +1916,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 }
             }
 
-            if (listenerPtr) {
-                InterruptNPC(listenerPtr, agentPointer.get());
-            }
+            QueueInterruptNPC(listenerPtr, agentPointer, listener);
         }
 
        
@@ -1906,12 +1932,19 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             actor ? actor->GetDisplayFullName() : "null", 
             rechatDepth);
 
+        if (!actor) {
+            logger::warn("[HTTPStream] Skipping stream with null actor");
+            return;
+        }
+
+        const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
         
         // First try to find agent by FormID (works for all agents including narrator)
         std::shared_ptr<AIAgent> agent = nullptr;
+        const auto actorFormID = actor->GetFormID();
         for (const auto& a : aiam.getAgents()) {
-            if (a->getActor() && a->getActor()->GetFormID() == actor->GetFormID()) {
+            if (a->getActor() && a->getActor()->GetFormID() == actorFormID) {
                 agent = a;
                 break;
             }
@@ -1930,8 +1963,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         // Skip InterruptNPC if msg contains "suggestion"
-        if (actor && msg.find("suggestion") == std::string::npos) {
-            InterruptNPC(actor, agent.get());
+        if (!isCombatBark && msg.find("suggestion") == std::string::npos) {
+            QueueInterruptNPC(actor, agent, listener);
+        } else if (isCombatBark) {
+            logger::trace("[HTTPStream] Combat bark skips dialogue interrupt for {}", listener);
         }
         logger::info("Stream Called for {}", listener);
 
