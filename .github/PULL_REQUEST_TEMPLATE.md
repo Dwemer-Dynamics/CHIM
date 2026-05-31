@@ -1,4 +1,6 @@
-# Pull Requests Must Target `main`
+# Pull Requests Must Target `unstable`
+
+> Open PRs against `unstable` unless a maintainer explicitly asks for a different base branch.
 
 ## Summary
 

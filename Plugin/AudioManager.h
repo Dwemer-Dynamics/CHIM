@@ -44,7 +44,7 @@ public:
     void setMuffledPlayback(bool enabled);
     void setSpatialUpdatesEnabled(bool enabled);
     void Update(const X3DAUDIO_VECTOR& sourcePosition, const X3DAUDIO_VECTOR& listenerPosition,
-                const X3DAUDIO_VECTOR& lookingAt,float headingAngle);
+                float headingAngle);
     float GetElapsedTimeSeconds();
     bool isPlaying() const;
     static X3DAUDIO_VECTOR ConvertNiPoint3ToX3DAUDIO_VECTOR(const RE::NiPoint3& niPoint);
@@ -62,6 +62,8 @@ public:
 
     std::atomic<float> defaultVolume{1.0f};
     bool spatialUpdatesEnabled = true;
+    // Dirty flag: forces next Update() to recompute X3DAudio matrix even if emitter position hasn't moved past threshold. Set on Play/setSpatialUpdatesEnabled, cleared after successful SetOutputMatrix.
+    bool forceSpatialMatrixUpdate = true;
 
     // Volume ramping members
     float currentVolume = 0.0f;

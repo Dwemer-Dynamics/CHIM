@@ -30,9 +30,11 @@ RE::Actor* findClosestAgent();
     // Info request
 std::string InspectLocations(RE::TESObjectREFR *reference);
 std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange, std::string separator,
-                                float farAwayLimit);
+                                 float farAwayLimit);
+std::string InspectManagedAgents(RE::TESObjectREFR* reference, float visionRange, const std::string& separator,
+                                 float farAwayLimit, bool includeNarrator = false);
 std::string InspectAudibleActors(RE::TESObjectREFR* reference, bool useCache, float visionRange,
-                                 std::string separator);
+                                  std::string separator);
 std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCache, float visionRange,
                                        std::string separator);
 std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange);
