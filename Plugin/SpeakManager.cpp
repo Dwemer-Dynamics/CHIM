@@ -1144,9 +1144,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     speakerActorPointer->IncRefCount();  // Increment reference count to prevent actor from being unloaded
 
-    //speakerActorPointer->GetActorRuntimeData().voiceTimer =
-    bool unstablerun = false;
-
     _dap_phase("before_playback_wait_loop");
     _dap_phase("pre_watchdog_setup");
 
@@ -1229,7 +1226,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                 lastLost = true;
                 break;
             }
-            unstablerun = true;
             // lastLost = true;
             // break;
         }
@@ -1424,6 +1420,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     candidateLastViseme = visemeCode;
                     candidateIntensity = 0.0f;
                 }
+                if (!useVrVisemeGuard && candidateIntensity > 0.99f) {
+                    candidateIntensity = 1.0f;
+                }
 
                 auto commitVisemeCandidate = [&]() {
                     lastViseme = candidateLastViseme;
@@ -1436,38 +1435,30 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                         setPhase("write_voice_timer");
                         speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
 
-                        // Restore pre-viseme-guard flat Skyrim behavior: direct facegen writes
-                        // each loop tick unless the actor has already entered the unstable fallback.
-                        if (!unstablerun) {
-                            setPhase("apply_viseme_frame_flat");
-                            RE::BSSpinLockGuard locker(fgen->lock);
-                            ApplyVisemeFrame(fgen, lastViseme, visemeCode, intensity, intensityStepDecal);
+                        setPhase("queue_viseme_task");
+                        auto* taskInterface = SKSE::GetTaskInterface();
+                        if (taskInterface) {
+                            auto actorHandle = speakerActorPointer->GetHandle();
+                            const int queuedLastViseme = lastViseme;
+                            const float queuedIntensity = intensity;
+                            taskInterface->AddTask(
+                                [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
+                                    auto* actor = actorHandle.get().get();
+                                    if (!actor || !actor->Is3DLoaded()) {
+                                        return;
+                                    }
+
+                                    auto deferredFgen = actor->GetFaceGenAnimationData();
+                                    if (!deferredFgen) {
+                                        return;
+                                    }
+
+                                    RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                    ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                     intensityStepDecal);
+                                });
                         } else {
-                            auto* taskInterface = SKSE::GetTaskInterface();
-                            if (taskInterface) {
-                                setPhase("queue_viseme_task_flat_unstable");
-                                auto actorHandle = speakerActorPointer->GetHandle();
-                                const int queuedLastViseme = lastViseme;
-                                const float queuedIntensity = intensity;
-                                taskInterface->AddTask(
-                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
-                                        auto* actor = actorHandle.get().get();
-                                        if (!actor || !actor->Is3DLoaded()) {
-                                            return;
-                                        }
-
-                                        auto deferredFgen = actor->GetFaceGenAnimationData();
-                                        if (!deferredFgen) {
-                                            return;
-                                        }
-
-                                        RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                        ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                         intensityStepDecal);
-                                    });
-                            } else {
-                                logger::warn("[SpeakManager] Task interface unavailable for unstable flat viseme update");
-                            }
+                            logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                         }
                     } else if (!visemeTaskGuardDisabled) {
                         const auto visemeTaskNow = std::chrono::steady_clock::now();
@@ -1562,7 +1553,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         loopWatchdog.join();
     }
     _dap_phase("after_playback_wait_loop");
-    QueueMouthReset(speakerActorPointer->GetHandle());
+    if (useVrVisemeGuard) {
+        QueueMouthReset(speakerActorPointer->GetHandle());
+    }
     speakerActorPointer->GetActorRuntimeData().voiceTimer = 0.0;
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
 
