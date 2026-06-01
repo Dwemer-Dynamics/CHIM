@@ -138,7 +138,7 @@ namespace
             return {};
         }
 
-        const char* name = actor->GetName();
+        const char* name = actor->GetDisplayFullName();
         if (name && name[0] != '\0') {
             return name;
         }

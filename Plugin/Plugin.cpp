@@ -3232,7 +3232,7 @@ namespace ProcessorMenu {
                 return playerDisplayName;
             }
 
-            const std::string playerName = trim(player->GetName());
+            const std::string playerName = trim(player->GetDisplayFullName());
             if (!playerName.empty()) {
                 return playerName;
             }
