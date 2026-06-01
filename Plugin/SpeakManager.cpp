@@ -1008,7 +1008,13 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     logger::debug("[SpeakManager] Loading WAV");
     am.setSpatialUpdatesEnabled(enable3DAudioPlayback);
     auto updatePlaybackSpatialPosition = [&]() {
-        if (!enable3DAudioPlayback || !DXinitOK) {
+        if (!DXinitOK) {
+            return;
+        }
+
+        if (!enable3DAudioPlayback) {
+            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            am.Update(noopPosition, noopPosition, 0.0f);
             return;
         }
 
@@ -1536,8 +1542,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
 
         setPhase("avoid_click_check");
-        if (std::chrono::steady_clock::now() > avoidClick) {
-            if (DXinitOK) {  // Only if audio being reproduced,
+        if (DXinitOK) {  // Only if audio being reproduced,
+            const bool shouldUpdatePlaybackState =
+                !enable3DAudioPlayback || std::chrono::steady_clock::now() > avoidClick;
+            if (shouldUpdatePlaybackState) {
                 setPhase("spatial_audio_position_update");
                 updatePlaybackSpatialPosition();
             }
