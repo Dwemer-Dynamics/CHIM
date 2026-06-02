@@ -4334,6 +4334,7 @@ OnSaveGame{
 
         ManagerMainQueue& mmq = ManagerMainQueue::getInstance();
         if (!mmq.isRunning()) {
+            logger::info("Starting main manager thread  at OnSaveGame");
             std::string polint = Conf::getInstance().getPolint();
             int polint_i = std::stoi(polint);
             mmq.startThread(polint_i);
@@ -5892,6 +5893,7 @@ OnLoadedGame {
 
         ManagerMainQueue& mmq = ManagerMainQueue::getInstance();
         if (!mmq.isRunning()) {
+            logger::info("Starting main manager thread  at OnLoadedGame");
             std::string polint = Conf::getInstance().getPolint();
             int polint_i = std::stoi(polint);
             mmq.startThread(polint_i);
