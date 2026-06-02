@@ -105,6 +105,7 @@ static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::P
     toSay.subtitle = subtitleText;
     toSay.pad04 = 0xabcd;
 
+    logger::info("[SpeakManager] KillSubtitles at PushForcedPlayerSubtitle.  Forcing player subtitle: '{}'", subtitleText);
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
     subtitleManager->subtitles.push_back(toSay);
@@ -1554,7 +1555,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         // Mark last time talk, so we don't restore actor voice (previously was updated only at the end of the process,
         // causing issues with voice restoration when speech is still being played, so NPC will mix AI speech and
         // vanilla speech)
-        currentActor->SetLastTimeTalk();
+        if (currentActor) {
+            currentActor->SetLastTimeTalk();
+            // logger::info("Updated last time talk for actor {}", currentActor->getCurrentAnimation());
+        }
+        
 
         setPhase("iter_sleep");
 
@@ -2509,6 +2514,10 @@ void SpeakManager::process(AIAgent *agent) {
 
             toSay.subtitle = scriptLine.subtitle;
             toSay.pad04 = 0xabcd;
+            logger::info("[SpeakManager] KillSubtitles at SpeakManager::process.  Forcing {} subtitle: '{}'",
+                         npc->GetDisplayFullName(),
+                         scriptLine.subtitle);
+
             sm->KillSubtitles();
             sm->subtitles.push_back(toSay);
 
@@ -3299,6 +3308,8 @@ void SpeakManager::clearVisibleSubtitles() {
     if (!subtitleManager) {
         return;
     }
+
+    logger::info("[SpeakManager] KillSubtitles SpeakManager::clearVisibleSubtitles().");
 
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
