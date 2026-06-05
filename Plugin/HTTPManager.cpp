@@ -1625,6 +1625,22 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
+        if (!agentPointer && playerInputMessage) {
+            const auto fallbackIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
+                [](const PlayerSpatialCandidate& target) {
+                    return target.agent && target.actor && target.agent->getActorName() != NARRATOR_NAME &&
+                           target.targetable;
+                });
+            if (fallbackIt != rankedTargets.end()) {
+                logger::info(
+                    "[LISTENER-RESOLVE] Using nearest targetable NPC fallback '{}' before Narrator "
+                    "(source={}, status={}, reason={}, dist={:.1f}m)",
+                    fallbackIt->name.empty() ? fallbackIt->agent->getActorName() : fallbackIt->name,
+                    fallbackIt->source, fallbackIt->status, fallbackIt->reason, fallbackIt->distanceMeters);
+                selectTarget(*fallbackIt, "nearest_targetable_fallback");
+            }
+        }
+
         if (!agentPointer) {
             auto narrator = aiam.getAgentByName(NARRATOR_NAME);
             if (narrator) {
@@ -1987,8 +2003,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             RefreshAIAgentInventory(actor, agent->getActorName(), false, false);
         }
 
-        // Skip InterruptNPC if msg contains "suggestion"
-        if (!isCombatBark && msg.find("suggestion") == std::string::npos) {
+        // Rechat is launched while the current line may still be playing; do not interrupt it.
+        if (rechatDepth > 0) {
+            logger::trace("[HTTPStream] Rechat skips dialogue interrupt for {}", listener);
+        } else if (!isCombatBark && msg.find("suggestion") == std::string::npos) {
             QueueInterruptNPC(actor, agent, listener);
         } else if (isCombatBark) {
             logger::trace("[HTTPStream] Combat bark skips dialogue interrupt for {}", listener);

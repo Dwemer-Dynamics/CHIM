@@ -2248,13 +2248,19 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 
         json rechatPayload = json::object();
         const std::string rechatChainId = ensureRechatChainId(speaker, targetedNpc, explicitRechatTarget);
+        const std::string resolvedRechatTarget =
+            !explicitRechatTarget.empty() ? explicitRechatTarget : targetedNpc;
         rechatPayload["speaker"] = speaker;
         rechatPayload["listener_hint"] = targetedNpc;
         rechatPayload["rechat_target_hint"] = explicitRechatTarget;
+        rechatPayload["resolved_rechat_target"] = resolvedRechatTarget;
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["audience"] = audienceSnapshot;
         rechatPayload["chain_id"] = rechatChainId;
+        if (!resolvedRechatTarget.empty()) {
+            logger::info("[RECHAT] resolved target for {} is {}", speaker, resolvedRechatTarget);
+        }
 
         std::vector<std::string> chainMembers = audienceSnapshot;
         if (!speaker.empty() &&
@@ -2367,69 +2373,6 @@ void SpeakManager::process(AIAgent *agent) {
 
         // Reset bored
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
-
-        const auto clearCurrentPlayback = [&]() {
-            std::lock_guard<std::mutex> lock(mtx);
-            currentPlaybackUtteranceId.clear();
-            currentPlaybackActor.clear();
-            currentPlaybackUtteranceConfirmed = false;
-        };
-
-        if (!agent->isNarrator()) {
-            const std::string listenerHint = TrimCopy(scriptLine.action);
-            auto explicitListenerAgent = !listenerHint.empty() ? aiam.getAgentByName(listenerHint) : nullptr;
-            auto* explicitListenerActor = explicitListenerAgent ? explicitListenerAgent->getActor() : nullptr;
-            const bool listenerIsPlayer =
-                (explicitListenerActor && explicitListenerActor == player) ||
-                IsDirectlyAddressingPlayer(listenerHint, aiam);
-
-            if (player && npc && (listenerHint.empty() || listenerIsPlayer)) {
-                uint32_t overrideFormId = 0;
-                std::string overrideName;
-                const bool isChatboxOverrideTarget =
-                    PrismaUIBridge::GetChatboxTargetOverride(overrideFormId, overrideName) &&
-                    ((overrideFormId != 0 && npc->GetFormID() == overrideFormId) ||
-                     (!overrideName.empty() && agent->getActorName() == overrideName));
-
-                if (!isChatboxOverrideTarget) {
-                    // Air-distance-only gate; full SpatialAwareness::Evaluate from this worker thread SEH-crashed at 0x58 (LOS/navmesh/door scan touch game-thread refs).
-                    const float airDistance = npc->GetPosition().GetDistance(player->GetPosition());
-                    const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
-                    const auto* playerCell = player->GetParentCell();
-                    const bool playerInterior = playerCell && playerCell->IsInteriorCell();
-                    const float hearingMax = playerInterior ? spatialSettings.interiorMaxDistance :
-                                                              spatialSettings.exteriorMaxDistance;
-                    if (std::isfinite(hearingMax) && hearingMax > 0.0f && airDistance > hearingMax) {
-                        logger::info(
-                            "[SpeakManager] Skipping NPC->Player playback: {} -> player (target='{}', air_dist={:.1f} > hearing_max={:.1f})",
-                            agent->getActorName(), listenerHint, airDistance, hearingMax);
-                        dequeueFirstItem();
-                        releasePendingPlayerSubtitle();
-                        clearVisibleSubtitles();
-                        clearCurrentPlayback();
-                        setProcessing(false);
-                        return;
-                    }
-                }
-            }
-
-            if (explicitListenerActor && explicitListenerActor != player && explicitListenerActor != npc) {
-                const SpatialAwareness::Result spatialGate =
-                    SpatialAwareness::Evaluate(agent->getActor(), explicitListenerActor);
-                if (!spatialGate.canCommunicate) {
-                    logger::info(
-                        "[SpeakManager] Skipping NPC->NPC playback: {} -> {} (reason={}, dist={:.1f}, pathRatio={:.2f}, closedDoors={})",
-                        agent->getActorName(), explicitListenerAgent->getActorName(), spatialGate.reason,
-                        spatialGate.airDistance, spatialGate.pathRatio, spatialGate.closedDoorCount);
-                    dequeueFirstItem();
-                    releasePendingPlayerSubtitle();
-                    clearVisibleSubtitles();
-                    clearCurrentPlayback();
-                    setProcessing(false);
-                    return;
-                }
-            }
-        }
 
         int res = 0;
 
@@ -3051,25 +2994,10 @@ void SpeakManager::process(AIAgent *agent) {
                         audibleCompanions.push_back(speakerName);
                     }
 
-                    // Preserve the intended listener only when spatial still allows it.
-                    // Otherwise far/blocked NPCs leak back into the rechat chain even
-                    // after the audible audience snapshot filtered them out.
-                    const bool listenerIsPlayer =
-                        listenerActor && player && listenerActor->GetFormID() == player->GetFormID();
-                    const bool listenerSpatiallyReachable =
-                        listenerIsPlayer || (hasSpatialContext && spatialResult.canCommunicate);
-                    if (!speechListener.empty()) {
-                        if (listenerSpatiallyReachable &&
-                            std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) ==
-                                audibleCompanions.end()) {
-                            audibleCompanions.push_back(speechListener);
-                        } else if (!listenerSpatiallyReachable) {
-                            logger::info(
-                                "[SpeakManager] Not preserving rechat listener '{}' for {}: spatial_reason={} distance={:.1f}",
-                                speechListener, agent->getActorName(),
-                                hasSpatialContext ? spatialResult.reason : "no_spatial_context",
-                                hasSpatialContext ? spatialResult.airDistance : 0.0f);
-                        }
+                    if (!speechListener.empty() &&
+                        std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) ==
+                            audibleCompanions.end()) {
+                        audibleCompanions.push_back(speechListener);
                     }
                 }
 

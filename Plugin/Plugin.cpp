@@ -2361,16 +2361,10 @@ private:
                         parseCommand(newResponse.text, newResponse.actor);
                     }
 
-                    const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
-
-                    if (!playerSpeechSuppressActive) {
-                        newResponse = spgResponse.getFirstItem("rolecommand");
-                        if (!newResponse.text.empty()) {
-                            logger::info("Rolemaster in action {}", newResponse.text);
-                            parseRoleCommand(newResponse.text);
-                        }
-                    } else {
-                        logger::debug("[PLAYER_SPEECH] Deferring rolecommand processing during player speech window");
+                    newResponse = spgResponse.getFirstItem("rolecommand");
+                    if (!newResponse.text.empty()) {
+                        logger::info("Rolemaster in action {}", newResponse.text);
+                        parseRoleCommand(newResponse.text);
                     }
 
                     auto boredElapsedSeconds =
@@ -2393,6 +2387,7 @@ private:
                         playerInDialog = true;
                     }
 
+                    const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                     avoidBored = playerSpeechSuppressActive || player->IsInCombat() || player->IsAttacking() || player->IsSneaking()
                         || CheckScene(player->GetCurrentScene()) || playerInDialog;
 
