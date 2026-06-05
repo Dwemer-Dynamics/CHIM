@@ -2229,22 +2229,12 @@ private:
 
                                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - controlLastInfoSent);
 
-                                // infonpc_close is a compatibility/context feed, not conversation routing.
-                                // Keep it dumb: read the already-built spatial snapshot if present, otherwise fall back to
-                                // the old managed-agent air-distance list. This path must not queue fresh LOS/navmesh work.
-                                // Snapshot-backed context is cached, but nearby item/activity scans still touch game refs.
-                                // Keep this off the short Prisma/UI cadence to avoid steady interior micro-stutters.
+                                // infonpc_close is a compatibility/context feed. Use the legacy nearby-NPC
+                                // scan so it describes everyone around the player, not only managed agents.
                                 if (elapsed > std::chrono::seconds(8)) {
                                     logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
                                     auto player = RE::PlayerCharacter::GetSingleton();
-
-                                    auto contextSnapshot =
-                                        SpatialSnapshotManager::GetPlayerSnapshot(false, "periodic_infonpc_close_cached");
-                                    auto result = contextSnapshot.Describe("/");
-                                    if (result.empty()) {
-                                        result = InspectManagedAgents(player->AsReference(), 3000, "/",
-                                                                      DISTANCE_ACTIVATING_NPC_OUT);
-                                    }
+                                    auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
                                     // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
                                     std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
                                     if (!itemsResult.empty()) {
@@ -5962,13 +5952,7 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
-        // infonpc_close is a compatibility/context feed. It may read an existing spatial snapshot, but it
-        // must fall back to the simple managed-agent list instead of forcing conversation spatial work.
-        auto loadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "loaded_game_infonpc_close");
-        auto resultClose = loadSnapshot.Describe("/");
-        if (resultClose.empty()) {
-            resultClose = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-        }
+        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
         if (!resultClose.empty()) {
             resultClose.append("/");
         }
@@ -6050,13 +6034,7 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
-        // infonpc_close is a compatibility/context feed. It may read an existing spatial snapshot, but it
-        // must fall back to the simple managed-agent list instead of forcing conversation spatial work.
-        auto reloadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "reloaded_game_infonpc_close");
-        auto resultClose = reloadSnapshot.Describe("/");
-        if (resultClose.empty()) {
-            resultClose = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-        }
+        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
         if (!resultClose.empty()) {
             resultClose.append("/");
         }
@@ -6369,15 +6347,12 @@ EventHandlers {
                                          "(beings in range:" + result + ")"));
             */
 
-            // Cell-load already runs Papyrus sendCellInfo and other mod detach work.
-            // Do not add item/activity scans here; the periodic pass sends them after the settle window.
-            auto locationSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "location_infonpc_close");
-            auto result = locationSnapshot.Describe("/");
+            auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
             if (!result.empty()) {
                 result.append("/");
-                result.append(AIAgentManager::getInstance().getPlayerName());
-                HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
             }
+            result.append(AIAgentManager::getInstance().getPlayerName());
+            HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
 
 
             BackGroundDialogueQueue.clear();
