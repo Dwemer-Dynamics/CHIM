@@ -1500,8 +1500,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 target.reason == "path_fallback_clear" ||
                 target.reason == "open_door_muffled";
             const bool actualCrosshairTarget = target.source.starts_with("crosshair_");
+            constexpr float kCloseLookTargetMeters = 6.0f;
             const bool closeLookTarget = target.lookTarget && target.reason == "distance_cell_clear" &&
-                                         target.distanceMeters <= 4.0f;
+                                         target.distanceMeters <= kCloseLookTargetMeters;
             const bool directCheapTarget = target.targetable && (actualCrosshairTarget || closeLookTarget);
 
             if (!target.targetable || (!stableAudibleReason && !directCheapTarget)) {
@@ -1528,6 +1529,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     source, target.source, target.status, target.reason, target.distanceMeters);
             }
             return true;
+        };
+        std::vector<RE::FormID> rejectedTargetFormIds;
+        rejectedTargetFormIds.reserve(4);
+        const auto wasRejectedTarget = [&](RE::FormID formId) {
+            return formId != 0 &&
+                   std::find(rejectedTargetFormIds.begin(), rejectedTargetFormIds.end(), formId) !=
+                       rejectedTargetFormIds.end();
         };
 
         uint32_t chatboxOverrideFormId = 0;
@@ -1579,6 +1587,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 });
             if (lookIt != rankedTargets.end()) {
                 if (!validatePlayerInputTarget(*lookIt, "look_target")) {
+                    rejectedTargetFormIds.push_back(lookIt->formId);
                     logger::info("[LISTENER-RESOLVE] Look target failed final spatial check; trying ranked auto target");
                 } else {
                     selectTarget(*lookIt, "look_target");
@@ -1587,16 +1596,32 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         if (!agentPointer) {
-            auto autoIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
-                [](const PlayerSpatialCandidate& target) {
-                    return target.autoEligible;
-                });
-            if (autoIt != rankedTargets.end()) {
-                if (!validatePlayerInputTarget(*autoIt, "ranked_targets")) {
-                    logger::info("[LISTENER-RESOLVE] Top ranked target failed final spatial check; falling back instead of scanning all candidates");
-                } else {
-                    selectTarget(*autoIt, "ranked_targets");
+            constexpr int kMaxRankedAutoTargetChecks = 3;
+            int rankedAutoTargetsChecked = 0;
+            bool rankedAutoTargetRejected = false;
+            for (const auto& target : rankedTargets) {
+                if (!target.autoEligible || wasRejectedTarget(target.formId)) {
+                    continue;
                 }
+
+                if (rankedAutoTargetsChecked >= kMaxRankedAutoTargetChecks) {
+                    break;
+                }
+                ++rankedAutoTargetsChecked;
+
+                if (validatePlayerInputTarget(target, "ranked_targets")) {
+                    selectTarget(target, "ranked_targets");
+                    break;
+                }
+
+                rejectedTargetFormIds.push_back(target.formId);
+                rankedAutoTargetRejected = true;
+            }
+
+            if (!agentPointer && rankedAutoTargetRejected) {
+                logger::info(
+                    "[LISTENER-RESOLVE] Ranked auto targets failed final spatial check after {} candidate(s); falling back",
+                    rankedAutoTargetsChecked);
             }
         }
 
