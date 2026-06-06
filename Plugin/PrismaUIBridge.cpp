@@ -1639,9 +1639,10 @@ R"CHIM(
 
         if (previousMode != modeStr) {
             // Voice mode changes should affect player speech reach without rewriting
-            // the user's MCM auto-activation distances. Clear cached spatial state so
-            // listener routing and Prisma UI immediately use the new runtime multiplier.
-            SpatialSnapshotManager::InvalidatePlayerSnapshot();
+            // the user's MCM auto-activation distances. Clear dynamic spatial state so
+            // listener routing and Prisma UI immediately use the new runtime multiplier
+            // without treating the mode change as a fresh cell-entry settle window.
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
             g_lastOverlayAgentsPayload.clear();
             g_lastChatboxTargetsPayload.clear();
             g_prismaDisplayStatusCache.clear();
@@ -4446,6 +4447,29 @@ R"CHIM(
         bool autoEligible = true;
     };
 
+    static std::string SummarizeChatboxNearbyAgents(const std::vector<ChatboxNearbyAgent>& nearbyAgents,
+                                                    std::size_t maxLen = 1600)
+    {
+        std::string summary;
+        int index = 0;
+        for (const auto& nearbyAgent : nearbyAgents) {
+            if (!summary.empty()) {
+                summary.append(" | ");
+            }
+            summary.append(std::format(
+                "{}:{}:{:08X}:targetable={}:auto={}:dist={:.1f}:status={}:bucket={}",
+                index, nearbyAgent.name, nearbyAgent.formId, nearbyAgent.targetable ? 1 : 0,
+                nearbyAgent.autoEligible ? 1 : 0, nearbyAgent.distanceMeters, nearbyAgent.status,
+                nearbyAgent.sortBucket));
+            if (summary.size() > maxLen) {
+                summary.append("...");
+                break;
+            }
+            ++index;
+        }
+        return summary;
+    }
+
     static bool IsChatboxSpawnMode()
     {
         return g_chatboxCurrentMode == "SPAWN";
@@ -4563,7 +4587,7 @@ R"CHIM(
             return nearbyAgents;
         }
 
-        const auto candidates = SpatialSnapshotManager::GetPlayerConversationTargets("chatbox_targets", true);
+        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets("chatbox_targets", true);
         for (const auto& candidate : candidates) {
             ChatboxNearbyAgent nearby{};
             nearby.actor = candidate.actor;
@@ -4589,6 +4613,13 @@ R"CHIM(
                 }
                 return lhs.name < rhs.name;
             });
+
+        logger::info(
+            "[TYLER-DEBUG][chatbox_targets_collect] mode='{}' targetMode={} count={} targets='{}'",
+            g_chatboxCurrentMode,
+            g_chatboxTargetMode == ChatboxTargetMode::Everyone ? "Everyone" :
+                (g_chatboxTargetMode == ChatboxTargetMode::NPC ? "NPC" : "Auto"),
+            nearbyAgents.size(), SummarizeChatboxNearbyAgents(nearbyAgents));
 
         return nearbyAgents;
     }
@@ -4908,9 +4939,15 @@ R"CHIM(
             selectedDistance = overrideTarget->distanceMeters;
         } else if (g_chatboxTargetMode == ChatboxTargetMode::NPC &&
                    (g_chatboxTargetOverrideFormId != 0 || !g_chatboxTargetOverrideName.empty())) {
-            selectedFormId = g_chatboxTargetOverrideFormId;
-            selectedName = g_chatboxTargetOverrideName;
-            selectedDistance = 0.0f;
+            logger::info(
+                "[Chatbox] Clearing unavailable target override formId={:08X} name='{}'",
+                g_chatboxTargetOverrideFormId, g_chatboxTargetOverrideName);
+            ClearChatboxTargetOverride();
+            if (hasAutoTarget) {
+                selectedFormId = autoTarget.formId;
+                selectedName = autoTarget.name;
+                selectedDistance = autoTarget.distanceMeters;
+            }
         } else if (!everyoneActive && hasAutoTarget) {
             selectedFormId = autoTarget.formId;
             selectedName = autoTarget.name;
@@ -4966,10 +5003,20 @@ R"CHIM(
         targetsPayload["targets"] = targetItems;
 
         const std::string serializedTargets = targetsPayload.dump();
-        if (serializedTargets != g_lastChatboxTargetsPayload) {
+        const bool targetsPayloadChanged = serializedTargets != g_lastChatboxTargetsPayload;
+        if (targetsPayloadChanged) {
             UpdateChatboxTargetsUI(serializedTargets);
             g_lastChatboxTargetsPayload = serializedTargets;
         }
+        logger::info(
+            "[TYLER-DEBUG][chatbox_targets_ui] force={} panelState={} mode='{}' targetMode={} overrideActive={} active='{}:{:08X}' autoActive={} everyoneActive={} targetCount={} payloadChanged={} targets='{}'",
+            force ? 1 : 0, g_chatboxState.load(), g_chatboxCurrentMode,
+            g_chatboxTargetMode == ChatboxTargetMode::Everyone ? "Everyone" :
+                (g_chatboxTargetMode == ChatboxTargetMode::NPC ? "NPC" : "Auto"),
+            (everyoneActive || overrideTarget != nullptr) ? 1 : 0, selectedName, selectedFormId,
+            (!everyoneActive && !overrideTarget && hasAutoTarget) ? 1 : 0, everyoneActive ? 1 : 0,
+            nearbyAgents.size(), targetsPayloadChanged ? 1 : 0,
+            SummarizeChatboxNearbyAgents(nearbyAgents));
 
         if (!g_chatboxModeInitialized || g_lastChatboxMode != g_chatboxCurrentMode) {
             UpdateChatboxModeUI(g_chatboxCurrentMode);
@@ -5166,6 +5213,24 @@ R"CHIM(
                         [&](const ChatboxNearbyAgent& nearbyAgent) {
                             return nearbyAgent.formId == agent->getActor()->GetFormID();
                         }) != nearbyAgents.end();
+                std::string nearbySummary;
+                for (const auto& nearbyAgent : nearbyAgents) {
+                    if (!nearbySummary.empty()) {
+                        nearbySummary.append(";");
+                    }
+                    nearbySummary.append(std::format(
+                        "{}:{:08X}:targetable={}:auto={}:dist={:.1f}:status={}",
+                        nearbyAgent.name, nearbyAgent.formId, nearbyAgent.targetable, nearbyAgent.autoEligible,
+                        nearbyAgent.distanceMeters, nearbyAgent.status));
+                    if (nearbySummary.size() > 1200) {
+                        nearbySummary.append("...");
+                        break;
+                    }
+                }
+                logger::info(
+                    "[TYLER-DEBUG][chatbox_target_override] requestedFormId={:08X} requestedName='{}' resolvedAgent='{}' targetIsNearby={} nearbyCount={} nearby='{}'",
+                    formId, targetName, agent ? agent->getActorName() : "", targetIsNearby,
+                    nearbyAgents.size(), nearbySummary);
                 if (targetIsNearby) {
                     SetChatboxTargetOverride(agent->getActor()->GetFormID(), agent->getActorName());
                     logger::info("[Chatbox] Applied explicit target override to {}", agent->getActorName());

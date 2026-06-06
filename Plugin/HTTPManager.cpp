@@ -11,6 +11,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "Commands.h"
 #include "Conf.h"
@@ -48,6 +49,56 @@ static bool EqualsIgnoreCaseHttp(const std::string& left, const std::string& rig
     }
 
     return true;
+}
+
+static std::string DebugPreviewHttp(std::string value, std::size_t maxLen = 500)
+{
+    std::replace(value.begin(), value.end(), '\r', ' ');
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    if (value.size() > maxLen) {
+        value.resize(maxLen);
+        value.append("...");
+    }
+    return value;
+}
+
+static std::string DebugJoinStringsHttp(const std::vector<std::string>& names, std::size_t maxLen = 800)
+{
+    std::string result;
+    for (const auto& name : names) {
+        if (!result.empty()) {
+            result.append(",");
+        }
+        result.append(name);
+        if (result.size() > maxLen) {
+            result.append("...");
+            break;
+        }
+    }
+    return result;
+}
+
+static std::string DebugJoinJsonStringArrayHttp(const json& values, std::size_t maxLen = 800)
+{
+    if (!values.is_array()) {
+        return "";
+    }
+
+    std::string result;
+    for (const auto& value : values) {
+        if (!value.is_string()) {
+            continue;
+        }
+        if (!result.empty()) {
+            result.append(",");
+        }
+        result.append(value.get<std::string>());
+        if (result.size() > maxLen) {
+            result.append("...");
+            break;
+        }
+    }
+    return result;
 }
 
 static bool IsPlayerStreamActor(const std::string& actorName)
@@ -642,6 +693,41 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             requestEventType = msgParts[0];  // First part is event type (rechat, narration, inputtext, etc.)
             logger::info("[EVENT_TYPE] Request event type: {}", requestEventType);
         }
+        logger::info(
+            "[TYLER-DEBUG][stream_request] request='{}' profileSpeaker='{}' rechatDepth={} parts={} decoded='{}'",
+            requestEventType, speaker, rechatDepth, msgParts.size(), DebugPreviewHttp(decodedMsg, 900));
+        if (requestEventType == "rechat" && msgParts.size() >= 4) {
+            try {
+                const auto rechatPayload = json::parse(msgParts[3]);
+                logger::info(
+                    "[TYLER-DEBUG][stream_request_rechat] profileSpeaker='{}' payloadSpeaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}'",
+                    speaker,
+                    rechatPayload.value("speaker", ""),
+                    rechatPayload.value("listener_hint", ""),
+                    rechatPayload.value("rechat_target_hint", ""),
+                    rechatPayload.value("resolved_rechat_target", ""),
+                    rechatPayload.value("chain_id", ""),
+                    DebugPreviewHttp(rechatPayload.value("origin_line", ""), 300));
+            } catch (const std::exception& e) {
+                logger::warn("[TYLER-DEBUG][stream_request_rechat] Failed to parse rechat payload: {}", e.what());
+            }
+        } else if ((requestEventType.starts_with("inputtext") || requestEventType.starts_with("ginputtext") ||
+                    requestEventType == "narrator_inputtext") && msgParts.size() >= 5) {
+            try {
+                const std::string decodedAudience = base64_decode(msgParts.back());
+                const auto inputAudience = json::parse(decodedAudience);
+                logger::info(
+                    "[TYLER-DEBUG][stream_request_input_audience] profileSpeaker='{}' event='{}' speaker='{}' listener='{}' companions='{}' injected={} raw='{}'",
+                    speaker, requestEventType,
+                    inputAudience.value("speaker", ""),
+                    inputAudience.value("listener", ""),
+                    DebugJoinJsonStringArrayHttp(inputAudience.value("companions", json::array())),
+                    inputAudience.value("resolved_listener_injected", false),
+                    DebugPreviewHttp(decodedAudience, 900));
+            } catch (const std::exception& e) {
+                logger::warn("[TYLER-DEBUG][stream_request_input_audience] Failed to parse input audience: {}", e.what());
+            }
+        }
 
         // Check rechat depth first
         if (rechatDepth > MAX_RECHAT_DEPTH) {
@@ -909,6 +995,14 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         spgResponse.markUnFinished(true); // Mark the queue as still receving data
 
                         std::vector<std::string> lineParts2 = splitString(lineParts[2], '/');
+                        const std::string responseText = lineParts2.empty() ? "" : lineParts2[0];
+                        const std::string responseAction = lineParts2.size() >= 3 ? trim(lineParts2[2]) : "";
+                        const std::string responseExplicitTarget =
+                            lineParts2.size() >= 7 ? trim(lineParts2[6]) : "";
+                        logger::info(
+                            "[TYLER-DEBUG][stream_line] request='{}' profileSpeaker='{}' rechatDepth={} returnedActor='{}' queue='{}' action='{}' explicitRechatTarget='{}' text='{}'",
+                            requestEventType, speaker, rechatDepth, lineParts[0], lineParts[1], responseAction,
+                            responseExplicitTarget, DebugPreviewHttp(responseText, 300));
                         if (lineParts2.size() >= 7) {
                             const std::string explicitRechatTarget = trim(lineParts2[6]);
                             if (!explicitRechatTarget.empty()) {
@@ -1422,13 +1516,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         std::string narratorOverrideReason;
-        auto* localPlayerCell = player->GetParentCell();
-        const auto playerSpatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
-        const float spatialListenerDistanceLimit =
-            (localPlayerCell && localPlayerCell->IsInteriorCell())
-                ? playerSpatialSettings.interiorMaxDistance
-                : playerSpatialSettings.exteriorMaxDistance;
-
         const bool playerInputMessage =
             msg.starts_with("inputtext_s|") || msg.starts_with("inputtext|") ||
             msg.starts_with("ginputtext_s|") || msg.starts_with("ginputtext|");
@@ -1443,8 +1530,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         float minDistance = (std::numeric_limits<float>::max)();
         bool directedChat = false;
         const bool everyoneTargetOverride = PrismaUIBridge::IsChatboxEveryoneTargetOverrideActive();
-        auto rankedTargets = SpatialSnapshotManager::GetPlayerConversationTargets(
-            playerInputMessage ? "player_input_listener_resolve" : "listener_resolve", true);
+        auto rankedTargets = playerInputMessage
+            ? SpatialSnapshotManager::GetValidPlayerSpeechTargets("player_input_listener_resolve")
+            : SpatialSnapshotManager::GetPlayerConversationTargets("listener_resolve", true);
 
         std::string currentParty = "";
         for (const auto& target : rankedTargets) {
@@ -1490,22 +1578,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 return true;
             }
 
-            // VoiceRecord runs on a worker thread. Do not call full SpatialAwareness::Evaluate here:
-            // LOS/navmesh/door/game-ref reads belong on the game-thread snapshot path and can throw SEH
-            // if actor refs move or unload while STT is handing off. For final STT routing, only accept
-            // targets whose cached/ranked status already came from a stable spatial result.
-            const bool stableAudibleReason =
-                target.reason == "immediate_proximity" ||
-                target.reason == "line_of_sight_clear" ||
-                target.reason == "path_fallback_clear" ||
-                target.reason == "open_door_muffled";
-            const bool actualCrosshairTarget = target.source.starts_with("crosshair_");
-            constexpr float kCloseLookTargetMeters = 6.0f;
-            const bool closeLookTarget = target.lookTarget && target.reason == "distance_cell_clear" &&
-                                         target.distanceMeters <= kCloseLookTargetMeters;
-            const bool directCheapTarget = target.targetable && (actualCrosshairTarget || closeLookTarget);
-
-            if (!target.targetable || (!stableAudibleReason && !directCheapTarget)) {
+            if (!SpatialSnapshotManager::IsValidPlayerSpeechTarget(target)) {
                 logger::info(
                     "[LISTENER-RESOLVE] Rejecting '{}' via {}: STT routing requires cached stable spatial "
                     "(source={}, status={}, reason={}, targetable={}, dist={:.1f}m)",
@@ -1515,19 +1588,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 return false;
             }
 
-            if (stableAudibleReason) {
-                logger::info(
-                    "[LISTENER-RESOLVE] Confirmed '{}' via {} using cached stable spatial "
-                    "(source={}, status={}, reason={}, dist={:.1f}m)",
-                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
-                    source, target.source, target.status, target.reason, target.distanceMeters);
-            } else {
-                logger::info(
-                    "[LISTENER-RESOLVE] Confirmed '{}' via {} using direct cheap target "
-                    "(source={}, status={}, reason={}, dist={:.1f}m)",
-                    target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
-                    source, target.source, target.status, target.reason, target.distanceMeters);
-            }
+            logger::info(
+                "[LISTENER-RESOLVE] Confirmed '{}' via {} using shared player speech target validation "
+                "(source={}, status={}, reason={}, dist={:.1f}m)",
+                target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
+                source, target.source, target.status, target.reason, target.distanceMeters);
             return true;
         };
         std::vector<RE::FormID> rejectedTargetFormIds;
@@ -1540,7 +1605,18 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         uint32_t chatboxOverrideFormId = 0;
         std::string chatboxOverrideName;
-        if (PrismaUIBridge::GetChatboxTargetOverride(chatboxOverrideFormId, chatboxOverrideName)) {
+        const bool chatboxOverrideActive =
+            PrismaUIBridge::GetChatboxTargetOverride(chatboxOverrideFormId, chatboxOverrideName);
+        const auto chatboxTargetMode = PrismaUIBridge::GetChatboxTargetMode();
+        const char* chatboxTargetModeText =
+            chatboxTargetMode == PrismaUIBridge::ChatboxTargetMode::Everyone ? "Everyone" :
+            (chatboxTargetMode == PrismaUIBridge::ChatboxTargetMode::NPC ? "NPC" : "Auto");
+        logger::info(
+            "[TYLER-DEBUG][player_resolve_start] playerInput={} msgEvent='{}' chatboxMode='{}' overrideActive={} overrideFormId={:08X} overrideName='{}' everyoneOverride={} rankedCount={} audibleCount={}",
+            playerInputMessage, msg.substr(0, msg.find('|')), chatboxTargetModeText, chatboxOverrideActive,
+            chatboxOverrideFormId, chatboxOverrideName, everyoneTargetOverride, rankedTargets.size(),
+            audibleActors.size());
+        if (chatboxOverrideActive) {
             auto overrideIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
                 [&](const PlayerSpatialCandidate& target) {
                     const bool formMatch = chatboxOverrideFormId != 0 && target.formId == chatboxOverrideFormId;
@@ -1548,35 +1624,23 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     return formMatch || nameMatch;
             });
             if (overrideIt != rankedTargets.end()) {
-                if (selectTarget(*overrideIt, "chatbox_override")) {
+                if (validatePlayerInputTarget(*overrideIt, "chatbox_override") &&
+                    selectTarget(*overrideIt, "chatbox_override")) {
                     directedChat = true;
-                    logger::info("[LISTENER-RESOLVE] Chatbox override absolute priority: {} (bypassed spatial validate)",
+                    logger::info("[LISTENER-RESOLVE] Chatbox override selected valid target: {}",
                                  chatboxOverrideName);
-                }
-            } else if (!chatboxOverrideName.empty()) {
-                auto* overrideAgent = aiam.getAgentByName(chatboxOverrideName).get();
-                if (overrideAgent && overrideAgent->getActor() && !overrideAgent->getActor()->IsDead()) {
-                    PlayerSpatialCandidate fallback{};
-                    fallback.agent = aiam.getAgentByName(chatboxOverrideName);
-                    fallback.actor = overrideAgent->getActor();
-                    fallback.name = chatboxOverrideName;
-                    fallback.formId = overrideAgent->getActor()->GetFormID();
-                    fallback.source = "chatbox_override_outofrange";
-                    fallback.status = "Locked target (out of spatial range)";
-                    fallback.reason = "chatbox_override_absolute";
-                    fallback.targetable = true;
-                    fallback.airDistance = 0.0f;
-                    fallback.distanceMeters = 0.0f;
-                    if (selectTarget(fallback, "chatbox_override_outofrange")) {
-                        directedChat = true;
-                        logger::info("[LISTENER-RESOLVE] Chatbox override target out of spatial range; sending anyway: {}",
-                                     chatboxOverrideName);
-                    }
                 } else {
-                    logger::warn("[LISTENER-RESOLVE] Chatbox override target not found or dead; clearing: name='{}'",
-                                 chatboxOverrideName);
+                    rejectedTargetFormIds.push_back(overrideIt->formId);
+                    logger::info(
+                        "[LISTENER-RESOLVE] Chatbox override target is no longer valid; clearing: name='{}' formId={:08X}",
+                        chatboxOverrideName, chatboxOverrideFormId);
                     PrismaUIBridge::ClearChatboxTargetOverride();
                 }
+            } else if (!chatboxOverrideName.empty()) {
+                logger::warn(
+                    "[LISTENER-RESOLVE] Chatbox override target not present in valid ranked targets; clearing: name='{}'",
+                    chatboxOverrideName);
+                PrismaUIBridge::ClearChatboxTargetOverride();
             }
         }
 
@@ -1625,23 +1689,25 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        if (!agentPointer && playerInputMessage) {
-            const auto fallbackIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
-                [](const PlayerSpatialCandidate& target) {
-                    return target.agent && target.actor && target.agent->getActorName() != NARRATOR_NAME &&
-                           target.targetable;
-                });
-            if (fallbackIt != rankedTargets.end()) {
-                logger::info(
-                    "[LISTENER-RESOLVE] Using nearest targetable NPC fallback '{}' before Narrator "
-                    "(source={}, status={}, reason={}, dist={:.1f}m)",
-                    fallbackIt->name.empty() ? fallbackIt->agent->getActorName() : fallbackIt->name,
-                    fallbackIt->source, fallbackIt->status, fallbackIt->reason, fallbackIt->distanceMeters);
-                selectTarget(*fallbackIt, "nearest_targetable_fallback");
-            }
-        }
-
         if (!agentPointer) {
+            std::string rankedSummary;
+            int summaryCount = 0;
+            for (const auto& target : rankedTargets) {
+                if (summaryCount >= 5) {
+                    break;
+                }
+                if (!rankedSummary.empty()) {
+                    rankedSummary.append(" | ");
+                }
+                rankedSummary.append(std::format(
+                    "{}:{} form={:#x} source={} auto={} look={} targetable={} status={} reason={} dist={:.1f}",
+                    summaryCount, target.name, target.formId, target.source, target.autoEligible, target.lookTarget,
+                    target.targetable, target.status, target.reason, target.distanceMeters));
+                ++summaryCount;
+            }
+            logger::info(
+                "[TYLER-DEBUG][listener_resolve] narrator_fallback playerInput={} audible={} ranked={} top='{}'",
+                playerInputMessage, audibleActors.size(), rankedTargets.size(), rankedSummary);
             auto narrator = aiam.getAgentByName(NARRATOR_NAME);
             if (narrator) {
                 logger::info("[LISTENER-RESOLVE] Routing to Narrator: no targetable NPC in ranked spatial targets (audible={}, ranked={})",
@@ -1821,9 +1887,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         std::string outboundMsg = msg;
         json speechLogPayload;
         bool shouldLogSpeech = false;
-        double audienceSnapshotMs = 0.0;
-        std::size_t audibleCompanionCount = 0;
-        std::size_t spatialAudibilityCount = 0;
         const bool isPlayerInputRequest =
             msg.starts_with("inputtext") || msg.starts_with("ginputtext") || msg.starts_with("narrator_inputtext");
         const bool isSpatialSnapshotEligibleRequest =
@@ -1846,55 +1909,76 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
                 std::vector<std::string> audibleCompanions;
                 json spatialAudibility = json::array();
-
-                for (const auto& candidateAgent : aiam.getAgents()) {
-                    if (!candidateAgent) {
-                        continue;
+                const auto addCompanion = [&](const std::string& name) {
+                    if (name.empty()) {
+                        return;
                     }
-
-                    const std::string candidateName = candidateAgent->getActorName();
-                    if (candidateName == NARRATOR_NAME) {
-                        continue;
-                    }
-
-                    auto* candidateActor = candidateAgent->getActor();
-                    if (!candidateActor || candidateActor->IsDead()) {
-                        continue;
-                    }
-
-                    const float candidateDistance = player->GetPosition().GetDistance(candidateActor->GetPosition());
-                    if (candidateDistance > spatialListenerDistanceLimit) {
-                        continue;
-                    }
-
-                    const auto candidateAudibleIt = audibleActorsByFormId.find(candidateActor->GetFormID());
-                    if (candidateAudibleIt == audibleActorsByFormId.end()) {
-                        continue;
-                    }
-                    const auto& candidateSpatial = *candidateAudibleIt->second;
-
-                    json candidateDebug;
-                    candidateDebug["name"] = candidateName;
-                    candidateDebug["can_communicate"] = true;
-                    candidateDebug["volume"] = candidateSpatial.volume;
-                    candidateDebug["reason"] = candidateSpatial.reason;
-                    candidateDebug["distance"] = candidateSpatial.airDistance;
-                    spatialAudibility.push_back(candidateDebug);
-
-                    if (std::find(audibleCompanions.begin(), audibleCompanions.end(), candidateName) ==
+                    if (std::find(audibleCompanions.begin(), audibleCompanions.end(), name) ==
                             audibleCompanions.end()) {
-                        audibleCompanions.push_back(candidateName);
+                        audibleCompanions.push_back(name);
+                    }
+                };
+                const auto addTargetSpatialDebug = [&](const PlayerSpatialCandidate& target) {
+                    if (target.name.empty() || target.name == NARRATOR_NAME) {
+                        return;
+                    }
+                    json candidateDebug;
+                    candidateDebug["name"] = target.name;
+                    candidateDebug["can_communicate"] = target.targetable;
+                    candidateDebug["reason"] = target.reason;
+                    candidateDebug["distance"] = target.airDistance;
+                    candidateDebug["source"] = target.source;
+                    const auto candidateAudibleIt = audibleActorsByFormId.find(target.formId);
+                    candidateDebug["volume"] = candidateAudibleIt != audibleActorsByFormId.end()
+                        ? candidateAudibleIt->second->volume
+                        : 0.0f;
+                    spatialAudibility.push_back(candidateDebug);
+                };
+
+                if (useEveryoneBroadcast) {
+                    const auto validTargets = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
+                        "player_input_final_audience");
+                    for (const auto& target : validTargets) {
+                        if (target.name == NARRATOR_NAME) {
+                            continue;
+                        }
+                        addCompanion(target.name);
+                        addTargetSpatialDebug(target);
+                    }
+                } else if (listener != NARRATOR_NAME) {
+                    addCompanion(listener);
+                    auto listenerTargetIt = rankedTargets.end();
+                    if (listenerPtr) {
+                        listenerTargetIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
+                            [&](const PlayerSpatialCandidate& target) {
+                                return target.formId == listenerPtr->GetFormID();
+                            });
+                    }
+                    if (listenerTargetIt == rankedTargets.end()) {
+                        listenerTargetIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
+                            [&](const PlayerSpatialCandidate& target) {
+                                return target.name == listener;
+                            });
+                    }
+                    if (listenerTargetIt != rankedTargets.end()) {
+                        distance = listenerTargetIt->airDistance;
+                        hasSpatialContext = true;
+                        listenerSpatial.formId = listenerTargetIt->formId;
+                        listenerSpatial.label = listenerTargetIt->name;
+                        listenerSpatial.airDistance = listenerTargetIt->airDistance;
+                        listenerSpatial.reason = listenerTargetIt->reason;
+                        const auto listenerAudibleIt = audibleActorsByFormId.find(listenerTargetIt->formId);
+                        listenerSpatial.volume = listenerAudibleIt != audibleActorsByFormId.end()
+                            ? listenerAudibleIt->second->volume
+                            : 0.0f;
+                        listenerSpatial.canCommunicate = listenerTargetIt->targetable;
+                        addTargetSpatialDebug(*listenerTargetIt);
                     }
                 }
 
                 const std::string playerSpeaker = RE::PlayerCharacter::GetSingleton()->GetName();
-                if (!playerSpeaker.empty() &&
-                    std::find(audibleCompanions.begin(), audibleCompanions.end(), playerSpeaker) ==
-                        audibleCompanions.end()) {
-                    audibleCompanions.push_back(playerSpeaker);
-                }
-                audibleCompanionCount = audibleCompanions.size();
-                spatialAudibilityCount = spatialAudibility.size();
+                addCompanion(playerSpeaker);
+                const bool injectedResolvedListener = false;
 
                 speechLogPayload["speaker"] = playerSpeaker;
                 speechLogPayload["location"] = GetPlayerLocation();
@@ -1907,6 +1991,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 speechLogPayload["spatial_reason"] = hasSpatialContext ? listenerSpatial.reason : "no_listener_context";
                 speechLogPayload["spatial_audibility"] = spatialAudibility;
                 shouldLogSpeech = true;
+                logger::info(
+                    "[TYLER-DEBUG][player_input_people] listener='{}' companions='{}' companionCount={} hasSpatialContext={} spatialReason='{}' distance={:.1f} spatialAudibilityCount={} spatialAudibility='{}'",
+                    listener, DebugJoinStringsHttp(audibleCompanions), audibleCompanions.size(),
+                    hasSpatialContext, hasSpatialContext ? listenerSpatial.reason : "no_listener_context", distance,
+                    spatialAudibility.size(), DebugPreviewHttp(spatialAudibility.dump(), 1200));
+                logger::info("[TYLER-DEBUG][player_input_speech_payload] {}",
+                             DebugPreviewHttp(speechLogPayload.dump(), 1200));
 
                 if (isSpatialSnapshotEligibleRequest) {
                     json audienceSnapshot;
@@ -1914,12 +2005,18 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     audienceSnapshot["speaker"] = playerSpeaker;
                     audienceSnapshot["listener"] = listener;
                     audienceSnapshot["companions"] = audibleCompanions;
+                    audienceSnapshot["resolved_listener_injected"] = injectedResolvedListener;
+                    audienceSnapshot["target_mode"] = useEveryoneBroadcast ? "everyone" :
+                        (listener == NARRATOR_NAME ? "narrator" : "direct");
                     const std::string snapshotDump = audienceSnapshot.dump();
+                    logger::info("[TYLER-DEBUG][player_input_append_audience] {}",
+                                 DebugPreviewHttp(snapshotDump, 1200));
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
                 }
-                audienceSnapshotMs = std::chrono::duration<double, std::milli>(
+                const auto audienceSnapshotMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - audienceSnapshotStartedAt).count();
+                logger::info("[TYLER-DEBUG][player_input_audience_ms] {:.2f}", audienceSnapshotMs);
             }
         } catch (const std::exception& e) {
             logger::error("Exception preparing player audience snapshot: {}", e.what());

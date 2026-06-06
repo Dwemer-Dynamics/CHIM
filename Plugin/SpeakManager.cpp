@@ -16,6 +16,7 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "Commands.h"
 #include "Globals.h"
@@ -46,6 +47,33 @@ constexpr auto kVrVisemeTaskMinInterval = std::chrono::milliseconds(33);
 constexpr auto kVisemeTaskStaleDisableAfter = std::chrono::milliseconds(500);
 constexpr auto kVisemeTaskGuardLogInterval = std::chrono::seconds(5);
 constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
+
+static std::string DebugPreviewSpeak(std::string value, std::size_t maxLen = 500)
+{
+    std::replace(value.begin(), value.end(), '\r', ' ');
+    std::replace(value.begin(), value.end(), '\n', ' ');
+    if (value.size() > maxLen) {
+        value.resize(maxLen);
+        value.append("...");
+    }
+    return value;
+}
+
+static std::string DebugJoinStringsSpeak(const std::vector<std::string>& names, std::size_t maxLen = 800)
+{
+    std::string result;
+    for (const auto& name : names) {
+        if (!result.empty()) {
+            result.append(",");
+        }
+        result.append(name);
+        if (result.size() > maxLen) {
+            result.append("...");
+            break;
+        }
+    }
+    return result;
+}
 
 extern bool GlobalEnable3DAudioPlayback;
 extern bool GlobalInvertHeadingState;
@@ -2222,13 +2250,20 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     SPGResponse& spgResponse = SPGResponse::getInstance();
     bool commandInQueue = spgResponse.getSize("command") > 0;
 
-    int n = ThreadPool::getInstance().runningTasksByType("HTTPStream");
+    int activeHttpStreams = ThreadPool::getInstance().runningTasksByType("HTTPStream");
+    int activeRechatStreams = ThreadPool::getInstance().runningTasksByType("HTTPStreamRechat");
+    logger::info(
+        "[TYLER-DEBUG][rechat_gate] speaker='{}' listenerHint='{}' explicitTarget='{}' depth={} commandInQueue={} activeHTTPStream={} activeHTTPStreamRechat={} cooldownActive={}",
+        speaker, targetedNpc, explicitRechatTarget, rechatDepth, commandInQueue, activeHttpStreams,
+        activeRechatStreams, std::chrono::high_resolution_clock::now() < rechatCooldown);
+
+    int n = activeHttpStreams;
     if (n > 0 && GlobalRechatPolicyAsap == 0) {
         logger::info("[RECHAT] Rechat avoid because another stream is active HTTPStream ");
         return 0;
     }
 
-    n = ThreadPool::getInstance().runningTasksByType("HTTPStreamRechat");
+    n = activeRechatStreams;
     if (n > 0 && GlobalRechatPolicyAsap==0) {
         logger::info("[RECHAT] Rechat avoid because another stream is active HTTPStreamRechat");
         return 0;
@@ -2238,12 +2273,6 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         if (RE::MenuTopicManager::GetSingleton()->unkB1) {
             logger::debug("[RECHAT] Avoiding rechat event because player is in dialogue");
             return 0;
-        }
-
-        std::vector<std::string> audienceSnapshot;
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            audienceSnapshot = audienceSnapshotCompanions;
         }
 
         json rechatPayload = json::object();
@@ -2256,26 +2285,11 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["resolved_rechat_target"] = resolvedRechatTarget;
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
-        rechatPayload["audience"] = audienceSnapshot;
         rechatPayload["chain_id"] = rechatChainId;
-        if (!resolvedRechatTarget.empty()) {
-            logger::info("[RECHAT] resolved target for {} is {}", speaker, resolvedRechatTarget);
-        }
-
-        std::vector<std::string> chainMembers = audienceSnapshot;
-        if (!speaker.empty() &&
-            std::find(chainMembers.begin(), chainMembers.end(), speaker) == chainMembers.end()) {
-            chainMembers.push_back(speaker);
-        }
-        if (!targetedNpc.empty() &&
-            std::find(chainMembers.begin(), chainMembers.end(), targetedNpc) == chainMembers.end()) {
-            chainMembers.push_back(targetedNpc);
-        }
-        if (!explicitRechatTarget.empty() &&
-            std::find(chainMembers.begin(), chainMembers.end(), explicitRechatTarget) == chainMembers.end()) {
-            chainMembers.push_back(explicitRechatTarget);
-        }
-        rechatPayload["chain_members"] = chainMembers;
+        logger::info(
+            "[TYLER-DEBUG][rechat_payload] speaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}' payload='{}'",
+            speaker, targetedNpc, explicitRechatTarget, resolvedRechatTarget, rechatChainId,
+            DebugPreviewSpeak(debugLauncherLine, 300), DebugPreviewSpeak(rechatPayload.dump(), 1500));
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
@@ -2882,6 +2896,10 @@ void SpeakManager::process(AIAgent *agent) {
                             reusedAudienceSnapshot = true;
                         }
                     }
+                    logger::info(
+                        "[TYLER-DEBUG][npc_audience_cache] speaker='{}' listener='{}' key='{}' reused={} cachedCompanions='{}'",
+                        speakerName, resolvedListenerName, audienceSnapshotKey, reusedAudienceSnapshot,
+                        DebugJoinStringsSpeak(audibleCompanions));
 
                     if (!reusedAudienceSnapshot) {
                         // Audience scope is speech audibility, not auto-activate population.
@@ -2954,6 +2972,11 @@ void SpeakManager::process(AIAgent *agent) {
 
                             SpatialAwareness::Result candidateSpatial =
                                 SpatialAwareness::Evaluate(audibilitySource, candidateActor);
+                            logger::info(
+                                "[TYLER-DEBUG][npc_audience_candidate] speaker='{}' listener='{}' key='{}' candidate='{}' cheapDistance={:.1f} maxDistance={:.1f} spatialCan={} spatialReason='{}' spatialDistance={:.1f} volume={:.3f}",
+                                speakerName, resolvedListenerName, audienceSnapshotKey, candidateName,
+                                candidate.distance, audienceMaxDistance, candidateSpatial.canCommunicate,
+                                candidateSpatial.reason, candidateSpatial.airDistance, candidateSpatial.volume);
 
                             json candidateDebug;
                             candidateDebug["name"] = candidateName;
@@ -2986,6 +3009,11 @@ void SpeakManager::process(AIAgent *agent) {
                             audienceSnapshotCompanions = audibleCompanions;
                             audienceSnapshotReady = !audienceSnapshotCompanions.empty();
                         }
+                        logger::info(
+                            "[TYLER-DEBUG][npc_audience_store] speaker='{}' listener='{}' key='{}' preFocusCompanions='{}' ready={} candidates={} evaluations={}",
+                            speakerName, resolvedListenerName, audienceSnapshotKey,
+                            DebugJoinStringsSpeak(audibleCompanions), !audibleCompanions.empty(),
+                            audienceCandidates.size(), audienceEvaluations);
                     }
 
                     if (!speakerName.empty() &&
@@ -3002,12 +3030,39 @@ void SpeakManager::process(AIAgent *agent) {
                 }
 
                 sData["companions"] = audibleCompanions;
+                auto joinCompanions = [](const std::vector<std::string>& names) {
+                    std::string result;
+                    for (const auto& name : names) {
+                        if (!result.empty()) {
+                            result.append(",");
+                        }
+                        result.append(name);
+                        if (result.size() > 500) {
+                            result.append("...");
+                            break;
+                        }
+                    }
+                    return result;
+                };
+                const bool directListenerInCompanions = speechListener.empty() ||
+                    std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) !=
+                        audibleCompanions.end();
+                logger::info(
+                    "[TYLER-DEBUG][speech_context] speaker='{}' listener='{}' directListenerInCompanions={} companionsCount={} spatialCan={} spatialReason='{}' distance={:.1f} companions='{}'",
+                    speakerName, speechListener, directListenerInCompanions, audibleCompanions.size(),
+                    hasSpatialContext ? spatialResult.canCommunicate : false,
+                    speakerIsNarrator ? "narrator" : (hasSpatialContext ? spatialResult.reason : "no_listener_context"),
+                    distance, joinCompanions(audibleCompanions));
                 sData["distance"] = distance;
                 sData["spatial_can_communicate"] = hasSpatialContext ? spatialResult.canCommunicate : false;
                 sData["spatial_volume"] = hasSpatialContext ? spatialResult.volume : 0.0f;
                 sData["spatial_reason"] = speakerIsNarrator ? "narrator" :
                     (hasSpatialContext ? spatialResult.reason : "no_listener_context");
                 sData["spatial_audibility"] = spatialAudibility;
+                logger::info(
+                    "[TYLER-DEBUG][speech_event_people] speaker='{}' listener='{}' eventCompanions='{}' payload='{}'",
+                    speakerName, speechListener, DebugJoinStringsSpeak(audibleCompanions),
+                    DebugPreviewSpeak(sData.dump(), 1500));
 
                 {
                     std::lock_guard<std::mutex> lock(mtx);
