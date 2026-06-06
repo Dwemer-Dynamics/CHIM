@@ -48,33 +48,6 @@ constexpr auto kVisemeTaskStaleDisableAfter = std::chrono::milliseconds(500);
 constexpr auto kVisemeTaskGuardLogInterval = std::chrono::seconds(5);
 constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 
-static std::string DebugPreviewSpeak(std::string value, std::size_t maxLen = 500)
-{
-    std::replace(value.begin(), value.end(), '\r', ' ');
-    std::replace(value.begin(), value.end(), '\n', ' ');
-    if (value.size() > maxLen) {
-        value.resize(maxLen);
-        value.append("...");
-    }
-    return value;
-}
-
-static std::string DebugJoinStringsSpeak(const std::vector<std::string>& names, std::size_t maxLen = 800)
-{
-    std::string result;
-    for (const auto& name : names) {
-        if (!result.empty()) {
-            result.append(",");
-        }
-        result.append(name);
-        if (result.size() > maxLen) {
-            result.append("...");
-            break;
-        }
-    }
-    return result;
-}
-
 extern bool GlobalEnable3DAudioPlayback;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
@@ -2252,10 +2225,6 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 
     int activeHttpStreams = ThreadPool::getInstance().runningTasksByType("HTTPStream");
     int activeRechatStreams = ThreadPool::getInstance().runningTasksByType("HTTPStreamRechat");
-    logger::info(
-        "[rework_debug][rechat_gate] speaker='{}' listenerHint='{}' explicitTarget='{}' depth={} commandInQueue={} activeHTTPStream={} activeHTTPStreamRechat={} cooldownActive={}",
-        speaker, targetedNpc, explicitRechatTarget, rechatDepth, commandInQueue, activeHttpStreams,
-        activeRechatStreams, std::chrono::high_resolution_clock::now() < rechatCooldown);
 
     int n = activeHttpStreams;
     if (n > 0 && GlobalRechatPolicyAsap == 0) {
@@ -2286,10 +2255,6 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
-        logger::info(
-            "[rework_debug][rechat_payload] speaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}' payload='{}'",
-            speaker, targetedNpc, explicitRechatTarget, resolvedRechatTarget, rechatChainId,
-            DebugPreviewSpeak(debugLauncherLine, 300), DebugPreviewSpeak(rechatPayload.dump(), 1500));
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
@@ -2808,7 +2773,6 @@ void SpeakManager::process(AIAgent *agent) {
                     speechListener.empty() ? RE::PlayerCharacter::GetSingleton()->GetName() : speechListener;
                 sData["listener"] = resolvedListenerName;
                 std::vector<std::string> audibleCompanions;
-                json spatialAudibility = json::array();
 
                 // Calculate distance and v1-lite spatial context from speaker to listener.
                 float distance = 0.0f;
@@ -2896,10 +2860,6 @@ void SpeakManager::process(AIAgent *agent) {
                             reusedAudienceSnapshot = true;
                         }
                     }
-                    logger::info(
-                        "[rework_debug][npc_audience_cache] speaker='{}' listener='{}' key='{}' reused={} cachedCompanions='{}'",
-                        speakerName, resolvedListenerName, audienceSnapshotKey, reusedAudienceSnapshot,
-                        DebugJoinStringsSpeak(audibleCompanions));
 
                     if (!reusedAudienceSnapshot) {
                         // Audience scope is speech audibility, not auto-activate population.
@@ -2961,30 +2921,13 @@ void SpeakManager::process(AIAgent *agent) {
                                       return lhs.distance < rhs.distance;
                                   });
 
-                        std::size_t audienceEvaluations = 0;
-                        const auto audienceEvaluateStartedAt = std::chrono::steady_clock::now();
                         for (const auto& candidate : audienceCandidates) {
-                            ++audienceEvaluations;
-
                             const auto& candidateAgent = candidate.agent;
                             auto* candidateActor = candidate.actor;
                             const std::string candidateName = candidateAgent->getActorName();
 
                             SpatialAwareness::Result candidateSpatial =
                                 SpatialAwareness::Evaluate(audibilitySource, candidateActor);
-                            logger::info(
-                                "[rework_debug][npc_audience_candidate] speaker='{}' listener='{}' key='{}' candidate='{}' cheapDistance={:.1f} maxDistance={:.1f} spatialCan={} spatialReason='{}' spatialDistance={:.1f} volume={:.3f}",
-                                speakerName, resolvedListenerName, audienceSnapshotKey, candidateName,
-                                candidate.distance, audienceMaxDistance, candidateSpatial.canCommunicate,
-                                candidateSpatial.reason, candidateSpatial.airDistance, candidateSpatial.volume);
-
-                            json candidateDebug;
-                            candidateDebug["name"] = candidateName;
-                            candidateDebug["can_communicate"] = candidateSpatial.canCommunicate;
-                            candidateDebug["volume"] = candidateSpatial.volume;
-                            candidateDebug["reason"] = candidateSpatial.reason;
-                            candidateDebug["distance"] = candidateSpatial.airDistance;
-                            spatialAudibility.push_back(candidateDebug);
 
                             if (candidateSpatial.canCommunicate &&
                                 std::find(audibleCompanions.begin(), audibleCompanions.end(), candidateName) ==
@@ -2993,27 +2936,12 @@ void SpeakManager::process(AIAgent *agent) {
                             }
                         }
 
-                        if (!audienceCandidates.empty()) {
-                            const auto audienceEvaluateMs =
-                                std::chrono::duration<double, std::milli>(
-                                    std::chrono::steady_clock::now() - audienceEvaluateStartedAt).count();
-                            logger::debug(
-                                "[SpeakManager] NPC audience snapshot evaluated {}/{} in {:.2f}ms, audible={}",
-                                audienceEvaluations, audienceCandidates.size(), audienceEvaluateMs,
-                                audibleCompanions.size());
-                        }
-
                         {
                             std::lock_guard<std::mutex> lock(mtx);
                             this->audienceSnapshotKey = audienceSnapshotKey;
                             audienceSnapshotCompanions = audibleCompanions;
                             audienceSnapshotReady = !audienceSnapshotCompanions.empty();
                         }
-                        logger::info(
-                            "[rework_debug][npc_audience_store] speaker='{}' listener='{}' key='{}' preFocusCompanions='{}' ready={} candidates={} evaluations={}",
-                            speakerName, resolvedListenerName, audienceSnapshotKey,
-                            DebugJoinStringsSpeak(audibleCompanions), !audibleCompanions.empty(),
-                            audienceCandidates.size(), audienceEvaluations);
                     }
 
                     if (!speakerName.empty() &&
@@ -3030,39 +2958,11 @@ void SpeakManager::process(AIAgent *agent) {
                 }
 
                 sData["companions"] = audibleCompanions;
-                auto joinCompanions = [](const std::vector<std::string>& names) {
-                    std::string result;
-                    for (const auto& name : names) {
-                        if (!result.empty()) {
-                            result.append(",");
-                        }
-                        result.append(name);
-                        if (result.size() > 500) {
-                            result.append("...");
-                            break;
-                        }
-                    }
-                    return result;
-                };
-                const bool directListenerInCompanions = speechListener.empty() ||
-                    std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) !=
-                        audibleCompanions.end();
-                logger::info(
-                    "[rework_debug][speech_context] speaker='{}' listener='{}' directListenerInCompanions={} companionsCount={} spatialCan={} spatialReason='{}' distance={:.1f} companions='{}'",
-                    speakerName, speechListener, directListenerInCompanions, audibleCompanions.size(),
-                    hasSpatialContext ? spatialResult.canCommunicate : false,
-                    speakerIsNarrator ? "narrator" : (hasSpatialContext ? spatialResult.reason : "no_listener_context"),
-                    distance, joinCompanions(audibleCompanions));
                 sData["distance"] = distance;
                 sData["spatial_can_communicate"] = hasSpatialContext ? spatialResult.canCommunicate : false;
                 sData["spatial_volume"] = hasSpatialContext ? spatialResult.volume : 0.0f;
                 sData["spatial_reason"] = speakerIsNarrator ? "narrator" :
                     (hasSpatialContext ? spatialResult.reason : "no_listener_context");
-                sData["spatial_audibility"] = spatialAudibility;
-                logger::info(
-                    "[rework_debug][speech_event_people] speaker='{}' listener='{}' eventCompanions='{}' payload='{}'",
-                    speakerName, speechListener, DebugJoinStringsSpeak(audibleCompanions),
-                    DebugPreviewSpeak(sData.dump(), 1500));
 
                 {
                     std::lock_guard<std::mutex> lock(mtx);

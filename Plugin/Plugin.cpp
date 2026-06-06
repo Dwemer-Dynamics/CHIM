@@ -68,41 +68,6 @@ namespace
         return std::chrono::duration_cast<std::chrono::milliseconds>(value.time_since_epoch()).count();
     }
 
-    std::size_t CountDelimitedEntries(const std::string& value, char separator)
-    {
-        std::size_t count = 0;
-        std::size_t tokenStart = 0;
-        while (tokenStart <= value.size()) {
-            const auto tokenEnd = value.find(separator, tokenStart);
-            const auto length = (tokenEnd == std::string::npos ? value.size() : tokenEnd) - tokenStart;
-            if (length > 0) {
-                ++count;
-            }
-            if (tokenEnd == std::string::npos) {
-                break;
-            }
-            tokenStart = tokenEnd + 1;
-        }
-        return count;
-    }
-
-    std::string PreviewContextValue(const std::string& value, std::size_t maxLength = 500)
-    {
-        if (value.size() <= maxLength) {
-            return value;
-        }
-        return value.substr(0, maxLength) + "...";
-    }
-
-    void LogInfonpcCloseDebug(const char* source, const std::string& payload)
-    {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        const auto* cell = player ? player->GetParentCell() : nullptr;
-        logger::info(
-            "[rework_debug][infonpc_close] source={} entries={} cell={:#x} payload='{}'",
-            source, CountDelimitedEntries(payload, '/'), cell ? cell->GetFormID() : 0,
-            PreviewContextValue(payload));
-    }
 }
 
 static std::atomic<std::int64_t> controlPlayerSpeechSuppressUntilTicks{
@@ -2282,7 +2247,6 @@ private:
                                         result.append("/");
                                     }
                                     result.append(AIAgentManager::getInstance().getPlayerName());
-                                    LogInfonpcCloseDebug("periodic:InspectSurroundingsNavmesh", result);
                                     HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(),
                                                                  GetGameTimeStamp(), result));
                                     PostNearbyActivityStatus(player, 3000.0f);
@@ -5989,7 +5953,6 @@ OnLoadedGame {
             resultClose.append("/");
         }
         resultClose.append(AIAgentManager::getInstance().getPlayerName());
-        LogInfonpcCloseDebug("init:InspectSurroundingsNavmesh", resultClose);
         HTTPManager::log(
             std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose));
         PostNearbyActivityStatus(player, 3000.0f);
@@ -6072,7 +6035,6 @@ OnLoadedGame {
             resultClose.append("/");
         }
         resultClose.append(AIAgentManager::getInstance().getPlayerName());
-        LogInfonpcCloseDebug("reload:InspectSurroundingsNavmesh", resultClose);
         HTTPManager::log(
             std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose));
         PostNearbyActivityStatus(player, 3000.0f);
@@ -6386,7 +6348,6 @@ EventHandlers {
                 result.append("/");
             }
             result.append(AIAgentManager::getInstance().getPlayerName());
-            LogInfonpcCloseDebug("location_change:InspectSurroundingsNavmesh", result);
             HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
 
 

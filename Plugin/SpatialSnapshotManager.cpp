@@ -146,36 +146,6 @@ namespace
         return std::format("form_{:08X}", actor->GetFormID());
     }
 
-    bool ShouldLogTargetListDebug(const std::string& reason)
-    {
-        return reason.contains("chatbox") ||
-               reason.contains("player_input_final_audience") ||
-               reason.contains("player_input_listener_resolve");
-    }
-
-    std::string SummarizePlayerSpatialTargets(const std::vector<PlayerSpatialCandidate>& targets,
-                                              std::size_t maxLen = 1800)
-    {
-        std::string summary;
-        int index = 0;
-        for (const auto& target : targets) {
-            if (!summary.empty()) {
-                summary.append(" | ");
-            }
-            summary.append(std::format(
-                "{}:{}:{:08X}:src={}:reason={}:status={}:targetable={}:auto={}:look={}:bucket={}:dist={:.1f}",
-                index, target.name, target.formId, target.source, target.reason, target.status,
-                target.targetable ? 1 : 0, target.autoEligible ? 1 : 0, target.lookTarget ? 1 : 0,
-                target.sortBucket, target.distanceMeters));
-            if (summary.size() > maxLen) {
-                summary.append("...");
-                break;
-            }
-            ++index;
-        }
-        return summary;
-    }
-
     DoorBarrierScan ScanDoorBarrierBetween(RE::Actor* player, RE::Actor* target,
                                            const SpatialAwareness::Settings& settings)
     {
@@ -662,14 +632,7 @@ namespace
                                const std::string& reason,
                                bool priorityTarget = false)
     {
-        const bool debugTargets = ShouldLogTargetListDebug(reason);
         if (!player || !target || !NeedsTargetRefinement(cheapResult)) {
-            if (debugTargets) {
-                logger::info(
-                    "[rework_debug][target_refinement_skip] reason='{}' target='{}' hasPlayer={} hasTarget={} cheapReason={} cheapCan={} priority={}",
-                    reason, ActorLabel(target), player != nullptr, target != nullptr,
-                    cheapResult.reason, cheapResult.canCommunicate ? 1 : 0, priorityTarget ? 1 : 0);
-            }
             return;
         }
 
@@ -677,12 +640,6 @@ namespace
         {
             SpatialAwareness::Result cached{};
             if (TryGetCachedTargetRefinement(player, target, cached, now)) {
-                if (debugTargets) {
-                    logger::info(
-                        "[rework_debug][target_refinement_skip_cached] reason='{}' target='{}' cachedReason={} cachedCan={} priority={}",
-                        reason, ActorLabel(target), cached.reason, cached.canCommunicate ? 1 : 0,
-                        priorityTarget ? 1 : 0);
-                }
                 return;
             }
         }
@@ -694,15 +651,6 @@ namespace
             auto& nextLosRefinementAt = priorityTarget ? g_nextPriorityLosRefinementAt : g_nextBackgroundLosRefinementAt;
             const auto losInterval = priorityTarget ? kPriorityLosRefinementMinInterval : kBackgroundLosRefinementMinInterval;
             if (g_targetRefinementTaskQueued || now < nextLosRefinementAt) {
-                if (debugTargets) {
-                    const auto waitMs = now < nextLosRefinementAt
-                        ? std::chrono::duration_cast<std::chrono::milliseconds>(nextLosRefinementAt - now).count()
-                        : 0LL;
-                    logger::info(
-                        "[rework_debug][target_refinement_throttle] reason='{}' target='{}' queued={} waitMs={} priority={}",
-                        reason, ActorLabel(target), g_targetRefinementTaskQueued ? 1 : 0, waitMs,
-                        priorityTarget ? 1 : 0);
-                }
                 return;
             }
             g_targetRefinementTaskQueued = true;
@@ -711,61 +659,33 @@ namespace
 
         auto* taskInterface = SKSE::GetTaskInterface();
         if (!taskInterface) {
-            if (debugTargets) {
-                logger::info(
-                    "[rework_debug][target_refinement_no_task_interface] reason='{}' target='{}' priority={}",
-                    reason, ActorLabel(target), priorityTarget ? 1 : 0);
-            }
             std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
             g_targetRefinementTaskQueued = false;
             return;
         }
 
-        if (debugTargets) {
-            logger::info(
-                "[rework_debug][target_refinement_queue] reason='{}' target='{}' cheapReason={} cheapCan={} priority={} dist={:.1f}",
-                reason, ActorLabel(target), cheapResult.reason, cheapResult.canCommunicate ? 1 : 0,
-                priorityTarget ? 1 : 0, cheapResult.airDistance * kSkyrimUnitsToMeters);
-        }
-
-        taskInterface->AddTask([playerFormId, targetFormId, settings, reason, priorityTarget]() {
+        taskInterface->AddTask([playerFormId, targetFormId, settings, priorityTarget]() {
             auto clearQueued = []() {
                 std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
                 g_targetRefinementTaskQueued = false;
             };
-            const bool debugTargets = ShouldLogTargetListDebug(reason);
 
             auto* playerForm = RE::TESForm::LookupByID(playerFormId);
             auto* targetForm = RE::TESForm::LookupByID(targetFormId);
             auto* playerActor = playerForm ? playerForm->As<RE::Actor>() : nullptr;
             auto* targetActor = targetForm ? targetForm->As<RE::Actor>() : nullptr;
             if (!playerActor || !targetActor || targetActor->IsDead() || !targetActor->Is3DLoaded()) {
-                if (debugTargets) {
-                    logger::info(
-                        "[rework_debug][target_refinement_task_invalid] reason='{}' targetForm={:08X} playerOk={} targetOk={} targetLoaded={}",
-                        reason, targetFormId, playerActor != nullptr, targetActor != nullptr,
-                        targetActor && targetActor->Is3DLoaded() ? 1 : 0);
-                }
                 clearQueued();
                 return;
             }
 
-            const auto storeResult = [&](const SpatialAwareness::Result& result, const char* stage) {
-                if (debugTargets) {
-                    logger::info(
-                        "[rework_debug][target_refinement_result] reason='{}' target='{}' stage={} resultReason={} can={} los={} losOk={} pathUsed={} pathFound={} pathDist={:.1f} ratio={:.2f} doors(open={},closed={})",
-                        reason, ActorLabel(targetActor), stage, result.reason,
-                        result.canCommunicate ? 1 : 0, result.hasLineOfSight ? 1 : 0,
-                        result.losQueryOk ? 1 : 0, result.navmeshPathUsed ? 1 : 0,
-                        result.navmeshPathFound ? 1 : 0, result.pathDistance, result.pathRatio,
-                        result.openDoorCount, result.closedDoorCount);
-                }
+            const auto storeResult = [&](const SpatialAwareness::Result& result) {
                 StoreTargetRefinement(playerActor, targetActor, result);
             };
 
             auto result = EvaluateCheapPlayerSpatial(playerActor, targetActor, settings);
             if (!NeedsTargetRefinement(result)) {
-                storeResult(result, "cheap_final");
+                storeResult(result);
                 return;
             }
 
@@ -779,7 +699,7 @@ namespace
                     result.canCommunicate = false;
                     result.volume = 0.0f;
                     result.reason = "closed_door_between";
-                    storeResult(result, "door_closed");
+                    storeResult(result);
                     return;
                 }
             }
@@ -792,7 +712,7 @@ namespace
             if (result.hasLineOfSight) {
                 result.canCommunicate = true;
                 result.reason = "line_of_sight_clear";
-                storeResult(result, "los_clear");
+                storeResult(result);
                 return;
             }
 
@@ -800,7 +720,7 @@ namespace
                 result.canCommunicate = false;
                 result.volume = 0.0f;
                 result.reason = "line_of_sight_blocked";
-                storeResult(result, "vertical_los_blocked");
+                storeResult(result);
                 return;
             }
 
@@ -821,16 +741,11 @@ namespace
             if (runPathFallback) {
                 result = EvaluatePathFallbackForTarget(playerActor, targetActor, settings, result);
             } else {
-                if (debugTargets) {
-                    logger::info(
-                        "[rework_debug][target_refinement_path_throttle] reason='{}' target='{}' priority={} closePath={}",
-                        reason, ActorLabel(targetActor), priorityTarget ? 1 : 0, closePathTarget ? 1 : 0);
-                }
                 clearQueued();
                 return;
             }
 
-            storeResult(result, "path_fallback");
+            storeResult(result);
         });
     }
 
@@ -1501,16 +1416,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             now - g_playerConversationTargetsAt < kPlayerConversationTargetsTtl &&
             g_playerConversationTargetsPlayerPosition.GetDistance(playerPosition) <=
                 kPlayerConversationTargetsMoveTolerance) {
-            if (ShouldLogTargetListDebug(reason)) {
-                const auto ageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - g_playerConversationTargetsAt).count();
-                const float moved = g_playerConversationTargetsPlayerPosition.GetDistance(playerPosition);
-                logger::info(
-                    "[rework_debug][target_list_cache] reuse reason='{}' includeUnavailable={} ageMs={} moved={:.1f} count={} targets='{}'",
-                    reason, includeUnavailable ? 1 : 0, ageMs, moved,
-                    g_playerConversationTargetsCache.size(),
-                    SummarizePlayerSpatialTargets(g_playerConversationTargetsCache));
-            }
             return g_playerConversationTargetsCache;
         }
     }
@@ -1648,10 +1553,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         if (TryGetCachedTargetRefinement(player, target.actor, cachedRefinement, now)) {
             const auto& spatial = cachedRefinement;
             const float verticalDelta = target.actor->GetPosition().z - playerPosition.z;
-            const auto oldSource = target.source;
-            const auto oldReason = target.reason;
-            const bool oldTargetable = target.targetable;
-            const bool oldAutoEligible = target.autoEligible;
             target.reason = spatial.reason;
             target.targetable = spatial.canCommunicate;
             target.status = FormatTargetStatus(target.reason, target.targetable, verticalDelta);
@@ -1663,13 +1564,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             if (!target.lookTarget && target.autoEligible && !nearestAutoEligibleSeen) {
                 nearestAutoEligibleSeen = true;
             }
-            if (ShouldLogTargetListDebug(reason)) {
-                logger::info(
-                    "[rework_debug][target_list_cached_refinement] reason='{}' target='{}' oldSource={} oldReason={} oldTargetable={} oldAuto={} newSource={} newReason={} newTargetable={} newAuto={} dist={:.1f}",
-                    reason, target.name, oldSource, oldReason, oldTargetable ? 1 : 0,
-                    oldAutoEligible ? 1 : 0, target.source, target.reason, target.targetable ? 1 : 0,
-                    target.autoEligible ? 1 : 0, target.distanceMeters);
-            }
             continue;
         } else if (!spatialRefinementSettling) {
             auto spatial = EvaluateCheapPlayerSpatial(player, target.actor, spatialSettings);
@@ -1679,11 +1573,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             }
             QueueTargetRefinement(player, target.actor, spatialSettings, spatial, reason,
                                   target.lookTarget || nearestAutoEligible);
-        } else if (ShouldLogTargetListDebug(reason)) {
-            logger::info(
-                "[rework_debug][target_list_refinement_settling] reason='{}' target='{}' source={} reasonBefore={} targetable={} dist={:.1f}",
-                reason, target.name, target.source, target.reason, target.targetable ? 1 : 0,
-                target.distanceMeters);
         }
         break;
     }
@@ -1710,15 +1599,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         g_playerConversationTargetsPlayerPosition = playerPosition;
         g_playerConversationTargetsIncludeUnavailable = includeUnavailable;
         g_playerConversationTargetsCacheValid = true;
-    }
-
-    if (ShouldLogTargetListDebug(reason)) {
-        logger::info(
-            "[rework_debug][target_list_build] reason='{}' includeUnavailable={} settling={} snapshotAudible={} snapshotEvaluated={} lookTarget='{}:{:08X}:{}:{}' count={} targets='{}'",
-            reason, includeUnavailable ? 1 : 0, spatialRefinementSettling ? 1 : 0,
-            spatialSnapshot.audibleActors.size(), spatialSnapshot.evaluatedActors.size(),
-            lookTarget.name, lookTarget.formId, lookTarget.source, lookTarget.reason,
-            targets.size(), SummarizePlayerSpatialTargets(targets));
     }
 
     return targets;
@@ -1819,18 +1699,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetValidPlayerSpeech
         return lhs.name < rhs.name;
     });
 
-    if (ShouldLogTargetListDebug(reason)) {
-        std::vector<PlayerSpatialCandidate> hiddenTargets;
-        for (const auto& target : rawTargets) {
-            if (!SpatialSnapshotManager::IsValidPlayerSpeechTarget(target)) {
-                hiddenTargets.push_back(target);
-            }
-        }
-        logger::info(
-            "[rework_debug][valid_target_filter] reason='{}' requireComplete={} rule=close_managed rawCount={} validCount={} hiddenCount={} valid='{}' hidden='{}'",
-            reason, requireComplete ? 1 : 0, rawTargets.size(), targets.size(), hiddenTargets.size(),
-            SummarizePlayerSpatialTargets(targets), SummarizePlayerSpatialTargets(hiddenTargets));
-    }
     return targets;
 }
 

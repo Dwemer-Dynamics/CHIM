@@ -51,56 +51,6 @@ static bool EqualsIgnoreCaseHttp(const std::string& left, const std::string& rig
     return true;
 }
 
-static std::string DebugPreviewHttp(std::string value, std::size_t maxLen = 500)
-{
-    std::replace(value.begin(), value.end(), '\r', ' ');
-    std::replace(value.begin(), value.end(), '\n', ' ');
-    if (value.size() > maxLen) {
-        value.resize(maxLen);
-        value.append("...");
-    }
-    return value;
-}
-
-static std::string DebugJoinStringsHttp(const std::vector<std::string>& names, std::size_t maxLen = 800)
-{
-    std::string result;
-    for (const auto& name : names) {
-        if (!result.empty()) {
-            result.append(",");
-        }
-        result.append(name);
-        if (result.size() > maxLen) {
-            result.append("...");
-            break;
-        }
-    }
-    return result;
-}
-
-static std::string DebugJoinJsonStringArrayHttp(const json& values, std::size_t maxLen = 800)
-{
-    if (!values.is_array()) {
-        return "";
-    }
-
-    std::string result;
-    for (const auto& value : values) {
-        if (!value.is_string()) {
-            continue;
-        }
-        if (!result.empty()) {
-            result.append(",");
-        }
-        result.append(value.get<std::string>());
-        if (result.size() > maxLen) {
-            result.append("...");
-            break;
-        }
-    }
-    return result;
-}
-
 static bool IsPlayerStreamActor(const std::string& actorName)
 {
     const std::string normalizedActorName = trim(actorName);
@@ -693,41 +643,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             requestEventType = msgParts[0];  // First part is event type (rechat, narration, inputtext, etc.)
             logger::info("[EVENT_TYPE] Request event type: {}", requestEventType);
         }
-        logger::info(
-            "[rework_debug][stream_request] request='{}' profileSpeaker='{}' rechatDepth={} parts={} decoded='{}'",
-            requestEventType, speaker, rechatDepth, msgParts.size(), DebugPreviewHttp(decodedMsg, 900));
-        if (requestEventType == "rechat" && msgParts.size() >= 4) {
-            try {
-                const auto rechatPayload = json::parse(msgParts[3]);
-                logger::info(
-                    "[rework_debug][stream_request_rechat] profileSpeaker='{}' payloadSpeaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}'",
-                    speaker,
-                    rechatPayload.value("speaker", ""),
-                    rechatPayload.value("listener_hint", ""),
-                    rechatPayload.value("rechat_target_hint", ""),
-                    rechatPayload.value("resolved_rechat_target", ""),
-                    rechatPayload.value("chain_id", ""),
-                    DebugPreviewHttp(rechatPayload.value("origin_line", ""), 300));
-            } catch (const std::exception& e) {
-                logger::warn("[rework_debug][stream_request_rechat] Failed to parse rechat payload: {}", e.what());
-            }
-        } else if ((requestEventType.starts_with("inputtext") || requestEventType.starts_with("ginputtext") ||
-                    requestEventType == "narrator_inputtext") && msgParts.size() >= 5) {
-            try {
-                const std::string decodedAudience = base64_decode(msgParts.back());
-                const auto inputAudience = json::parse(decodedAudience);
-                logger::info(
-                    "[rework_debug][stream_request_input_audience] profileSpeaker='{}' event='{}' speaker='{}' listener='{}' companions='{}' injected={} raw='{}'",
-                    speaker, requestEventType,
-                    inputAudience.value("speaker", ""),
-                    inputAudience.value("listener", ""),
-                    DebugJoinJsonStringArrayHttp(inputAudience.value("companions", json::array())),
-                    inputAudience.value("resolved_listener_injected", false),
-                    DebugPreviewHttp(decodedAudience, 900));
-            } catch (const std::exception& e) {
-                logger::warn("[rework_debug][stream_request_input_audience] Failed to parse input audience: {}", e.what());
-            }
-        }
 
         // Check rechat depth first
         if (rechatDepth > MAX_RECHAT_DEPTH) {
@@ -995,14 +910,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         spgResponse.markUnFinished(true); // Mark the queue as still receving data
 
                         std::vector<std::string> lineParts2 = splitString(lineParts[2], '/');
-                        const std::string responseText = lineParts2.empty() ? "" : lineParts2[0];
-                        const std::string responseAction = lineParts2.size() >= 3 ? trim(lineParts2[2]) : "";
-                        const std::string responseExplicitTarget =
-                            lineParts2.size() >= 7 ? trim(lineParts2[6]) : "";
-                        logger::info(
-                            "[rework_debug][stream_line] request='{}' profileSpeaker='{}' rechatDepth={} returnedActor='{}' queue='{}' action='{}' explicitRechatTarget='{}' text='{}'",
-                            requestEventType, speaker, rechatDepth, lineParts[0], lineParts[1], responseAction,
-                            responseExplicitTarget, DebugPreviewHttp(responseText, 300));
                         if (lineParts2.size() >= 7) {
                             const std::string explicitRechatTarget = trim(lineParts2[6]);
                             if (!explicitRechatTarget.empty()) {
@@ -1607,15 +1514,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         std::string chatboxOverrideName;
         const bool chatboxOverrideActive =
             PrismaUIBridge::GetChatboxTargetOverride(chatboxOverrideFormId, chatboxOverrideName);
-        const auto chatboxTargetMode = PrismaUIBridge::GetChatboxTargetMode();
-        const char* chatboxTargetModeText =
-            chatboxTargetMode == PrismaUIBridge::ChatboxTargetMode::Everyone ? "Everyone" :
-            (chatboxTargetMode == PrismaUIBridge::ChatboxTargetMode::NPC ? "NPC" : "Auto");
-        logger::info(
-            "[rework_debug][player_resolve_start] playerInput={} msgEvent='{}' chatboxMode='{}' overrideActive={} overrideFormId={:08X} overrideName='{}' everyoneOverride={} rankedCount={} audibleCount={}",
-            playerInputMessage, msg.substr(0, msg.find('|')), chatboxTargetModeText, chatboxOverrideActive,
-            chatboxOverrideFormId, chatboxOverrideName, everyoneTargetOverride, rankedTargets.size(),
-            audibleActors.size());
         if (chatboxOverrideActive) {
             auto overrideIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
                 [&](const PlayerSpatialCandidate& target) {
@@ -1690,24 +1588,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         if (!agentPointer) {
-            std::string rankedSummary;
-            int summaryCount = 0;
-            for (const auto& target : rankedTargets) {
-                if (summaryCount >= 5) {
-                    break;
-                }
-                if (!rankedSummary.empty()) {
-                    rankedSummary.append(" | ");
-                }
-                rankedSummary.append(std::format(
-                    "{}:{} form={:#x} source={} auto={} look={} targetable={} status={} reason={} dist={:.1f}",
-                    summaryCount, target.name, target.formId, target.source, target.autoEligible, target.lookTarget,
-                    target.targetable, target.status, target.reason, target.distanceMeters));
-                ++summaryCount;
-            }
-            logger::info(
-                "[rework_debug][listener_resolve] narrator_fallback playerInput={} audible={} ranked={} top='{}'",
-                playerInputMessage, audibleActors.size(), rankedTargets.size(), rankedSummary);
             auto narrator = aiam.getAgentByName(NARRATOR_NAME);
             if (narrator) {
                 logger::info("[LISTENER-RESOLVE] Routing to Narrator: no targetable NPC in ranked spatial targets (audible={}, ranked={})",
@@ -1894,13 +1774,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         try {
             if (isPlayerInputRequest) {
-                const auto audienceSnapshotStartedAt = std::chrono::steady_clock::now();
                 float distance = minDistance;
                 bool hasSpatialContext = false;
                 AudibleActorDescriptor listenerSpatial{};
 
                 std::vector<std::string> audibleCompanions;
-                json spatialAudibility = json::array();
                 std::string audienceSource = listener == NARRATOR_NAME ? "narrator" : "player_spatial";
                 std::string targetMode = useEveryoneBroadcast ? "everyone" :
                     (listener == NARRATOR_NAME ? "narrator" : "direct");
@@ -1914,32 +1792,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         audibleCompanions.push_back(name);
                     }
                 };
-                const auto addSpatialDebug = [&](const std::string& name, RE::FormID formId, bool canCommunicate,
-                                                 const std::string& reason, float airDistance,
-                                                 const std::string& source, float volume) {
-                    if (name.empty() || name == NARRATOR_NAME) {
-                        return;
-                    }
-
-                    json candidateDebug;
-                    candidateDebug["name"] = name;
-                    candidateDebug["can_communicate"] = canCommunicate;
-                    candidateDebug["reason"] = reason;
-                    candidateDebug["distance"] = airDistance;
-                    candidateDebug["source"] = source;
-                    candidateDebug["volume"] = volume;
-                    if (formId != 0) {
-                        candidateDebug["form_id"] = std::format("{:08X}", formId);
-                    }
-                    spatialAudibility.push_back(candidateDebug);
-                };
-                const auto addTargetSpatialDebug = [&](const PlayerSpatialCandidate& target) {
-                    const auto candidateAudibleIt = audibleActorsByFormId.find(target.formId);
-                    addSpatialDebug(
-                        target.name, target.formId, target.targetable, target.reason, target.airDistance,
-                        target.source,
-                        candidateAudibleIt != audibleActorsByFormId.end() ? candidateAudibleIt->second->volume : 0.0f);
-                };
                 const auto addNearbyTargets = [&](const std::string& reason) {
                     const auto validTargets = SpatialSnapshotManager::GetValidPlayerSpeechTargets(reason);
                     std::size_t added = 0;
@@ -1948,7 +1800,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             continue;
                         }
                         addCompanion(target.name);
-                        addTargetSpatialDebug(target);
                         ++added;
                     }
                     return added;
@@ -1966,9 +1817,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     listenerSpatial.volume = listenerSpatialResult.volume;
                     listenerSpatial.reason = listenerSpatialResult.reason;
                     listenerSpatial.canCommunicate = listenerSpatialResult.canCommunicate;
-                    addSpatialDebug(listener, listenerSpatial.formId, listenerSpatialResult.canCommunicate,
-                                    listenerSpatialResult.reason, listenerSpatialResult.airDistance,
-                                    "direct_spatial", listenerSpatialResult.volume);
                 }
 
                 if (listener != NARRATOR_NAME) {
@@ -1991,16 +1839,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 speechLogPayload["spatial_can_communicate"] = listenerCanCommunicate;
                 speechLogPayload["spatial_volume"] = hasSpatialContext ? listenerSpatial.volume : 0.0f;
                 speechLogPayload["spatial_reason"] = hasSpatialContext ? listenerSpatial.reason : "no_listener_context";
-                speechLogPayload["spatial_audibility"] = spatialAudibility;
                 shouldLogSpeech = true;
-                logger::info(
-                    "[rework_debug][player_input_people] listener='{}' targetMode='{}' audienceSource='{}' companions='{}' companionCount={} hasSpatialContext={} listenerCanCommunicate={} spatialReason='{}' distance={:.1f} spatialAudibilityCount={} spatialAudibility='{}'",
-                    listener, targetMode, audienceSource, DebugJoinStringsHttp(audibleCompanions),
-                    audibleCompanions.size(), hasSpatialContext, listenerCanCommunicate ? 1 : 0,
-                    hasSpatialContext ? listenerSpatial.reason : "no_listener_context", distance,
-                    spatialAudibility.size(), DebugPreviewHttp(spatialAudibility.dump(), 1200));
-                logger::info("[rework_debug][player_input_speech_payload] {}",
-                             DebugPreviewHttp(speechLogPayload.dump(), 1200));
 
                 if (isSpatialSnapshotEligibleRequest) {
                     json audienceSnapshot;
@@ -2012,14 +1851,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     audienceSnapshot["target_mode"] = targetMode;
                     audienceSnapshot["audience_source"] = audienceSource;
                     const std::string snapshotDump = audienceSnapshot.dump();
-                    logger::info("[rework_debug][player_input_append_audience] {}",
-                                 DebugPreviewHttp(snapshotDump, 1200));
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
                 }
-                const auto audienceSnapshotMs = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - audienceSnapshotStartedAt).count();
-                logger::info("[rework_debug][player_input_audience_ms] {:.2f}", audienceSnapshotMs);
             }
         } catch (const std::exception& e) {
             logger::error("Exception preparing player audience snapshot: {}", e.what());

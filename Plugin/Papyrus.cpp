@@ -1763,13 +1763,11 @@ void addAllNPC() {
 
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        logger::info("[rework_debug][autoadd] skipped: player=null");
         return;
     }
 
     auto cell = player->GetParentCell();
     if (!cell) {
-        logger::info("[rework_debug][autoadd] skipped: player_cell=null");
         return;
     }
 
@@ -1777,63 +1775,18 @@ void addAllNPC() {
     const bool playerInterior = cell->IsInteriorCell();
     const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
     std::unordered_set<RE::FormID> queuedFormIds;
-    int highHandles = 0;
-    int currentProcessHandles = 0;
-    int consideredActors = 0;
-    int duplicateOrManaged = 0;
-    int skippedInvalid = 0;
-    int skippedPlayer = 0;
-    int skippedEmptyName = 0;
-    int skippedDead = 0;
-    int skippedNotLoaded = 0;
-    int skippedCell = 0;
-    int skippedRace = 0;
-    int skippedDialogue = 0;
-    int skippedHostile = 0;
-    int skippedCreature = 0;
-    int skippedDistance = 0;
-    int queued = 0;
-    std::vector<std::string> queuedSamples;
-    std::vector<std::string> rejectedSamples;
-
-    auto rememberSample = [](std::vector<std::string>& samples, const std::string& label, const char* reason) {
-        if (samples.size() >= 10) {
-            return;
-        }
-        samples.push_back(label + ":" + reason);
-    };
-
-    auto joinSamples = [](const std::vector<std::string>& samples) {
-        std::string result;
-        for (const auto& sample : samples) {
-            if (!result.empty()) {
-                result.append(",");
-            }
-            result.append(sample);
-        }
-        return result;
-    };
 
     // Actors lurking around
     if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
         for (auto& targetHandle : processLists->highActorHandles) {
-            ++highHandles;
             if (auto target = targetHandle.get(); target && target->GetActorRuntimeData().currentProcess) {
-                ++currentProcessHandles;
                 auto actor = target.get();
                 if (!actor || actor->GetFormID() == player->GetFormID()) {
-                    if (actor) {
-                        ++skippedPlayer;
-                    } else {
-                        ++skippedInvalid;
-                    }
                     continue;
                 }
-                ++consideredActors;
 
                 std::string actorLabel(actor->GetDisplayFullName());
                 if (actorLabel.empty()) {
-                    ++skippedEmptyName;
                     continue;
                 }
 
@@ -1841,69 +1794,43 @@ void addAllNPC() {
                 if ((actorFormId != 0 && (aiam.getAgentByFormId(actorFormId) ||
                                            !queuedFormIds.insert(actorFormId).second)) ||
                     aiam.getAgentByName(actorLabel)) {
-                    ++duplicateOrManaged;
-                    rememberSample(rejectedSamples, actorLabel, "already_managed_or_queued");
                     continue;
                 }
 
                 if (actor->IsDead()) {
-                    ++skippedDead;
-                    rememberSample(rejectedSamples, actorLabel, "dead");
                     continue;
                 } else if (!actor->Is3DLoaded()) {
-                    ++skippedNotLoaded;
-                    rememberSample(rejectedSamples, actorLabel, "not_3d_loaded");
                     continue;
                 }
 
                 auto* actorCell = actor->GetParentCell();
                 if (!actorCell || !actorCell->IsAttached()) {
-                    ++skippedCell;
-                    rememberSample(rejectedSamples, actorLabel, "cell_unattached");
                     continue;
                 }
                 if (playerInterior != actorCell->IsInteriorCell()) {
-                    ++skippedCell;
-                    rememberSample(rejectedSamples, actorLabel, "interior_mismatch");
                     continue;
                 }
                 if (playerInterior && actorCell != cell) {
-                    ++skippedCell;
-                    rememberSample(rejectedSamples, actorLabel, "different_cell");
                     continue;
                 }
 
                 auto* race = actor->GetRace();
                 if (!race) {
-                    ++skippedRace;
-                    rememberSample(rejectedSamples, actorLabel, "race_null");
                     continue;
                 }
                 if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) {
-                    ++skippedDialogue;
-                    rememberSample(rejectedSamples, actorLabel, "no_pc_dialogue");
                     continue;
                 } else if (actor->IsHostileToActor(player) && AutoAddHostile == false) {
-                    ++skippedHostile;
-                    rememberSample(rejectedSamples, actorLabel, "hostile");
                     continue;
                 } else if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) {
-                    ++skippedCreature;
-                    rememberSample(rejectedSamples, actorLabel, "creature");
                     continue;
                 }
 
                 float distance = player->GetPosition().GetDistance(actor->GetPosition());
                 if (!std::isfinite(distance) || distance > maxDistance) {
-                    ++skippedDistance;
-                    rememberSample(rejectedSamples, actorLabel, "distance");
                     continue;
                 }
                 logger::info("Auto-adding {}", actorLabel);
-                ++queued;
-                if (queuedSamples.size() < 10) {
-                    queuedSamples.push_back(actorLabel);
-                }
 
                 auto actorHandle = actor->GetHandle();
                 ThreadPool::getInstance().enqueue(
@@ -1911,15 +1838,7 @@ void addAllNPC() {
                     actorLabel);
             }
         }
-    } else {
-        logger::info("[rework_debug][autoadd] skipped: process_lists=null");
     }
-    logger::info(
-        "[rework_debug][autoadd] cell={:#x} interior={} maxDistance={:.0f} handles={} currentProcess={} considered={} queued={} duplicate={} invalid={} player={} emptyName={} dead={} notLoaded={} cellReject={} race={} dialogue={} hostile={} creature={} distance={} queuedSamples='{}' rejectedSamples='{}'",
-        cell->GetFormID(), playerInterior, maxDistance, highHandles, currentProcessHandles, consideredActors, queued,
-        duplicateOrManaged, skippedInvalid, skippedPlayer, skippedEmptyName, skippedDead, skippedNotLoaded, skippedCell,
-        skippedRace, skippedDialogue, skippedHostile, skippedCreature, skippedDistance, joinSamples(queuedSamples),
-        joinSamples(rejectedSamples));
 }
 
 bool promoteCrosshairTargetToAI() {
