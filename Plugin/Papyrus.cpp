@@ -1121,12 +1121,12 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                         // Upgrade to manually-activated instead of removing
                         already->setManuallyAdded(true);
                         std::string s(targetActor->GetDisplayFullName());
-                        s.append(" is now manually activated");
+                        s.append(" is now active in CHIM");
                         if (warn) RE::DebugNotification(s.c_str());
                     } else {
                         // Already manually-activated, remove as before
                         std::string s(targetActor->GetDisplayFullName());
-                        s.append(" is already driven by AI, removing");
+                        s.append(" was already active in CHIM, removing");
                         targetActor->GetActorBase()->voiceType = already->getOriginalVoice();
                         aiam.deleteAgent(already);
                         if (warn) RE::DebugNotification(s.c_str());
