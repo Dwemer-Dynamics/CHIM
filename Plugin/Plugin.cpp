@@ -4294,12 +4294,12 @@ OnSaveGame{
 
         logger::info("AIAgent.esp present");
         if (!Conf::getInstance().isOk()) {
-            RE::DebugNotification("AIAgent.ini file not present or invalid");
+            RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         }
 
         const bool serverReachable = Conf::getInstance().ping();
         if (!serverReachable) {
-            RE::DebugNotification("Cannot connect to server. Review AIAgent.ini");
+            RE::DebugNotification("[CHIM] Cannot connect to the server. Check AIAgent.ini.");
         }
 
         // setNewActionModeFromConfig();
@@ -5837,12 +5837,12 @@ OnLoadedGame {
 
        
         if (!Conf::getInstance().isOk()) {
-            RE::DebugNotification("AIAgent.ini file not present or invalid");
+            RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         }
 
         const bool serverReachable = Conf::getInstance().ping();
         if (!serverReachable) {
-            RE::DebugNotification("Cannot connect to server. Review AIAgent.ini");
+            RE::DebugNotification("[CHIM] Cannot connect to the server. Check AIAgent.ini.");
         }
 
         // setNewActionModeFromConfig();
@@ -6153,7 +6153,7 @@ OnNewGame {
 
     logger::info("AIAgent.esp present");
     if (!Conf::getInstance().isOk()) {
-        RE::DebugNotification("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
     }
     // setNewActionModeFromConfig();
 
@@ -6205,7 +6205,7 @@ OnNewGame {
     */
     auto server = Conf::getInstance().getServer();
     auto port = Conf::getInstance().getPort();
-    auto initMsg = std::format("[AIFF] Using server: http://{}:{}", server, port);
+    auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
     RE::DebugNotification(initMsg.c_str());
 
     pendingLoadedPluginManifestSync = true;

@@ -819,7 +819,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 std::string originalrequest = base64_decode(msg);
                 logger::info("No data received for {} seconds, breaking the loop, request was {}", TIMEOUT_SECONDS,
                              originalrequest);
-                RE::DebugNotification("Seems there are connection issues. Check server log");
+                RE::DebugNotification("[CHIM] Server connection issue. Check the server log.");
                 closeReason = "timeout";
                 break;
             }
@@ -1638,7 +1638,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         if (agentPointer->hasConversationCooldown()) {
             logger::info("{} is on conversation cooldown, showing message", agentPointer->getActorName());
-            std::string cooldownMsg = std::format("{} does not want to talk right now", agentPointer->getActorName());
+            std::string cooldownMsg = std::format("[CHIM] {} does not want to talk right now.", agentPointer->getActorName());
             RE::DebugNotification(cooldownMsg.c_str());
             return;
         }

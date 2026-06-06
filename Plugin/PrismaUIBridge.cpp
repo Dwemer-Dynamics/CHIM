@@ -1635,7 +1635,7 @@ R"CHIM(
         logger::info("[{}] Set mode to: {}", sourceTag, modeStr);
 
         if (showNotification) {
-            RE::DebugNotification(("Mode: " + modeStr).c_str());
+            RE::DebugNotification(("[CHIM] Chat mode: " + modeStr).c_str());
         }
 
         if (previousMode != modeStr) {
@@ -4679,7 +4679,7 @@ R"CHIM(
             getCurrentTimeMillis(), GetGameTimeStamp(), profileNum));
         logger::info("[{}] Switched to LLM profile: {}", sourceTag, profileNum);
         if (showNotification) {
-            RE::DebugNotification(("LLM: " + label).c_str());
+            RE::DebugNotification(("[CHIM] LLM profile: " + label).c_str());
         }
 
         g_chatboxCurrentModelLabel = label;
@@ -4698,7 +4698,7 @@ R"CHIM(
         if (npcName.empty()) {
             logger::warn("[{}] continue_chat requires a target", sourceTag);
             if (showMissingTargetNotification) {
-                RE::DebugNotification("No target available for Continue Speaking");
+                RE::DebugNotification("[CHIM] No target available for Continue Speaking.");
             }
             return false;
         }
@@ -4725,7 +4725,7 @@ R"CHIM(
         HTTPManager::stream(request);
         logger::info("[{}] Triggered continue_chat for Everyone", sourceTag);
         if (showNotification) {
-            RE::DebugNotification("Broadcasting to everyone");
+            RE::DebugNotification("[CHIM] Continuing conversation with everyone.");
         }
         return true;
     }
@@ -5128,6 +5128,9 @@ R"CHIM(
         } else if (cmd.starts_with("debug_notify|")) {
             std::string message = cmd.substr(13);
             if (!message.empty()) {
+                if (message.find("[CHIM]") != 0) {
+                    message = "[CHIM] " + message;
+                }
                 RE::DebugNotification(message.c_str());
             }
         } else if (cmd == "target_override_clear") {
@@ -5188,7 +5191,7 @@ R"CHIM(
                     logger::warn("[Chatbox] Ignoring unavailable target override formId={} name='{}'", formId, targetName);
                     ClearChatboxTargetOverride();
                     CheckAndUpdateChatboxControls(true);
-                    RE::DebugNotification("That target is not currently available");
+                    RE::DebugNotification("[CHIM] That target is not currently available.");
                 }
             }
         } else if (cmd == "focus_chat_toggle") {
@@ -5200,7 +5203,7 @@ R"CHIM(
             UpdateChatboxFocusUI(newFocusChatState);
             g_lastChatboxFocusChatSent = newFocusChatState;
             g_chatboxFocusChatSentInitialized = true;
-            RE::DebugNotification(newFocusChatState ? "Focus Chat Enabled" : "Focus Chat Disabled");
+            RE::DebugNotification(newFocusChatState ? "[CHIM] Focus Chat enabled." : "[CHIM] Focus Chat disabled.");
         }
     }
 
@@ -5602,7 +5605,7 @@ R"CHIM(
         }
         speakManager.stopRechatForNseconds(3);
 
-        RE::DebugNotification("Stopped all dialogue");
+        RE::DebugNotification("[CHIM] Stopped all dialogue.");
     }
 
     // ===== CHIM Settings Menu Functions =====
@@ -5692,7 +5695,7 @@ R"CHIM(
                 HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@1", 
                     getCurrentTimeMillis(), GetGameTimeStamp()));
                 logger::info("[Settings Menu] Enabled Focus Chat");
-                RE::DebugNotification("Focus Chat Enabled");
+                RE::DebugNotification("[CHIM] Focus Chat enabled.");
                 HideSettingsMenu();
                 return;
             }
@@ -5713,7 +5716,7 @@ R"CHIM(
             // Use HTTPManager::log with actor parameter like logMessageForActor
             HTTPManager::log(std::format("core_profile_assign|{}|{}|{}", 
                 getCurrentTimeMillis(), GetGameTimeStamp(), profileNum), npcName);
-            RE::DebugNotification(("Profile " + profileNum + " -> " + npcName).c_str());
+            RE::DebugNotification(("[CHIM] Assigned Profile " + profileNum + " to " + npcName + ".").c_str());
             HideSettingsMenu();
             return;
         }

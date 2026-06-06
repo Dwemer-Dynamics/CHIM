@@ -236,7 +236,7 @@ std::string makeSTT(std::string wavData) {
 
     if (!Conf::getInstance().isOk()) {
         logger::error("AIAgent.ini file not present or invalid");
-        RE::DebugNotification("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         return "";
     }
 

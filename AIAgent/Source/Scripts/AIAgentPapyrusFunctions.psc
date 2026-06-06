@@ -224,14 +224,14 @@ Function ProcessPendingSettingsAction()
 			StorageUtil.SetStringValue(targetActor, "forcedName", messageText)
 		endif
 	elseif (actionId == "tools_sync_factions_locations")
-		Debug.Notification("Please wait 3-5 minutes. You only need to do this once per playthrough.")
+		Debug.Notification("[CHIM] Sync started. Please wait 3-5 minutes. This is only needed once per playthrough.")
 		RunToolsSendFactionLocationInfo()
-		Debug.Notification("factions and locations fully synced and complete!")
+		Debug.Notification("[CHIM] Factions and locations synced.")
 	elseif (actionId == "tools_send_all_voice_samples")
-		Debug.Notification("Uploading all voice samples. Will take 20-30 seconds.")
+		Debug.Notification("[CHIM] Uploading voice samples. This may take 20-30 seconds.")
 		int voiceUploadResult = RunToolsSendAllVoiceSamples()
 		if (voiceUploadResult == 0)
-			Debug.Notification("Voice samples uploaded successfully")
+			Debug.Notification("[CHIM] Voice samples uploaded.")
 		endif
 	elseif (StringUtil.Find(actionId, "sg_") == 0)
 		; Soulgaze actions (check if starts with "sg_")
@@ -1883,7 +1883,7 @@ Function OpenModeToggleWheel(float holdTime)
 		StorageUtil.SetIntValue(None, "AIAgent_CurrentModeIndex", _currentModeIndex)
 
 		String currentMode = _modes[_currentModeIndex]
-		Debug.Notification("Changed to mode "+currentMode)
+		Debug.Notification("[CHIM] Chat mode: "+currentMode)
 		AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
 	endif
 	
