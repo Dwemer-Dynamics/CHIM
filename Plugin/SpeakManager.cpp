@@ -91,6 +91,27 @@ static float GetYawFromQuaternionForAudio(const RE::NiQuaternion& q) {
     return std::atan2(siny_cosp, cosy_cosp) * -1.0f;
 }
 
+static std::string TrimSubtitleLogText(const std::string& subtitleText)
+{
+    const auto first = subtitleText.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "";
+    }
+
+    const auto last = subtitleText.find_last_not_of(" \t\r\n");
+    return subtitleText.substr(first, last - first + 1);
+}
+
+static std::string GetCurrentSubtitleManagerText(RE::SubtitleManager* subtitleManager)
+{
+    if (!subtitleManager || subtitleManager->subtitles.empty()) {
+        return "";
+    }
+
+    const char* currentSubtitle = subtitleManager->subtitles[0].subtitle.c_str();
+    return currentSubtitle ? currentSubtitle : "";
+}
+
 static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::PlayerCharacter* player,
                                      const std::string& subtitleText)
 {
@@ -105,7 +126,67 @@ static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::P
     toSay.subtitle = subtitleText;
     toSay.pad04 = 0xabcd;
 
-    logger::info("[SpeakManager] KillSubtitles at PushForcedPlayerSubtitle.  Forcing player subtitle: '{}'", subtitleText);
+    subtitleManager->KillSubtitles();
+    subtitleManager->subtitles.clear();
+    subtitleManager->subtitles.push_back(toSay);
+}
+
+static int EstimateTextOnlySpeechDurationMs(const std::string& text)
+{
+    if (text.empty()) {
+        return 2000;
+    }
+
+    int words = 0;
+    bool inWord = false;
+    int punctuationPauseMs = 0;
+    for (char rawChar : text) {
+        const auto ch = static_cast<unsigned char>(rawChar);
+        const bool wordChar = std::isalnum(ch) != 0;
+        if (wordChar && !inWord) {
+            ++words;
+            inWord = true;
+        } else if (!wordChar) {
+            inWord = false;
+        }
+
+        if (ch == '.' || ch == '!' || ch == '?') {
+            punctuationPauseMs += 260;
+        } else if (ch == ',' || ch == ';' || ch == ':') {
+            punctuationPauseMs += 120;
+        } else if (ch == '\n' || ch == '\r') {
+            punctuationPauseMs += 180;
+        }
+    }
+
+    const int chars = static_cast<int>(text.length());
+    int baseMs = words > 0 ? words * 360 : chars * 55;
+    baseMs += punctuationPauseMs + 220;
+
+    return std::clamp(baseMs, 900, 45000);
+}
+
+static void PushForcedActorSubtitle(RE::SubtitleManager* subtitleManager, RE::Actor* subtitleSpeaker,
+                                    const std::string& subtitleText, bool narratorSpeaker)
+{
+    if (!subtitleManager || !subtitleSpeaker || subtitleText.empty()) {
+        return;
+    }
+
+    RE::SubtitleInfo toSay;
+    toSay.forceDisplay = true;
+    toSay.targetDistance = 10;
+    if (!narratorSpeaker) {
+        toSay.speaker = subtitleSpeaker->GetHandle();
+    } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        player->SetDisplayName(NARRATOR_NAME, true);
+        toSay.speaker = player->As<RE::Actor>();
+    } else {
+        toSay.speaker = subtitleSpeaker->GetHandle();
+    }
+    toSay.subtitle = subtitleText;
+    toSay.pad04 = 0xabcd;
+
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
     subtitleManager->subtitles.push_back(toSay);
@@ -1072,10 +1153,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     std::vector<SilenceSegment> silences;
     auto avoidClick = std::chrono::steady_clock::now() + std::chrono::duration<double>(preclip);
     // if (!PlaySoundA(buffer, NULL, SND_MEMORY | SND_ASYNC | SND_SYSTEM)) {
+    const bool usingTextOnlyTiming = !DXinitOK;
+
     if (!DXinitOK) {
         logger::info("Could not play buffer:  {}, we should now make something here", GetLastError());
-        auto secondsToWait = static_cast<int>(std::ceil(static_cast<double>(text.length()) / 14.0));
-        duration = secondsToWait;
+        duration = static_cast<double>(EstimateTextOnlySpeechDurationMs(text)) / 1000.0;
         if (forcedDuration > 0) {
             duration = forcedDuration;
         }
@@ -1148,6 +1230,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     bool hasLastRuntimeSpatialLogSignature = false;
     bool appliedMuffleFilter = runtimeMuffleFilter;
     float appliedLineVolumeMultiplier = runtimeLineVolumeMultiplier;
+    const std::string expectedSubtitleText = text;
+    const bool holdNpcTextOnlySubtitle = usingTextOnlyTiming && speaker != "Player" && !expectedSubtitleText.empty();
+    constexpr auto kNpcTextOnlySubtitleKeepAliveInterval = std::chrono::milliseconds(250);
+    auto lastNpcSubtitleRefresh = std::chrono::steady_clock::now() - kNpcTextOnlySubtitleKeepAliveInterval;
 
     speakerActorPointer->IncRefCount();  // Increment reference count to prevent actor from being unloaded
 
@@ -1222,6 +1308,24 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("iter_top");
         // Your loop code here
         lastLost = false;
+
+        if (holdNpcTextOnlySubtitle) {
+            auto* subtitleManager = RE::SubtitleManager::GetSingleton();
+            const auto now = std::chrono::steady_clock::now();
+            const auto subtitleCount = subtitleManager ? subtitleManager->subtitles.size() : 0;
+            const std::string currentSubtitle = GetCurrentSubtitleManagerText(subtitleManager);
+            const bool matchesExpected = subtitleCount > 0 &&
+                                         TrimSubtitleLogText(currentSubtitle) == TrimSubtitleLogText(expectedSubtitleText);
+            const bool keepAliveDue = now - lastNpcSubtitleRefresh >= kNpcTextOnlySubtitleKeepAliveInterval;
+            if ((subtitleCount == 0 || !matchesExpected || keepAliveDue) && subtitleManager && speakerActorPointer) {
+                PushForcedActorSubtitle(subtitleManager,
+                                        speakerActorPointer,
+                                        expectedSubtitleText,
+                                        isNarrator);
+                lastNpcSubtitleRefresh = now;
+            }
+        }
+
         setPhase("get_facegen_anim_data");
         fgen = speakerActorPointer->GetFaceGenAnimationData();
         if (!fgen) {
@@ -2457,8 +2561,6 @@ void SpeakManager::process(AIAgent *agent) {
 
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
-            RE::SubtitleInfo toSay;
-
             if (scriptLine.actor != agent->getActorName()) {  // Character change
                 // If the mismatched item is a "Player" line, dequeue it — no NPC agent
                 // will ever match "Player", so it blocks the queue head forever.
@@ -2501,25 +2603,11 @@ void SpeakManager::process(AIAgent *agent) {
             }
 
             auto* sm = RE::SubtitleManager::GetSingleton();
-            toSay.forceDisplay = true;
-            toSay.targetDistance = 10;
-            if (!agent->isNarrator()) {
-                toSay.speaker = npc->GetHandle();
-            } else {
-                RE::PlayerCharacter::GetSingleton()->SetDisplayName(NARRATOR_NAME, true);
-                toSay.speaker = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
-            }
-
             releasePendingPlayerSubtitle();
-
-            toSay.subtitle = scriptLine.subtitle;
-            toSay.pad04 = 0xabcd;
-            logger::info("[SpeakManager] KillSubtitles at SpeakManager::process.  Forcing {} subtitle: '{}'",
-                         npc->GetDisplayFullName(),
-                         scriptLine.subtitle);
-
-            sm->KillSubtitles();
-            sm->subtitles.push_back(toSay);
+            PushForcedActorSubtitle(sm,
+                                    npc,
+                                    scriptLine.subtitle,
+                                    agent->isNarrator());
 
             hasTalked = true;
 
@@ -3308,8 +3396,6 @@ void SpeakManager::clearVisibleSubtitles() {
     if (!subtitleManager) {
         return;
     }
-
-    logger::info("[SpeakManager] KillSubtitles SpeakManager::clearVisibleSubtitles().");
 
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
