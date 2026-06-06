@@ -4418,10 +4418,15 @@ std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCac
             continue;
         }
 
+        
         const auto navPath = SpatialAwareness::EvaluatePath(player, target, spatialSettings);
         if (navPath.status != SpatialAwareness::PathStatus::kSuccess || navPath.pathDistance < 0.0f) {
-            targetHandle.get()->DecRefCount();
-            continue;
+            // SpatialAwareness does not consider dead people. We can be surrounded by corpses and will never
+            // notice. Avoid discarding it via SpatialAwareness in that case.
+            if (!target->IsDead()) {
+                targetHandle.get()->DecRefCount();
+                continue;
+            }
         }
 
         if (target->IsDead()) {
