@@ -60,6 +60,7 @@ namespace PrismaUIBridge {
     static std::chrono::steady_clock::time_point g_stickyPrismaTargetAt;
     constexpr auto kPrismaTargetStickyTtl = std::chrono::seconds(3);
     constexpr float kPrismaTargetSwitchMarginMeters = 1.5f;
+    constexpr float kChatboxWhisperTargetMaxMeters = 1.0f;
     struct PrismaDisplayStatusEntry {
         std::string status;
         std::chrono::steady_clock::time_point updatedAt;
@@ -1639,9 +1640,10 @@ R"CHIM(
 
         if (previousMode != modeStr) {
             // Voice mode changes should affect player speech reach without rewriting
-            // the user's MCM auto-activation distances. Clear cached spatial state so
-            // listener routing and Prisma UI immediately use the new runtime multiplier.
-            SpatialSnapshotManager::InvalidatePlayerSnapshot();
+            // the user's MCM auto-activation distances. Clear dynamic spatial state so
+            // listener routing and Prisma UI immediately use the new runtime multiplier
+            // without treating the mode change as a fresh cell-entry settle window.
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
             g_lastOverlayAgentsPayload.clear();
             g_lastChatboxTargetsPayload.clear();
             g_prismaDisplayStatusCache.clear();
@@ -4563,8 +4565,15 @@ R"CHIM(
             return nearbyAgents;
         }
 
-        const auto candidates = SpatialSnapshotManager::GetPlayerConversationTargets("chatbox_targets", true);
+        const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
+        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets("chatbox_targets", true);
         for (const auto& candidate : candidates) {
+            if (whisperTargetCapActive &&
+                (!std::isfinite(candidate.distanceMeters) ||
+                 candidate.distanceMeters > kChatboxWhisperTargetMaxMeters)) {
+                continue;
+            }
+
             ChatboxNearbyAgent nearby{};
             nearby.actor = candidate.actor;
             nearby.name = candidate.name;
@@ -4908,9 +4917,15 @@ R"CHIM(
             selectedDistance = overrideTarget->distanceMeters;
         } else if (g_chatboxTargetMode == ChatboxTargetMode::NPC &&
                    (g_chatboxTargetOverrideFormId != 0 || !g_chatboxTargetOverrideName.empty())) {
-            selectedFormId = g_chatboxTargetOverrideFormId;
-            selectedName = g_chatboxTargetOverrideName;
-            selectedDistance = 0.0f;
+            logger::info(
+                "[Chatbox] Clearing unavailable target override formId={:08X} name='{}'",
+                g_chatboxTargetOverrideFormId, g_chatboxTargetOverrideName);
+            ClearChatboxTargetOverride();
+            if (hasAutoTarget) {
+                selectedFormId = autoTarget.formId;
+                selectedName = autoTarget.name;
+                selectedDistance = autoTarget.distanceMeters;
+            }
         } else if (!everyoneActive && hasAutoTarget) {
             selectedFormId = autoTarget.formId;
             selectedName = autoTarget.name;
@@ -4966,7 +4981,8 @@ R"CHIM(
         targetsPayload["targets"] = targetItems;
 
         const std::string serializedTargets = targetsPayload.dump();
-        if (serializedTargets != g_lastChatboxTargetsPayload) {
+        const bool targetsPayloadChanged = serializedTargets != g_lastChatboxTargetsPayload;
+        if (targetsPayloadChanged) {
             UpdateChatboxTargetsUI(serializedTargets);
             g_lastChatboxTargetsPayload = serializedTargets;
         }
@@ -5127,7 +5143,6 @@ R"CHIM(
             SetChatboxEveryoneTargetOverride();
             logger::info("[Chatbox] Applied Everyone target override");
             CheckAndUpdateChatboxControls(true);
-            TriggerContinueConversationForEveryone("Chatbox Targets", true);
         } else if (cmd.starts_with("target_override|")) {
             std::string payload = cmd.substr(16);
             std::string formIdText;
@@ -5152,7 +5167,6 @@ R"CHIM(
             if (IsChatboxNarratorOnlyMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
-                TriggerContinueConversationForNpc(NARRATOR_NAME, "Chatbox Targets", true);
                 return;
             }
 
@@ -5170,7 +5184,6 @@ R"CHIM(
                     SetChatboxTargetOverride(agent->getActor()->GetFormID(), agent->getActorName());
                     logger::info("[Chatbox] Applied explicit target override to {}", agent->getActorName());
                     CheckAndUpdateChatboxControls(true);
-                    TriggerContinueConversationForNpc(agent->getActorName(), "Chatbox Targets", true);
                 } else {
                     logger::warn("[Chatbox] Ignoring unavailable target override formId={} name='{}'", formId, targetName);
                     ClearChatboxTargetOverride();

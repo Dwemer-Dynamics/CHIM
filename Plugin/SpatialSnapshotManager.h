@@ -61,6 +61,9 @@ public:
                                                                     const std::string& reason = "crosshair");
     static std::vector<PlayerSpatialCandidate> GetPlayerConversationTargets(
         const std::string& reason = "conversation_targets", bool includeUnavailable = true);
+    static bool IsValidPlayerSpeechTarget(const PlayerSpatialCandidate& target);
+    static std::vector<PlayerSpatialCandidate> GetValidPlayerSpeechTargets(
+        const std::string& reason = "valid_speech_targets", bool requireComplete = false);
     static bool IsPlayerSpatialSettling();
     static void InvalidatePlayerSnapshot();
     static void InvalidateDynamicSpatialState();

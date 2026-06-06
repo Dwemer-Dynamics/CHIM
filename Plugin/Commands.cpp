@@ -5094,7 +5094,7 @@ RE::Actor* findClosestAgent() {
     }
 
     if (index == -1) {
-        logger::info("No agent available, trying {}", NARRATOR_NAME);
+        logger::info("No non-narrator agent available; returning null actor");
         return nullptr;
 
     } else {
