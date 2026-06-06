@@ -60,6 +60,7 @@ namespace PrismaUIBridge {
     static std::chrono::steady_clock::time_point g_stickyPrismaTargetAt;
     constexpr auto kPrismaTargetStickyTtl = std::chrono::seconds(3);
     constexpr float kPrismaTargetSwitchMarginMeters = 1.5f;
+    constexpr float kChatboxWhisperTargetMaxMeters = 1.0f;
     struct PrismaDisplayStatusEntry {
         std::string status;
         std::chrono::steady_clock::time_point updatedAt;
@@ -4587,8 +4588,17 @@ R"CHIM(
             return nearbyAgents;
         }
 
+        const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
+        std::size_t whisperFiltered = 0;
         const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets("chatbox_targets", true);
         for (const auto& candidate : candidates) {
+            if (whisperTargetCapActive &&
+                (!std::isfinite(candidate.distanceMeters) ||
+                 candidate.distanceMeters > kChatboxWhisperTargetMaxMeters)) {
+                ++whisperFiltered;
+                continue;
+            }
+
             ChatboxNearbyAgent nearby{};
             nearby.actor = candidate.actor;
             nearby.name = candidate.name;
@@ -4615,11 +4625,12 @@ R"CHIM(
             });
 
         logger::info(
-            "[TYLER-DEBUG][chatbox_targets_collect] mode='{}' targetMode={} count={} targets='{}'",
+            "[rework_debug][chatbox_targets_collect] mode='{}' targetMode={} whisperMaxMeters={:.1f} whisperFiltered={} count={} targets='{}'",
             g_chatboxCurrentMode,
             g_chatboxTargetMode == ChatboxTargetMode::Everyone ? "Everyone" :
                 (g_chatboxTargetMode == ChatboxTargetMode::NPC ? "NPC" : "Auto"),
-            nearbyAgents.size(), SummarizeChatboxNearbyAgents(nearbyAgents));
+            whisperTargetCapActive ? kChatboxWhisperTargetMaxMeters : 0.0f,
+            whisperFiltered, nearbyAgents.size(), SummarizeChatboxNearbyAgents(nearbyAgents));
 
         return nearbyAgents;
     }
@@ -5009,7 +5020,7 @@ R"CHIM(
             g_lastChatboxTargetsPayload = serializedTargets;
         }
         logger::info(
-            "[TYLER-DEBUG][chatbox_targets_ui] force={} panelState={} mode='{}' targetMode={} overrideActive={} active='{}:{:08X}' autoActive={} everyoneActive={} targetCount={} payloadChanged={} targets='{}'",
+            "[rework_debug][chatbox_targets_ui] force={} panelState={} mode='{}' targetMode={} overrideActive={} active='{}:{:08X}' autoActive={} everyoneActive={} targetCount={} payloadChanged={} targets='{}'",
             force ? 1 : 0, g_chatboxState.load(), g_chatboxCurrentMode,
             g_chatboxTargetMode == ChatboxTargetMode::Everyone ? "Everyone" :
                 (g_chatboxTargetMode == ChatboxTargetMode::NPC ? "NPC" : "Auto"),
@@ -5174,7 +5185,6 @@ R"CHIM(
             SetChatboxEveryoneTargetOverride();
             logger::info("[Chatbox] Applied Everyone target override");
             CheckAndUpdateChatboxControls(true);
-            TriggerContinueConversationForEveryone("Chatbox Targets", true);
         } else if (cmd.starts_with("target_override|")) {
             std::string payload = cmd.substr(16);
             std::string formIdText;
@@ -5199,7 +5209,6 @@ R"CHIM(
             if (IsChatboxNarratorOnlyMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
-                TriggerContinueConversationForNpc(NARRATOR_NAME, "Chatbox Targets", true);
                 return;
             }
 
@@ -5228,14 +5237,13 @@ R"CHIM(
                     }
                 }
                 logger::info(
-                    "[TYLER-DEBUG][chatbox_target_override] requestedFormId={:08X} requestedName='{}' resolvedAgent='{}' targetIsNearby={} nearbyCount={} nearby='{}'",
+                    "[rework_debug][chatbox_target_override] requestedFormId={:08X} requestedName='{}' resolvedAgent='{}' targetIsNearby={} nearbyCount={} nearby='{}'",
                     formId, targetName, agent ? agent->getActorName() : "", targetIsNearby,
                     nearbyAgents.size(), nearbySummary);
                 if (targetIsNearby) {
                     SetChatboxTargetOverride(agent->getActor()->GetFormID(), agent->getActorName());
                     logger::info("[Chatbox] Applied explicit target override to {}", agent->getActorName());
                     CheckAndUpdateChatboxControls(true);
-                    TriggerContinueConversationForNpc(agent->getActorName(), "Chatbox Targets", true);
                 } else {
                     logger::warn("[Chatbox] Ignoring unavailable target override formId={} name='{}'", formId, targetName);
                     ClearChatboxTargetOverride();

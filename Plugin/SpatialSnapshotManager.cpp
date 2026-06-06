@@ -666,7 +666,7 @@ namespace
         if (!player || !target || !NeedsTargetRefinement(cheapResult)) {
             if (debugTargets) {
                 logger::info(
-                    "[TYLER-DEBUG][target_refinement_skip] reason='{}' target='{}' hasPlayer={} hasTarget={} cheapReason={} cheapCan={} priority={}",
+                    "[rework_debug][target_refinement_skip] reason='{}' target='{}' hasPlayer={} hasTarget={} cheapReason={} cheapCan={} priority={}",
                     reason, ActorLabel(target), player != nullptr, target != nullptr,
                     cheapResult.reason, cheapResult.canCommunicate ? 1 : 0, priorityTarget ? 1 : 0);
             }
@@ -679,7 +679,7 @@ namespace
             if (TryGetCachedTargetRefinement(player, target, cached, now)) {
                 if (debugTargets) {
                     logger::info(
-                        "[TYLER-DEBUG][target_refinement_skip_cached] reason='{}' target='{}' cachedReason={} cachedCan={} priority={}",
+                        "[rework_debug][target_refinement_skip_cached] reason='{}' target='{}' cachedReason={} cachedCan={} priority={}",
                         reason, ActorLabel(target), cached.reason, cached.canCommunicate ? 1 : 0,
                         priorityTarget ? 1 : 0);
                 }
@@ -699,7 +699,7 @@ namespace
                         ? std::chrono::duration_cast<std::chrono::milliseconds>(nextLosRefinementAt - now).count()
                         : 0LL;
                     logger::info(
-                        "[TYLER-DEBUG][target_refinement_throttle] reason='{}' target='{}' queued={} waitMs={} priority={}",
+                        "[rework_debug][target_refinement_throttle] reason='{}' target='{}' queued={} waitMs={} priority={}",
                         reason, ActorLabel(target), g_targetRefinementTaskQueued ? 1 : 0, waitMs,
                         priorityTarget ? 1 : 0);
                 }
@@ -713,7 +713,7 @@ namespace
         if (!taskInterface) {
             if (debugTargets) {
                 logger::info(
-                    "[TYLER-DEBUG][target_refinement_no_task_interface] reason='{}' target='{}' priority={}",
+                    "[rework_debug][target_refinement_no_task_interface] reason='{}' target='{}' priority={}",
                     reason, ActorLabel(target), priorityTarget ? 1 : 0);
             }
             std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
@@ -723,7 +723,7 @@ namespace
 
         if (debugTargets) {
             logger::info(
-                "[TYLER-DEBUG][target_refinement_queue] reason='{}' target='{}' cheapReason={} cheapCan={} priority={} dist={:.1f}",
+                "[rework_debug][target_refinement_queue] reason='{}' target='{}' cheapReason={} cheapCan={} priority={} dist={:.1f}",
                 reason, ActorLabel(target), cheapResult.reason, cheapResult.canCommunicate ? 1 : 0,
                 priorityTarget ? 1 : 0, cheapResult.airDistance * kSkyrimUnitsToMeters);
         }
@@ -742,7 +742,7 @@ namespace
             if (!playerActor || !targetActor || targetActor->IsDead() || !targetActor->Is3DLoaded()) {
                 if (debugTargets) {
                     logger::info(
-                        "[TYLER-DEBUG][target_refinement_task_invalid] reason='{}' targetForm={:08X} playerOk={} targetOk={} targetLoaded={}",
+                        "[rework_debug][target_refinement_task_invalid] reason='{}' targetForm={:08X} playerOk={} targetOk={} targetLoaded={}",
                         reason, targetFormId, playerActor != nullptr, targetActor != nullptr,
                         targetActor && targetActor->Is3DLoaded() ? 1 : 0);
                 }
@@ -753,7 +753,7 @@ namespace
             const auto storeResult = [&](const SpatialAwareness::Result& result, const char* stage) {
                 if (debugTargets) {
                     logger::info(
-                        "[TYLER-DEBUG][target_refinement_result] reason='{}' target='{}' stage={} resultReason={} can={} los={} losOk={} pathUsed={} pathFound={} pathDist={:.1f} ratio={:.2f} doors(open={},closed={})",
+                        "[rework_debug][target_refinement_result] reason='{}' target='{}' stage={} resultReason={} can={} los={} losOk={} pathUsed={} pathFound={} pathDist={:.1f} ratio={:.2f} doors(open={},closed={})",
                         reason, ActorLabel(targetActor), stage, result.reason,
                         result.canCommunicate ? 1 : 0, result.hasLineOfSight ? 1 : 0,
                         result.losQueryOk ? 1 : 0, result.navmeshPathUsed ? 1 : 0,
@@ -823,7 +823,7 @@ namespace
             } else {
                 if (debugTargets) {
                     logger::info(
-                        "[TYLER-DEBUG][target_refinement_path_throttle] reason='{}' target='{}' priority={} closePath={}",
+                        "[rework_debug][target_refinement_path_throttle] reason='{}' target='{}' priority={} closePath={}",
                         reason, ActorLabel(targetActor), priorityTarget ? 1 : 0, closePathTarget ? 1 : 0);
                 }
                 clearQueued();
@@ -1506,7 +1506,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
                     now - g_playerConversationTargetsAt).count();
                 const float moved = g_playerConversationTargetsPlayerPosition.GetDistance(playerPosition);
                 logger::info(
-                    "[TYLER-DEBUG][target_list_cache] reuse reason='{}' includeUnavailable={} ageMs={} moved={:.1f} count={} targets='{}'",
+                    "[rework_debug][target_list_cache] reuse reason='{}' includeUnavailable={} ageMs={} moved={:.1f} count={} targets='{}'",
                     reason, includeUnavailable ? 1 : 0, ageMs, moved,
                     g_playerConversationTargetsCache.size(),
                     SummarizePlayerSpatialTargets(g_playerConversationTargetsCache));
@@ -1665,7 +1665,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             }
             if (ShouldLogTargetListDebug(reason)) {
                 logger::info(
-                    "[TYLER-DEBUG][target_list_cached_refinement] reason='{}' target='{}' oldSource={} oldReason={} oldTargetable={} oldAuto={} newSource={} newReason={} newTargetable={} newAuto={} dist={:.1f}",
+                    "[rework_debug][target_list_cached_refinement] reason='{}' target='{}' oldSource={} oldReason={} oldTargetable={} oldAuto={} newSource={} newReason={} newTargetable={} newAuto={} dist={:.1f}",
                     reason, target.name, oldSource, oldReason, oldTargetable ? 1 : 0,
                     oldAutoEligible ? 1 : 0, target.source, target.reason, target.targetable ? 1 : 0,
                     target.autoEligible ? 1 : 0, target.distanceMeters);
@@ -1681,7 +1681,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
                                   target.lookTarget || nearestAutoEligible);
         } else if (ShouldLogTargetListDebug(reason)) {
             logger::info(
-                "[TYLER-DEBUG][target_list_refinement_settling] reason='{}' target='{}' source={} reasonBefore={} targetable={} dist={:.1f}",
+                "[rework_debug][target_list_refinement_settling] reason='{}' target='{}' source={} reasonBefore={} targetable={} dist={:.1f}",
                 reason, target.name, target.source, target.reason, target.targetable ? 1 : 0,
                 target.distanceMeters);
         }
@@ -1714,7 +1714,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
 
     if (ShouldLogTargetListDebug(reason)) {
         logger::info(
-            "[TYLER-DEBUG][target_list_build] reason='{}' includeUnavailable={} settling={} snapshotAudible={} snapshotEvaluated={} lookTarget='{}:{:08X}:{}:{}' count={} targets='{}'",
+            "[rework_debug][target_list_build] reason='{}' includeUnavailable={} settling={} snapshotAudible={} snapshotEvaluated={} lookTarget='{}:{:08X}:{}:{}' count={} targets='{}'",
             reason, includeUnavailable ? 1 : 0, spatialRefinementSettling ? 1 : 0,
             spatialSnapshot.audibleActors.size(), spatialSnapshot.evaluatedActors.size(),
             lookTarget.name, lookTarget.formId, lookTarget.source, lookTarget.reason,
@@ -1827,7 +1827,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetValidPlayerSpeech
             }
         }
         logger::info(
-            "[TYLER-DEBUG][valid_target_filter] reason='{}' requireComplete={} rule=close_managed rawCount={} validCount={} hiddenCount={} valid='{}' hidden='{}'",
+            "[rework_debug][valid_target_filter] reason='{}' requireComplete={} rule=close_managed rawCount={} validCount={} hiddenCount={} valid='{}' hidden='{}'",
             reason, requireComplete ? 1 : 0, rawTargets.size(), targets.size(), hiddenTargets.size(),
             SummarizePlayerSpatialTargets(targets), SummarizePlayerSpatialTargets(hiddenTargets));
     }

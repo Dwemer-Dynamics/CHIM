@@ -99,7 +99,7 @@ namespace
         auto* player = RE::PlayerCharacter::GetSingleton();
         const auto* cell = player ? player->GetParentCell() : nullptr;
         logger::info(
-            "[TYLER-DEBUG][infonpc_close] source={} entries={} cell={:#x} payload='{}'",
+            "[rework_debug][infonpc_close] source={} entries={} cell={:#x} payload='{}'",
             source, CountDelimitedEntries(payload, '/'), cell ? cell->GetFormID() : 0,
             PreviewContextValue(payload));
     }

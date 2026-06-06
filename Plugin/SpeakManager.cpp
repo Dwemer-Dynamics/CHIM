@@ -2253,7 +2253,7 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     int activeHttpStreams = ThreadPool::getInstance().runningTasksByType("HTTPStream");
     int activeRechatStreams = ThreadPool::getInstance().runningTasksByType("HTTPStreamRechat");
     logger::info(
-        "[TYLER-DEBUG][rechat_gate] speaker='{}' listenerHint='{}' explicitTarget='{}' depth={} commandInQueue={} activeHTTPStream={} activeHTTPStreamRechat={} cooldownActive={}",
+        "[rework_debug][rechat_gate] speaker='{}' listenerHint='{}' explicitTarget='{}' depth={} commandInQueue={} activeHTTPStream={} activeHTTPStreamRechat={} cooldownActive={}",
         speaker, targetedNpc, explicitRechatTarget, rechatDepth, commandInQueue, activeHttpStreams,
         activeRechatStreams, std::chrono::high_resolution_clock::now() < rechatCooldown);
 
@@ -2287,7 +2287,7 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
         logger::info(
-            "[TYLER-DEBUG][rechat_payload] speaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}' payload='{}'",
+            "[rework_debug][rechat_payload] speaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}' payload='{}'",
             speaker, targetedNpc, explicitRechatTarget, resolvedRechatTarget, rechatChainId,
             DebugPreviewSpeak(debugLauncherLine, 300), DebugPreviewSpeak(rechatPayload.dump(), 1500));
 
@@ -2897,7 +2897,7 @@ void SpeakManager::process(AIAgent *agent) {
                         }
                     }
                     logger::info(
-                        "[TYLER-DEBUG][npc_audience_cache] speaker='{}' listener='{}' key='{}' reused={} cachedCompanions='{}'",
+                        "[rework_debug][npc_audience_cache] speaker='{}' listener='{}' key='{}' reused={} cachedCompanions='{}'",
                         speakerName, resolvedListenerName, audienceSnapshotKey, reusedAudienceSnapshot,
                         DebugJoinStringsSpeak(audibleCompanions));
 
@@ -2973,7 +2973,7 @@ void SpeakManager::process(AIAgent *agent) {
                             SpatialAwareness::Result candidateSpatial =
                                 SpatialAwareness::Evaluate(audibilitySource, candidateActor);
                             logger::info(
-                                "[TYLER-DEBUG][npc_audience_candidate] speaker='{}' listener='{}' key='{}' candidate='{}' cheapDistance={:.1f} maxDistance={:.1f} spatialCan={} spatialReason='{}' spatialDistance={:.1f} volume={:.3f}",
+                                "[rework_debug][npc_audience_candidate] speaker='{}' listener='{}' key='{}' candidate='{}' cheapDistance={:.1f} maxDistance={:.1f} spatialCan={} spatialReason='{}' spatialDistance={:.1f} volume={:.3f}",
                                 speakerName, resolvedListenerName, audienceSnapshotKey, candidateName,
                                 candidate.distance, audienceMaxDistance, candidateSpatial.canCommunicate,
                                 candidateSpatial.reason, candidateSpatial.airDistance, candidateSpatial.volume);
@@ -3010,7 +3010,7 @@ void SpeakManager::process(AIAgent *agent) {
                             audienceSnapshotReady = !audienceSnapshotCompanions.empty();
                         }
                         logger::info(
-                            "[TYLER-DEBUG][npc_audience_store] speaker='{}' listener='{}' key='{}' preFocusCompanions='{}' ready={} candidates={} evaluations={}",
+                            "[rework_debug][npc_audience_store] speaker='{}' listener='{}' key='{}' preFocusCompanions='{}' ready={} candidates={} evaluations={}",
                             speakerName, resolvedListenerName, audienceSnapshotKey,
                             DebugJoinStringsSpeak(audibleCompanions), !audibleCompanions.empty(),
                             audienceCandidates.size(), audienceEvaluations);
@@ -3048,7 +3048,7 @@ void SpeakManager::process(AIAgent *agent) {
                     std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) !=
                         audibleCompanions.end();
                 logger::info(
-                    "[TYLER-DEBUG][speech_context] speaker='{}' listener='{}' directListenerInCompanions={} companionsCount={} spatialCan={} spatialReason='{}' distance={:.1f} companions='{}'",
+                    "[rework_debug][speech_context] speaker='{}' listener='{}' directListenerInCompanions={} companionsCount={} spatialCan={} spatialReason='{}' distance={:.1f} companions='{}'",
                     speakerName, speechListener, directListenerInCompanions, audibleCompanions.size(),
                     hasSpatialContext ? spatialResult.canCommunicate : false,
                     speakerIsNarrator ? "narrator" : (hasSpatialContext ? spatialResult.reason : "no_listener_context"),
@@ -3060,7 +3060,7 @@ void SpeakManager::process(AIAgent *agent) {
                     (hasSpatialContext ? spatialResult.reason : "no_listener_context");
                 sData["spatial_audibility"] = spatialAudibility;
                 logger::info(
-                    "[TYLER-DEBUG][speech_event_people] speaker='{}' listener='{}' eventCompanions='{}' payload='{}'",
+                    "[rework_debug][speech_event_people] speaker='{}' listener='{}' eventCompanions='{}' payload='{}'",
                     speakerName, speechListener, DebugJoinStringsSpeak(audibleCompanions),
                     DebugPreviewSpeak(sData.dump(), 1500));
 

@@ -1763,13 +1763,13 @@ void addAllNPC() {
 
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        logger::info("[TYLER-DEBUG][autoadd] skipped: player=null");
+        logger::info("[rework_debug][autoadd] skipped: player=null");
         return;
     }
 
     auto cell = player->GetParentCell();
     if (!cell) {
-        logger::info("[TYLER-DEBUG][autoadd] skipped: player_cell=null");
+        logger::info("[rework_debug][autoadd] skipped: player_cell=null");
         return;
     }
 
@@ -1912,10 +1912,10 @@ void addAllNPC() {
             }
         }
     } else {
-        logger::info("[TYLER-DEBUG][autoadd] skipped: process_lists=null");
+        logger::info("[rework_debug][autoadd] skipped: process_lists=null");
     }
     logger::info(
-        "[TYLER-DEBUG][autoadd] cell={:#x} interior={} maxDistance={:.0f} handles={} currentProcess={} considered={} queued={} duplicate={} invalid={} player={} emptyName={} dead={} notLoaded={} cellReject={} race={} dialogue={} hostile={} creature={} distance={} queuedSamples='{}' rejectedSamples='{}'",
+        "[rework_debug][autoadd] cell={:#x} interior={} maxDistance={:.0f} handles={} currentProcess={} considered={} queued={} duplicate={} invalid={} player={} emptyName={} dead={} notLoaded={} cellReject={} race={} dialogue={} hostile={} creature={} distance={} queuedSamples='{}' rejectedSamples='{}'",
         cell->GetFormID(), playerInterior, maxDistance, highHandles, currentProcessHandles, consideredActors, queued,
         duplicateOrManaged, skippedInvalid, skippedPlayer, skippedEmptyName, skippedDead, skippedNotLoaded, skippedCell,
         skippedRace, skippedDialogue, skippedHostile, skippedCreature, skippedDistance, joinSamples(queuedSamples),

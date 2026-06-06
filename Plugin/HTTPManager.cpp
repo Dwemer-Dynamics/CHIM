@@ -694,13 +694,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             logger::info("[EVENT_TYPE] Request event type: {}", requestEventType);
         }
         logger::info(
-            "[TYLER-DEBUG][stream_request] request='{}' profileSpeaker='{}' rechatDepth={} parts={} decoded='{}'",
+            "[rework_debug][stream_request] request='{}' profileSpeaker='{}' rechatDepth={} parts={} decoded='{}'",
             requestEventType, speaker, rechatDepth, msgParts.size(), DebugPreviewHttp(decodedMsg, 900));
         if (requestEventType == "rechat" && msgParts.size() >= 4) {
             try {
                 const auto rechatPayload = json::parse(msgParts[3]);
                 logger::info(
-                    "[TYLER-DEBUG][stream_request_rechat] profileSpeaker='{}' payloadSpeaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}'",
+                    "[rework_debug][stream_request_rechat] profileSpeaker='{}' payloadSpeaker='{}' listenerHint='{}' explicitTarget='{}' resolvedTarget='{}' chainId='{}' origin='{}'",
                     speaker,
                     rechatPayload.value("speaker", ""),
                     rechatPayload.value("listener_hint", ""),
@@ -709,7 +709,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     rechatPayload.value("chain_id", ""),
                     DebugPreviewHttp(rechatPayload.value("origin_line", ""), 300));
             } catch (const std::exception& e) {
-                logger::warn("[TYLER-DEBUG][stream_request_rechat] Failed to parse rechat payload: {}", e.what());
+                logger::warn("[rework_debug][stream_request_rechat] Failed to parse rechat payload: {}", e.what());
             }
         } else if ((requestEventType.starts_with("inputtext") || requestEventType.starts_with("ginputtext") ||
                     requestEventType == "narrator_inputtext") && msgParts.size() >= 5) {
@@ -717,7 +717,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 const std::string decodedAudience = base64_decode(msgParts.back());
                 const auto inputAudience = json::parse(decodedAudience);
                 logger::info(
-                    "[TYLER-DEBUG][stream_request_input_audience] profileSpeaker='{}' event='{}' speaker='{}' listener='{}' companions='{}' injected={} raw='{}'",
+                    "[rework_debug][stream_request_input_audience] profileSpeaker='{}' event='{}' speaker='{}' listener='{}' companions='{}' injected={} raw='{}'",
                     speaker, requestEventType,
                     inputAudience.value("speaker", ""),
                     inputAudience.value("listener", ""),
@@ -725,7 +725,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     inputAudience.value("resolved_listener_injected", false),
                     DebugPreviewHttp(decodedAudience, 900));
             } catch (const std::exception& e) {
-                logger::warn("[TYLER-DEBUG][stream_request_input_audience] Failed to parse input audience: {}", e.what());
+                logger::warn("[rework_debug][stream_request_input_audience] Failed to parse input audience: {}", e.what());
             }
         }
 
@@ -1000,7 +1000,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         const std::string responseExplicitTarget =
                             lineParts2.size() >= 7 ? trim(lineParts2[6]) : "";
                         logger::info(
-                            "[TYLER-DEBUG][stream_line] request='{}' profileSpeaker='{}' rechatDepth={} returnedActor='{}' queue='{}' action='{}' explicitRechatTarget='{}' text='{}'",
+                            "[rework_debug][stream_line] request='{}' profileSpeaker='{}' rechatDepth={} returnedActor='{}' queue='{}' action='{}' explicitRechatTarget='{}' text='{}'",
                             requestEventType, speaker, rechatDepth, lineParts[0], lineParts[1], responseAction,
                             responseExplicitTarget, DebugPreviewHttp(responseText, 300));
                         if (lineParts2.size() >= 7) {
@@ -1612,7 +1612,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             chatboxTargetMode == PrismaUIBridge::ChatboxTargetMode::Everyone ? "Everyone" :
             (chatboxTargetMode == PrismaUIBridge::ChatboxTargetMode::NPC ? "NPC" : "Auto");
         logger::info(
-            "[TYLER-DEBUG][player_resolve_start] playerInput={} msgEvent='{}' chatboxMode='{}' overrideActive={} overrideFormId={:08X} overrideName='{}' everyoneOverride={} rankedCount={} audibleCount={}",
+            "[rework_debug][player_resolve_start] playerInput={} msgEvent='{}' chatboxMode='{}' overrideActive={} overrideFormId={:08X} overrideName='{}' everyoneOverride={} rankedCount={} audibleCount={}",
             playerInputMessage, msg.substr(0, msg.find('|')), chatboxTargetModeText, chatboxOverrideActive,
             chatboxOverrideFormId, chatboxOverrideName, everyoneTargetOverride, rankedTargets.size(),
             audibleActors.size());
@@ -1706,7 +1706,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 ++summaryCount;
             }
             logger::info(
-                "[TYLER-DEBUG][listener_resolve] narrator_fallback playerInput={} audible={} ranked={} top='{}'",
+                "[rework_debug][listener_resolve] narrator_fallback playerInput={} audible={} ranked={} top='{}'",
                 playerInputMessage, audibleActors.size(), rankedTargets.size(), rankedSummary);
             auto narrator = aiam.getAgentByName(NARRATOR_NAME);
             if (narrator) {
@@ -1898,17 +1898,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 float distance = minDistance;
                 bool hasSpatialContext = false;
                 AudibleActorDescriptor listenerSpatial{};
-                if (listenerPtr) {
-                    const auto listenerAudibleIt = audibleActorsByFormId.find(listenerPtr->GetFormID());
-                    if (listenerAudibleIt != audibleActorsByFormId.end()) {
-                        listenerSpatial = *listenerAudibleIt->second;
-                        hasSpatialContext = true;
-                        distance = listenerSpatial.airDistance;
-                    }
-                }
 
                 std::vector<std::string> audibleCompanions;
                 json spatialAudibility = json::array();
+                std::string audienceSource = listener == NARRATOR_NAME ? "narrator" : "player_spatial";
+                std::string targetMode = useEveryoneBroadcast ? "everyone" :
+                    (listener == NARRATOR_NAME ? "narrator" : "direct");
+                bool listenerCanCommunicate = false;
                 const auto addCompanion = [&](const std::string& name) {
                     if (name.empty()) {
                         return;
@@ -1918,67 +1914,73 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         audibleCompanions.push_back(name);
                     }
                 };
-                const auto addTargetSpatialDebug = [&](const PlayerSpatialCandidate& target) {
-                    if (target.name.empty() || target.name == NARRATOR_NAME) {
+                const auto addSpatialDebug = [&](const std::string& name, RE::FormID formId, bool canCommunicate,
+                                                 const std::string& reason, float airDistance,
+                                                 const std::string& source, float volume) {
+                    if (name.empty() || name == NARRATOR_NAME) {
                         return;
                     }
+
                     json candidateDebug;
-                    candidateDebug["name"] = target.name;
-                    candidateDebug["can_communicate"] = target.targetable;
-                    candidateDebug["reason"] = target.reason;
-                    candidateDebug["distance"] = target.airDistance;
-                    candidateDebug["source"] = target.source;
-                    const auto candidateAudibleIt = audibleActorsByFormId.find(target.formId);
-                    candidateDebug["volume"] = candidateAudibleIt != audibleActorsByFormId.end()
-                        ? candidateAudibleIt->second->volume
-                        : 0.0f;
+                    candidateDebug["name"] = name;
+                    candidateDebug["can_communicate"] = canCommunicate;
+                    candidateDebug["reason"] = reason;
+                    candidateDebug["distance"] = airDistance;
+                    candidateDebug["source"] = source;
+                    candidateDebug["volume"] = volume;
+                    if (formId != 0) {
+                        candidateDebug["form_id"] = std::format("{:08X}", formId);
+                    }
                     spatialAudibility.push_back(candidateDebug);
                 };
-
-                if (useEveryoneBroadcast) {
-                    const auto validTargets = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
-                        "player_input_final_audience");
+                const auto addTargetSpatialDebug = [&](const PlayerSpatialCandidate& target) {
+                    const auto candidateAudibleIt = audibleActorsByFormId.find(target.formId);
+                    addSpatialDebug(
+                        target.name, target.formId, target.targetable, target.reason, target.airDistance,
+                        target.source,
+                        candidateAudibleIt != audibleActorsByFormId.end() ? candidateAudibleIt->second->volume : 0.0f);
+                };
+                const auto addNearbyTargets = [&](const std::string& reason) {
+                    const auto validTargets = SpatialSnapshotManager::GetValidPlayerSpeechTargets(reason);
+                    std::size_t added = 0;
                     for (const auto& target : validTargets) {
                         if (target.name == NARRATOR_NAME) {
                             continue;
                         }
                         addCompanion(target.name);
                         addTargetSpatialDebug(target);
+                        ++added;
                     }
-                } else if (listener != NARRATOR_NAME) {
-                    addCompanion(listener);
-                    auto listenerTargetIt = rankedTargets.end();
-                    if (listenerPtr) {
-                        listenerTargetIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
-                            [&](const PlayerSpatialCandidate& target) {
-                                return target.formId == listenerPtr->GetFormID();
-                            });
-                    }
-                    if (listenerTargetIt == rankedTargets.end()) {
-                        listenerTargetIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
-                            [&](const PlayerSpatialCandidate& target) {
-                                return target.name == listener;
-                            });
-                    }
-                    if (listenerTargetIt != rankedTargets.end()) {
-                        distance = listenerTargetIt->airDistance;
-                        hasSpatialContext = true;
-                        listenerSpatial.formId = listenerTargetIt->formId;
-                        listenerSpatial.label = listenerTargetIt->name;
-                        listenerSpatial.airDistance = listenerTargetIt->airDistance;
-                        listenerSpatial.reason = listenerTargetIt->reason;
-                        const auto listenerAudibleIt = audibleActorsByFormId.find(listenerTargetIt->formId);
-                        listenerSpatial.volume = listenerAudibleIt != audibleActorsByFormId.end()
-                            ? listenerAudibleIt->second->volume
-                            : 0.0f;
-                        listenerSpatial.canCommunicate = listenerTargetIt->targetable;
-                        addTargetSpatialDebug(*listenerTargetIt);
+                    return added;
+                };
+
+                if (listenerPtr && listener != NARRATOR_NAME) {
+                    const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
+                    const auto listenerSpatialResult = SpatialAwareness::Evaluate(player, listenerPtr, spatialSettings);
+                    hasSpatialContext = true;
+                    listenerCanCommunicate = listenerSpatialResult.canCommunicate;
+                    distance = listenerSpatialResult.airDistance;
+                    listenerSpatial.formId = listenerPtr->GetFormID();
+                    listenerSpatial.label = listener;
+                    listenerSpatial.airDistance = listenerSpatialResult.airDistance;
+                    listenerSpatial.volume = listenerSpatialResult.volume;
+                    listenerSpatial.reason = listenerSpatialResult.reason;
+                    listenerSpatial.canCommunicate = listenerSpatialResult.canCommunicate;
+                    addSpatialDebug(listener, listenerSpatial.formId, listenerSpatialResult.canCommunicate,
+                                    listenerSpatialResult.reason, listenerSpatialResult.airDistance,
+                                    "direct_spatial", listenerSpatialResult.volume);
+                }
+
+                if (listener != NARRATOR_NAME) {
+                    const auto nearbyTargetCount = addNearbyTargets("player_input_final_audience");
+                    if (nearbyTargetCount == 0) {
+                        audienceSource = "selected_listener_fallback";
+                        addCompanion(listener);
                     }
                 }
 
                 const std::string playerSpeaker = RE::PlayerCharacter::GetSingleton()->GetName();
                 addCompanion(playerSpeaker);
-                const bool injectedResolvedListener = false;
 
                 speechLogPayload["speaker"] = playerSpeaker;
                 speechLogPayload["location"] = GetPlayerLocation();
@@ -1986,17 +1988,18 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 speechLogPayload["listener"] = listener;
                 speechLogPayload["companions"] = audibleCompanions;
                 speechLogPayload["distance"] = distance;
-                speechLogPayload["spatial_can_communicate"] = hasSpatialContext;
+                speechLogPayload["spatial_can_communicate"] = listenerCanCommunicate;
                 speechLogPayload["spatial_volume"] = hasSpatialContext ? listenerSpatial.volume : 0.0f;
                 speechLogPayload["spatial_reason"] = hasSpatialContext ? listenerSpatial.reason : "no_listener_context";
                 speechLogPayload["spatial_audibility"] = spatialAudibility;
                 shouldLogSpeech = true;
                 logger::info(
-                    "[TYLER-DEBUG][player_input_people] listener='{}' companions='{}' companionCount={} hasSpatialContext={} spatialReason='{}' distance={:.1f} spatialAudibilityCount={} spatialAudibility='{}'",
-                    listener, DebugJoinStringsHttp(audibleCompanions), audibleCompanions.size(),
-                    hasSpatialContext, hasSpatialContext ? listenerSpatial.reason : "no_listener_context", distance,
+                    "[rework_debug][player_input_people] listener='{}' targetMode='{}' audienceSource='{}' companions='{}' companionCount={} hasSpatialContext={} listenerCanCommunicate={} spatialReason='{}' distance={:.1f} spatialAudibilityCount={} spatialAudibility='{}'",
+                    listener, targetMode, audienceSource, DebugJoinStringsHttp(audibleCompanions),
+                    audibleCompanions.size(), hasSpatialContext, listenerCanCommunicate ? 1 : 0,
+                    hasSpatialContext ? listenerSpatial.reason : "no_listener_context", distance,
                     spatialAudibility.size(), DebugPreviewHttp(spatialAudibility.dump(), 1200));
-                logger::info("[TYLER-DEBUG][player_input_speech_payload] {}",
+                logger::info("[rework_debug][player_input_speech_payload] {}",
                              DebugPreviewHttp(speechLogPayload.dump(), 1200));
 
                 if (isSpatialSnapshotEligibleRequest) {
@@ -2005,18 +2008,18 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     audienceSnapshot["speaker"] = playerSpeaker;
                     audienceSnapshot["listener"] = listener;
                     audienceSnapshot["companions"] = audibleCompanions;
-                    audienceSnapshot["resolved_listener_injected"] = injectedResolvedListener;
-                    audienceSnapshot["target_mode"] = useEveryoneBroadcast ? "everyone" :
-                        (listener == NARRATOR_NAME ? "narrator" : "direct");
+                    audienceSnapshot["resolved_listener_injected"] = false;
+                    audienceSnapshot["target_mode"] = targetMode;
+                    audienceSnapshot["audience_source"] = audienceSource;
                     const std::string snapshotDump = audienceSnapshot.dump();
-                    logger::info("[TYLER-DEBUG][player_input_append_audience] {}",
+                    logger::info("[rework_debug][player_input_append_audience] {}",
                                  DebugPreviewHttp(snapshotDump, 1200));
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
                 }
                 const auto audienceSnapshotMs = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - audienceSnapshotStartedAt).count();
-                logger::info("[TYLER-DEBUG][player_input_audience_ms] {:.2f}", audienceSnapshotMs);
+                logger::info("[rework_debug][player_input_audience_ms] {:.2f}", audienceSnapshotMs);
             }
         } catch (const std::exception& e) {
             logger::error("Exception preparing player audience snapshot: {}", e.what());
