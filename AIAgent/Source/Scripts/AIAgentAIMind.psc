@@ -11,7 +11,7 @@ Actor lastTarget
 
 function Test() global
 
-Debug.Notification("Ok");
+Debug.Notification("[CHIM] OK.");
 
 endFunction
 
@@ -141,7 +141,7 @@ function MoveToTargetEnd(Actor npc) global
 						; Use MoveInventoryItem for proper transfer with confirmation for gold
 						MoveInventoryItem(npc, destinationActor, itemForm, itemAmount, itemName)
 						
-						Debug.Notification(npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName())
+						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName()+".")
 						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName(),"itemtransfer",npc.GetDisplayName())
 					else
 						Debug.Trace("[CHIM] ERROR: Could not find Form with ID "+formID)
@@ -237,7 +237,7 @@ function MoveToTargetEnd(Actor npc) global
 						Debug.TraceUser("ChimHTTPSender", logMessage)
 						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 						
-						Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
 					
 					; Clear the pending pickup data
@@ -274,7 +274,7 @@ function MoveToTargetEnd(Actor npc) global
 						Debug.TraceUser("ChimHTTPSender", logMessage)
 						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 						
-						Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
 				endif
 				; Clear the pending pickup data
@@ -788,7 +788,7 @@ function TravelToTargetEnd(Actor npc) global
 					Debug.TraceUser("ChimHTTPSender", logMessage)
 					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 					
-					Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+					Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 				endif
 			endif
 			; Clear the pending pickup data
@@ -1187,7 +1187,11 @@ function ShowDebugNotification(String text) global
 
 	Utility.WaitMenuMode(0.05)
 
-	Debug.Notification(text)
+	if StringUtil.Substring(text, 0, 6) == "[CHIM]"
+		Debug.Notification(text)
+	else
+		Debug.Notification("[CHIM] "+text)
+	endif
 endFunction
 
 function ShowTopLeftNotification(String text) global
@@ -2757,7 +2761,7 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 		
 	else
 		source.RemoveItem(akItemToRemove, amount, false, target)
-		Debug.Notification(source.GetDisplayName()+ " gives "+amount+" "+realName+" to "+target.getDisplayName());
+		Debug.Notification("[CHIM] "+source.GetDisplayName()+ " gave "+amount+" "+realName+" to "+target.getDisplayName()+".");
 		;TESCOntainerEvent will take care of the transaction
 	endif
 	Debug.Trace("MoveInventoryItem end");
@@ -2916,9 +2920,9 @@ Function AddBounty(Actor player, Actor guard, Faction crimeFaction, int amount, 
 	endif
 
 	if (holdName != "")
-		Debug.Notification(amount+" gold added to bounty in "+holdName+".")
+		Debug.Notification("[CHIM] Added "+amount+" gold to bounty in "+holdName+".")
 	else
-		Debug.Notification(amount+" gold added to bounty.")
+		Debug.Notification("[CHIM] Added "+amount+" gold to bounty.")
 	endif
 
 	if (updatedBounty <= previousBounty)
@@ -3232,7 +3236,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 		Debug.TraceUser("ChimHTTPSender", logMessage)
 		
-		Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 	else
 		; Too far - store details and initiate movement
 		StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)

@@ -1120,13 +1120,15 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     if (!already->isManuallyAdded()) {
                         // Upgrade to manually-activated instead of removing
                         already->setManuallyAdded(true);
-                        std::string s(targetActor->GetDisplayFullName());
-                        s.append(" is now manually activated");
+                        std::string s("[CHIM] ");
+                        s.append(targetActor->GetDisplayFullName());
+                        s.append(" is now active.");
                         if (warn) RE::DebugNotification(s.c_str());
                     } else {
                         // Already manually-activated, remove as before
-                        std::string s(targetActor->GetDisplayFullName());
-                        s.append(" is already driven by AI, removing");
+                        std::string s("[CHIM] ");
+                        s.append(targetActor->GetDisplayFullName());
+                        s.append(" was already active. Removing from CHIM.");
                         targetActor->GetActorBase()->voiceType = already->getOriginalVoice();
                         aiam.deleteAgent(already);
                         if (warn) RE::DebugNotification(s.c_str());
@@ -1402,8 +1404,9 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     logger::info("{} IS NOW DRIVEN BY AI. Total AI Agents {}", targetActor->GetDisplayFullName(),
                                  aiam.getAgents().size());
 
-                    std::string s(targetActor->GetDisplayFullName());
-                    s.append(" is now AI assisted");
+                    std::string s("[CHIM] ");
+                    s.append(targetActor->GetDisplayFullName());
+                    s.append(" is now active.");
                     if (warn) RE::DebugNotification(s.c_str());
 
                     // commandAnimation("IdleDrunk", agent->getActor());
@@ -1438,7 +1441,7 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     // Check if NPC is on conversation cooldown
                     if (agent->hasConversationCooldown()) {
                         logger::info("{} is on conversation cooldown, showing message", agent->getActorName());
-                        std::string cooldownMsg = std::format("{} does not want to talk right now", agent->getActorName());
+                        std::string cooldownMsg = std::format("[CHIM] {} does not want to talk right now.", agent->getActorName());
                         RE::DebugNotification(cooldownMsg.c_str());
                         return 0;
                     }
@@ -1504,7 +1507,7 @@ int sendMessageReal(std::string msg, std::string type) {
     // SpeakManager::getInstance().setProcessing(false);
 
     if (!Conf::getInstance().isOk()) {
-        RE::DebugNotification("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         return -1;
     }
 

@@ -1459,8 +1459,8 @@ void parseRoleCommand(std::string rawCommand) {
             logger::info("Command has not enough parms {}", command);
         } else {
             std::string message(splitResult[0].c_str());
-            const bool addPrefix = !command.contains("RawDebugNotification");
-            if (addPrefix && message.find("[CHIM]") != 0 && message.find("Diary Entry") != 0) {
+            const bool addPrefix = true;
+            if (addPrefix && message.find("[CHIM]") != 0) {
                 message = std::format("[CHIM] {}", message);
             }
 
@@ -1471,7 +1471,7 @@ void parseRoleCommand(std::string rawCommand) {
             if (!dispatched) {
                 logger::warn("[DebugNotification] Failed to dispatch Papyrus notification helper, falling back to RE::DebugNotification");
                 auto fallbackMessage = splitResult[0];
-                if (addPrefix && fallbackMessage.find("[CHIM]") != 0 && fallbackMessage.find("Diary Entry") != 0) {
+                if (addPrefix && fallbackMessage.find("[CHIM]") != 0) {
                     fallbackMessage = std::format("[CHIM] {}", fallbackMessage);
                 }
                 RE::DebugNotification(fallbackMessage.c_str());
@@ -5148,7 +5148,7 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
                             "command@Attack@" + targetName + "@Error. target " + targetName + " not found "),
                 agentPtr->getActor());
 
-        RE::DebugNotification(std::string("[AIFF] Target Not found ").append(targetName).c_str());
+        RE::DebugNotification(std::string("[CHIM] Target not found: ").append(targetName).append(".").c_str());
         EndCommandError("Attack", actor->GetDisplayFullName());
     }
 }
