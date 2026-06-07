@@ -1779,6 +1779,16 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 AudibleActorDescriptor listenerSpatial{};
 
                 std::vector<std::string> audibleCompanions;
+                const auto joinCompanions = [](const std::vector<std::string>& names) {
+                    std::string joined;
+                    for (const auto& name : names) {
+                        if (!joined.empty()) {
+                            joined += "|";
+                        }
+                        joined += name;
+                    }
+                    return joined;
+                };
                 std::string audienceSource = listener == NARRATOR_NAME ? "narrator" : "player_spatial";
                 std::string targetMode = useEveryoneBroadcast ? "everyone" :
                     (listener == NARRATOR_NAME ? "narrator" : "direct");
@@ -1805,6 +1815,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     return added;
                 };
 
+                std::size_t nearbyContextCount = 0;
+                if (listener != NARRATOR_NAME) {
+                    const auto nearbyContextTargets = SpatialSnapshotManager::GetPlayerNearbyManagedTargets();
+                    for (const auto& target : nearbyContextTargets) {
+                        addCompanion(target.name);
+                        ++nearbyContextCount;
+                    }
+                    logger::info(
+                        "[rework_debug][nearby_context] player_prescan listener='{}' radius_units={:.1f} radius_m=8.0 count={} names='{}'",
+                        listener, SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits, nearbyContextCount,
+                        joinCompanions(audibleCompanions));
+                    if (nearbyContextCount > 0) {
+                        audienceSource = "player_nearby_context";
+                    }
+                } else {
+                    logger::info("[rework_debug][nearby_context] player_prescan skipped for narrator listener");
+                }
+
                 if (listenerPtr && listener != NARRATOR_NAME) {
                     const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
                     const auto listenerSpatialResult = SpatialAwareness::Evaluate(player, listenerPtr, spatialSettings);
@@ -1819,16 +1847,28 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     listenerSpatial.canCommunicate = listenerSpatialResult.canCommunicate;
                 }
 
+                std::size_t spatialAudienceCount = 0;
                 if (listener != NARRATOR_NAME) {
-                    const auto nearbyTargetCount = addNearbyTargets("player_input_final_audience");
-                    if (nearbyTargetCount == 0) {
-                        audienceSource = "selected_listener_fallback";
+                    spatialAudienceCount = addNearbyTargets("player_input_final_audience");
+                    if (spatialAudienceCount > 0) {
+                        audienceSource = nearbyContextCount > 0
+                            ? "player_nearby_context+player_spatial"
+                            : "player_spatial";
+                    }
+                    if (spatialAudienceCount == 0) {
+                        audienceSource = nearbyContextCount > 0
+                            ? "player_nearby_context+selected_listener_fallback"
+                            : "selected_listener_fallback";
                         addCompanion(listener);
                     }
                 }
 
                 const std::string playerSpeaker = RE::PlayerCharacter::GetSingleton()->GetName();
                 addCompanion(playerSpeaker);
+                logger::info(
+                    "[rework_debug][nearby_context] player_audience listener='{}' target_mode='{}' nearby_count={} spatial_count={} source='{}' companions='{}'",
+                    listener, targetMode, nearbyContextCount, spatialAudienceCount, audienceSource,
+                    joinCompanions(audibleCompanions));
 
                 speechLogPayload["speaker"] = playerSpeaker;
                 speechLogPayload["location"] = GetPlayerLocation();

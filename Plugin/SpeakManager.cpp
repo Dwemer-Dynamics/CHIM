@@ -31,6 +31,7 @@
 #include "HTTPManager.h"
 #include "PrismaUIBridge.h"
 #include "SpatialAwareness.h"
+#include "SpatialSnapshotManager.h"
 #include <winhttp.h>
 #include "ThreadPool.h"
 
@@ -2861,6 +2862,25 @@ void SpeakManager::process(AIAgent *agent) {
                     speechListener.empty() ? RE::PlayerCharacter::GetSingleton()->GetName() : speechListener;
                 sData["listener"] = resolvedListenerName;
                 std::vector<std::string> audibleCompanions;
+                const auto addCompanion = [&](const std::string& name) {
+                    if (name.empty()) {
+                        return;
+                    }
+                    if (std::find(audibleCompanions.begin(), audibleCompanions.end(), name) ==
+                        audibleCompanions.end()) {
+                        audibleCompanions.push_back(name);
+                    }
+                };
+                const auto joinCompanions = [](const std::vector<std::string>& names) {
+                    std::string joined;
+                    for (const auto& name : names) {
+                        if (!joined.empty()) {
+                            joined += "|";
+                        }
+                        joined += name;
+                    }
+                    return joined;
+                };
 
                 // Calculate distance and v1-lite spatial context from speaker to listener.
                 float distance = 0.0f;
@@ -2940,6 +2960,8 @@ void SpeakManager::process(AIAgent *agent) {
                     const std::string audienceSnapshotKey =
                         normalizeName(speakerName) + "->" + normalizeName(resolvedListenerName);
                     bool reusedAudienceSnapshot = false;
+                    bool speakerWithinPlayerNearbyContext = false;
+                    std::size_t playerNearbyContextCount = 0;
                     {
                         std::lock_guard<std::mutex> lock(mtx);
                         if (audienceSnapshotReady && audienceSnapshotKey == this->audienceSnapshotKey &&
@@ -2950,6 +2972,23 @@ void SpeakManager::process(AIAgent *agent) {
                     }
 
                     if (!reusedAudienceSnapshot) {
+                        speakerWithinPlayerNearbyContext = audibilitySource &&
+                            SpatialSnapshotManager::IsActorWithinPlayerNearbyContext(audibilitySource);
+                        if (speakerWithinPlayerNearbyContext) {
+                            const auto playerNearbyTargets =
+                                SpatialSnapshotManager::GetPlayerNearbyManagedTargets();
+                            for (const auto& target : playerNearbyTargets) {
+                                addCompanion(target.name);
+                                ++playerNearbyContextCount;
+                            }
+                        }
+                        logger::info(
+                            "[rework_debug][nearby_context] npc_prescan speaker='{}' listener='{}' radius_units={:.1f} radius_m=8.0 speaker_within_8m={} count={} names='{}'",
+                            speakerName, resolvedListenerName,
+                            SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits,
+                            speakerWithinPlayerNearbyContext ? 1 : 0, playerNearbyContextCount,
+                            joinCompanions(audibleCompanions));
+
                         // Audience scope is speech audibility, not auto-activate population.
                         // Auto-activate can keep broader scene agents alive, but NPC speech fanout
                         // should use the MCM spatial hearing distances before running Evaluate().
@@ -3017,10 +3056,8 @@ void SpeakManager::process(AIAgent *agent) {
                             SpatialAwareness::Result candidateSpatial =
                                 SpatialAwareness::Evaluate(audibilitySource, candidateActor);
 
-                            if (candidateSpatial.canCommunicate &&
-                                std::find(audibleCompanions.begin(), audibleCompanions.end(), candidateName) ==
-                                    audibleCompanions.end()) {
-                                audibleCompanions.push_back(candidateName);
+                            if (candidateSpatial.canCommunicate) {
+                                addCompanion(candidateName);
                             }
                         }
 
@@ -3032,17 +3069,13 @@ void SpeakManager::process(AIAgent *agent) {
                         }
                     }
 
-                    if (!speakerName.empty() &&
-                        std::find(audibleCompanions.begin(), audibleCompanions.end(), speakerName) ==
-                            audibleCompanions.end()) {
-                        audibleCompanions.push_back(speakerName);
-                    }
-
-                    if (!speechListener.empty() &&
-                        std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) ==
-                            audibleCompanions.end()) {
-                        audibleCompanions.push_back(speechListener);
-                    }
+                    addCompanion(speakerName);
+                    addCompanion(speechListener);
+                    logger::info(
+                        "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_8m={} nearby_count={} companions='{}'",
+                        speakerName, resolvedListenerName, reusedAudienceSnapshot ? 1 : 0,
+                        speakerWithinPlayerNearbyContext ? 1 : 0, playerNearbyContextCount,
+                        joinCompanions(audibleCompanions));
                 }
 
                 sData["companions"] = audibleCompanions;

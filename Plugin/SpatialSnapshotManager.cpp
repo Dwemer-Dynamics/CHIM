@@ -1392,6 +1392,90 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
     return resolved;
 }
 
+bool SpatialSnapshotManager::IsActorWithinPlayerNearbyContext(RE::Actor* actor, float maxDistanceUnits)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !actor || !std::isfinite(maxDistanceUnits) || maxDistanceUnits <= 0.0f) {
+        return false;
+    }
+
+    auto* playerCell = player->GetParentCell();
+    auto* actorCell = actor->GetParentCell();
+    if (!playerCell || !playerCell->IsAttached() || !actorCell || !actorCell->IsAttached()) {
+        return false;
+    }
+
+    const bool playerInterior = playerCell->IsInteriorCell();
+    const bool actorInterior = actorCell->IsInteriorCell();
+    if (playerInterior != actorInterior || (playerInterior && actorCell != playerCell)) {
+        return false;
+    }
+
+    const float airDistance = player->GetPosition().GetDistance(actor->GetPosition());
+    return std::isfinite(airDistance) && airDistance <= maxDistanceUnits;
+}
+
+std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerNearbyManagedTargets(float maxDistanceUnits)
+{
+    std::vector<PlayerSpatialCandidate> targets;
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !std::isfinite(maxDistanceUnits) || maxDistanceUnits <= 0.0f) {
+        return targets;
+    }
+
+    auto* playerCell = player->GetParentCell();
+    if (!playerCell || !playerCell->IsAttached()) {
+        return targets;
+    }
+
+    const auto playerPosition = player->GetPosition();
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent) {
+            continue;
+        }
+
+        auto* actor = agent->getActor();
+        if (!actor) {
+            actor = agent->getActorByFormId();
+        }
+        if (!IsPresentDisplayCandidate(agent, actor, player)) {
+            continue;
+        }
+        if (!IsActorWithinPlayerNearbyContext(actor, maxDistanceUnits)) {
+            continue;
+        }
+
+        const float airDistance = playerPosition.GetDistance(actor->GetPosition());
+        if (!std::isfinite(airDistance)) {
+            continue;
+        }
+
+        PlayerSpatialCandidate target{};
+        target.agent = std::const_pointer_cast<AIAgent>(agent);
+        target.actor = actor;
+        target.formId = actor->GetFormID();
+        target.name = agent->getActorName().empty() ? ActorLabel(actor) : agent->getActorName();
+        target.airDistance = airDistance;
+        target.distanceMeters = airDistance * kSkyrimUnitsToMeters;
+        target.source = "player_nearby_context";
+        target.reason = "player_nearby_air";
+        target.status = "Nearby";
+        targets.push_back(std::move(target));
+    }
+
+    std::sort(targets.begin(), targets.end(), [](const PlayerSpatialCandidate& lhs,
+                                                 const PlayerSpatialCandidate& rhs) {
+        if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+            return lhs.distanceMeters < rhs.distanceMeters;
+        }
+        return lhs.name < rhs.name;
+    });
+
+    return targets;
+}
+
 std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversationTargets(
     const std::string& reason, bool includeUnavailable)
 {
