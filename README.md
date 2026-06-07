@@ -39,3 +39,7 @@ For CHIM and Herika-related builds and deploys inside this monorepo:
 - use `CHIM/Plugin` instead of `HerikaAI-NG`
 
 The old top-level repos can remain as legacy references during migration, but the active deployment pipeline now targets `CHIM`.
+
+## PR Submissions
+
+Building AI systems is complex, and changes can unintentionally affect other connected systems. Before opening a pull request, follow the repository PR template and make sure the change has been discussed with either `RANGROO` or `tyler.maister` in Discord. When adding new features, prefer making them optional or toggleable where practical.
