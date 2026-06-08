@@ -3071,6 +3071,7 @@ void SpeakManager::process(AIAgent *agent) {
 
                     addCompanion(speakerName);
                     addCompanion(speechListener);
+                    addCompanion(configuredPlayerName.empty() ? playerName : configuredPlayerName);
                     logger::info(
                         "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_8m={} nearby_count={} companions='{}'",
                         speakerName, resolvedListenerName, reusedAudienceSnapshot ? 1 : 0,

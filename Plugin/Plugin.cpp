@@ -2018,6 +2018,9 @@ static void AddCachedSpeechAudience(json& speechPayload, const std::string& reas
     if (speechPayload.contains("speaker") && speechPayload["speaker"].is_string()) {
         appendCompanion(speechPayload["speaker"].get<std::string>());
     }
+    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        appendCompanion(player->GetName());
+    }
 
     if (companions.empty()) {
         return;
