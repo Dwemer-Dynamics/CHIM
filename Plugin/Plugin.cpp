@@ -7092,7 +7092,9 @@ EventHandlers {
                     // Update stats when exiting combat (capture post-combat state)
                     AIAgentManager& aiamStats = AIAgentManager::getInstance();
                     for (const auto& agent : aiamStats.getAgents()) {
-                        if (agent->getActor()->GetFormID() == target->GetFormID()) {
+                        // Had some crash here, related to GetFormID. 
+                        if (!agent) continue;   
+                        if (agent->GetFormId() == target->GetFormID()) {
                             RefreshAIAgentStats(agent->getActor(), agent->getActorName(), false);
                             RefreshAIAgentActivityStatus(agent->getActor(), agent->getActorName());
                             logger::info("[COMBAT_END] Updated stats for {} after combat", agent->getActorName());
@@ -7148,7 +7150,8 @@ EventHandlers {
                         // Update stats when entering combat
                         AIAgentManager& aiamStats = AIAgentManager::getInstance();
                         for (const auto& agent : aiamStats.getAgents()) {
-                            if (agent->getActor()->GetFormID() == target->GetFormID()) {
+                            if (!agent || agent->getActor()) continue;   
+                            if (agent->GetFormId() == target->GetFormID()) {
                                 RefreshAIAgentStats(agent->getActor(), agent->getActorName());
                                 RefreshAIAgentActivityStatus(agent->getActor(), agent->getActorName());
                                 break;
