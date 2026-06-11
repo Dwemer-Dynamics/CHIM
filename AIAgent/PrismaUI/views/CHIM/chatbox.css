@@ -900,8 +900,14 @@ body {
 }
 
 .focus-btn-primary {
-    background: rgba(242, 124, 17, 0.35);
+    border-color: rgba(46, 204, 113, 0.5);
+    background: rgba(46, 204, 113, 0.3);
     color: #fff;
+}
+
+.focus-btn-primary:hover {
+    background: rgba(46, 204, 113, 0.46);
+    border-color: rgba(46, 204, 113, 0.72);
 }
 
 .focus-btn-danger {

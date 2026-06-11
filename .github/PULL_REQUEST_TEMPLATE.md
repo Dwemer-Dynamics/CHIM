@@ -22,6 +22,13 @@
 <!-- Why was this change needed? What problem does it solve? -->
 
 
+## Maintainer Discussion
+
+<!-- PRs should be discussed with RANGROO or tyler.maister in Discord before submission. -->
+
+- [ ] I discussed this PR with `RANGROO` or `tyler.maister` in Discord.
+
+
 ## Validation
 
 <!-- List the commands, builds, deploys, and manual checks you actually ran. -->

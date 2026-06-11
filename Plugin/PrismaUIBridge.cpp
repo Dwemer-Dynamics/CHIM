@@ -60,6 +60,7 @@ namespace PrismaUIBridge {
     static std::chrono::steady_clock::time_point g_stickyPrismaTargetAt;
     constexpr auto kPrismaTargetStickyTtl = std::chrono::seconds(3);
     constexpr float kPrismaTargetSwitchMarginMeters = 1.5f;
+    constexpr float kChatboxWhisperTargetMaxMeters = 1.0f;
     struct PrismaDisplayStatusEntry {
         std::string status;
         std::chrono::steady_clock::time_point updatedAt;
@@ -1634,14 +1635,15 @@ R"CHIM(
         logger::info("[{}] Set mode to: {}", sourceTag, modeStr);
 
         if (showNotification) {
-            RE::DebugNotification(("Mode: " + modeStr).c_str());
+            RE::DebugNotification(("[CHIM] Chat mode: " + modeStr).c_str());
         }
 
         if (previousMode != modeStr) {
             // Voice mode changes should affect player speech reach without rewriting
-            // the user's MCM auto-activation distances. Clear cached spatial state so
-            // listener routing and Prisma UI immediately use the new runtime multiplier.
-            SpatialSnapshotManager::InvalidatePlayerSnapshot();
+            // the user's MCM auto-activation distances. Clear dynamic spatial state so
+            // listener routing and Prisma UI immediately use the new runtime multiplier
+            // without treating the mode change as a fresh cell-entry settle window.
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
             g_lastOverlayAgentsPayload.clear();
             g_lastChatboxTargetsPayload.clear();
             g_prismaDisplayStatusCache.clear();
@@ -4563,8 +4565,15 @@ R"CHIM(
             return nearbyAgents;
         }
 
-        const auto candidates = SpatialSnapshotManager::GetPlayerConversationTargets("chatbox_targets", true);
+        const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
+        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets("chatbox_targets", true);
         for (const auto& candidate : candidates) {
+            if (whisperTargetCapActive &&
+                (!std::isfinite(candidate.distanceMeters) ||
+                 candidate.distanceMeters > kChatboxWhisperTargetMaxMeters)) {
+                continue;
+            }
+
             ChatboxNearbyAgent nearby{};
             nearby.actor = candidate.actor;
             nearby.name = candidate.name;
@@ -4670,7 +4679,7 @@ R"CHIM(
             getCurrentTimeMillis(), GetGameTimeStamp(), profileNum));
         logger::info("[{}] Switched to LLM profile: {}", sourceTag, profileNum);
         if (showNotification) {
-            RE::DebugNotification(("LLM: " + label).c_str());
+            RE::DebugNotification(("[CHIM] LLM profile: " + label).c_str());
         }
 
         g_chatboxCurrentModelLabel = label;
@@ -4689,7 +4698,7 @@ R"CHIM(
         if (npcName.empty()) {
             logger::warn("[{}] continue_chat requires a target", sourceTag);
             if (showMissingTargetNotification) {
-                RE::DebugNotification("No target available for Continue Speaking");
+                RE::DebugNotification("[CHIM] No target available for Continue Speaking.");
             }
             return false;
         }
@@ -4716,7 +4725,7 @@ R"CHIM(
         HTTPManager::stream(request);
         logger::info("[{}] Triggered continue_chat for Everyone", sourceTag);
         if (showNotification) {
-            RE::DebugNotification("Broadcasting to everyone");
+            RE::DebugNotification("[CHIM] Continuing conversation with everyone.");
         }
         return true;
     }
@@ -4908,9 +4917,15 @@ R"CHIM(
             selectedDistance = overrideTarget->distanceMeters;
         } else if (g_chatboxTargetMode == ChatboxTargetMode::NPC &&
                    (g_chatboxTargetOverrideFormId != 0 || !g_chatboxTargetOverrideName.empty())) {
-            selectedFormId = g_chatboxTargetOverrideFormId;
-            selectedName = g_chatboxTargetOverrideName;
-            selectedDistance = 0.0f;
+            logger::info(
+                "[Chatbox] Clearing unavailable target override formId={:08X} name='{}'",
+                g_chatboxTargetOverrideFormId, g_chatboxTargetOverrideName);
+            ClearChatboxTargetOverride();
+            if (hasAutoTarget) {
+                selectedFormId = autoTarget.formId;
+                selectedName = autoTarget.name;
+                selectedDistance = autoTarget.distanceMeters;
+            }
         } else if (!everyoneActive && hasAutoTarget) {
             selectedFormId = autoTarget.formId;
             selectedName = autoTarget.name;
@@ -4966,7 +4981,8 @@ R"CHIM(
         targetsPayload["targets"] = targetItems;
 
         const std::string serializedTargets = targetsPayload.dump();
-        if (serializedTargets != g_lastChatboxTargetsPayload) {
+        const bool targetsPayloadChanged = serializedTargets != g_lastChatboxTargetsPayload;
+        if (targetsPayloadChanged) {
             UpdateChatboxTargetsUI(serializedTargets);
             g_lastChatboxTargetsPayload = serializedTargets;
         }
@@ -5112,6 +5128,9 @@ R"CHIM(
         } else if (cmd.starts_with("debug_notify|")) {
             std::string message = cmd.substr(13);
             if (!message.empty()) {
+                if (message.find("[CHIM]") != 0) {
+                    message = "[CHIM] " + message;
+                }
                 RE::DebugNotification(message.c_str());
             }
         } else if (cmd == "target_override_clear") {
@@ -5127,7 +5146,6 @@ R"CHIM(
             SetChatboxEveryoneTargetOverride();
             logger::info("[Chatbox] Applied Everyone target override");
             CheckAndUpdateChatboxControls(true);
-            TriggerContinueConversationForEveryone("Chatbox Targets", true);
         } else if (cmd.starts_with("target_override|")) {
             std::string payload = cmd.substr(16);
             std::string formIdText;
@@ -5152,7 +5170,6 @@ R"CHIM(
             if (IsChatboxNarratorOnlyMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
-                TriggerContinueConversationForNpc(NARRATOR_NAME, "Chatbox Targets", true);
                 return;
             }
 
@@ -5170,12 +5187,11 @@ R"CHIM(
                     SetChatboxTargetOverride(agent->getActor()->GetFormID(), agent->getActorName());
                     logger::info("[Chatbox] Applied explicit target override to {}", agent->getActorName());
                     CheckAndUpdateChatboxControls(true);
-                    TriggerContinueConversationForNpc(agent->getActorName(), "Chatbox Targets", true);
                 } else {
                     logger::warn("[Chatbox] Ignoring unavailable target override formId={} name='{}'", formId, targetName);
                     ClearChatboxTargetOverride();
                     CheckAndUpdateChatboxControls(true);
-                    RE::DebugNotification("That target is not currently available");
+                    RE::DebugNotification("[CHIM] That target is not currently available.");
                 }
             }
         } else if (cmd == "focus_chat_toggle") {
@@ -5187,7 +5203,7 @@ R"CHIM(
             UpdateChatboxFocusUI(newFocusChatState);
             g_lastChatboxFocusChatSent = newFocusChatState;
             g_chatboxFocusChatSentInitialized = true;
-            RE::DebugNotification(newFocusChatState ? "Focus Chat Enabled" : "Focus Chat Disabled");
+            RE::DebugNotification(newFocusChatState ? "[CHIM] Focus Chat enabled." : "[CHIM] Focus Chat disabled.");
         }
     }
 
@@ -5589,7 +5605,7 @@ R"CHIM(
         }
         speakManager.stopRechatForNseconds(3);
 
-        RE::DebugNotification("Stopped all dialogue");
+        RE::DebugNotification("[CHIM] Stopped all dialogue.");
     }
 
     // ===== CHIM Settings Menu Functions =====
@@ -5679,7 +5695,7 @@ R"CHIM(
                 HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@1", 
                     getCurrentTimeMillis(), GetGameTimeStamp()));
                 logger::info("[Settings Menu] Enabled Focus Chat");
-                RE::DebugNotification("Focus Chat Enabled");
+                RE::DebugNotification("[CHIM] Focus Chat enabled.");
                 HideSettingsMenu();
                 return;
             }
@@ -5700,7 +5716,7 @@ R"CHIM(
             // Use HTTPManager::log with actor parameter like logMessageForActor
             HTTPManager::log(std::format("core_profile_assign|{}|{}|{}", 
                 getCurrentTimeMillis(), GetGameTimeStamp(), profileNum), npcName);
-            RE::DebugNotification(("Profile " + profileNum + " -> " + npcName).c_str());
+            RE::DebugNotification(("[CHIM] Assigned Profile " + profileNum + " to " + npcName + ".").c_str());
             HideSettingsMenu();
             return;
         }

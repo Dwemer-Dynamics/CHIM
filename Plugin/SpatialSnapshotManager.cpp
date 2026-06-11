@@ -138,7 +138,7 @@ namespace
             return {};
         }
 
-        const char* name = actor->GetName();
+        const char* name = actor->GetDisplayFullName();
         if (name && name[0] != '\0') {
             return name;
         }
@@ -664,7 +664,7 @@ namespace
             return;
         }
 
-        taskInterface->AddTask([playerFormId, targetFormId, settings, reason, priorityTarget]() {
+        taskInterface->AddTask([playerFormId, targetFormId, settings, priorityTarget]() {
             auto clearQueued = []() {
                 std::lock_guard<std::mutex> lock(g_targetRefinementMutex);
                 g_targetRefinementTaskQueued = false;
@@ -679,9 +679,13 @@ namespace
                 return;
             }
 
+            const auto storeResult = [&](const SpatialAwareness::Result& result) {
+                StoreTargetRefinement(playerActor, targetActor, result);
+            };
+
             auto result = EvaluateCheapPlayerSpatial(playerActor, targetActor, settings);
             if (!NeedsTargetRefinement(result)) {
-                StoreTargetRefinement(playerActor, targetActor, result);
+                storeResult(result);
                 return;
             }
 
@@ -695,7 +699,7 @@ namespace
                     result.canCommunicate = false;
                     result.volume = 0.0f;
                     result.reason = "closed_door_between";
-                    StoreTargetRefinement(playerActor, targetActor, result);
+                    storeResult(result);
                     return;
                 }
             }
@@ -708,7 +712,7 @@ namespace
             if (result.hasLineOfSight) {
                 result.canCommunicate = true;
                 result.reason = "line_of_sight_clear";
-                StoreTargetRefinement(playerActor, targetActor, result);
+                storeResult(result);
                 return;
             }
 
@@ -716,7 +720,7 @@ namespace
                 result.canCommunicate = false;
                 result.volume = 0.0f;
                 result.reason = "line_of_sight_blocked";
-                StoreTargetRefinement(playerActor, targetActor, result);
+                storeResult(result);
                 return;
             }
 
@@ -741,7 +745,7 @@ namespace
                 return;
             }
 
-            StoreTargetRefinement(playerActor, targetActor, result);
+            storeResult(result);
         });
     }
 
@@ -1388,6 +1392,90 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
     return resolved;
 }
 
+bool SpatialSnapshotManager::IsActorWithinPlayerNearbyContext(RE::Actor* actor, float maxDistanceUnits)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !actor || !std::isfinite(maxDistanceUnits) || maxDistanceUnits <= 0.0f) {
+        return false;
+    }
+
+    auto* playerCell = player->GetParentCell();
+    auto* actorCell = actor->GetParentCell();
+    if (!playerCell || !playerCell->IsAttached() || !actorCell || !actorCell->IsAttached()) {
+        return false;
+    }
+
+    const bool playerInterior = playerCell->IsInteriorCell();
+    const bool actorInterior = actorCell->IsInteriorCell();
+    if (playerInterior != actorInterior || (playerInterior && actorCell != playerCell)) {
+        return false;
+    }
+
+    const float airDistance = player->GetPosition().GetDistance(actor->GetPosition());
+    return std::isfinite(airDistance) && airDistance <= maxDistanceUnits;
+}
+
+std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerNearbyManagedTargets(float maxDistanceUnits)
+{
+    std::vector<PlayerSpatialCandidate> targets;
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !std::isfinite(maxDistanceUnits) || maxDistanceUnits <= 0.0f) {
+        return targets;
+    }
+
+    auto* playerCell = player->GetParentCell();
+    if (!playerCell || !playerCell->IsAttached()) {
+        return targets;
+    }
+
+    const auto playerPosition = player->GetPosition();
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent) {
+            continue;
+        }
+
+        auto* actor = agent->getActor();
+        if (!actor) {
+            actor = agent->getActorByFormId();
+        }
+        if (!IsPresentDisplayCandidate(agent, actor, player)) {
+            continue;
+        }
+        if (!IsActorWithinPlayerNearbyContext(actor, maxDistanceUnits)) {
+            continue;
+        }
+
+        const float airDistance = playerPosition.GetDistance(actor->GetPosition());
+        if (!std::isfinite(airDistance)) {
+            continue;
+        }
+
+        PlayerSpatialCandidate target{};
+        target.agent = std::const_pointer_cast<AIAgent>(agent);
+        target.actor = actor;
+        target.formId = actor->GetFormID();
+        target.name = agent->getActorName().empty() ? ActorLabel(actor) : agent->getActorName();
+        target.airDistance = airDistance;
+        target.distanceMeters = airDistance * kSkyrimUnitsToMeters;
+        target.source = "player_nearby_context";
+        target.reason = "player_nearby_air";
+        target.status = "Nearby";
+        targets.push_back(std::move(target));
+    }
+
+    std::sort(targets.begin(), targets.end(), [](const PlayerSpatialCandidate& lhs,
+                                                 const PlayerSpatialCandidate& rhs) {
+        if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+            return lhs.distanceMeters < rhs.distanceMeters;
+        }
+        return lhs.name < rhs.name;
+    });
+
+    return targets;
+}
+
 std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversationTargets(
     const std::string& reason, bool includeUnavailable)
 {
@@ -1596,6 +1684,104 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         g_playerConversationTargetsIncludeUnavailable = includeUnavailable;
         g_playerConversationTargetsCacheValid = true;
     }
+
+    return targets;
+}
+
+bool SpatialSnapshotManager::IsValidPlayerSpeechTarget(const PlayerSpatialCandidate& target)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!target.agent || target.agent->isNarrator() || !target.actor || !player) {
+        return false;
+    }
+
+    if (!IsPresentDisplayCandidate(target.agent, target.actor, player)) {
+        return false;
+    }
+
+    auto* playerCell = player->GetParentCell();
+    auto* targetCell = target.actor->GetParentCell();
+    if (!playerCell || !playerCell->IsAttached() || !targetCell || !targetCell->IsAttached()) {
+        return false;
+    }
+
+    const bool playerInterior = playerCell->IsInteriorCell();
+    const bool targetInterior = targetCell->IsInteriorCell();
+    if (playerInterior != targetInterior || (playerInterior && targetCell != playerCell)) {
+        return false;
+    }
+
+    const auto playerPosition = player->GetPosition();
+    const auto targetPosition = target.actor->GetPosition();
+    const float airDistance = playerPosition.GetDistance(targetPosition);
+    if (!std::isfinite(airDistance)) {
+        return false;
+    }
+
+    const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
+    float closeLimit = playerInterior ? spatialSettings.interiorMaxDistance : spatialSettings.exteriorMaxDistance;
+    if (spatialSettings.maxAirDistance > 0.0f) {
+        closeLimit = std::min(closeLimit, spatialSettings.maxAirDistance);
+    }
+    if (!std::isfinite(closeLimit) || closeLimit <= 0.0f || airDistance > closeLimit) {
+        return false;
+    }
+
+    const float verticalDelta = targetPosition.z - playerPosition.z;
+    if (playerInterior && std::isfinite(verticalDelta) &&
+        std::abs(verticalDelta) >= kDifferentLevelVerticalDelta) {
+        return false;
+    }
+
+    std::string blockedStatus;
+    return !IsAutoBlocked(target.agent, target.actor, player, blockedStatus);
+}
+
+std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetValidPlayerSpeechTargets(
+    const std::string& reason, bool requireComplete)
+{
+    const auto rawTargets = GetPlayerConversationTargets(reason, true);
+    std::vector<PlayerSpatialCandidate> targets;
+    targets.reserve(rawTargets.size());
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    for (auto target : rawTargets) {
+        if (!SpatialSnapshotManager::IsValidPlayerSpeechTarget(target)) {
+            continue;
+        }
+
+        if (player && target.actor) {
+            const float airDistance = player->GetPosition().GetDistance(target.actor->GetPosition());
+            if (std::isfinite(airDistance)) {
+                target.airDistance = airDistance;
+                target.distanceMeters = airDistance * kSkyrimUnitsToMeters;
+            }
+        }
+
+        target.targetable = true;
+        target.autoEligible = true;
+        target.reason = "close_managed";
+        target.status = "Can hear you";
+        if (!target.lookTarget) {
+            target.source = "close_managed";
+        }
+        target.sortBucket = target.lookTarget ? 0 : 1;
+        targets.push_back(std::move(target));
+    }
+
+    std::sort(targets.begin(), targets.end(), [](const PlayerSpatialCandidate& lhs,
+                                                 const PlayerSpatialCandidate& rhs) {
+        if (lhs.sortBucket != rhs.sortBucket) {
+            return lhs.sortBucket < rhs.sortBucket;
+        }
+        if (lhs.lookTarget != rhs.lookTarget) {
+            return lhs.lookTarget;
+        }
+        if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+            return lhs.distanceMeters < rhs.distanceMeters;
+        }
+        return lhs.name < rhs.name;
+    });
 
     return targets;
 }

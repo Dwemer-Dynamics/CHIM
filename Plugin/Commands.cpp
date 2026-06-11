@@ -1459,8 +1459,8 @@ void parseRoleCommand(std::string rawCommand) {
             logger::info("Command has not enough parms {}", command);
         } else {
             std::string message(splitResult[0].c_str());
-            const bool addPrefix = !command.contains("RawDebugNotification");
-            if (addPrefix && message.find("[CHIM]") != 0 && message.find("Diary Entry") != 0) {
+            const bool addPrefix = true;
+            if (addPrefix && message.find("[CHIM]") != 0) {
                 message = std::format("[CHIM] {}", message);
             }
 
@@ -1471,7 +1471,7 @@ void parseRoleCommand(std::string rawCommand) {
             if (!dispatched) {
                 logger::warn("[DebugNotification] Failed to dispatch Papyrus notification helper, falling back to RE::DebugNotification");
                 auto fallbackMessage = splitResult[0];
-                if (addPrefix && fallbackMessage.find("[CHIM]") != 0 && fallbackMessage.find("Diary Entry") != 0) {
+                if (addPrefix && fallbackMessage.find("[CHIM]") != 0) {
                     fallbackMessage = std::format("[CHIM] {}", fallbackMessage);
                 }
                 RE::DebugNotification(fallbackMessage.c_str());
@@ -2049,6 +2049,98 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         /*
         HTTPLogger->critical("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                              "command@" + command + "@" + trim(parameter) + "@");*/
+
+    } else if (command.contains("MoveTo")) {
+        responsePop("command");
+
+        auto npc = agentPtr->getActor();
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!npc || !player) {
+            return;
+        }
+
+        float distance = npc->GetPosition().GetDistance(player->GetPosition());
+        if (distance > 2048) {
+            logger::info("{} is {} units away (too far)", npc->GetDisplayFullName(), distance);
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@" + command + "@" + trim(parameter) +
+                                             "@Error: actor is too far away"),
+                             npc);
+            return;
+        }
+
+        if (agentPtr.get()->isCommandBusy()) {
+            logger::info("[CHIM] Actor {} busy : {}", agentPtr.get()->getActorName(),
+                         agentPtr.get()->getCurrentCommand().c_str());
+            RE::DebugNotification(std::format("[CHIM] Actor {} busy : {}", agentPtr.get()->getActorName(),
+                                              agentPtr.get()->getCurrentCommand())
+                                      .c_str());
+            return;
+        }
+
+        std::string targetName = trim(parameter);
+        if (targetName.empty()) {
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@" + command + "@" + targetName + "@Error: missing target"),
+                             npc);
+            return;
+        }
+
+        auto playerActor = player->As<RE::Actor>();
+        auto normalizeActorName = [](std::string value) {
+            value = trim(value);
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return value;
+        };
+
+        const std::string normalizedTargetName = normalizeActorName(targetName);
+        bool targetIsPlayer = normalizedTargetName == "player";
+        if (!targetIsPlayer && playerActor) {
+            const std::string playerDisplayName = normalizeActorName(playerActor->GetDisplayFullName());
+            const std::string playerName = normalizeActorName(playerActor->GetName());
+            targetIsPlayer = (!playerDisplayName.empty() && normalizedTargetName == playerDisplayName) ||
+                             (!playerName.empty() && normalizedTargetName == playerName);
+        }
+
+        RE::TESObjectREFR* target = nullptr;
+        RE::Actor* targetAsActor = nullptr;
+        if (targetIsPlayer) {
+            target = playerActor;
+            targetAsActor = playerActor;
+        } else {
+            target = findActorInCell(targetName, npc->GetParentCell(), npc, 2048, false);
+            targetAsActor = target ? target->As<RE::Actor>() : nullptr;
+        }
+
+        if (!target || !targetAsActor) {
+            logger::info("[MoveTo] target {} not found", targetName);
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@" + command + "@" + targetName + "@Error: target not found"),
+                             npc);
+            return;
+        }
+
+        std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
+        if (resolvedTargetName.empty()) resolvedTargetName = targetName;
+
+        const std::string notificationText =
+            std::format("[CHIM] {} moves to {}", npc->GetDisplayFullName(), resolvedTargetName);
+        RE::DebugNotification(notificationText.c_str());
+
+        HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                     "command@" + command + "@" + resolvedTargetName + "@" +
+                                         npc->GetDisplayFullName() + " starts moving to " + resolvedTargetName),
+                         npc);
+
+        int intent = 0;
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+        auto args = RE::MakeFunctionArguments(std::move(npc), std::move(target), std::move(intent));
+        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "MoveToTarget",
+                                                                                   args, callback);
+
+        agentPtr.get()->setCurrentCommand("MoveTo");
 
     } else if (command.contains("TravelToRaw")) {
         // This used when server finds location on database, and sends formid
@@ -5004,8 +5096,6 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
     return foundTarget;
 }
 
-void StartMoveTo(std::string targetName, bool log) {}
-
 void StartSneakTo(std::string targetName) {}
 
 RE::Actor* findClosestAgent() {
@@ -5094,7 +5184,7 @@ RE::Actor* findClosestAgent() {
     }
 
     if (index == -1) {
-        logger::info("No agent available, trying {}", NARRATOR_NAME);
+        logger::info("No non-narrator agent available; returning null actor");
         return nullptr;
 
     } else {
@@ -5122,6 +5212,14 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
     }
     if (target != nullptr) {
         agentPtr.get()->setAttackTarget(target);
+        auto targetActor = target->As<RE::Actor>();
+        std::string resolvedTargetName = targetActor ? targetActor->GetDisplayFullName() : targetName;
+        if (resolvedTargetName.empty()) resolvedTargetName = targetName;
+        const std::string notificationText =
+            lethal ? std::format("[CHIM] {} attacks {}", actor->GetDisplayFullName(), resolvedTargetName)
+                   : std::format("[CHIM] {} brawls with {}", actor->GetDisplayFullName(), resolvedTargetName);
+        RE::DebugNotification(notificationText.c_str());
+
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         auto args = RE::MakeFunctionArguments(std::move(actor), std::move(target->AsReference()), std::move(lethal));
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "AttackTarget",
@@ -5148,7 +5246,7 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
                             "command@Attack@" + targetName + "@Error. target " + targetName + " not found "),
                 agentPtr->getActor());
 
-        RE::DebugNotification(std::string("[AIFF] Target Not found ").append(targetName).c_str());
+        RE::DebugNotification(std::string("[CHIM] Target not found: ").append(targetName).append(".").c_str());
         EndCommandError("Attack", actor->GetDisplayFullName());
     }
 }
@@ -5164,7 +5262,7 @@ void StopCurrent(RE::Actor* npc) {
 }
 
 void EndCommand(std::string command, std::string actor) {
-    if (command.contains("TravelTo")) {
+    if (command.contains("TravelTo") || command.contains("MoveTo")) {
         AIAgentManager& aiam = AIAgentManager::getInstance();
         auto agentPtr = aiam.getAgentByName(actor);
 

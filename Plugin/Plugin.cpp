@@ -44,8 +44,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "2.8.1"
-#define PLUGIN_RELEASE_DATE "2026-05-26"
+#define PLUGIN_VERSION "2.8.3"
+#define PLUGIN_RELEASE_DATE "2026-06-11"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -67,6 +67,7 @@ namespace
     {
         return std::chrono::duration_cast<std::chrono::milliseconds>(value.time_since_epoch()).count();
     }
+
 }
 
 static std::atomic<std::int64_t> controlPlayerSpeechSuppressUntilTicks{
@@ -2017,6 +2018,9 @@ static void AddCachedSpeechAudience(json& speechPayload, const std::string& reas
     if (speechPayload.contains("speaker") && speechPayload["speaker"].is_string()) {
         appendCompanion(speechPayload["speaker"].get<std::string>());
     }
+    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        appendCompanion(player->GetName());
+    }
 
     if (companions.empty()) {
         return;
@@ -2229,22 +2233,12 @@ private:
 
                                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - controlLastInfoSent);
 
-                                // infonpc_close is a compatibility/context feed, not conversation routing.
-                                // Keep it dumb: read the already-built spatial snapshot if present, otherwise fall back to
-                                // the old managed-agent air-distance list. This path must not queue fresh LOS/navmesh work.
-                                // Snapshot-backed context is cached, but nearby item/activity scans still touch game refs.
-                                // Keep this off the short Prisma/UI cadence to avoid steady interior micro-stutters.
+                                // infonpc_close is a compatibility/context feed. Use the legacy nearby-NPC
+                                // scan so it describes everyone around the player, not only managed agents.
                                 if (elapsed > std::chrono::seconds(8)) {
                                     logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
                                     auto player = RE::PlayerCharacter::GetSingleton();
-
-                                    auto contextSnapshot =
-                                        SpatialSnapshotManager::GetPlayerSnapshot(false, "periodic_infonpc_close_cached");
-                                    auto result = contextSnapshot.Describe("/");
-                                    if (result.empty()) {
-                                        result = InspectManagedAgents(player->AsReference(), 3000, "/",
-                                                                      DISTANCE_ACTIVATING_NPC_OUT);
-                                    }
+                                    auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
                                     // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
                                     std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
                                     if (!itemsResult.empty()) {
@@ -2371,16 +2365,10 @@ private:
                         parseCommand(newResponse.text, newResponse.actor);
                     }
 
-                    const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
-
-                    if (!playerSpeechSuppressActive) {
-                        newResponse = spgResponse.getFirstItem("rolecommand");
-                        if (!newResponse.text.empty()) {
-                            logger::info("Rolemaster in action {}", newResponse.text);
-                            parseRoleCommand(newResponse.text);
-                        }
-                    } else {
-                        logger::debug("[PLAYER_SPEECH] Deferring rolecommand processing during player speech window");
+                    newResponse = spgResponse.getFirstItem("rolecommand");
+                    if (!newResponse.text.empty()) {
+                        logger::info("Rolemaster in action {}", newResponse.text);
+                        parseRoleCommand(newResponse.text);
                     }
 
                     auto boredElapsedSeconds =
@@ -2403,6 +2391,7 @@ private:
                         playerInDialog = true;
                     }
 
+                    const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                     avoidBored = playerSpeechSuppressActive || player->IsInCombat() || player->IsAttacking() || player->IsSneaking()
                         || CheckScene(player->GetCurrentScene()) || playerInDialog;
 
@@ -3232,7 +3221,7 @@ namespace ProcessorMenu {
                 return playerDisplayName;
             }
 
-            const std::string playerName = trim(player->GetName());
+            const std::string playerName = trim(player->GetDisplayFullName());
             if (!playerName.empty()) {
                 return playerName;
             }
@@ -4308,12 +4297,12 @@ OnSaveGame{
 
         logger::info("AIAgent.esp present");
         if (!Conf::getInstance().isOk()) {
-            RE::DebugNotification("AIAgent.ini file not present or invalid");
+            RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         }
 
         const bool serverReachable = Conf::getInstance().ping();
         if (!serverReachable) {
-            RE::DebugNotification("Cannot connect to server. Review AIAgent.ini");
+            RE::DebugNotification("[CHIM] Cannot connect to the server. Check AIAgent.ini.");
         }
 
         // setNewActionModeFromConfig();
@@ -4334,6 +4323,7 @@ OnSaveGame{
 
         ManagerMainQueue& mmq = ManagerMainQueue::getInstance();
         if (!mmq.isRunning()) {
+            logger::info("Starting main manager thread  at OnSaveGame");
             std::string polint = Conf::getInstance().getPolint();
             int polint_i = std::stoi(polint);
             mmq.startThread(polint_i);
@@ -5850,12 +5840,12 @@ OnLoadedGame {
 
        
         if (!Conf::getInstance().isOk()) {
-            RE::DebugNotification("AIAgent.ini file not present or invalid");
+            RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         }
 
         const bool serverReachable = Conf::getInstance().ping();
         if (!serverReachable) {
-            RE::DebugNotification("Cannot connect to server. Review AIAgent.ini");
+            RE::DebugNotification("[CHIM] Cannot connect to the server. Check AIAgent.ini.");
         }
 
         // setNewActionModeFromConfig();
@@ -5892,6 +5882,7 @@ OnLoadedGame {
 
         ManagerMainQueue& mmq = ManagerMainQueue::getInstance();
         if (!mmq.isRunning()) {
+            logger::info("Starting main manager thread  at OnLoadedGame");
             std::string polint = Conf::getInstance().getPolint();
             int polint_i = std::stoi(polint);
             mmq.startThread(polint_i);
@@ -5960,13 +5951,7 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
-        // infonpc_close is a compatibility/context feed. It may read an existing spatial snapshot, but it
-        // must fall back to the simple managed-agent list instead of forcing conversation spatial work.
-        auto loadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "loaded_game_infonpc_close");
-        auto resultClose = loadSnapshot.Describe("/");
-        if (resultClose.empty()) {
-            resultClose = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-        }
+        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
         if (!resultClose.empty()) {
             resultClose.append("/");
         }
@@ -6048,13 +6033,7 @@ OnLoadedGame {
                                          GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
         }
         
-        // infonpc_close is a compatibility/context feed. It may read an existing spatial snapshot, but it
-        // must fall back to the simple managed-agent list instead of forcing conversation spatial work.
-        auto reloadSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "reloaded_game_infonpc_close");
-        auto resultClose = reloadSnapshot.Describe("/");
-        if (resultClose.empty()) {
-            resultClose = InspectManagedAgents(player->AsReference(), 3000, "/", DISTANCE_ACTIVATING_NPC_OUT);
-        }
+        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
         if (!resultClose.empty()) {
             resultClose.append("/");
         }
@@ -6177,7 +6156,7 @@ OnNewGame {
 
     logger::info("AIAgent.esp present");
     if (!Conf::getInstance().isOk()) {
-        RE::DebugNotification("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
     }
     // setNewActionModeFromConfig();
 
@@ -6229,7 +6208,7 @@ OnNewGame {
     */
     auto server = Conf::getInstance().getServer();
     auto port = Conf::getInstance().getPort();
-    auto initMsg = std::format("[AIFF] Using server: http://{}:{}", server, port);
+    auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
     RE::DebugNotification(initMsg.c_str());
 
     pendingLoadedPluginManifestSync = true;
@@ -6367,15 +6346,12 @@ EventHandlers {
                                          "(beings in range:" + result + ")"));
             */
 
-            // Cell-load already runs Papyrus sendCellInfo and other mod detach work.
-            // Do not add item/activity scans here; the periodic pass sends them after the settle window.
-            auto locationSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(false, "location_infonpc_close");
-            auto result = locationSnapshot.Describe("/");
+            auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
             if (!result.empty()) {
                 result.append("/");
-                result.append(AIAgentManager::getInstance().getPlayerName());
-                HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
             }
+            result.append(AIAgentManager::getInstance().getPlayerName());
+            HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
 
 
             BackGroundDialogueQueue.clear();
