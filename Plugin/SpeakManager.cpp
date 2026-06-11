@@ -2532,6 +2532,24 @@ void SpeakManager::process(AIAgent *agent) {
                                     scriptLine.subtitle,
                                     agent->isNarrator());
 
+            if (PrismaUIBridge::IsAvailable()) {
+                char timeDateString[200];
+                RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                const std::string speakerType = agent->isNarrator() ? "narrator" : "npc";
+                PrismaUIBridge::PushChatboxMessage(
+                    agent->getActorName(),
+                    scriptLine.subtitle,
+                    std::string(timeDateString),
+                    speakerType,
+                    "llm");
+                PrismaUIBridge::PushDialogueEntry(
+                    agent->getActorName(),
+                    scriptLine.subtitle,
+                    std::string(timeDateString),
+                    "chat",
+                    "llm");
+            }
+
             hasTalked = true;
 
             logger::info("[SPEAKERMANAGER {}] Parsing scriptline actor:{} listener:{} text:{}", tid, scriptLine.actor,
