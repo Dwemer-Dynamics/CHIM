@@ -44,8 +44,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "2.8.2"
-#define PLUGIN_RELEASE_DATE "2026-06-07"
+#define PLUGIN_VERSION "2.8.3"
+#define PLUGIN_RELEASE_DATE "2026-06-11"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -1544,7 +1544,8 @@ void ProcedureListenToScene() {
                         actor->GetDisplayFullName(), 
                         subtitleString,
                         std::string(timeDateString),
-                        "npc"
+                        "npc",
+                        "subtitle"
                     );
                     // NOTE: Don't push to history here - the all-subtitles monitor handles it to avoid duplicates
                 }
@@ -1572,6 +1573,8 @@ void MonitorAllSubtitlesForChatbox() {
         
         std::string subtitle(s.subtitle);
         if (subtitle.empty()) continue;
+        const bool aiGeneratedSubtitle = s.pad04 == 0xabcd;
+        const std::string source = aiGeneratedSubtitle ? "llm" : "subtitle";
         
         // Create unique key to prevent duplicate pushes
         std::string cacheKey = std::string(actor->GetDisplayFullName()) + "|" + subtitle;
@@ -1606,14 +1609,16 @@ void MonitorAllSubtitlesForChatbox() {
             actor->GetDisplayFullName(), 
             subtitle,
             std::string(timeDateString),
-            speakerType
+            speakerType,
+            source
         );
         // Also push to conversation history panel
         PrismaUIBridge::PushDialogueEntry(
             actor->GetDisplayFullName(), 
             subtitle,
             std::string(timeDateString),
-            "chat"
+            "chat",
+            source
         );
     }
 }
@@ -7639,14 +7644,16 @@ EventHandlers {
                                      playerName, 
                                      DialogueLastStringSay,
                                      std::string(timeDateString),
-                                     "player"
+                                     "player",
+                                     "subtitle"
                                  );
                                  // Also push to conversation history panel
                                  PrismaUIBridge::PushDialogueEntry(
                                      playerName, 
                                      DialogueLastStringSay,
                                      std::string(timeDateString),
-                                     "inputtext"
+                                     "inputtext",
+                                     "subtitle"
                                  );
                              } else {
                                  logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
@@ -7783,14 +7790,16 @@ EventHandlers {
                                         lastSpeaker->GetDisplayFullName(),
                                         DialogueLastStringResponse,
                                         std::string(timeDateString),
-                                        "npc"
+                                        "npc",
+                                        "subtitle"
                                     );
                                     // Also push to conversation history panel
                                     PrismaUIBridge::PushDialogueEntry(
                                         lastSpeaker->GetDisplayFullName(),
                                         DialogueLastStringResponse,
                                         std::string(timeDateString),
-                                        "chat"
+                                        "chat",
+                                        "subtitle"
                                     );
                                 } else {
                                     logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");

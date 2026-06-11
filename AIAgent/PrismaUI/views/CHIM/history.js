@@ -14,6 +14,7 @@
     // State
     let entries = [];
     let lastRowId = 0;
+    const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext']);
 
     /**
      * Update the history panel with data from the server
@@ -72,17 +73,14 @@
         try {
             const entry = JSON.parse(jsonString);
             
-            // Filter out location-related events (infoloc, location) and context entries
             const eventType = entry.eventType || 'chat';
-            if (eventType === 'infoloc' || eventType === 'location') {
-                return; // Skip location context events
+            if (!isDialogueEvent(eventType)) {
+                return;
             }
             
-            const fullText = (entry.speaker || '') + ': ' + (entry.text || '');
-            
-            // Also filter out entries that start with "(Context location:" or "(Context History"
-            if (fullText.startsWith('(Context location:') || fullText.startsWith('(Context History')) {
-                return; // Skip context entries
+            const fullText = sanitizeDialogueText((entry.speaker || '') + ': ' + (entry.text || ''));
+            if (!fullText) {
+                return;
             }
             
             hideEmpty();
@@ -90,7 +88,8 @@
             const entryEl = createEntryElement({
                 'Event': eventType,
                 'Events': fullText,
-                'Tamrielic Time': entry.timestamp || ''
+                'Tamrielic Time': entry.timestamp || '',
+                'Source': entry.source || 'llm'
             });
             
             // Prepend new entry at top (newest first)
@@ -115,16 +114,24 @@
         let rendered = 0;
         
         // Entries are already in DESC order (newest first)
-        // Show all events - no filtering (matches eventlog page behavior)
         entries.forEach((entry, index) => {
-            const eventData = stripHtml(entry['Events'] || '');
+            const eventType = stripHtml(entry['Event'] || 'chat');
+            if (!isDialogueEvent(eventType)) {
+                return;
+            }
+
+            const rawEventData = stripHtml(entry['Events'] || '');
+            const eventData = sanitizeDialogueText(rawEventData);
+            if (!eventData) {
+                return;
+            }
             
             // Debug first 5 entries
             if (index < 5) {
                 console.log('[CHIM History] Entry', index, ':', eventData.substring(0, 100));
             }
             
-            const entryEl = createEntryElement(entry);
+            const entryEl = createEntryElement(entry, eventData, inferDialogueSource(entry, rawEventData));
             historyList.appendChild(entryEl);
             rendered++;
         });
@@ -148,25 +155,51 @@
         return temp.textContent || temp.innerText || '';
     }
 
+    function isDialogueEvent(eventType) {
+        return dialogueEventTypes.has(String(eventType || '').toLowerCase());
+    }
+
+    function sanitizeDialogueText(text) {
+        let cleaned = String(text || '').trim();
+        if (!cleaned) return '';
+
+        if (/^\(?Context History/i.test(cleaned)) {
+            return '';
+        }
+
+        cleaned = cleaned
+            .replace(/^\(Context (?:new )?location:[^)]+\)\s*/i, '')
+            .replace(/\s+\(Context (?:new )?location:[\s\S]*$/i, '')
+            .replace(/\s*,+\s*Current Date in Skyrim World:[\s\S]*$/i, '')
+            .trim();
+
+        return cleaned;
+    }
+
+    function inferDialogueSource(entry, rawEventData) {
+        const explicitSource = stripHtml(entry['Source'] || entry.source || '');
+        if (explicitSource) return explicitSource;
+
+        const raw = String(rawEventData || '');
+        if (/\(Context (?:new )?location:[^)]*background chat/i.test(raw)) {
+            return 'subtitle';
+        }
+        return 'llm';
+    }
+
     /**
      * Create a DOM element for a history entry
      * @param {Object} entry - Entry data from the server
      * @returns {HTMLElement} - The entry element
      */
-    function createEntryElement(entry) {
+    function createEntryElement(entry, sanitizedEventData, sourceOverride) {
         const div = document.createElement('div');
         div.className = 'history-entry';
         
         // Parse the event data - strip HTML from all fields
         const eventType = stripHtml(entry['Event'] || 'chat');
-        let eventData = stripHtml(entry['Events'] || '');
-        
-        // Remove "(Context location: ...)" or "(Context new location: ...)" prefix if present
-        // This matches how adventurelog.php processes the data (line 140)
-        const contextMatch = eventData.match(/^\(Context (?:new )?location:[^)]+\)\s*/);
-        if (contextMatch) {
-            eventData = eventData.substring(contextMatch[0].length);
-        }
+        let eventData = sanitizedEventData || sanitizeDialogueText(stripHtml(entry['Events'] || ''));
+        const source = sourceOverride || inferDialogueSource(entry, entry['Events'] || '');
         
         // Handle timestamp - key might have HTML in older API responses
         let timestamp = '';
@@ -208,6 +241,9 @@
             div.classList.add('action');
         } else {
             div.classList.add('npc');
+        }
+        if (source === 'subtitle') {
+            div.classList.add('non-llm');
         }
         
         // Build entry HTML
