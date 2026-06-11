@@ -1981,7 +1981,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         if (rechatDepth > 0) {
             logger::trace("[HTTPStream] Rechat skips dialogue interrupt for {}", listener);
         } else if (!isCombatBark && msg.find("suggestion") == std::string::npos) {
-            QueueInterruptNPC(actor, agent, listener);
+            if (SpeakManager::getInstance().getCurrentProcessingActorName() == listener)
+                ;  // Don't interrupt if the same actor is already processing speech, to avoid cutting off their current
+                   // subtitle line
+            else
+                QueueInterruptNPC(actor, agent, listener);
         } else if (isCombatBark) {
             logger::trace("[HTTPStream] Combat bark skips dialogue interrupt for {}", listener);
         }
