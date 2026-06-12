@@ -7,14 +7,17 @@
 namespace SpatialAwareness
 {
     inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
-    inline constexpr float kPlayerAutoIncludeRadiusMeters = 8.0f;
-    inline constexpr float kPlayerAutoIncludeDistance =
-        kPlayerAutoIncludeRadiusMeters * kSkyrimUnitsPerMeter;
+    inline constexpr float kAutoHearingRadiusMeters = 8.0f;
+    inline constexpr float kMinAutoHearingRadiusMeters = 1.0f;
+    inline constexpr float kMaxAutoHearingRadiusMeters = 20.0f;
+    inline constexpr float kAutoHearingDistance =
+        kAutoHearingRadiusMeters * kSkyrimUnitsPerMeter;
 
     struct Settings
     {
         float maxAirDistance = 4000.0f;
         float immediateDistance = 150.0f;
+        float autoHearingDistance = kAutoHearingDistance;
         // Tuned so clear-line practical audibility (volume >= 0.15) is roughly:
         // - indoors:  ~22.5 ft (~750 units)
         // - outdoors: ~37.5 ft (~1250 units)
@@ -74,6 +77,8 @@ namespace SpatialAwareness
     Settings GetSettings();
     void SetInteriorMaxDistance(float interiorMaxDistance);
     void SetExteriorMaxDistance(float exteriorMaxDistance);
+    void SetAutoHearingRadiusMeters(float meters);
+    float GetAutoHearingRadiusMeters();
     void InvalidateCache();
 
     PathResult EvaluatePath(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());

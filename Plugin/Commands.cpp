@@ -4142,7 +4142,7 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
         spatialSettings.maxAirDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
         spatialSettings.exteriorMaxDistance *= distanceMultiplier;
-        spatialSettings.immediateDistance = SpatialAwareness::kPlayerAutoIncludeDistance;
+        spatialSettings.immediateDistance = spatialSettings.autoHearingDistance;
     }
 
     return spatialSettings;
