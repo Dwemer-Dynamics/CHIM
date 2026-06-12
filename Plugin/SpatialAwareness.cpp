@@ -769,6 +769,16 @@ namespace SpatialAwareness
             return finalize("tier1_too_far");
         }
 
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        const bool playerSpeaker = player && speaker->GetFormID() == player->GetFormID();
+        if (playerSpeaker && settings.immediateDistance > 0.0f &&
+            airDistance <= settings.immediateDistance) {
+            result.canCommunicate = true;
+            result.volume = 1.0f;
+            result.reason = "immediate_proximity";
+            return finalize("tier1_player_auto_radius");
+        }
+
         // Speech audibility should be governed by the active interior/exterior
         // hearing distance, not the broader maxAirDistance safety ceiling. If
         // the pair is already outside the MCM hearing range, do not spend work

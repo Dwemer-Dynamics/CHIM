@@ -53,7 +53,7 @@ struct PlayerSpatialCandidate {
 
 class SpatialSnapshotManager {
 public:
-    static constexpr float kPlayerNearbyContextRadiusUnits = 8.0f * 70.0f;
+    static constexpr float kPlayerNearbyContextRadiusUnits = SpatialAwareness::kPlayerAutoIncludeDistance;
 
     static PlayerSpatialSnapshot GetPlayerSnapshot(bool forceRefresh = false,
                                                    const std::string& reason = "cache");

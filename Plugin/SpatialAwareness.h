@@ -6,6 +6,11 @@
 
 namespace SpatialAwareness
 {
+    inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
+    inline constexpr float kPlayerAutoIncludeRadiusMeters = 8.0f;
+    inline constexpr float kPlayerAutoIncludeDistance =
+        kPlayerAutoIncludeRadiusMeters * kSkyrimUnitsPerMeter;
+
     struct Settings
     {
         float maxAirDistance = 4000.0f;

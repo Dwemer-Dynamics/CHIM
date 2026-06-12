@@ -4140,9 +4140,9 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
         const float distanceMultiplier = PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();
         spatialSettings.maxAirDistance *= distanceMultiplier;
-        spatialSettings.immediateDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
         spatialSettings.exteriorMaxDistance *= distanceMultiplier;
+        spatialSettings.immediateDistance = SpatialAwareness::kPlayerAutoIncludeDistance;
     }
 
     return spatialSettings;

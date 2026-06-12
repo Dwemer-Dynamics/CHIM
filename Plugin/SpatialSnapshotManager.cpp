@@ -56,7 +56,7 @@ namespace
     constexpr auto kDistantPathFallbackMinInterval = std::chrono::milliseconds(4000);
     constexpr float kTargetRefinementMoveTolerance = 64.0f;
     constexpr float kDifferentLevelVerticalDelta = 160.0f;
-    constexpr float kSkyrimUnitsToMeters = 1.0f / 70.0f;
+    constexpr float kSkyrimUnitsToMeters = 1.0f / SpatialAwareness::kSkyrimUnitsPerMeter;
     constexpr std::size_t kTargetRefinementCacheMaxEntries = 64;
 
     RE::FormID g_observedPlayerCellFormId = 0;
@@ -435,17 +435,17 @@ namespace
             return result;
         }
 
+        if (settings.immediateDistance > 0.0f && airDistance <= settings.immediateDistance) {
+            result.canCommunicate = true;
+            result.volume = 1.0f;
+            result.reason = "immediate_proximity";
+            return result;
+        }
+
         const float audibleDistance =
             playerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
         if (audibleDistance > 0.0f && airDistance > audibleDistance) {
             result.reason = "too_far";
-            return result;
-        }
-
-        if (airDistance <= settings.immediateDistance) {
-            result.canCommunicate = true;
-            result.volume = 1.0f;
-            result.reason = "immediate_proximity";
             return result;
         }
 
@@ -1544,6 +1544,8 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
         if (!std::isfinite(airDistance) || (displayHardLimit > 0.0f && airDistance > displayHardLimit)) {
             continue;
         }
+        const bool withinPlayerAutoRadius =
+            airDistance <= SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits;
 
         PlayerSpatialCandidate target{};
         target.agent = std::const_pointer_cast<AIAgent>(agent);
@@ -1593,6 +1595,16 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             }
         }
 
+        if (withinPlayerAutoRadius) {
+            target.targetable = true;
+            target.reason = "immediate_proximity";
+            target.status = "Can hear you";
+            if (!target.lookTarget) {
+                target.source = "player_auto_radius";
+                target.sortBucket = 1;
+            }
+        }
+
         std::string blockedStatus;
         if (target.targetable && IsAutoBlocked(target.agent, target.actor, player, blockedStatus)) {
             target.targetable = false;
@@ -1600,7 +1612,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             target.status = blockedStatus;
             target.sortBucket = std::max(target.sortBucket, 2);
         } else {
-            target.autoEligible = target.targetable;
+            target.autoEligible = target.targetable && withinPlayerAutoRadius;
         }
 
         ApplyBehindPlayerClearLosStatus(player, actorPosition, target);
@@ -1633,6 +1645,17 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             continue;
         }
 
+        const float currentAirDistance = player->GetPosition().GetDistance(target.actor->GetPosition());
+        const bool withinPlayerAutoRadius =
+            std::isfinite(currentAirDistance) &&
+            currentAirDistance <= SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits;
+        if (withinPlayerAutoRadius) {
+            if (!target.lookTarget && target.autoEligible && !nearestAutoEligibleSeen) {
+                nearestAutoEligibleSeen = true;
+            }
+            continue;
+        }
+
         SpatialAwareness::Result cachedRefinement{};
         if (TryGetCachedTargetRefinement(player, target.actor, cachedRefinement, now)) {
             const auto& spatial = cachedRefinement;
@@ -1643,7 +1666,7 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
             target.source = spatial.navmeshPathUsed ? "refined_path" :
                             (spatial.losFallbackUsed ? "refined_los" : target.source);
             target.sortBucket = target.targetable ? (target.lookTarget ? 0 : 1) : 3;
-            target.autoEligible = target.targetable;
+            target.autoEligible = target.targetable && withinPlayerAutoRadius;
             ApplyBehindPlayerClearLosStatus(player, target.actor->GetPosition(), target);
             if (!target.lookTarget && target.autoEligible && !nearestAutoEligibleSeen) {
                 nearestAutoEligibleSeen = true;
@@ -1718,18 +1741,7 @@ bool SpatialSnapshotManager::IsValidPlayerSpeechTarget(const PlayerSpatialCandid
         return false;
     }
 
-    const auto spatialSettings = GetPlayerSpeechSpatialSettings(player, HERIKA_MAX_VISION_RANGE);
-    float closeLimit = playerInterior ? spatialSettings.interiorMaxDistance : spatialSettings.exteriorMaxDistance;
-    if (spatialSettings.maxAirDistance > 0.0f) {
-        closeLimit = std::min(closeLimit, spatialSettings.maxAirDistance);
-    }
-    if (!std::isfinite(closeLimit) || closeLimit <= 0.0f || airDistance > closeLimit) {
-        return false;
-    }
-
-    const float verticalDelta = targetPosition.z - playerPosition.z;
-    if (playerInterior && std::isfinite(verticalDelta) &&
-        std::abs(verticalDelta) >= kDifferentLevelVerticalDelta) {
+    if (airDistance > SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits) {
         return false;
     }
 
