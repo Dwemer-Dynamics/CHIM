@@ -2532,6 +2532,24 @@ void SpeakManager::process(AIAgent *agent) {
                                     scriptLine.subtitle,
                                     agent->isNarrator());
 
+            if (PrismaUIBridge::IsAvailable()) {
+                char timeDateString[200];
+                RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                const std::string speakerType = agent->isNarrator() ? "narrator" : "npc";
+                PrismaUIBridge::PushChatboxMessage(
+                    agent->getActorName(),
+                    scriptLine.subtitle,
+                    std::string(timeDateString),
+                    speakerType,
+                    "llm");
+                PrismaUIBridge::PushDialogueEntry(
+                    agent->getActorName(),
+                    scriptLine.subtitle,
+                    std::string(timeDateString),
+                    "chat",
+                    "llm");
+            }
+
             hasTalked = true;
 
             logger::info("[SPEAKERMANAGER {}] Parsing scriptline actor:{} listener:{} text:{}", tid, scriptLine.actor,
@@ -2960,7 +2978,7 @@ void SpeakManager::process(AIAgent *agent) {
                     const std::string audienceSnapshotKey =
                         normalizeName(speakerName) + "->" + normalizeName(resolvedListenerName);
                     bool reusedAudienceSnapshot = false;
-                    bool speakerWithinPlayerNearbyContext = false;
+                    bool speakerWithinAutoHearingRadius = false;
                     std::size_t playerNearbyContextCount = 0;
                     {
                         std::lock_guard<std::mutex> lock(mtx);
@@ -2972,21 +2990,26 @@ void SpeakManager::process(AIAgent *agent) {
                     }
 
                     if (!reusedAudienceSnapshot) {
-                        speakerWithinPlayerNearbyContext = audibilitySource &&
-                            SpatialSnapshotManager::IsActorWithinPlayerNearbyContext(audibilitySource);
-                        if (speakerWithinPlayerNearbyContext) {
+                        speakerWithinAutoHearingRadius = audibilitySource &&
+                            SpatialSnapshotManager::IsActorWithinAutoHearingRadius(audibilitySource);
+                        if (speakerWithinAutoHearingRadius) {
+                            const float autoHearingRadiusUnits =
+                                SpatialSnapshotManager::GetAutoHearingRadiusUnits();
                             const auto playerNearbyTargets =
-                                SpatialSnapshotManager::GetPlayerNearbyManagedTargets();
+                                SpatialSnapshotManager::GetPlayerNearbyManagedTargets(autoHearingRadiusUnits);
                             for (const auto& target : playerNearbyTargets) {
                                 addCompanion(target.name);
                                 ++playerNearbyContextCount;
                             }
                         }
+                        const float autoHearingRadiusUnits =
+                            SpatialSnapshotManager::GetAutoHearingRadiusUnits();
+                        const float autoHearingRadiusMeters =
+                            autoHearingRadiusUnits / SpatialAwareness::kSkyrimUnitsPerMeter;
                         logger::info(
-                            "[rework_debug][nearby_context] npc_prescan speaker='{}' listener='{}' radius_units={:.1f} radius_m=8.0 speaker_within_8m={} count={} names='{}'",
-                            speakerName, resolvedListenerName,
-                            SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits,
-                            speakerWithinPlayerNearbyContext ? 1 : 0, playerNearbyContextCount,
+                            "[rework_debug][nearby_context] npc_prescan speaker='{}' listener='{}' radius_units={:.1f} radius_m={:.1f} speaker_within_auto_hearing_radius={} count={} names='{}'",
+                            speakerName, resolvedListenerName, autoHearingRadiusUnits, autoHearingRadiusMeters,
+                            speakerWithinAutoHearingRadius ? 1 : 0, playerNearbyContextCount,
                             joinCompanions(audibleCompanions));
 
                         // Audience scope is speech audibility, not auto-activate population.
@@ -3073,9 +3096,9 @@ void SpeakManager::process(AIAgent *agent) {
                     addCompanion(speechListener);
                     addCompanion(configuredPlayerName.empty() ? playerName : configuredPlayerName);
                     logger::info(
-                        "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_8m={} nearby_count={} companions='{}'",
+                        "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_auto_hearing_radius={} nearby_count={} companions='{}'",
                         speakerName, resolvedListenerName, reusedAudienceSnapshot ? 1 : 0,
-                        speakerWithinPlayerNearbyContext ? 1 : 0, playerNearbyContextCount,
+                        speakerWithinAutoHearingRadius ? 1 : 0, playerNearbyContextCount,
                         joinCompanions(audibleCompanions));
                 }
 

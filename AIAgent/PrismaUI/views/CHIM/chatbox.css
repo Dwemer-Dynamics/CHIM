@@ -461,6 +461,15 @@ body {
     color: #ec7063;
 }
 
+.message.non-llm {
+    opacity: 0.82;
+    background: rgba(28, 28, 34, 0.32);
+}
+
+.message.non-llm .message-text {
+    color: #c4c4c4;
+}
+
 /* System Messages */
 .message-system {
     display: block;

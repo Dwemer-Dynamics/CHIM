@@ -1221,14 +1221,27 @@ R"CHIM(
         );
     }
 
+    static std::list<std::string> g_historyEntryCache;
+    static const size_t MAX_HISTORY_ENTRY_CACHE = 150;
+
     void PushDialogueEntry(const std::string& speaker, const std::string& text,
-                           const std::string& timestamp, const std::string& eventType) {
+                           const std::string& timestamp, const std::string& eventType,
+                           const std::string& source) {
         if (!g_prismaUI || !g_panelCreated.load()) {
             return;
         }
 
         // Push entries even when hidden so they appear when user opens the panel
         // This matches chatbox behavior - don't check IsHidden()
+        std::string dedupeKey = speaker + "|" + text;
+        auto it = std::find(g_historyEntryCache.begin(), g_historyEntryCache.end(), dedupeKey);
+        if (it != g_historyEntryCache.end()) {
+            return;
+        }
+        g_historyEntryCache.push_back(dedupeKey);
+        while (g_historyEntryCache.size() > MAX_HISTORY_ENTRY_CACHE) {
+            g_historyEntryCache.pop_front();
+        }
 
         try {
             json entry;
@@ -1236,6 +1249,7 @@ R"CHIM(
             entry["text"] = text;
             entry["timestamp"] = timestamp;
             entry["eventType"] = eventType;
+            entry["source"] = source;
 
             std::string jsonStr = entry.dump();
 
@@ -4566,7 +4580,8 @@ R"CHIM(
         }
 
         const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
-        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets("chatbox_targets", true);
+        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
+            "chatbox_targets", true, PlayerSpeechTargetMode::Manual);
         for (const auto& candidate : candidates) {
             if (whisperTargetCapActive &&
                 (!std::isfinite(candidate.distanceMeters) ||
@@ -5266,6 +5281,7 @@ R"CHIM(
         logger::info("[PrismaUIBridge] Showing chatbox panel (no auto-focus)");
         g_chatboxQuickFocusActive.store(false);
         g_prismaUI->Show(g_chatboxView);
+        g_chatboxState.store(1);
         CheckAndUpdateChatboxControls(true);
         
         // No auto-focus - player retains control until they press Enter
@@ -5388,7 +5404,10 @@ R"CHIM(
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
             CheckAndUpdateChatboxControls(true);
-            g_prismaUI->Invoke(g_chatboxView, "window.onChatboxFocused(true)", nullptr);
+            g_prismaUI->Invoke(
+                g_chatboxView,
+                wasVisibleAtStart ? "window.onChatboxFocused(false)" : "window.onChatboxFocused(true)",
+                nullptr);
             // JS opens the centered focus chat modal and focuses its textarea.
         } else {
             g_chatboxQuickFocusActive.store(false);
@@ -5464,7 +5483,8 @@ R"CHIM(
     static const size_t MAX_CHATBOX_MSG_CACHE = 150;
 
     void PushChatboxMessage(const std::string& speaker, const std::string& text,
-                            const std::string& timestamp, const std::string& type) {
+                            const std::string& timestamp, const std::string& type,
+                            const std::string& source) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
             return;
         }
@@ -5509,10 +5529,11 @@ R"CHIM(
             std::string escapedText = escapeForJS(text);
             std::string escapedTimestamp = escapeForJS(timestamp);
             std::string escapedType = escapeForJS(type);
+            std::string escapedSource = escapeForJS(source);
 
             std::string jsCall = "window.pushChatMessage('" + escapedSpeaker + "', '" + 
                                 escapedText + "', '" + escapedTimestamp + "', '" + 
-                                escapedType + "')";
+                                escapedType + "', '" + escapedSource + "')";
 
             g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
             logger::debug("[PrismaUIBridge] Pushed chat message: {} - {}", speaker, text.substr(0, 50));

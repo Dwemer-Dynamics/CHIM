@@ -1438,7 +1438,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         bool directedChat = false;
         const bool everyoneTargetOverride = PrismaUIBridge::IsChatboxEveryoneTargetOverrideActive();
         auto rankedTargets = playerInputMessage
-            ? SpatialSnapshotManager::GetValidPlayerSpeechTargets("player_input_listener_resolve")
+            ? SpatialSnapshotManager::GetValidPlayerSpeechTargets(
+                "player_input_listener_resolve", false, PlayerSpeechTargetMode::Manual)
             : SpatialSnapshotManager::GetPlayerConversationTargets("listener_resolve", true);
 
         std::string currentParty = "";
@@ -1485,9 +1486,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 return true;
             }
 
-            if (!SpatialSnapshotManager::IsValidPlayerSpeechTarget(target)) {
+            if (!SpatialSnapshotManager::IsValidPlayerSpeechTarget(target, PlayerSpeechTargetMode::Manual)) {
                 logger::info(
-                    "[LISTENER-RESOLVE] Rejecting '{}' via {}: STT routing requires cached stable spatial "
+                    "[LISTENER-RESOLVE] Rejecting '{}' via {}: STT routing requires manual targetable spatial "
                     "(source={}, status={}, reason={}, targetable={}, dist={:.1f}m)",
                     target.name.empty() && target.agent ? target.agent->getActorName() : target.name,
                     source, target.source, target.status, target.reason, target.targetable ? 1 : 0,
@@ -1817,14 +1818,19 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
                 std::size_t nearbyContextCount = 0;
                 if (listener != NARRATOR_NAME) {
-                    const auto nearbyContextTargets = SpatialSnapshotManager::GetPlayerNearbyManagedTargets();
+                    const float autoHearingRadiusUnits =
+                        SpatialSnapshotManager::GetAutoHearingRadiusUnits();
+                    const float autoHearingRadiusMeters =
+                        autoHearingRadiusUnits / SpatialAwareness::kSkyrimUnitsPerMeter;
+                    const auto nearbyContextTargets =
+                        SpatialSnapshotManager::GetPlayerNearbyManagedTargets(autoHearingRadiusUnits);
                     for (const auto& target : nearbyContextTargets) {
                         addCompanion(target.name);
                         ++nearbyContextCount;
                     }
                     logger::info(
-                        "[rework_debug][nearby_context] player_prescan listener='{}' radius_units={:.1f} radius_m=8.0 count={} names='{}'",
-                        listener, SpatialSnapshotManager::kPlayerNearbyContextRadiusUnits, nearbyContextCount,
+                        "[rework_debug][nearby_context] player_prescan listener='{}' radius_units={:.1f} radius_m={:.1f} count={} names='{}'",
+                        listener, autoHearingRadiusUnits, autoHearingRadiusMeters, nearbyContextCount,
                         joinCompanions(audibleCompanions));
                     if (nearbyContextCount > 0) {
                         audienceSource = "player_nearby_context";

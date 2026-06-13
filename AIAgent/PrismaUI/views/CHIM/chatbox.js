@@ -79,13 +79,14 @@
     /**
      * Push a new chat message (called from C++ via Invoke)
      */
-    window.pushChatMessage = function(speaker, text, timestamp, type) {
+    window.pushChatMessage = function(speaker, text, timestamp, type, source) {
         if (!speaker || !text) return;
         type = type || 'npc';
+        source = source || 'llm';
         timestamp = timestamp || getCurrentTime();
 
         var messageDiv = document.createElement('div');
-        messageDiv.className = 'message ' + type;
+        messageDiv.className = 'message ' + type + (source === 'subtitle' ? ' non-llm' : '');
 
         var headerDiv = document.createElement('div');
         headerDiv.className = 'message-header';

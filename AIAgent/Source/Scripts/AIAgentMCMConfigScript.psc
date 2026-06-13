@@ -107,6 +107,9 @@ float		_spatial_hearing_inside		= 500.0
 int			_slider_spatial_hearing_outside
 float		_spatial_hearing_outside	= 1000.0
 
+int			_slider_auto_hearing_radius_m
+float		_auto_hearing_radius_m	= 8.0
+
 int			_slider_bored_period
 float		_bored_period		= 60.0
 
@@ -460,6 +463,17 @@ event OnConfigInit()
 	endIf
 	controlScript.setConf("_spatial_hearing_outside", _spatial_hearing_outside)
 
+	int autoHearingRadiusValue = AIAgentFunctions.get_conf_i("_auto_hearing_radius_m")
+	if (autoHearingRadiusValue < 1 || autoHearingRadiusValue > 20)
+		autoHearingRadiusValue = AIAgentFunctions.get_conf_i("_player_auto_include_radius_m")
+	endIf
+	if (autoHearingRadiusValue >= 1 && autoHearingRadiusValue <= 20)
+		_auto_hearing_radius_m = autoHearingRadiusValue as float
+	else
+		_auto_hearing_radius_m = 8.0
+	endIf
+	controlScript.setConf("_auto_hearing_radius_m", _auto_hearing_radius_m)
+
 	int playbackDropoffInsideValue = AIAgentFunctions.get_conf_i("_playback_dropoff_inside")
 	if (playbackDropoffInsideValue >= 25 && playbackDropoffInsideValue <= 200)
 		_playback_dropoff_inside = playbackDropoffInsideValue as float
@@ -518,12 +532,17 @@ endEvent
 
 int function GetVersion()
 
-	return 66
+	return 67
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 67 && a_version > CurrentVersion)
+		; Version 67: Added auto hearing radius slider
+		OnConfigInit()
+	endIf
 
 	if (a_version == 66 && a_version > CurrentVersion)
 		; Version 66: Add camera-based audio heading option
@@ -701,6 +720,7 @@ event OnPageReset(string a_page)
 		_slider_max_distance_outside	= AddSliderOption("Exterior Auto Activate Distance",_max_distance_outside,"{0}" )
 		_slider_spatial_hearing_inside	= AddSliderOption("Interior Spatial Hearing Distance",_spatial_hearing_inside,"{0}" )
 		_slider_spatial_hearing_outside	= AddSliderOption("Exterior Spatial Hearing Distance",_spatial_hearing_outside,"{0}" )
+		_slider_auto_hearing_radius_m	= AddSliderOption("Auto Hearing Radius",_auto_hearing_radius_m,"{0}" )
 		
 		AddEmptyOption()
 		
@@ -953,6 +973,13 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
+
+	if (a_option == _slider_auto_hearing_radius_m)
+		SetSliderDialogStartValue(_auto_hearing_radius_m)
+		SetSliderDialogDefaultValue(8)
+		SetSliderDialogRange(1, 20)
+		SetSliderDialogInterval(1)
+	endIf
 	
 	if (a_option == _slider_bored_period)
 		SetSliderDialogStartValue(_bored_period)
@@ -1066,6 +1093,12 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		controlScript.setConf("_spatial_hearing_outside",_spatial_hearing_outside)
 		SetSliderOptionValue(a_option, a_value, "{1}")
 	endIf
+
+	if (a_option == _slider_auto_hearing_radius_m)
+		_auto_hearing_radius_m = a_value
+		controlScript.setConf("_auto_hearing_radius_m",_auto_hearing_radius_m)
+		SetSliderOptionValue(a_option, a_value, "{1}")
+	endIf
 	
 	if (a_option == _slider_bored_period)
 		_bored_period = a_value
@@ -1146,6 +1179,7 @@ event OnGameReload()
 	a=controlScript.setConf("_max_distance_outside",_max_distance_outside)
 	a=controlScript.setConf("_spatial_hearing_inside",_spatial_hearing_inside)
 	a=controlScript.setConf("_spatial_hearing_outside",_spatial_hearing_outside)
+	a=controlScript.setConf("_auto_hearing_radius_m",_auto_hearing_radius_m)
 	
 	controlScript.mdi=_max_distance_inside;
 	controlScript.mdo=_max_distance_outside;
@@ -2069,6 +2103,10 @@ event OnOptionHighlight(int a_option)
 
 	if (a_option == _slider_spatial_hearing_outside)
 		SetInfoText("Sets outdoor conversation hearing distance for spatial awareness checks.")
+	endIf
+
+	if (a_option == _slider_auto_hearing_radius_m)
+		SetInfoText("Direct auto hearing radius in meters. Uses straight-line distance and does not require LOS or navmesh.")
 	endIf
 	
 	if (a_option == _toggleAddAllNPC)
