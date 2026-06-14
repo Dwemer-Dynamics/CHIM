@@ -4,6 +4,7 @@
 #include "ThreadPool.h"
 #include "Papyrus.h"
 #include "HTTPManager.h"
+#include "HTTPUploader.h"
 #include "Globals.h"
 #include "SpeakManager.h"
 #include "SPGResponse.h"
@@ -11,20 +12,40 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <Windows.h>
+#include <comdef.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+#include <wincodec.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
+#include <future>
 #include <iomanip>
 #include <limits>
 #include <list>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 #include <thread>
 #include <unordered_map>
 
+#include <SKSE/API.h>
+
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 namespace logger = SKSE::log;
+using Microsoft::WRL::ComPtr;
+
+extern void MutexSetScreenShotSendMode(int newVal);
 
 namespace PrismaUIBridge {
 
@@ -135,6 +156,38 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_masterMenuVisible{false};  // Track visibility state
     static std::mutex g_masterMenuMutex;
 
+    // Item image batch capture state
+    static PrismaView g_itemCaptureView = 0;
+    static std::atomic<bool> g_itemCaptureCreated{false};
+    static std::atomic<bool> g_itemCaptureDomReady{false};
+    static std::atomic<bool> g_itemCaptureRunning{false};
+    static std::atomic<bool> g_itemCaptureSelectorOpen{false};
+    struct ItemCapturePreviewRect {
+        int x = 0;
+        int y = 0;
+        int w = 0;
+        int h = 0;
+    };
+    struct ItemImageBatchCandidate {
+        std::string plugin;
+        std::string baseid;
+        std::string runtimeFormId;
+        std::string name;
+        RE::FormID localId = 0;
+        RE::FormID rawFormId = 0;
+        int formType = 0;
+    };
+    static std::mutex g_itemCaptureSelectionMutex;
+    static std::vector<ItemImageBatchCandidate> g_itemCapturePendingCandidates;
+    static std::mutex g_itemCaptureMutex;
+    static std::condition_variable g_itemCaptureCv;
+    static int g_itemCaptureExpectedSeq = 0;
+    static int g_itemCaptureReadySeq = 0;
+    static bool g_itemCapturePreviewOk = false;
+    static ItemCapturePreviewRect g_itemCapturePreviewRect;
+    static std::wstring g_itemCaptureDumpPath = L".\\Data\\SKSE\\Plugins\\PrismaUI_ModelPreview_dump.bmp";
+    static std::wstring g_itemCaptureDumpConfigPath = L".\\Data\\SKSE\\Plugins\\PrismaUI_ModelPreview.ini";
+
     // Quest Manager state
     static PrismaView g_questManagerView = 0;
     static std::atomic<bool> g_questManagerCreated{false};
@@ -166,6 +219,12 @@ namespace PrismaUIBridge {
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
     static void OnMasterMenuCommand(const char* argument);
+    static void OnItemCaptureDomReady(PrismaView view);
+    static void OnItemCapturePreviewReady(const char* argument);
+    static void OnItemCaptureSelection(const char* argument);
+    static void OnItemCaptureCancel(const char* argument);
+    static void HideItemCaptureView();
+    static void RunItemModelImageBatchCapture(std::vector<ItemImageBatchCandidate> candidates);
     static void OnQuestManagerDomReady(PrismaView view);
     static void OnQuestManagerCommand(const char* argument);
     static void OnBrowserCommand(const char* argument);
@@ -5945,6 +6004,1337 @@ R"CHIM(
         g_pendingSettingsAction = "";
     }
 
+    static bool QueueGameTaskAndWait(std::function<void()> task, std::chrono::milliseconds timeout) {
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            task();
+            return true;
+        }
+
+        auto completion = std::make_shared<std::promise<void>>();
+        auto future = completion->get_future();
+        taskInterface->AddTask([task = std::move(task), completion]() mutable {
+            task();
+            completion->set_value();
+        });
+
+        return future.wait_for(timeout) == std::future_status::ready;
+    }
+
+    static void QueueGameNotification(std::string text) {
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            RE::DebugNotification(text.c_str());
+            return;
+        }
+
+        taskInterface->AddTask([text = std::move(text)]() {
+            RE::DebugNotification(text.c_str());
+        });
+    }
+
+    static std::string FormatItemCaptureFormId(RE::FormID formId) {
+        return std::format("{:08X}", static_cast<std::uint32_t>(formId));
+    }
+
+    static std::string UrlEncodeItemCapture(std::string_view value) {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string encoded;
+        encoded.reserve(value.size());
+
+        for (unsigned char ch : value) {
+            if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+                encoded.push_back(static_cast<char>(ch));
+            } else {
+                encoded.push_back('%');
+                encoded.push_back(kHex[ch >> 4]);
+                encoded.push_back(kHex[ch & 0x0F]);
+            }
+        }
+
+        return encoded;
+    }
+
+    static bool IsItemImageBatchFormType(RE::FormType formType) {
+        switch (formType) {
+        case RE::FormType::Scroll:
+        case RE::FormType::Armor:
+        case RE::FormType::Book:
+        case RE::FormType::Ingredient:
+        case RE::FormType::Light:
+        case RE::FormType::Misc:
+        case RE::FormType::Apparatus:
+        case RE::FormType::Weapon:
+        case RE::FormType::Ammo:
+        case RE::FormType::KeyMaster:
+        case RE::FormType::AlchemyItem:
+        case RE::FormType::Note:
+        case RE::FormType::SoulGem:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static std::vector<ItemImageBatchCandidate> CollectItemImageBatchCandidates() {
+        std::vector<ItemImageBatchCandidate> candidates;
+        auto* dataHandler = RE::TESDataHandler::GetSingleton();
+        if (!dataHandler) {
+            return candidates;
+        }
+
+        const std::vector<RE::FormType> formTypes = {
+            RE::FormType::Scroll,
+            RE::FormType::Armor,
+            RE::FormType::Book,
+            RE::FormType::Ingredient,
+            RE::FormType::Light,
+            RE::FormType::Misc,
+            RE::FormType::Apparatus,
+            RE::FormType::Weapon,
+            RE::FormType::Ammo,
+            RE::FormType::KeyMaster,
+            RE::FormType::AlchemyItem,
+            RE::FormType::Note,
+            RE::FormType::SoulGem,
+        };
+
+        std::unordered_set<std::string> seen;
+        for (const auto formType : formTypes) {
+            for (auto* form : dataHandler->GetFormArray(formType)) {
+                if (!form || !IsItemImageBatchFormType(form->GetFormType())) {
+                    continue;
+                }
+
+                auto* sourceFile = form->GetFile(0);
+                if (!sourceFile || sourceFile->GetFilename().empty()) {
+                    continue;
+                }
+
+                const auto localFormId = form->GetLocalFormID();
+                const auto runtimeFormId = form->GetFormID();
+                std::string plugin(sourceFile->GetFilename());
+                std::string baseid = FormatItemCaptureFormId(localFormId);
+                const std::string stableKey = plugin + "|" + baseid;
+                if (!seen.insert(stableKey).second) {
+                    continue;
+                }
+
+                ItemImageBatchCandidate candidate;
+                candidate.plugin = std::move(plugin);
+                candidate.baseid = std::move(baseid);
+                candidate.runtimeFormId = FormatItemCaptureFormId(runtimeFormId);
+                candidate.localId = localFormId;
+                candidate.rawFormId = runtimeFormId;
+                candidate.formType = static_cast<int>(form->GetFormType());
+                if (const char* name = form->GetName(); name && name[0] != '\0') {
+                    candidate.name = name;
+                }
+                candidates.push_back(std::move(candidate));
+            }
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+            const int pluginCompare = _stricmp(left.plugin.c_str(), right.plugin.c_str());
+            if (pluginCompare != 0) {
+                return pluginCompare < 0;
+            }
+            return left.baseid < right.baseid;
+        });
+
+        return candidates;
+    }
+
+    static json BuildItemCaptureSelectorPayload(const std::vector<ItemImageBatchCandidate>& candidates) {
+        std::unordered_map<std::string, int> counts;
+        for (const auto& candidate : candidates) {
+            ++counts[candidate.plugin];
+        }
+
+        std::vector<std::pair<std::string, int>> pluginCounts;
+        pluginCounts.reserve(counts.size());
+        for (const auto& [plugin, count] : counts) {
+            pluginCounts.emplace_back(plugin, count);
+        }
+
+        std::sort(pluginCounts.begin(), pluginCounts.end(), [](const auto& left, const auto& right) {
+            const int pluginCompare = _stricmp(left.first.c_str(), right.first.c_str());
+            if (pluginCompare != 0) {
+                return pluginCompare < 0;
+            }
+            return left.second > right.second;
+        });
+
+        json plugins = json::array();
+        for (const auto& [plugin, count] : pluginCounts) {
+            plugins.push_back({
+                { "plugin", plugin },
+                { "count", count },
+            });
+        }
+
+        return {
+            { "total", static_cast<int>(candidates.size()) },
+            { "plugins", std::move(plugins) },
+        };
+    }
+
+    static std::string BuildItemImageBatchCaptureQuery(const ItemImageBatchCandidate& candidate, const ItemCapturePreviewRect& rect,
+                                                       int batchIndex, int batchTotal) {
+        std::string query = "&source=chim_item_model_batch_capture";
+        query.append("&capture_context=prismaui_additem_batch");
+        query.append("&plugin=").append(UrlEncodeItemCapture(candidate.plugin));
+        query.append("&baseid=").append(UrlEncodeItemCapture(candidate.baseid));
+        query.append("&runtime_formid=").append(UrlEncodeItemCapture(candidate.runtimeFormId));
+        query.append("&form_type=").append(std::to_string(candidate.formType));
+        query.append("&batch_index=").append(std::to_string(batchIndex));
+        query.append("&batch_total=").append(std::to_string(batchTotal));
+
+        if (!candidate.name.empty()) {
+            query.append("&name=").append(UrlEncodeItemCapture(candidate.name));
+        }
+        if (rect.w > 0 && rect.h > 0) {
+            query.append("&crop_x=").append(std::to_string(rect.x));
+            query.append("&crop_y=").append(std::to_string(rect.y));
+            query.append("&crop_w=").append(std::to_string(rect.w));
+            query.append("&crop_h=").append(std::to_string(rect.h));
+        }
+
+        return query;
+    }
+
+    static bool EnsureItemCaptureView() {
+        if (!g_prismaUI) {
+            return false;
+        }
+
+        if (g_itemCaptureCreated.load()) {
+            return true;
+        }
+
+        logger::info("[ItemImageBatch] Creating CHIM item capture view from CHIM/item_capture.html...");
+        g_itemCaptureView = g_prismaUI->CreateView("CHIM/item_capture.html", OnItemCaptureDomReady);
+        if (g_itemCaptureView == 0) {
+            logger::error("[ItemImageBatch] Failed to create item capture view");
+            return false;
+        }
+
+        g_prismaUI->SetOrder(g_itemCaptureView, 135);
+        g_prismaUI->RegisterJSListener(g_itemCaptureView, "chimItemCaptureReady", [](const char*) {
+            logger::info("[ItemImageBatch] Item capture JavaScript ready");
+        });
+        g_prismaUI->RegisterJSListener(g_itemCaptureView, "chimItemCapturePreviewReady", OnItemCapturePreviewReady);
+        g_prismaUI->RegisterJSListener(g_itemCaptureView, "chimItemCaptureSelection", OnItemCaptureSelection);
+        g_prismaUI->RegisterJSListener(g_itemCaptureView, "chimItemCaptureCancel", OnItemCaptureCancel);
+        g_itemCaptureCreated.store(true);
+        logger::info("[ItemImageBatch] Item capture view created with ID: {}", g_itemCaptureView);
+        return true;
+    }
+
+    static void OnItemCaptureDomReady(PrismaView view) {
+        logger::info("[ItemImageBatch] Item capture view DOM ready");
+        g_itemCaptureDomReady.store(true);
+    }
+
+    static void OnItemCapturePreviewReady(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        try {
+            const auto payload = json::parse(argument);
+            const int seq = payload.value("seq", 0);
+            const bool ok = payload.value("ok", false);
+
+            std::lock_guard<std::mutex> lock(g_itemCaptureMutex);
+            if (seq != g_itemCaptureExpectedSeq) {
+                logger::debug("[ItemImageBatch] Ignoring stale preview rect seq={} expected={}", seq, g_itemCaptureExpectedSeq);
+                return;
+            }
+
+            g_itemCapturePreviewRect = {
+                payload.value("x", 0),
+                payload.value("y", 0),
+                payload.value("w", 0),
+                payload.value("h", 0),
+            };
+            g_itemCapturePreviewOk = ok && g_itemCapturePreviewRect.w > 0 && g_itemCapturePreviewRect.h > 0;
+            g_itemCaptureReadySeq = seq;
+            g_itemCaptureCv.notify_all();
+        } catch (const std::exception& e) {
+            logger::warn("[ItemImageBatch] Failed to parse preview-ready payload: {}", e.what());
+        }
+    }
+
+    static bool WaitForItemCaptureDomReady(std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (g_itemCaptureDomReady.load()) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return g_itemCaptureDomReady.load();
+    }
+
+    static bool SleepWhileItemCaptureRunning(std::chrono::milliseconds duration) {
+        const auto deadline = std::chrono::steady_clock::now() + duration;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!g_itemCaptureRunning.load()) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return g_itemCaptureRunning.load();
+    }
+
+    static bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& bytes) {
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 128LL * 1024LL * 1024LL) {
+            CloseHandle(file);
+            return false;
+        }
+
+        bytes.resize(static_cast<std::size_t>(size.QuadPart));
+        DWORD read = 0;
+        const BOOL ok = ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr);
+        CloseHandle(file);
+        if (!ok || read != bytes.size()) {
+            bytes.clear();
+            return false;
+        }
+
+        return true;
+    }
+
+    static bool WriteWholeFile(const std::wstring& path, const std::string& text) {
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+
+        DWORD written = 0;
+        const BOOL ok = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+        CloseHandle(file);
+        return ok && written == text.size();
+    }
+
+    static void EnsureModelPreviewDumpEnabled() {
+        std::vector<BYTE> bytes;
+        std::string config;
+        if (ReadWholeFile(g_itemCaptureDumpConfigPath, bytes)) {
+            config.assign(reinterpret_cast<const char*>(bytes.data()), reinterpret_cast<const char*>(bytes.data()) + bytes.size());
+        }
+
+        if (config.empty()) {
+            config =
+                "; PrismaUI 3D Model Preview - CHIM item capture requires render-target dumps.\r\n"
+                "[General]\r\n"
+                "bEnabled=1\r\n"
+                "iRTSize=768\r\n"
+                "iSpinDegPerSec=45\r\n"
+                "bDumpRT=1\r\n";
+        } else {
+            const std::string needle = "bDumpRT=0";
+            const auto pos = config.find(needle);
+            if (pos != std::string::npos) {
+                config.replace(pos, needle.size(), "bDumpRT=1");
+            } else if (config.find("bDumpRT=1") == std::string::npos) {
+                config.append("\r\nbDumpRT=1\r\n");
+            }
+        }
+
+        if (!WriteWholeFile(g_itemCaptureDumpConfigPath, config)) {
+            logger::warn("[ItemImageBatch] Could not enable PrismaUI ModelPreview dump config at .\\Data\\SKSE\\Plugins\\PrismaUI_ModelPreview.ini");
+        }
+    }
+
+    static void DeleteModelPreviewDump() {
+        DeleteFileW(g_itemCaptureDumpPath.c_str());
+    }
+
+    static void ReleaseComObject(IUnknown* object) {
+        if (object) {
+            object->Release();
+        }
+    }
+
+    static std::vector<char> EncodeBitmapToPng(HBITMAP bitmap, int width, int height) {
+        std::vector<char> png;
+        if (!bitmap || width <= 0 || height <= 0) {
+            return png;
+        }
+
+        const HRESULT initResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const bool shouldUninitialize = SUCCEEDED(initResult);
+        if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE) {
+            logger::warn("[ItemImageBatch] Failed to initialize COM for WIC PNG encode: 0x{:08X}",
+                         static_cast<unsigned int>(initResult));
+            return png;
+        }
+
+        IWICImagingFactory* factory = nullptr;
+        IWICBitmap* wicBitmap = nullptr;
+        IStream* stream = nullptr;
+        IWICBitmapEncoder* encoder = nullptr;
+        IWICBitmapFrameEncode* frame = nullptr;
+
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory));
+        if (SUCCEEDED(hr)) {
+            hr = factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, &wicBitmap);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = encoder->CreateNewFrame(&frame, nullptr);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->Initialize(nullptr);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->SetSize(static_cast<UINT>(width), static_cast<UINT>(height));
+        }
+        if (SUCCEEDED(hr)) {
+            WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+            hr = frame->SetPixelFormat(&format);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->WriteSource(wicBitmap, nullptr);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->Commit();
+        }
+        if (SUCCEEDED(hr)) {
+            hr = encoder->Commit();
+        }
+
+        if (SUCCEEDED(hr)) {
+            HGLOBAL global = nullptr;
+            if (SUCCEEDED(GetHGlobalFromStream(stream, &global)) && global) {
+                const SIZE_T size = GlobalSize(global);
+                void* bytes = GlobalLock(global);
+                if (bytes && size > 0) {
+                    const auto* begin = static_cast<const char*>(bytes);
+                    png.assign(begin, begin + size);
+                }
+                if (bytes) {
+                    GlobalUnlock(global);
+                }
+            }
+        } else {
+            logger::warn("[ItemImageBatch] Failed to encode preview capture as PNG: 0x{:08X}",
+                         static_cast<unsigned int>(hr));
+        }
+
+        ReleaseComObject(frame);
+        ReleaseComObject(encoder);
+        ReleaseComObject(stream);
+        ReleaseComObject(wicBitmap);
+        ReleaseComObject(factory);
+        if (shouldUninitialize) {
+            CoUninitialize();
+        }
+
+        return png;
+    }
+
+    static std::vector<char> EncodeBgraPixelsToPng(const BYTE* pixels, int width, int height, UINT stride) {
+        std::vector<char> png;
+        if (!pixels || width <= 0 || height <= 0 || stride == 0) {
+            return png;
+        }
+
+        const HRESULT initResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const bool shouldUninitialize = SUCCEEDED(initResult);
+        if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE) {
+            logger::warn("[ItemImageBatch] Failed to initialize COM for DXGI PNG encode: 0x{:08X}",
+                         static_cast<unsigned int>(initResult));
+            return png;
+        }
+
+        IWICImagingFactory* factory = nullptr;
+        IStream* stream = nullptr;
+        IWICBitmapEncoder* encoder = nullptr;
+        IWICBitmapFrameEncode* frame = nullptr;
+
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory));
+        if (SUCCEEDED(hr)) {
+            hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = encoder->CreateNewFrame(&frame, nullptr);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->Initialize(nullptr);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->SetSize(static_cast<UINT>(width), static_cast<UINT>(height));
+        }
+        if (SUCCEEDED(hr)) {
+            WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+            hr = frame->SetPixelFormat(&format);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->WritePixels(static_cast<UINT>(height), stride,
+                                    static_cast<UINT>(stride * static_cast<UINT>(height)),
+                                    const_cast<BYTE*>(pixels));
+        }
+        if (SUCCEEDED(hr)) {
+            hr = frame->Commit();
+        }
+        if (SUCCEEDED(hr)) {
+            hr = encoder->Commit();
+        }
+
+        if (SUCCEEDED(hr)) {
+            HGLOBAL global = nullptr;
+            if (SUCCEEDED(GetHGlobalFromStream(stream, &global)) && global) {
+                const SIZE_T size = GlobalSize(global);
+                void* bytes = GlobalLock(global);
+                if (bytes && size > 0) {
+                    const auto* begin = static_cast<const char*>(bytes);
+                    png.assign(begin, begin + size);
+                }
+                if (bytes) {
+                    GlobalUnlock(global);
+                }
+            }
+        } else {
+            logger::warn("[ItemImageBatch] Failed to encode DXGI capture as PNG: 0x{:08X}",
+                         static_cast<unsigned int>(hr));
+        }
+
+        ReleaseComObject(frame);
+        ReleaseComObject(encoder);
+        ReleaseComObject(stream);
+        ReleaseComObject(factory);
+        if (shouldUninitialize) {
+            CoUninitialize();
+        }
+
+        return png;
+    }
+
+    static std::uint16_t ReadLe16(const std::vector<BYTE>& bytes, std::size_t offset) {
+        if (offset + 2 > bytes.size()) {
+            return 0;
+        }
+        return static_cast<std::uint16_t>(bytes[offset] | (bytes[offset + 1] << 8));
+    }
+
+    static std::uint32_t ReadLe32(const std::vector<BYTE>& bytes, std::size_t offset) {
+        if (offset + 4 > bytes.size()) {
+            return 0;
+        }
+        return static_cast<std::uint32_t>(bytes[offset] | (bytes[offset + 1] << 8) |
+                                          (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24));
+    }
+
+    static std::int32_t ReadLeI32(const std::vector<BYTE>& bytes, std::size_t offset) {
+        return static_cast<std::int32_t>(ReadLe32(bytes, offset));
+    }
+
+    static bool BgraPixelsLookFlat(const BYTE* pixels, int width, int height, UINT stride) {
+        if (!pixels || width <= 0 || height <= 0 || stride == 0) {
+            return true;
+        }
+
+        int minLuma = 255;
+        int maxLuma = 0;
+        int minChannel = 255;
+        int maxChannel = 0;
+        std::uint64_t sum = 0;
+        std::uint64_t sumSq = 0;
+        std::uint64_t count = 0;
+        const int stepX = std::max(1, width / 128);
+        const int stepY = std::max(1, height / 128);
+
+        for (int y = 0; y < height; y += stepY) {
+            const BYTE* row = pixels + static_cast<std::size_t>(y) * stride;
+            for (int x = 0; x < width; x += stepX) {
+                const BYTE b = row[x * 4 + 0];
+                const BYTE g = row[x * 4 + 1];
+                const BYTE r = row[x * 4 + 2];
+                const int luma = (static_cast<int>(r) * 30 + static_cast<int>(g) * 59 + static_cast<int>(b) * 11) / 100;
+                minLuma = std::min(minLuma, luma);
+                maxLuma = std::max(maxLuma, luma);
+                minChannel = std::min({ minChannel, static_cast<int>(r), static_cast<int>(g), static_cast<int>(b) });
+                maxChannel = std::max({ maxChannel, static_cast<int>(r), static_cast<int>(g), static_cast<int>(b) });
+                sum += static_cast<std::uint64_t>(luma);
+                sumSq += static_cast<std::uint64_t>(luma) * static_cast<std::uint64_t>(luma);
+                ++count;
+            }
+        }
+
+        if (count == 0) {
+            return true;
+        }
+
+        const double mean = static_cast<double>(sum) / static_cast<double>(count);
+        const double variance = (static_cast<double>(sumSq) / static_cast<double>(count)) - (mean * mean);
+        return (maxLuma - minLuma) < 8 && (maxChannel - minChannel) < 12 && variance < 6.0;
+    }
+
+    static bool HBitmapLooksFlat(HBITMAP bitmap, HDC dc, int width, int height) {
+        if (!bitmap || !dc || width <= 0 || height <= 0) {
+            return true;
+        }
+
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+
+        std::vector<BYTE> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+        const int rows = GetDIBits(dc, bitmap, 0, static_cast<UINT>(height), pixels.data(), &info, DIB_RGB_COLORS);
+        if (rows != height) {
+            return true;
+        }
+
+        return BgraPixelsLookFlat(pixels.data(), width, height, static_cast<UINT>(width * 4));
+    }
+
+    static std::vector<char> EncodeBmpFileToPng(const std::vector<BYTE>& bytes) {
+        if (bytes.size() < 54 || bytes[0] != 'B' || bytes[1] != 'M') {
+            return {};
+        }
+
+        const auto pixelOffset = ReadLe32(bytes, 10);
+        const auto dibSize = ReadLe32(bytes, 14);
+        if (dibSize < 40 || pixelOffset >= bytes.size()) {
+            return {};
+        }
+
+        const int width = ReadLeI32(bytes, 18);
+        const int rawHeight = ReadLeI32(bytes, 22);
+        const int height = std::abs(rawHeight);
+        const bool topDown = rawHeight < 0;
+        const auto planes = ReadLe16(bytes, 26);
+        const auto bitsPerPixel = ReadLe16(bytes, 28);
+        const auto compression = ReadLe32(bytes, 30);
+        if (width <= 0 || height <= 0 || planes != 1 || (bitsPerPixel != 24 && bitsPerPixel != 32) || compression != 0) {
+            return {};
+        }
+
+        const std::size_t sourceStride = (((static_cast<std::size_t>(width) * bitsPerPixel) + 31) / 32) * 4;
+        if (static_cast<std::size_t>(pixelOffset) + sourceStride * static_cast<std::size_t>(height) > bytes.size()) {
+            return {};
+        }
+
+        std::vector<BYTE> bgra(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+        for (int y = 0; y < height; ++y) {
+            const int sourceY = topDown ? y : (height - 1 - y);
+            const BYTE* source = bytes.data() + static_cast<std::size_t>(pixelOffset) + static_cast<std::size_t>(sourceY) * sourceStride;
+            BYTE* target = bgra.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4;
+            for (int x = 0; x < width; ++x) {
+                if (bitsPerPixel == 32) {
+                    target[x * 4 + 0] = source[x * 4 + 0];
+                    target[x * 4 + 1] = source[x * 4 + 1];
+                    target[x * 4 + 2] = source[x * 4 + 2];
+                    target[x * 4 + 3] = 255;
+                } else {
+                    target[x * 4 + 0] = source[x * 3 + 0];
+                    target[x * 4 + 1] = source[x * 3 + 1];
+                    target[x * 4 + 2] = source[x * 3 + 2];
+                    target[x * 4 + 3] = 255;
+                }
+            }
+        }
+
+        if (BgraPixelsLookFlat(bgra.data(), width, height, static_cast<UINT>(width * 4))) {
+            logger::warn("[ItemImageBatch] PrismaUI ModelPreview dump looked flat/blank; not uploading it");
+            return {};
+        }
+
+        return EncodeBgraPixelsToPng(bgra.data(), width, height, static_cast<UINT>(width * 4));
+    }
+
+    static std::vector<char> CaptureModelPreviewDumpToPng(std::chrono::milliseconds waitTime) {
+        const auto deadline = std::chrono::steady_clock::now() + waitTime;
+        do {
+            std::vector<BYTE> bytes;
+            if (ReadWholeFile(g_itemCaptureDumpPath, bytes)) {
+                auto png = EncodeBmpFileToPng(bytes);
+                if (!png.empty()) {
+                    logger::debug("[ItemImageBatch] Captured PrismaUI ModelPreview render-target dump ({} bytes)", png.size());
+                    return png;
+                }
+            }
+
+            if (!g_itemCaptureRunning.load()) {
+                return {};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(75));
+        } while (std::chrono::steady_clock::now() < deadline);
+
+        return {};
+    }
+
+    static std::vector<char> CaptureDxgiScreenRectToPng(int sourceX, int sourceY, int width, int height) {
+        std::vector<char> png;
+        if (width <= 0 || height <= 0) {
+            return png;
+        }
+
+        ComPtr<IDXGIFactory1> factory;
+        HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+        if (FAILED(hr)) {
+            logger::warn("[ItemImageBatch] CreateDXGIFactory1 failed: 0x{:08X}", static_cast<unsigned int>(hr));
+            return png;
+        }
+
+        const POINT capturePoint{ sourceX + width / 2, sourceY + height / 2 };
+        const HMONITOR targetMonitor = MonitorFromPoint(capturePoint, MONITOR_DEFAULTTONEAREST);
+
+        ComPtr<IDXGIAdapter1> selectedAdapter;
+        ComPtr<IDXGIOutput1> selectedOutput;
+        DXGI_OUTPUT_DESC selectedOutputDesc{};
+
+        for (UINT adapterIndex = 0; !selectedOutput && factory->EnumAdapters1(adapterIndex, &selectedAdapter) != DXGI_ERROR_NOT_FOUND; ++adapterIndex) {
+            ComPtr<IDXGIOutput> output;
+            for (UINT outputIndex = 0; selectedAdapter->EnumOutputs(outputIndex, &output) != DXGI_ERROR_NOT_FOUND; ++outputIndex) {
+                DXGI_OUTPUT_DESC desc{};
+                if (FAILED(output->GetDesc(&desc))) {
+                    output.Reset();
+                    continue;
+                }
+
+                if (desc.Monitor == targetMonitor) {
+                    selectedOutputDesc = desc;
+                    output.As(&selectedOutput);
+                    break;
+                }
+                output.Reset();
+            }
+            if (!selectedOutput) {
+                selectedAdapter.Reset();
+            }
+        }
+
+        if (!selectedAdapter || !selectedOutput) {
+            logger::warn("[ItemImageBatch] Could not find DXGI output for capture point {},{}", capturePoint.x, capturePoint.y);
+            return png;
+        }
+
+        ComPtr<ID3D11Device> device;
+        ComPtr<ID3D11DeviceContext> context;
+        D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
+        const D3D_FEATURE_LEVEL featureLevels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+        };
+
+        hr = D3D11CreateDevice(selectedAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                               featureLevels, static_cast<UINT>(sizeof(featureLevels) / sizeof(featureLevels[0])), D3D11_SDK_VERSION,
+                               &device, &featureLevel, &context);
+        if (FAILED(hr)) {
+            logger::warn("[ItemImageBatch] D3D11CreateDevice failed for DXGI capture: 0x{:08X}", static_cast<unsigned int>(hr));
+            return png;
+        }
+
+        ComPtr<IDXGIOutputDuplication> duplication;
+        hr = selectedOutput->DuplicateOutput(device.Get(), &duplication);
+        if (FAILED(hr)) {
+            logger::warn("[ItemImageBatch] DuplicateOutput failed for DXGI capture: 0x{:08X}", static_cast<unsigned int>(hr));
+            return png;
+        }
+
+        DXGI_OUTDUPL_FRAME_INFO frameInfo{};
+        ComPtr<IDXGIResource> frameResource;
+        bool frameAcquired = false;
+        for (int attempt = 0; attempt < 4 && !frameAcquired; ++attempt) {
+            hr = duplication->AcquireNextFrame(500, &frameInfo, &frameResource);
+            if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+                continue;
+            }
+            if (FAILED(hr)) {
+                logger::warn("[ItemImageBatch] AcquireNextFrame failed for DXGI capture: 0x{:08X}",
+                             static_cast<unsigned int>(hr));
+                return png;
+            }
+            frameAcquired = true;
+        }
+
+        if (!frameAcquired || !frameResource) {
+            logger::warn("[ItemImageBatch] DXGI capture timed out waiting for a composed desktop frame");
+            return png;
+        }
+
+        ComPtr<ID3D11Texture2D> desktopTexture;
+        hr = frameResource.As(&desktopTexture);
+        if (FAILED(hr) || !desktopTexture) {
+            duplication->ReleaseFrame();
+            logger::warn("[ItemImageBatch] Failed to query DXGI frame texture: 0x{:08X}", static_cast<unsigned int>(hr));
+            return png;
+        }
+
+        D3D11_TEXTURE2D_DESC desktopDesc{};
+        desktopTexture->GetDesc(&desktopDesc);
+        const int outputLeft = selectedOutputDesc.DesktopCoordinates.left;
+        const int outputTop = selectedOutputDesc.DesktopCoordinates.top;
+        const int outputWidth = selectedOutputDesc.DesktopCoordinates.right - selectedOutputDesc.DesktopCoordinates.left;
+        const int outputHeight = selectedOutputDesc.DesktopCoordinates.bottom - selectedOutputDesc.DesktopCoordinates.top;
+        const int cropX = sourceX - outputLeft;
+        const int cropY = sourceY - outputTop;
+        if (cropX < 0 || cropY < 0 || cropX + width > outputWidth || cropY + height > outputHeight) {
+            duplication->ReleaseFrame();
+            logger::warn("[ItemImageBatch] DXGI crop outside output bounds: crop={},{} {}x{}, output={}x{}",
+                         cropX, cropY, width, height, outputWidth, outputHeight);
+            return png;
+        }
+
+        D3D11_TEXTURE2D_DESC stagingDesc{};
+        stagingDesc.Width = static_cast<UINT>(width);
+        stagingDesc.Height = static_cast<UINT>(height);
+        stagingDesc.MipLevels = 1;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.Format = desktopDesc.Format;
+        stagingDesc.SampleDesc.Count = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+        ComPtr<ID3D11Texture2D> stagingTexture;
+        hr = device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
+        if (FAILED(hr) || !stagingTexture) {
+            duplication->ReleaseFrame();
+            logger::warn("[ItemImageBatch] Failed to create DXGI staging texture: 0x{:08X}", static_cast<unsigned int>(hr));
+            return png;
+        }
+
+        const D3D11_BOX sourceBox{
+            static_cast<UINT>(cropX),
+            static_cast<UINT>(cropY),
+            0,
+            static_cast<UINT>(cropX + width),
+            static_cast<UINT>(cropY + height),
+            1
+        };
+        context->CopySubresourceRegion(stagingTexture.Get(), 0, 0, 0, 0, desktopTexture.Get(), 0, &sourceBox);
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        hr = context->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+        if (FAILED(hr)) {
+            duplication->ReleaseFrame();
+            logger::warn("[ItemImageBatch] Failed to map DXGI staging texture: 0x{:08X}", static_cast<unsigned int>(hr));
+            return png;
+        }
+
+        if (desktopDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            desktopDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
+            desktopDesc.Format == DXGI_FORMAT_B8G8R8X8_UNORM ||
+            desktopDesc.Format == DXGI_FORMAT_B8G8R8X8_UNORM_SRGB) {
+            if (BgraPixelsLookFlat(static_cast<const BYTE*>(mapped.pData), width, height, mapped.RowPitch)) {
+                logger::warn("[ItemImageBatch] DXGI preview capture looked flat/blank; ignoring it");
+            } else {
+                png = EncodeBgraPixelsToPng(static_cast<const BYTE*>(mapped.pData), width, height, mapped.RowPitch);
+            }
+        } else if (desktopDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+                   desktopDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+            std::vector<BYTE> bgra(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+            const auto* sourceRows = static_cast<const BYTE*>(mapped.pData);
+            for (int y = 0; y < height; ++y) {
+                const BYTE* source = sourceRows + static_cast<std::size_t>(y) * mapped.RowPitch;
+                BYTE* target = bgra.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4;
+                for (int x = 0; x < width; ++x) {
+                    target[x * 4 + 0] = source[x * 4 + 2];
+                    target[x * 4 + 1] = source[x * 4 + 1];
+                    target[x * 4 + 2] = source[x * 4 + 0];
+                    target[x * 4 + 3] = source[x * 4 + 3];
+                }
+            }
+            if (BgraPixelsLookFlat(bgra.data(), width, height, static_cast<UINT>(width * 4))) {
+                logger::warn("[ItemImageBatch] DXGI preview capture looked flat/blank; ignoring it");
+            } else {
+                png = EncodeBgraPixelsToPng(bgra.data(), width, height, static_cast<UINT>(width * 4));
+            }
+        } else {
+            logger::warn("[ItemImageBatch] Unsupported DXGI desktop format for capture: {}", static_cast<unsigned int>(desktopDesc.Format));
+        }
+
+        context->Unmap(stagingTexture.Get(), 0);
+        duplication->ReleaseFrame();
+
+        if (png.empty()) {
+            logger::warn("[ItemImageBatch] DXGI preview capture produced an empty PNG buffer");
+        }
+        return png;
+    }
+
+    static std::vector<char> CaptureScreenRectToPng(const ItemCapturePreviewRect& rect) {
+        std::vector<char> png;
+        if (rect.w <= 0 || rect.h <= 0) {
+            return png;
+        }
+
+        HWND targetWindow = GetForegroundWindow();
+        if (!targetWindow) {
+            targetWindow = GetActiveWindow();
+        }
+
+        POINT clientOrigin{ 0, 0 };
+        if (targetWindow) {
+            ClientToScreen(targetWindow, &clientOrigin);
+        }
+
+        const int sourceX = clientOrigin.x + rect.x;
+        const int sourceY = clientOrigin.y + rect.y;
+
+        png = CaptureDxgiScreenRectToPng(sourceX, sourceY, rect.w, rect.h);
+        if (!png.empty()) {
+            return png;
+        }
+
+        logger::warn("[ItemImageBatch] Falling back to GDI capture for preview rect {}x{} at {},{}",
+                     rect.w, rect.h, sourceX, sourceY);
+
+        HDC screenDc = GetDC(nullptr);
+        if (!screenDc) {
+            logger::warn("[ItemImageBatch] Failed to acquire screen DC for item preview capture");
+            return png;
+        }
+
+        HDC captureDc = CreateCompatibleDC(screenDc);
+        HBITMAP captureBitmap = nullptr;
+        HGDIOBJ previousBitmap = nullptr;
+        if (captureDc) {
+            captureBitmap = CreateCompatibleBitmap(screenDc, rect.w, rect.h);
+        }
+        if (captureDc && captureBitmap) {
+            previousBitmap = SelectObject(captureDc, captureBitmap);
+            const BOOL copied = BitBlt(captureDc, 0, 0, rect.w, rect.h, screenDc, sourceX, sourceY,
+                                       SRCCOPY | CAPTUREBLT);
+            if (copied) {
+                if (HBitmapLooksFlat(captureBitmap, captureDc, rect.w, rect.h)) {
+                    logger::warn("[ItemImageBatch] GDI preview capture looked flat/blank; ignoring it");
+                } else {
+                    png = EncodeBitmapToPng(captureBitmap, rect.w, rect.h);
+                }
+            } else {
+                logger::warn("[ItemImageBatch] BitBlt failed while capturing preview rect {}x{} at {},{}: {}",
+                             rect.w, rect.h, sourceX, sourceY, GetLastError());
+            }
+        }
+
+        if (previousBitmap) {
+            SelectObject(captureDc, previousBitmap);
+        }
+        if (captureBitmap) {
+            DeleteObject(captureBitmap);
+        }
+        if (captureDc) {
+            DeleteDC(captureDc);
+        }
+        ReleaseDC(nullptr, screenDc);
+
+        if (png.empty()) {
+            logger::warn("[ItemImageBatch] Preview capture produced an empty PNG buffer");
+        }
+        return png;
+    }
+
+    static void ClearPendingItemCaptureCandidates() {
+        std::lock_guard<std::mutex> lock(g_itemCaptureSelectionMutex);
+        g_itemCapturePendingCandidates.clear();
+    }
+
+    static void CancelItemCapture(const char* source, bool notify) {
+        const bool wasRunning = g_itemCaptureRunning.exchange(false);
+        const bool wasSelectorOpen = g_itemCaptureSelectorOpen.exchange(false);
+        if (wasSelectorOpen) {
+            ClearPendingItemCaptureCandidates();
+        }
+
+        MutexSetScreenShotSendMode(0);
+        g_itemCaptureCv.notify_all();
+
+        if (wasRunning || wasSelectorOpen) {
+            logger::info("[ItemImageBatch] Cancel requested from {}", source ? source : "unknown");
+            if (notify) {
+                QueueGameNotification("[CHIM] Item image capture canceled.");
+            }
+        }
+
+        if (wasSelectorOpen && !wasRunning) {
+            HideItemCaptureView();
+        }
+    }
+
+    static bool ShowItemCaptureSelector(const std::vector<ItemImageBatchCandidate>& candidates) {
+        const json payload = BuildItemCaptureSelectorPayload(candidates);
+        const std::string payloadJson = payload.dump();
+
+        const bool viewShown = QueueGameTaskAndWait([]() {
+            if (!EnsureItemCaptureView()) {
+                return;
+            }
+
+            if (!g_prismaUI->IsValid(g_itemCaptureView)) {
+                logger::error("[ItemImageBatch] Item capture selector view is invalid");
+                return;
+            }
+
+            g_prismaUI->SetOrder(g_itemCaptureView, 135);
+            g_prismaUI->Show(g_itemCaptureView);
+            g_prismaUI->Focus(g_itemCaptureView, true, false);
+        }, std::chrono::seconds(3));
+
+        if (!viewShown || !WaitForItemCaptureDomReady(std::chrono::seconds(5))) {
+            logger::error("[ItemImageBatch] Item capture selector view did not become ready");
+            return false;
+        }
+
+        auto invoked = std::make_shared<std::atomic<bool>>(false);
+        const bool invokeQueued = QueueGameTaskAndWait([payloadJson, invoked]() {
+            if (!g_prismaUI || !g_itemCaptureCreated.load() || !g_prismaUI->IsValid(g_itemCaptureView)) {
+                return;
+            }
+
+            const std::string script = "window.chimItemCaptureShowSelector && window.chimItemCaptureShowSelector('" +
+                                       EscapePrismaJSArg(payloadJson) + "')";
+            g_prismaUI->Invoke(g_itemCaptureView, script.c_str(), nullptr);
+            invoked->store(true);
+        }, std::chrono::seconds(3));
+
+        return invokeQueued && invoked->load();
+    }
+
+    static void OnItemCaptureSelection(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        try {
+            const auto payload = json::parse(argument);
+            const std::string action = payload.value("action", std::string{});
+            if (action == "cancel") {
+                CancelItemCapture("selector", true);
+                return;
+            }
+
+            if (action != "start") {
+                logger::warn("[ItemImageBatch] Unknown selector action: {}", action);
+                return;
+            }
+
+            const std::string selectedPlugin = payload.value("plugin", std::string{});
+            std::vector<ItemImageBatchCandidate> selected;
+            {
+                std::lock_guard<std::mutex> lock(g_itemCaptureSelectionMutex);
+                selected.reserve(g_itemCapturePendingCandidates.size());
+                for (const auto& candidate : g_itemCapturePendingCandidates) {
+                    if (selectedPlugin.empty() || candidate.plugin == selectedPlugin) {
+                        selected.push_back(candidate);
+                    }
+                }
+                g_itemCapturePendingCandidates.clear();
+            }
+
+            g_itemCaptureSelectorOpen.store(false);
+            if (selected.empty()) {
+                logger::warn("[ItemImageBatch] Selected plugin '{}' has no item forms to capture", selectedPlugin);
+                QueueGameNotification("[CHIM] No item forms found for that plugin.");
+                HideItemCaptureView();
+                return;
+            }
+
+            bool expected = false;
+            if (!g_itemCaptureRunning.compare_exchange_strong(expected, true)) {
+                logger::warn("[ItemImageBatch] Batch capture already running when selector submitted");
+                QueueGameNotification("[CHIM] Item image capture is already running.");
+                HideItemCaptureView();
+                return;
+            }
+
+            logger::info("[ItemImageBatch] Selector starting capture for plugin='{}' count={}",
+                         selectedPlugin.empty() ? "ALL" : selectedPlugin,
+                         selected.size());
+            std::thread(RunItemModelImageBatchCapture, std::move(selected)).detach();
+        } catch (const std::exception& e) {
+            logger::warn("[ItemImageBatch] Failed to parse selector payload: {}", e.what());
+        }
+    }
+
+    static void OnItemCaptureCancel(const char*) {
+        CancelItemCapture("capture_view", true);
+    }
+
+    static bool ShowItemCapturePreview(const ItemImageBatchCandidate& candidate, int seq, int batchIndex, int batchTotal) {
+        if (!g_itemCaptureRunning.load()) {
+            return false;
+        }
+
+        DeleteModelPreviewDump();
+
+        {
+            std::lock_guard<std::mutex> lock(g_itemCaptureMutex);
+            g_itemCaptureExpectedSeq = seq;
+            g_itemCaptureReadySeq = 0;
+            g_itemCapturePreviewOk = false;
+            g_itemCapturePreviewRect = {};
+        }
+
+        json payload = {
+            { "seq", seq },
+            { "plugin", candidate.plugin },
+            { "localId", static_cast<std::uint32_t>(candidate.localId) },
+            { "rawFormID", static_cast<std::uint32_t>(candidate.rawFormId) },
+            { "name", candidate.name },
+            { "index", batchIndex },
+            { "total", batchTotal },
+        };
+
+        const bool queued = QueueGameTaskAndWait([payload = std::move(payload)]() {
+            if (!EnsureItemCaptureView()) {
+                return;
+            }
+
+            if (!g_prismaUI->IsValid(g_itemCaptureView)) {
+                logger::error("[ItemImageBatch] Item capture view is invalid");
+                return;
+            }
+
+            g_prismaUI->SetOrder(g_itemCaptureView, 135);
+            g_prismaUI->Show(g_itemCaptureView);
+            g_prismaUI->Focus(g_itemCaptureView, true, false);
+
+            const std::string script = "window.chimItemCaptureShow('" + EscapePrismaJSArg(payload.dump()) + "')";
+            g_prismaUI->Invoke(g_itemCaptureView, script.c_str(), nullptr);
+        }, std::chrono::seconds(3));
+
+        if (!queued) {
+            logger::warn("[ItemImageBatch] Timed out queuing preview task");
+            return false;
+        }
+
+        std::unique_lock<std::mutex> lock(g_itemCaptureMutex);
+        const bool ready = g_itemCaptureCv.wait_for(lock, std::chrono::seconds(3), [seq]() {
+            return g_itemCaptureReadySeq == seq || !g_itemCaptureRunning.load();
+        });
+
+        return ready && g_itemCaptureRunning.load() && g_itemCapturePreviewOk;
+    }
+
+    static void MarkItemCaptureFrame() {
+        QueueGameTaskAndWait([]() {
+            if (!g_prismaUI || !g_itemCaptureCreated.load() || !g_prismaUI->IsValid(g_itemCaptureView)) {
+                return;
+            }
+            g_prismaUI->Invoke(g_itemCaptureView, "window.chimItemCaptureMarkFrame && window.chimItemCaptureMarkFrame()", nullptr);
+        }, std::chrono::seconds(1));
+    }
+
+    static bool UploadItemCapturePreview(const ItemImageBatchCandidate& candidate, int batchIndex, int batchTotal) {
+        ItemCapturePreviewRect rect;
+        {
+            std::lock_guard<std::mutex> lock(g_itemCaptureMutex);
+            rect = g_itemCapturePreviewRect;
+        }
+
+        MarkItemCaptureFrame();
+        if (!SleepWhileItemCaptureRunning(std::chrono::milliseconds(100))) {
+            return false;
+        }
+
+        bool capturedModelPreviewDump = false;
+        auto png = CaptureModelPreviewDumpToPng(std::chrono::milliseconds(900));
+        if (!png.empty()) {
+            capturedModelPreviewDump = true;
+        }
+        if (png.empty()) {
+            logger::warn("[ItemImageBatch] PrismaUI ModelPreview dump unavailable; trying desktop preview capture");
+            png = CaptureScreenRectToPng(rect);
+        }
+        if (png.empty()) {
+            return false;
+        }
+
+        const std::string hints = BuildItemImageBatchCaptureQuery(
+            candidate,
+            capturedModelPreviewDump ? ItemCapturePreviewRect{} : rect,
+            batchIndex,
+            batchTotal);
+        MutexSetScreenShotSendMode(3);
+        const std::string response = HTTPUploader::getInstance().UploadImagePng(png.data(), static_cast<int>(png.size()), hints);
+        MutexSetScreenShotSendMode(0);
+
+        if (response.empty() || response == "...") {
+            logger::warn("[ItemImageBatch] Item preview upload failed or returned an empty response for {}|{}",
+                         candidate.plugin, candidate.baseid);
+            return false;
+        }
+
+        logger::debug("[ItemImageBatch] Item preview upload response for {}|{}: {}", candidate.plugin, candidate.baseid, response);
+        return true;
+    }
+
+    static void HideItemCaptureView() {
+        auto task = []() {
+            if (!g_prismaUI || !g_itemCaptureCreated.load() || !g_prismaUI->IsValid(g_itemCaptureView)) {
+                return;
+            }
+
+            g_prismaUI->Invoke(g_itemCaptureView, "window.chimItemCaptureHide && window.chimItemCaptureHide()", nullptr);
+            if (g_prismaUI->HasFocus(g_itemCaptureView)) {
+                g_prismaUI->Unfocus(g_itemCaptureView);
+            }
+            g_prismaUI->Hide(g_itemCaptureView);
+        };
+
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            task();
+            return;
+        }
+        taskInterface->AddTask(std::move(task));
+    }
+
+    static void RunItemModelImageBatchCapture(std::vector<ItemImageBatchCandidate> candidates) {
+        const int total = static_cast<int>(candidates.size());
+        logger::info("[ItemImageBatch] Starting batch capture for {} item forms", total);
+        QueueGameNotification(std::format("[CHIM] Starting item image capture for {} items.", total));
+
+        bool viewReady = QueueGameTaskAndWait([]() {
+            EnsureItemCaptureView();
+        }, std::chrono::seconds(3));
+        viewReady = viewReady && WaitForItemCaptureDomReady(std::chrono::seconds(5));
+        if (!viewReady) {
+            logger::error("[ItemImageBatch] Item capture view did not become ready");
+            QueueGameNotification("[CHIM] Item image capture view failed.");
+            g_itemCaptureRunning.store(false);
+            return;
+        }
+
+        int uploaded = 0;
+        int skipped = 0;
+        int seq = 1;
+        for (int i = 0; i < total && g_itemCaptureRunning.load(); ++i) {
+            const auto& candidate = candidates[static_cast<std::size_t>(i)];
+            const int batchIndex = i + 1;
+
+            if (!g_itemCaptureRunning.load()) {
+                break;
+            }
+
+            logger::info("[ItemImageBatch] Capturing {}/{} {}|{} {}", batchIndex, total, candidate.plugin,
+                         candidate.baseid, candidate.name);
+
+            if (!ShowItemCapturePreview(candidate, seq++, batchIndex, total)) {
+                logger::warn("[ItemImageBatch] Preview failed for {}|{}", candidate.plugin, candidate.baseid);
+                ++skipped;
+                continue;
+            }
+
+            if (!SleepWhileItemCaptureRunning(std::chrono::milliseconds(650))) {
+                break;
+            }
+
+            if (UploadItemCapturePreview(candidate, batchIndex, total)) {
+                ++uploaded;
+            } else {
+                logger::warn("[ItemImageBatch] Failed to capture/upload preview for {}|{}", candidate.plugin, candidate.baseid);
+                ++skipped;
+                MutexSetScreenShotSendMode(0);
+                continue;
+            }
+
+            if (uploaded > 0 && uploaded % 50 == 0) {
+                QueueGameNotification(std::format("[CHIM] Item images: {}/{} uploaded.", uploaded, total));
+            }
+        }
+
+        const bool canceled = !g_itemCaptureRunning.load();
+        HideItemCaptureView();
+        g_itemCaptureRunning.store(false);
+        if (canceled) {
+            logger::info("[ItemImageBatch] Batch capture canceled: uploaded={}, skipped={}, total={}", uploaded, skipped, total);
+            QueueGameNotification(std::format("[CHIM] Item image capture canceled: {}/{} uploaded.", uploaded, total));
+        } else {
+            logger::info("[ItemImageBatch] Batch capture complete: uploaded={}, skipped={}, total={}", uploaded, skipped, total);
+            QueueGameNotification(std::format("[CHIM] Item image capture complete: {}/{} uploaded.", uploaded, total));
+        }
+    }
+
+    int StartItemModelImageBatchCapture() {
+        if (!g_prismaUI) {
+            logger::warn("[ItemImageBatch] PrismaUI is not available");
+            return 1;
+        }
+
+        EnsureModelPreviewDumpEnabled();
+
+        if (g_itemCaptureRunning.load()) {
+            logger::warn("[ItemImageBatch] Batch capture already running or selector is already open");
+            return 2;
+        }
+        bool expected = false;
+        if (!g_itemCaptureSelectorOpen.compare_exchange_strong(expected, true)) {
+            logger::warn("[ItemImageBatch] Batch capture already running or selector is already open");
+            return 2;
+        }
+        if (g_itemCaptureRunning.load()) {
+            g_itemCaptureSelectorOpen.store(false);
+            logger::warn("[ItemImageBatch] Batch capture started before selector could open");
+            return 2;
+        }
+
+        auto candidates = CollectItemImageBatchCandidates();
+        if (candidates.empty()) {
+            g_itemCaptureSelectorOpen.store(false);
+            logger::warn("[ItemImageBatch] No item forms found to capture");
+            return 3;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_itemCaptureSelectionMutex);
+            g_itemCapturePendingCandidates = candidates;
+        }
+
+        std::thread([candidates = std::move(candidates)]() {
+            if (!ShowItemCaptureSelector(candidates)) {
+                logger::error("[ItemImageBatch] Failed to open item capture selector");
+                g_itemCaptureSelectorOpen.store(false);
+                ClearPendingItemCaptureCandidates();
+                HideItemCaptureView();
+                QueueGameNotification("[CHIM] Item image selector failed.");
+                return;
+            }
+
+            QueueGameNotification(std::format("[CHIM] Select an item plugin to capture ({} total).", candidates.size()));
+        }).detach();
+        return 0;
+    }
+
+    bool IsItemModelImageBatchCaptureRunning() {
+        return g_itemCaptureRunning.load() || g_itemCaptureSelectorOpen.load();
+    }
+
     // ===== CHIM Master Menu Functions =====
 
     void CreateMasterMenu() {
@@ -6015,7 +7405,8 @@ R"CHIM(
             cmd == "settings" ||
             cmd == "questmanager" ||
             cmd == "tools_sync_factions_locations" ||
-            cmd == "tools_send_all_voice_samples";
+            cmd == "tools_send_all_voice_samples" ||
+            cmd == "tools_capture_item_model_image";
 
         if (shouldCloseFirst) {
             HideMasterMenu();
@@ -6046,7 +7437,9 @@ R"CHIM(
             ToggleSettingsMenu();
         } else if (cmd == "questmanager") {
             ToggleQuestManagerPanel();
-        } else if (cmd == "tools_sync_factions_locations" || cmd == "tools_send_all_voice_samples") {
+        } else if (cmd == "tools_sync_factions_locations" ||
+                   cmd == "tools_send_all_voice_samples" ||
+                   cmd == "tools_capture_item_model_image") {
             std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
             g_pendingSettingsAction = cmd;
             logger::info("[PrismaUIBridge] Queued tools action from master menu: {}", cmd);

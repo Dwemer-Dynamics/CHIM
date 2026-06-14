@@ -31,4 +31,5 @@ SKYRIM_FOLDER "${AIAGENT_SKYRIM_FOLDER}"
 SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE SkyrimScriptingPlugin::SkyrimScripting.Plugin)
+target_link_libraries(${PROJECT_NAME} PRIVATE windowscodecs ole32 gdi32 user32 d3d11 dxgi)
 

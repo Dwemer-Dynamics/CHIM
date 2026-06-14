@@ -112,6 +112,8 @@ int function startPlayerMenuDialogueTTS(String fallbackText) Global Native
 
 ; Test functions
 int function sendAllVoices() Global Native
+int function captureItemModelImage(String plugin, String baseid, String runtimeFormId, String itemName, int formType, int cropX, int cropY, int cropW, int cropH) Global Native
+int function captureAllItemModelImages() Global Native
 int function  testAddAllNPCAround() Global Native
 int function  testRemoveAll() Global Native
 

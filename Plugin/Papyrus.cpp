@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <chrono>
 #include <cmath>
@@ -54,6 +56,244 @@ namespace
     std::atomic<bool> g_playerMenuDialogueTtsActive{ false };
     std::atomic<std::uint64_t> g_playerMenuDialogueTtsRequestId{ 0 };
     constexpr auto kPlayerMenuDialogueTtsStartTimeout = std::chrono::seconds(7);
+
+    struct ItemImageMetadata
+    {
+        std::string plugin;
+        std::string baseid;
+        std::string runtimeFormId;
+        std::string name;
+        int formType = 0;
+    };
+
+    std::string TrimCopyLocal(std::string value)
+    {
+        auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char ch) {
+            return !isSpace(static_cast<unsigned char>(ch));
+        }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [&](char ch) {
+            return !isSpace(static_cast<unsigned char>(ch));
+        }).base(), value.end());
+        return value;
+    }
+
+    std::string NormalizeHexToken(std::string value)
+    {
+        value = TrimCopyLocal(std::move(value));
+        value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
+            return std::isspace(ch) != 0;
+        }), value.end());
+
+        if (value.size() > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X')) {
+            value.erase(0, 2);
+        }
+
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::toupper(ch));
+        });
+
+        if (!value.empty() && value.size() < 8) {
+            value.insert(value.begin(), 8 - value.size(), '0');
+        }
+
+        return value;
+    }
+
+    bool TryParseHexFormId(const std::string& value, RE::FormID& outFormId)
+    {
+        const auto normalized = NormalizeHexToken(value);
+        if (normalized.empty() || normalized.size() > 8) {
+            return false;
+        }
+
+        try {
+            outFormId = static_cast<RE::FormID>(std::stoul(normalized, nullptr, 16));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    std::string FormatFormId(RE::FormID formId)
+    {
+        return std::format("{:08X}", static_cast<std::uint32_t>(formId));
+    }
+
+    std::string UrlEncode(std::string_view value)
+    {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string encoded;
+        encoded.reserve(value.size());
+
+        for (unsigned char ch : value) {
+            if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+                encoded.push_back(static_cast<char>(ch));
+            } else {
+                encoded.push_back('%');
+                encoded.push_back(kHex[ch >> 4]);
+                encoded.push_back(kHex[ch & 0x0F]);
+            }
+        }
+
+        return encoded;
+    }
+
+    bool IsItemImageFormType(RE::FormType formType)
+    {
+        switch (formType) {
+        case RE::FormType::Scroll:
+        case RE::FormType::Armor:
+        case RE::FormType::Book:
+        case RE::FormType::Ingredient:
+        case RE::FormType::Light:
+        case RE::FormType::Misc:
+        case RE::FormType::Apparatus:
+        case RE::FormType::Weapon:
+        case RE::FormType::Ammo:
+        case RE::FormType::KeyMaster:
+        case RE::FormType::AlchemyItem:
+        case RE::FormType::Note:
+        case RE::FormType::SoulGem:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    std::string GetFormDisplayName(RE::TESObjectREFR* ref, RE::TESForm* form)
+    {
+        if (ref) {
+            if (const char* displayName = ref->GetDisplayFullName(); displayName && displayName[0] != '\0') {
+                return displayName;
+            }
+        }
+
+        if (form) {
+            if (const char* formName = form->GetName(); formName && formName[0] != '\0') {
+                return formName;
+            }
+        }
+
+        return "";
+    }
+
+    bool PopulateItemImageMetadataFromForm(RE::TESForm* form, RE::TESObjectREFR* ref, ItemImageMetadata& metadata)
+    {
+        if (!form) {
+            return false;
+        }
+
+        if (!IsItemImageFormType(form->GetFormType())) {
+            logger::warn("[ItemImageCapture] Form 0x{:08X} has unsupported form type {}", form->GetFormID(),
+                         static_cast<int>(form->GetFormType()));
+            return false;
+        }
+
+        auto* sourceFile = form->GetFile(0);
+        if (!sourceFile || sourceFile->GetFilename().empty()) {
+            logger::warn("[ItemImageCapture] Form 0x{:08X} has no source file", form->GetFormID());
+            return false;
+        }
+
+        metadata.plugin = std::string(sourceFile->GetFilename());
+        metadata.baseid = FormatFormId(form->GetLocalFormID());
+        metadata.runtimeFormId = FormatFormId(form->GetFormID());
+        metadata.formType = static_cast<int>(form->GetFormType());
+        metadata.name = GetFormDisplayName(ref, form);
+        return true;
+    }
+
+    bool PopulateItemImageMetadataFromCurrentTarget(ItemImageMetadata& metadata)
+    {
+        RE::TESObjectREFR* targetRef = nullptr;
+
+        auto selectedRef = RE::Console::GetSelectedRef();
+        if (selectedRef) {
+            targetRef = selectedRef.get();
+        }
+
+        if (!targetRef) {
+            auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
+            if (crosshairPickData && crosshairPickData->target) {
+                auto crosshairRef = crosshairPickData->target.get();
+                if (crosshairRef) {
+                    targetRef = crosshairRef.get();
+                }
+            }
+        }
+
+        if (!targetRef) {
+            logger::warn("[ItemImageCapture] No console-selected or crosshair item target");
+            return false;
+        }
+
+        auto* baseForm = targetRef->GetBaseObject();
+        if (!baseForm) {
+            logger::warn("[ItemImageCapture] Target 0x{:08X} has no base form", targetRef->GetFormID());
+            return false;
+        }
+
+        return PopulateItemImageMetadataFromForm(baseForm, targetRef, metadata);
+    }
+
+    bool PopulateMissingItemImageMetadata(ItemImageMetadata& metadata)
+    {
+        if (metadata.plugin.empty() || metadata.baseid.empty()) {
+            RE::FormID runtimeFormId = 0;
+            if (!metadata.runtimeFormId.empty() && TryParseHexFormId(metadata.runtimeFormId, runtimeFormId)) {
+                if (auto* form = RE::TESForm::LookupByID(runtimeFormId)) {
+                    ItemImageMetadata resolved;
+                    if (PopulateItemImageMetadataFromForm(form, nullptr, resolved)) {
+                        if (metadata.plugin.empty()) {
+                            metadata.plugin = std::move(resolved.plugin);
+                        }
+                        if (metadata.baseid.empty()) {
+                            metadata.baseid = std::move(resolved.baseid);
+                        }
+                        if (metadata.name.empty()) {
+                            metadata.name = std::move(resolved.name);
+                        }
+                        if (metadata.formType == 0) {
+                            metadata.formType = resolved.formType;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (metadata.plugin.empty() || metadata.baseid.empty()) {
+            return PopulateItemImageMetadataFromCurrentTarget(metadata);
+        }
+
+        return true;
+    }
+
+    std::string BuildItemImageCaptureQuery(const ItemImageMetadata& metadata, int cropX, int cropY, int cropW, int cropH)
+    {
+        std::string query = "&source=chim_item_model_capture";
+        query.append("&capture_context=prismaui_item_model_tool");
+        query.append("&plugin=").append(UrlEncode(metadata.plugin));
+        query.append("&baseid=").append(UrlEncode(metadata.baseid));
+
+        if (!metadata.runtimeFormId.empty()) {
+            query.append("&runtime_formid=").append(UrlEncode(metadata.runtimeFormId));
+        }
+        if (!metadata.name.empty()) {
+            query.append("&name=").append(UrlEncode(metadata.name));
+        }
+        if (metadata.formType != 0) {
+            query.append("&form_type=").append(std::to_string(metadata.formType));
+        }
+        if (cropW > 0 && cropH > 0) {
+            query.append("&crop_x=").append(std::to_string(cropX));
+            query.append("&crop_y=").append(std::to_string(cropY));
+            query.append("&crop_w=").append(std::to_string(cropW));
+            query.append("&crop_h=").append(std::to_string(cropH));
+        }
+
+        return query;
+    }
 
     std::string SanitizePlayerMenuDialogueLine(std::string line)
     {
@@ -3140,6 +3380,46 @@ int Papyrus::sendAllVoices(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_
     return 0;
 }
 
+int Papyrus::captureItemModelImage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                   RE::StaticFunctionTag*, std::string plugin, std::string baseid,
+                                   std::string runtimeFormId, std::string itemName, int formType, int cropX,
+                                   int cropY, int cropW, int cropH) {
+    ScopedPapyrusLock lock("captureItemModelImage");
+
+    ItemImageMetadata metadata;
+    metadata.plugin = TrimCopyLocal(std::move(plugin));
+    metadata.baseid = NormalizeHexToken(std::move(baseid));
+    metadata.runtimeFormId = NormalizeHexToken(std::move(runtimeFormId));
+    metadata.name = TrimCopyLocal(std::move(itemName));
+    metadata.formType = formType;
+
+    if (!PopulateMissingItemImageMetadata(metadata) || metadata.plugin.empty() || metadata.baseid.empty()) {
+        logger::warn("[ItemImageCapture] Missing item metadata; cannot queue screenshot");
+        return 3;
+    }
+
+    globalHints.assign(BuildItemImageCaptureQuery(metadata, cropX, cropY, cropW, cropH));
+    MutexSetScreenShotSendMode(3);
+    MutexSetMakeShotNativeActive(true);
+
+    auto* menuControls = RE::MenuControls::GetSingleton();
+    if (!menuControls || !menuControls->screenshotHandler) {
+        logger::error("[ItemImageCapture] Screenshot handler unavailable");
+        MutexSetScreenShotSendMode(0);
+        return 4;
+    }
+
+    menuControls->screenshotHandler->screenshotQueued = true;
+    logger::info("[ItemImageCapture] Queued item model screenshot for {}|{}", metadata.plugin, metadata.baseid);
+    return 0;
+}
+
+int Papyrus::captureAllItemModelImages(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                       RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("captureAllItemModelImages");
+    return PrismaUIBridge::StartItemModelImageBatchCapture();
+}
+
 int Papyrus::setAIKeyWord(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                           RE::Actor* target) {
     ScopedPapyrusLock lock("setAIKeyWord");
@@ -4299,6 +4579,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
     a_vm->RegisterFunction("hardResetExpression", "AIAgentFunctions", hardResetExpression, false);
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
+    a_vm->RegisterFunction("captureItemModelImage", "AIAgentFunctions", captureItemModelImage, false);
+    a_vm->RegisterFunction("captureAllItemModelImages", "AIAgentFunctions", captureAllItemModelImages, false);
     a_vm->RegisterFunction("isGameVR", "AIAgentFunctions", isGameVR, false);
     a_vm->RegisterFunction("setConf", "AIAgentFunctions", setConf, false);
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);
