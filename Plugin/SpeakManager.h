@@ -218,7 +218,10 @@ public:
         rechatCooldown = std::chrono::high_resolution_clock::now() + std::chrono::seconds(n);
     }
 
-
+    std::string getCurrentProcessingActorName() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return currentPlaybackActor;
+    }
     // Method to insert a ScriptLine into the queue
     void insertInQueue(const ScriptLine& scriptLine);
 
@@ -273,6 +276,7 @@ public:
                std::string explicitRechatTarget = "");
 
   
+    
 
 };
 
