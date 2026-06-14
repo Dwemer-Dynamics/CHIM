@@ -6367,6 +6367,10 @@ EventHandlers {
             logger::info("New location {}", cLoc.c_str());
 
             // Follow persistence: teleport following agents to new location
+            // Update: Out of scope. This behavior is managed by packages/papyrus scripts.
+            // If you have a bug about people not following you across cells, look elsewhere, this is not the place to fix such issue.
+
+            /*
             if (AIAgentFollowFaction) {
                 AIAgentManager& followAiam = AIAgentManager::getInstance();
                 for (const auto& agent : followAiam.getAgents()) {
@@ -6383,6 +6387,7 @@ EventHandlers {
                                  actor->GetDisplayFullName(), cLoc);
                 }
             }
+            */
         }
 
         // Lets send cell info to Server
@@ -6392,6 +6397,7 @@ EventHandlers {
             return;
         }
 
+        
         const auto cellFormID = cell->GetFormID();
         // Town entry can fire 26+ cell-load events in 1s, saturating Papyrus VM.
         {
@@ -6407,7 +6413,9 @@ EventHandlers {
         }
 
         QueueDelayedSendCellInfo(cellFormID);
+        
         logger::info("[TESCellFullyLoadedEvent] Queued delayed SendCellInfo for cell <{:#x}>", cellFormID);
+        
         
     }
     );
@@ -7097,7 +7105,9 @@ EventHandlers {
                     // Update stats when exiting combat (capture post-combat state)
                     AIAgentManager& aiamStats = AIAgentManager::getInstance();
                     for (const auto& agent : aiamStats.getAgents()) {
-                        if (agent->getActor()->GetFormID() == target->GetFormID()) {
+                        // Had some crash here, related to GetFormID. 
+                        if (!agent) continue;   
+                        if (agent->GetFormId() == target->GetFormID()) {
                             RefreshAIAgentStats(agent->getActor(), agent->getActorName(), false);
                             RefreshAIAgentActivityStatus(agent->getActor(), agent->getActorName());
                             logger::info("[COMBAT_END] Updated stats for {} after combat", agent->getActorName());
@@ -7153,7 +7163,8 @@ EventHandlers {
                         // Update stats when entering combat
                         AIAgentManager& aiamStats = AIAgentManager::getInstance();
                         for (const auto& agent : aiamStats.getAgents()) {
-                            if (agent->getActor()->GetFormID() == target->GetFormID()) {
+                            if (!agent || agent->getActor()) continue;   
+                            if (agent->GetFormId() == target->GetFormID()) {
                                 RefreshAIAgentStats(agent->getActor(), agent->getActorName());
                                 RefreshAIAgentActivityStatus(agent->getActor(), agent->getActorName());
                                 break;
