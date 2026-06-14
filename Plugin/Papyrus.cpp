@@ -2051,6 +2051,14 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
         logger::info("Setting _spatial_hearing_outside to {} ", f_Value);
 
+    } else if (code == "_auto_hearing_radius_m" || code == "_player_auto_include_radius_m") {
+        if (f_Value > 0) {
+            SpatialAwareness::SetAutoHearingRadiusMeters(f_Value);
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        }
+
+        logger::info("Setting _auto_hearing_radius_m to {} ", f_Value);
+
     } else if (code == "_playback_dropoff_inside") {
         SpeakManager::getInstance().setPlaybackDropoffInside(f_Value);
         logger::info("Setting _playback_dropoff_inside to {} ", f_Value);
@@ -2651,6 +2659,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
 
     } else if (code == "_spatial_hearing_outside") {
         result = static_cast<int>(SpatialAwareness::GetSettings().exteriorMaxDistance);
+
+    } else if (code == "_auto_hearing_radius_m" || code == "_player_auto_include_radius_m") {
+        result = static_cast<int>(std::lround(SpatialAwareness::GetAutoHearingRadiusMeters()));
 
     } else if (code == "_playback_dropoff_inside") {
         result = static_cast<int>(SpeakManager::getInstance().getPlaybackDropoffInside());

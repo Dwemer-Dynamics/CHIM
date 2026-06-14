@@ -4580,7 +4580,8 @@ R"CHIM(
         }
 
         const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
-        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets("chatbox_targets", true);
+        const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
+            "chatbox_targets", true, PlayerSpeechTargetMode::Manual);
         for (const auto& candidate : candidates) {
             if (whisperTargetCapActive &&
                 (!std::isfinite(candidate.distanceMeters) ||

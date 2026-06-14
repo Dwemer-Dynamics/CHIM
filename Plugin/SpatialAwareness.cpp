@@ -599,6 +599,30 @@ namespace SpatialAwareness
         logger::info("[SPATIAL_V1L] exteriorMaxDistance set to {:.1f}", exteriorMaxDistance);
     }
 
+    void SetAutoHearingRadiusMeters(float meters)
+    {
+        if (!std::isfinite(meters) || meters <= 0.0f) {
+            return;
+        }
+
+        const float clampedMeters =
+            std::clamp(meters, kMinAutoHearingRadiusMeters, kMaxAutoHearingRadiusMeters);
+        const float distanceUnits = clampedMeters * kSkyrimUnitsPerMeter;
+        {
+            std::lock_guard<std::mutex> lock(g_settingsMutex);
+            g_settings.autoHearingDistance = distanceUnits;
+        }
+        InvalidateCache();
+        logger::info("[SPATIAL_V1L] autoHearingRadius set to {:.1f}m ({:.1f} units)",
+                     clampedMeters, distanceUnits);
+    }
+
+    float GetAutoHearingRadiusMeters()
+    {
+        std::lock_guard<std::mutex> lock(g_settingsMutex);
+        return g_settings.autoHearingDistance / kSkyrimUnitsPerMeter;
+    }
+
     void InvalidateCache()
     {
         std::lock_guard<std::mutex> lock(g_evalCacheMutex);
@@ -767,6 +791,18 @@ namespace SpatialAwareness
         if (airDistance > settings.maxAirDistance) {
             result.reason = "too_far";
             return finalize("tier1_too_far");
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        const bool playerSpeaker = player && speaker->GetFormID() == player->GetFormID();
+        const float autoHearingDistance =
+            settings.autoHearingDistance > 0.0f ? settings.autoHearingDistance : settings.immediateDistance;
+        if (playerSpeaker && autoHearingDistance > 0.0f &&
+            airDistance <= autoHearingDistance) {
+            result.canCommunicate = true;
+            result.volume = 1.0f;
+            result.reason = "immediate_proximity";
+            return finalize("tier1_auto_hearing_radius");
         }
 
         // Speech audibility should be governed by the active interior/exterior
