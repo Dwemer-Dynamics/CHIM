@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AIAgent VERSION 2.8.4)
+project(AIAgent VERSION 2.8.5)
 
 find_package(SkyrimScripting.CMake CONFIG REQUIRED)
 find_package(SkyrimScripting.Plugin CONFIG REQUIRED)
