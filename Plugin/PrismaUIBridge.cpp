@@ -6327,29 +6327,13 @@ R"CHIM(
     }
 
     static void EnsureModelPreviewDumpEnabled() {
-        std::vector<BYTE> bytes;
-        std::string config;
-        if (ReadWholeFile(g_itemCaptureDumpConfigPath, bytes)) {
-            config.assign(reinterpret_cast<const char*>(bytes.data()), reinterpret_cast<const char*>(bytes.data()) + bytes.size());
-        }
-
-        if (config.empty()) {
-            config =
-                "; PrismaUI 3D Model Preview - CHIM item capture requires render-target dumps.\r\n"
-                "[General]\r\n"
-                "bEnabled=1\r\n"
-                "iRTSize=768\r\n"
-                "iSpinDegPerSec=45\r\n"
-                "bDumpRT=1\r\n";
-        } else {
-            const std::string needle = "bDumpRT=0";
-            const auto pos = config.find(needle);
-            if (pos != std::string::npos) {
-                config.replace(pos, needle.size(), "bDumpRT=1");
-            } else if (config.find("bDumpRT=1") == std::string::npos) {
-                config.append("\r\nbDumpRT=1\r\n");
-            }
-        }
+        const std::string config =
+            "; PrismaUI 3D Model Preview - CHIM item capture requires render-target dumps.\r\n"
+            "[General]\r\n"
+            "bEnabled=1\r\n"
+            "iRTSize=768\r\n"
+            "iSpinDegPerSec=45\r\n"
+            "bDumpRT=1\r\n";
 
         if (!WriteWholeFile(g_itemCaptureDumpConfigPath, config)) {
             logger::warn("[ItemImageBatch] Could not enable PrismaUI ModelPreview dump config at .\\Data\\SKSE\\Plugins\\PrismaUI_ModelPreview.ini");
