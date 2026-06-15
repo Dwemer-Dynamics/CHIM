@@ -6182,7 +6182,7 @@ R"CHIM(
     static std::string BuildItemImageBatchCaptureQuery(const ItemImageBatchCandidate& candidate, const ItemCapturePreviewRect& rect,
                                                        int batchIndex, int batchTotal) {
         std::string query = "&source=chim_item_model_batch_capture";
-        query.append("&capture_context=prismaui_additem_batch");
+        query.append("&capture_context=prismaui_item_model_batch");
         query.append("&plugin=").append(UrlEncodeItemCapture(candidate.plugin));
         query.append("&baseid=").append(UrlEncodeItemCapture(candidate.baseid));
         query.append("&runtime_formid=").append(UrlEncodeItemCapture(candidate.runtimeFormId));
