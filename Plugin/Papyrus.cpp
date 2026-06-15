@@ -349,6 +349,7 @@ extern int GlobalCombatBarksPeriod;
 bool PreserveQueueDuringAction = false;
 bool PauseDialogueWhenMenuOpen = false;
 bool PlayerTtsTraditionalDialogueEnabled = false;
+bool AIQuestProgressionEnabled = false;
 bool AllowActorsOnScene = true;
 bool GodMode = false;
 bool AutoAddHostile = false;
@@ -2016,6 +2017,24 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
             PlayerTtsTraditionalDialogueEnabled = false;
         logger::info("Setting _player_tts_traditional_dialogue to {} ", f_Value);
 
+    } else if (code == "_ai_quest_progression") {
+        const bool wasEnabled = AIQuestProgressionEnabled;
+        AIQuestProgressionEnabled = f_Value > 0;
+        logger::info("Setting _ai_quest_progression to {}", AIQuestProgressionEnabled);
+        HTTPManager::log(std::format("setconf|{}|{}|chim_ai_quest_progression@{}",
+                                     getCurrentTimeMillis(),
+                                     GetGameTimeStamp(),
+                                     AIQuestProgressionEnabled ? 1 : 0));
+        if (!wasEnabled && AIQuestProgressionEnabled) {
+            ResetQuestProgressionBridgeState();
+            ScheduleQuestProgressionFullResync("config_enable", 2500, true);
+        } else if (wasEnabled && !AIQuestProgressionEnabled) {
+            ResetQuestProgressionBridgeState();
+            HTTPManager::postGameData("gamedata.php", json{
+                {"type", "quest_reset_runtime"}
+            });
+        }
+
     } else if (code == "_preserve_queue") {
         if (f_Value > 0)
             PreserveQueueDuringAction = true;
@@ -2683,6 +2702,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
 
     } else if (code == "_player_tts_traditional_dialogue") {
         result = PlayerTtsTraditionalDialogueEnabled ? 1 : 0;
+
+    } else if (code == "_ai_quest_progression") {
+        result = AIQuestProgressionEnabled ? 1 : 0;
 
     } else if (code == "_restrict_onscene") {
         
