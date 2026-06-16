@@ -2251,7 +2251,7 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 				Debug.Trace("[CHIM] [SPAWN_ITEM] NO location, checking if reference is a ObjectReference for "+itemname);
 				ObjectReference genericRef = Game.GetFormEx(locationMarker) as ObjectReference
 				if (genericRef)
-					Debug.Trace("[CHIM] [SPAWN_ITEM] Reference is a ObjectReference "+itemname+", ref: 0x"+DecToHex(genericRef.GetFormId()));
+					Debug.Trace("[CHIM] [SPAWN_ITEM] Reference is a ObjectReference (ref)"+itemname+", ref: 0x"+DecToHex(genericRef.GetFormId()));
 					ref = genericRef
 				else
 					Debug.Trace("[CHIM] [SPAWN_ITEM] Reference is NOT a ObjectReference "+DecToHex(locationMarker));
@@ -2320,12 +2320,25 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 			finalItem.SetDisplayName(itemname,true)
 			finalItem.SetName(itemname)
 			
-			;if (finalItem.Is3DLoaded())
-				float deltaX=Utility.RandomFloat(-1, 1)
-				float deltaY=Utility.RandomFloat(-1, 1)
-				float deltaZ=Utility.RandomFloat(1,1)*-1
-				finalItem.MoveTo(ref, 0,0,deltaZ)
-				finalItem.SetAngle(0,-180,0)
+			
+			float deltaX=Utility.RandomFloat(-1, 1)
+			float deltaY=Utility.RandomFloat(-1, 1)
+			float deltaZ=Utility.RandomFloat(1,1)*-1
+			finalItem.MoveTo(ref, 0,0,deltaZ)
+			finalItem.SetAngle(0,-180,0)
+			
+			;if (finalItem.Is3DLoaded())			
+				if (finalItem.GetDistance(Game.GetPlayer())< 4096)
+					; Spawnning on a close location, lets find a container
+					Debug.Trace("[CHIM] [SPAWN_ITEM] Spawning on NEARBY location "+DecToHex(ref.GetFormId()));
+					ObjectReference[] candidates=PO3_SKSEFunctions.FindAllReferencesOfFormType(finalItem,28,512)
+					if (candidates.length>0)
+						Debug.Trace("[CHIM] [SPAWN_ITEM] Spawning on NEARBY location->container "+DecToHex(candidates[0].GetFormId()));
+						candidates[0].AddItem(finalItem,1,true)
+					endif
+				
+				endif
+				
 			;Endif
 		
 		endif;
