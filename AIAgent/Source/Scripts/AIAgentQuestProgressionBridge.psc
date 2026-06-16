@@ -3,6 +3,7 @@ Scriptname AIAgentQuestProgressionBridge Hidden
 
 Function SetQuestStage(int questFormId, int stage) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
+    Debug.Trace("[AIAgentQuestProgressionBridge] SetQuestStage quest=" + questFormId + " stage=" + stage + " found=" + (targetQuest != None))
     if targetQuest
         targetQuest.SetStage(stage)
     endif
@@ -10,6 +11,7 @@ EndFunction
 
 Function SetQuestObjectiveCompleted(int questFormId, int objectiveIndex, bool completed = true) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
+    Debug.Trace("[AIAgentQuestProgressionBridge] SetQuestObjectiveCompleted quest=" + questFormId + " objective=" + objectiveIndex + " found=" + (targetQuest != None))
     if targetQuest
         targetQuest.SetObjectiveCompleted(objectiveIndex, completed)
     endif
@@ -17,6 +19,7 @@ EndFunction
 
 Function SetQuestObjectiveDisplayed(int questFormId, int objectiveIndex, bool displayed = true, bool forceDisplayed = false) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
+    Debug.Trace("[AIAgentQuestProgressionBridge] SetQuestObjectiveDisplayed quest=" + questFormId + " objective=" + objectiveIndex + " found=" + (targetQuest != None))
     if targetQuest
         targetQuest.SetObjectiveDisplayed(objectiveIndex, displayed, forceDisplayed)
     endif
@@ -31,12 +34,14 @@ EndFunction
 
 Function StartQuest(int questFormId) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
+    Debug.Trace("[AIAgentQuestProgressionBridge] StartQuest quest=" + questFormId + " found=" + (targetQuest != None))
     if targetQuest
         targetQuest.Start()
     endif
 EndFunction
 
 Function ExecuteConsoleCommand(String command) Global
+    Debug.Trace("[AIAgentQuestProgressionBridge] ExecuteConsoleCommand command=" + command)
     if command != ""
         ConsoleUtil.ExecuteCommand(command)
     endif
