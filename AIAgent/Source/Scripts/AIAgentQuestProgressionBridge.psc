@@ -47,6 +47,26 @@ Function ExecuteConsoleCommand(String command) Global
     endif
 EndFunction
 
+Function ExecuteConsoleCommandSequence(String commands) Global
+    Debug.Trace("[AIAgentQuestProgressionBridge] ExecuteConsoleCommandSequence commands=" + commands)
+    int splitIndex = StringUtil.Find(commands, "||")
+    while splitIndex >= 0
+        String command = StringUtil.Substring(commands, 0, splitIndex)
+        if command != ""
+            Debug.Trace("[AIAgentQuestProgressionBridge] ExecuteConsoleCommandSequence command=" + command)
+            ConsoleUtil.ExecuteCommand(command)
+            Utility.Wait(0.25)
+        endif
+        commands = StringUtil.Substring(commands, splitIndex + 2)
+        splitIndex = StringUtil.Find(commands, "||")
+    endwhile
+
+    if commands != ""
+        Debug.Trace("[AIAgentQuestProgressionBridge] ExecuteConsoleCommandSequence command=" + commands)
+        ConsoleUtil.ExecuteCommand(commands)
+    endif
+EndFunction
+
 Function StopQuest(int questFormId) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
     if targetQuest

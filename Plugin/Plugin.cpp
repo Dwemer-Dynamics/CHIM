@@ -4856,6 +4856,41 @@ namespace
             return execution;
         }
 
+        if (actionType == "console_command_sequence") {
+            std::vector<std::string> commands;
+            if (payload.contains("commands") && payload["commands"].is_array()) {
+                for (const auto& commandValue : payload["commands"]) {
+                    if (commandValue.is_string()) {
+                        std::string command = commandValue.get<std::string>();
+                        if (!command.empty()) {
+                            commands.push_back(std::move(command));
+                        }
+                    }
+                }
+            }
+
+            std::string commandSequence = payload.value("command_sequence", std::string());
+            if (commandSequence.empty() && !commands.empty()) {
+                for (std::size_t index = 0; index < commands.size(); ++index) {
+                    if (index > 0) {
+                        commandSequence += "||";
+                    }
+                    commandSequence += commands[index];
+                }
+            }
+
+            if (commandSequence.empty()) {
+                execution.result["error"] = "missing commands";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("ExecuteConsoleCommandSequence", commandSequence)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"command_sequence", commandSequence}});
+            return execution;
+        }
+
         if (actionType == "stop_quest") {
             const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
             if (!questFormID) {
