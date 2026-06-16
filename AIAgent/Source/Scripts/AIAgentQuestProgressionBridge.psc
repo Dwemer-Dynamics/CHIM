@@ -40,6 +40,21 @@ Function StartQuest(int questFormId) Global
     endif
 EndFunction
 
+Function StartQuestStageObjective(int questFormId, int stage, int objectiveIndex) Global
+    Quest targetQuest = Game.GetForm(questFormId) as Quest
+    Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective quest=" + questFormId + " stage=" + stage + " objective=" + objectiveIndex + " found=" + (targetQuest != None))
+    if targetQuest
+        bool startResult = targetQuest.Start()
+        Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective after Start result=" + startResult + " running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
+        Utility.Wait(0.25)
+        targetQuest.SetStage(stage)
+        Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective after SetStage running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
+        Utility.Wait(0.25)
+        targetQuest.SetObjectiveDisplayed(objectiveIndex, true, true)
+        Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective after SetObjectiveDisplayed running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
+    endif
+EndFunction
+
 Function ExecuteConsoleCommand(String command) Global
     Debug.Trace("[AIAgentQuestProgressionBridge] ExecuteConsoleCommand command=" + command)
     if command != ""

@@ -4842,6 +4842,27 @@ namespace
             return execution;
         }
 
+        if (actionType == "start_quest_stage_objective") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const int stage = payload.value("stage", -1);
+            const int objectiveIndex = payload.value("objective_index", -1);
+            if (!questFormID || stage < 0 || objectiveIndex < 0) {
+                execution.result["error"] = "missing quest, stage, or objective index";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("StartQuestStageObjective", static_cast<int>(questFormID), stage,
+                                                     objectiveIndex)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({
+                {"runtime_quest_form_id", questFormID},
+                {"stage", stage},
+                {"objective_index", objectiveIndex}
+            });
+            return execution;
+        }
+
         if (actionType == "console_command") {
             const std::string command = payload.value("command", std::string());
             if (command.empty()) {
