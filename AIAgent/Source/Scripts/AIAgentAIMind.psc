@@ -219,8 +219,9 @@ function MoveToTargetEnd(Actor npc) global
 					ObjectReference itemRef
 					itemRef = destination as ObjectReference
 					if (itemRef)
-						npc.Activate(itemRef)
-						
+						;npc.Activate(itemRef)
+						npc.AddItem(itemRef)
+						Debug.Trace("[CHIM] MoveToTargetEnd, "+npc.GetDisplayName()+". picked item "+itemRef.GetDisplayName())
 						; Wait a moment for the pickup to process
 						Utility.Wait(0.5)
 						
@@ -3219,7 +3220,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Utility.Wait(0.5)
 		
 		; Activate the item to pick it up
-		npc.Activate(itemRef)
+		npc.Additem(itemRef)
 		
 		; Wait a moment for the pickup to process
 		Utility.Wait(0.5)
@@ -3239,10 +3240,35 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 	else
 		; Too far - store details and initiate movement
-		StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
-		
+		;StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
 		; Make the NPC walk to the item (intent=4 for pickup)
-		MoveToTarget(npc, itemRef, 4)
+		;MoveToTarget(npc, itemRef, 4)
+		
+		npc.PathToReference(itemRef, 1);Move it next to it
+
+		Debug.SendAnimationEvent(npc, "IdlePickup")
+		Utility.Wait(0.5)
+		
+		; Activate the item to pick it up
+		npc.Additem(itemRef)
+		
+		; Wait a moment for the pickup to process
+		Utility.Wait(0.5)
+		
+		; Refresh the NPC's inventory so they know what they picked up
+		Debug.TraceUser("ChimHTTPSender", "AIAgentRefreshInventory|"+npc.GetFormID())
+		
+		; Notify server of the pickup
+		int currentTime
+		currentTime = Utility.GetCurrentRealTime() as int
+		int gameTime
+		gameTime = Utility.GetCurrentGameTime() as int
+		string logMessage
+		logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
+		Debug.TraceUser("ChimHTTPSender", logMessage)
+		
+		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
+		
 	endif
 EndFunction
 
