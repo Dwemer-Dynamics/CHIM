@@ -4439,6 +4439,92 @@ namespace
         return true;
     }
 
+    std::unordered_map<std::uint32_t, std::string> BuildQuestProgressionAliasInstanceText(RE::TESQuest* quest)
+    {
+        std::unordered_map<std::uint32_t, std::string> aliasText;
+        if (!quest) {
+            return aliasText;
+        }
+
+        for (auto iter = quest->instanceData.begin(); iter != quest->instanceData.end(); ++iter) {
+            RE::BGSQuestInstanceText* instanceText = *iter;
+            if (!instanceText) {
+                continue;
+            }
+
+            for (auto textIter = instanceText->stringData.begin(); textIter != instanceText->stringData.end(); ++textIter) {
+                RE::TESForm* resolved = RE::TESForm::LookupByID(textIter->fullNameFormID);
+                if (!resolved || !resolved->GetName() || !resolved->GetName()[0]) {
+                    continue;
+                }
+
+                aliasText[textIter->aliasID] = std::string(resolved->GetName());
+            }
+        }
+
+        return aliasText;
+    }
+
+    json BuildQuestProgressionAliasPayload(RE::TESQuest* quest)
+    {
+        json aliases = json::array();
+        if (!quest) {
+            return aliases;
+        }
+
+        const auto instanceText = BuildQuestProgressionAliasInstanceText(quest);
+
+        for (auto iter = quest->aliases.begin(); iter != quest->aliases.end(); ++iter) {
+            RE::BGSBaseAlias* alias = *iter;
+            if (!alias) {
+                continue;
+            }
+
+            json aliasPayload;
+            aliasPayload["id"] = alias->aliasID;
+            aliasPayload["name"] = std::string(alias->aliasName);
+            aliasPayload["type"] = "unknown";
+
+            auto textIt = instanceText.find(alias->aliasID);
+            if (textIt != instanceText.end() && !textIt->second.empty()) {
+                aliasPayload["display_name"] = textIt->second;
+                aliasPayload["instance_text"] = textIt->second;
+            }
+
+            if (auto* refAlias = skyrim_cast<RE::BGSRefAlias*>(alias)) {
+                aliasPayload["type"] = "reference";
+
+                RE::TESObjectREFR* ref = refAlias->GetReference();
+                if (ref) {
+                    PopulateQuestProgressionFormPayload(aliasPayload, "form_id", "plugin", ref);
+                    aliasPayload["is_actor"] = refAlias->GetActorReference() != nullptr;
+
+                    if (auto* displayName = ref->GetDisplayFullName(); displayName && displayName[0]) {
+                        aliasPayload["display_name"] = std::string(displayName);
+                    } else if (auto* refName = ref->GetName(); refName && refName[0]) {
+                        aliasPayload["display_name"] = std::string(refName);
+                    }
+
+                    if (auto* baseObject = ref->GetBaseObject()) {
+                        PopulateQuestProgressionFormPayload(aliasPayload, "base_form_id", "base_plugin", baseObject);
+                        if (auto* baseName = baseObject->GetName(); baseName && baseName[0]) {
+                            aliasPayload["base_name"] = std::string(baseName);
+                            if (!aliasPayload.contains("display_name")) {
+                                aliasPayload["display_name"] = std::string(baseName);
+                            }
+                        }
+                    }
+                }
+            } else if (skyrim_cast<RE::BGSLocAlias*>(alias)) {
+                aliasPayload["type"] = "location";
+            }
+
+            aliases.push_back(aliasPayload);
+        }
+
+        return aliases;
+    }
+
     void AddSuppressedInventoryDelta(std::unordered_map<std::string, int>& suppressionMap, const std::string& formKey,
                                      int count)
     {
@@ -4499,6 +4585,10 @@ namespace
         }
         if (auto* questName = quest->GetName(); questName && questName[0]) {
             payload["quest_name"] = std::string(questName);
+        }
+        json aliases = BuildQuestProgressionAliasPayload(quest);
+        if (!aliases.empty()) {
+            payload["aliases"] = aliases;
         }
         payload["stage"] = stage;
         PostQuestProgressionEvent("quest_stage", payload);
