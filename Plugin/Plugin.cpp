@@ -4842,6 +4842,20 @@ namespace
             return execution;
         }
 
+        if (actionType == "console_command") {
+            const std::string command = payload.value("command", std::string());
+            if (command.empty()) {
+                execution.result["error"] = "missing command";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("ExecuteConsoleCommand", command)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"command", command}});
+            return execution;
+        }
+
         if (actionType == "stop_quest") {
             const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
             if (!questFormID) {

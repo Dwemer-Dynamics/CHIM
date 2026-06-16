@@ -36,6 +36,12 @@ Function StartQuest(int questFormId) Global
     endif
 EndFunction
 
+Function ExecuteConsoleCommand(String command) Global
+    if command != ""
+        ConsoleUtil.ExecuteCommand(command)
+    endif
+EndFunction
+
 Function StopQuest(int questFormId) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
     if targetQuest
