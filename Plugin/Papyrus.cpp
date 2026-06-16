@@ -2021,18 +2021,11 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         const bool wasEnabled = AIQuestProgressionEnabled;
         AIQuestProgressionEnabled = f_Value > 0;
         logger::info("Setting _ai_quest_progression to {}", AIQuestProgressionEnabled);
-        HTTPManager::log(std::format("setconf|{}|{}|chim_ai_quest_progression@{}",
-                                     getCurrentTimeMillis(),
-                                     GetGameTimeStamp(),
-                                     AIQuestProgressionEnabled ? 1 : 0));
         if (!wasEnabled && AIQuestProgressionEnabled) {
             ResetQuestProgressionBridgeState();
             ScheduleQuestProgressionFullResync("config_enable", 2500, true);
         } else if (wasEnabled && !AIQuestProgressionEnabled) {
             ResetQuestProgressionBridgeState();
-            HTTPManager::postGameData("gamedata.php", json{
-                {"type", "quest_reset_runtime"}
-            });
         }
 
     } else if (code == "_preserve_queue") {

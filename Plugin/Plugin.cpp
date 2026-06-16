@@ -303,6 +303,7 @@ bool importDataDetectionDone = false;  // Track if we've already done import dat
 namespace
 {
     constexpr auto kQuestProgressionPollInterval = std::chrono::seconds(2);
+    constexpr auto kQuestProgressionStatusPollInterval = std::chrono::seconds(10);
 
     struct QuestActionExecutionResult
     {
@@ -324,12 +325,15 @@ namespace
         std::chrono::steady_clock::time_point::max();
     std::chrono::steady_clock::time_point g_questProgressionLastPollAt =
         std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point g_questProgressionLastStatusPollAt =
+        std::chrono::steady_clock::time_point::min();
 }
 
 void ResetQuestProgressionBridgeState();
 void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory);
 static void MaybeRunScheduledQuestProgressionResync();
 static void PollQuestProgressionActions();
+static void SyncQuestProgressionEnabledFromServer();
 
 
 RE::TESFaction *AIAgentRoleMasterFaction = nullptr;
@@ -2231,6 +2235,7 @@ private:
                 }
 
                 UpdatePlayerMenuDialogueGate();
+                SyncQuestProgressionEnabledFromServer();
                 MaybeRunScheduledQuestProgressionResync();
                 PollQuestProgressionActions();
 
@@ -4997,6 +5002,7 @@ void ResetQuestProgressionBridgeState()
     g_questProgressionResyncIncludeInventory = true;
     g_questProgressionResyncDueAt = std::chrono::steady_clock::time_point::max();
     g_questProgressionLastPollAt = std::chrono::steady_clock::time_point::min();
+    g_questProgressionLastStatusPollAt = std::chrono::steady_clock::time_point::min();
 }
 
 void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory)
@@ -5073,6 +5079,46 @@ static void PollQuestProgressionActions()
 
     for (const auto& action : response["actions"]) {
         QueueQuestProgressionAction(action);
+    }
+}
+
+static void SyncQuestProgressionEnabledFromServer()
+{
+    if (!pluginInited) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+        if (g_questProgressionLastStatusPollAt != std::chrono::steady_clock::time_point::min() &&
+            now - g_questProgressionLastStatusPollAt < kQuestProgressionStatusPollInterval) {
+            return;
+        }
+        g_questProgressionLastStatusPollAt = now;
+    }
+
+    json response = HTTPManager::postGameDataJson("gamedata.php", json{
+        {"type", "quest_status"}
+    }, 1500);
+
+    if (!response.is_object() || !response.contains("enabled") || !response["enabled"].is_boolean()) {
+        return;
+    }
+
+    const bool serverEnabled = response["enabled"].get<bool>();
+    const bool wasEnabled = AIQuestProgressionEnabled;
+    if (wasEnabled == serverEnabled) {
+        return;
+    }
+
+    AIQuestProgressionEnabled = serverEnabled;
+    logger::info("[QuestProgression] Server global setting changed to {}", AIQuestProgressionEnabled);
+    if (AIQuestProgressionEnabled) {
+        ResetQuestProgressionBridgeState();
+        ScheduleQuestProgressionFullResync("server_config_enable", 2500, true);
+    } else {
+        ResetQuestProgressionBridgeState();
     }
 }
 
