@@ -124,7 +124,7 @@ long long GetGameTimeStamp() {
             logger::warn("GetGameTimeStamp: Anomalous timestamp change detected! Old: {}, New: {}, Diff: {}, Change: {:.2f}%", 
                         lastTimestamp, currentGameTimestamp, gameTimestampDelta, percentChange);
             logger::warn("GetGameTimeStamp: Switching to continuity timestamp mode");
-            RE::DebugNotification("CHIM: Detected anomalous timestamp change! Switching to continuity timestamp mode");
+            RE::DebugNotification("[CHIM] Timestamp changed unexpectedly. Using continuity timestamp mode.");
             usingContinuityTimestamp = true;
         }
         
@@ -792,7 +792,7 @@ std::string ParseImportDataCSV(const std::string& filePath) {
         if (fileSize > MAX_FILE_SIZE) {
             logger::error("CSV file {} is too large ({} bytes). Maximum allowed size is 10MB.", 
                         filePath, fileSize);
-            RE::DebugNotification(std::format("Error: CSV file too large ({}MB). Max 10MB allowed.", 
+            RE::DebugNotification(std::format("[CHIM] CSV file is too large ({}MB). Max size is 10MB.",
                                              fileSize / (1024 * 1024)).c_str());
             return "";
         }
@@ -802,7 +802,7 @@ std::string ParseImportDataCSV(const std::string& filePath) {
         if (fileSize > WARN_SIZE) {
             logger::warn("CSV file {} is large ({} bytes). This may cause upload issues. Consider splitting into smaller files.", 
                         filePath, fileSize);
-            RE::DebugNotification(std::format("Warning: Large CSV file detected ({}MB). Upload may be slow.", 
+            RE::DebugNotification(std::format("[CHIM] Large CSV file detected ({}MB). Upload may be slow.",
                                              fileSize / (1024 * 1024)).c_str());
         }
         

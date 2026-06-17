@@ -12,9 +12,11 @@
 #include <condition_variable>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "Commands.h"
 #include "Globals.h"
@@ -27,7 +29,9 @@
 #include "AudioManager.h"
 #include "SPGResponse.h"
 #include "HTTPManager.h"
+#include "PrismaUIBridge.h"
 #include "SpatialAwareness.h"
+#include "SpatialSnapshotManager.h"
 #include <winhttp.h>
 #include "ThreadPool.h"
 
@@ -39,6 +43,12 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
+constexpr auto kFlatVisemeTaskMinInterval = std::chrono::milliseconds(16);
+constexpr auto kVrVisemeTaskMinInterval = std::chrono::milliseconds(33);
+constexpr auto kVisemeTaskStaleDisableAfter = std::chrono::milliseconds(500);
+constexpr auto kVisemeTaskGuardLogInterval = std::chrono::seconds(5);
+constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
+
 extern bool GlobalEnable3DAudioPlayback;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
@@ -46,6 +56,11 @@ extern int GlobalConfiguredTimeout;
 extern int GlobalRechatPolicyAsap;
 
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
+
+static void ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds duration)
+{
+    ExtendPlayerSpeechMaintenanceSuppress(std::chrono::duration_cast<std::chrono::milliseconds>(duration));
+}
 
 // Get the actor's actual 3D head position for audio spatialization.
 // During OStim/animation scenes, GetPosition() returns the scene origin which is
@@ -78,6 +93,27 @@ static float GetYawFromQuaternionForAudio(const RE::NiQuaternion& q) {
     return std::atan2(siny_cosp, cosy_cosp) * -1.0f;
 }
 
+static std::string TrimSubtitleLogText(const std::string& subtitleText)
+{
+    const auto first = subtitleText.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "";
+    }
+
+    const auto last = subtitleText.find_last_not_of(" \t\r\n");
+    return subtitleText.substr(first, last - first + 1);
+}
+
+static std::string GetCurrentSubtitleManagerText(RE::SubtitleManager* subtitleManager)
+{
+    if (!subtitleManager || subtitleManager->subtitles.empty()) {
+        return "";
+    }
+
+    const char* currentSubtitle = subtitleManager->subtitles[0].subtitle.c_str();
+    return currentSubtitle ? currentSubtitle : "";
+}
+
 static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::PlayerCharacter* player,
                                      const std::string& subtitleText)
 {
@@ -89,6 +125,67 @@ static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::P
     toSay.forceDisplay = true;
     toSay.targetDistance = 10;
     toSay.speaker = player->GetHandle();
+    toSay.subtitle = subtitleText;
+    toSay.pad04 = 0xabcd;
+
+    subtitleManager->KillSubtitles();
+    subtitleManager->subtitles.clear();
+    subtitleManager->subtitles.push_back(toSay);
+}
+
+static int EstimateTextOnlySpeechDurationMs(const std::string& text)
+{
+    if (text.empty()) {
+        return 2000;
+    }
+
+    int words = 0;
+    bool inWord = false;
+    int punctuationPauseMs = 0;
+    for (char rawChar : text) {
+        const auto ch = static_cast<unsigned char>(rawChar);
+        const bool wordChar = std::isalnum(ch) != 0;
+        if (wordChar && !inWord) {
+            ++words;
+            inWord = true;
+        } else if (!wordChar) {
+            inWord = false;
+        }
+
+        if (ch == '.' || ch == '!' || ch == '?') {
+            punctuationPauseMs += 260;
+        } else if (ch == ',' || ch == ';' || ch == ':') {
+            punctuationPauseMs += 120;
+        } else if (ch == '\n' || ch == '\r') {
+            punctuationPauseMs += 180;
+        }
+    }
+
+    const int chars = static_cast<int>(text.length());
+    int baseMs = words > 0 ? words * 360 : chars * 55;
+    baseMs += punctuationPauseMs + 220;
+
+    return std::clamp(baseMs, 900, 45000);
+}
+
+static void PushForcedActorSubtitle(RE::SubtitleManager* subtitleManager, RE::Actor* subtitleSpeaker,
+                                    const std::string& subtitleText, bool narratorSpeaker)
+{
+    if (!subtitleManager || !subtitleSpeaker || subtitleText.empty()) {
+        return;
+    }
+
+    RE::SubtitleInfo toSay;
+    toSay.forceDisplay = true;
+    toSay.targetDistance = 10;
+    if (!narratorSpeaker) {
+        toSay.speaker = subtitleSpeaker->GetHandle();
+    } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        player->SetDisplayName(NARRATOR_NAME, true);
+        toSay.speaker = player->As<RE::Actor>();
+    } else {
+        toSay.speaker = subtitleSpeaker->GetHandle();
+    }
     toSay.subtitle = subtitleText;
     toSay.pad04 = 0xabcd;
 
@@ -159,6 +256,70 @@ static void ApplyVisemeFrame(TFaceGen* fgen, int lastViseme, int visemeCode, flo
             if (current < 0) current = 0.0f;
             fgen->phenomeKeyFrame.SetValue(i, current);
         }
+    }
+}
+
+static void QueueMouthReset(RE::ActorHandle actorHandle)
+{
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[SpeakManager] Task interface unavailable for mouth reset");
+        return;
+    }
+
+    taskInterface->AddTask([actorHandle]() {
+        auto* actor = actorHandle.get().get();
+        if (!actor || !actor->Is3DLoaded()) {
+            return;
+        }
+
+        auto* fgen = actor->GetFaceGenAnimationData();
+        if (!fgen) {
+            return;
+        }
+
+        RE::BSSpinLockGuard locker(fgen->lock);
+        for (int i = 0; i <= 15; ++i) {
+            fgen->phenomeKeyFrame.SetValue(i, 0.0f);
+        }
+    });
+}
+
+static float GetVisemeMaxIntensity(int visemeCode)
+{
+    switch (visemeCode) {
+        case -1:
+            return 0.0f;
+        case 0:   // aah
+            return 0.56f;
+        case 1:   // big aah
+            return 0.68f;
+        case 2:   // B, M, P
+            return 0.54f;
+        case 3:   // ch, J, sh
+            return 0.51f;
+        case 4:   // D, S, T
+            return 0.38f;
+        case 5:   // ee
+            return 0.36f;
+        case 6:   // eh
+            return 0.49f;
+        case 7:   // F, V
+            return 0.49f;
+        case 8:   // i
+            return 0.36f;
+        case 10:  // N
+            return 0.29f;
+        case 11:  // oh, ooh
+            return 0.52f;
+        case 13:  // R
+            return 0.35f;
+        case 14:  // th
+            return 0.47f;
+        case 15:  // W
+            return 0.54f;
+        default:
+            return 0.43f;
     }
 }
 
@@ -414,10 +575,9 @@ static PlaybackSpatialAudioState EvaluatePlaybackSpatialAudioForPlayer(RE::Actor
         }
     }
 
-    bool hasLineOfSight = false;
-    state.losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
-    state.hasLineOfSight = state.losQueryOk && hasLineOfSight;
-    state.losBlocked = state.losQueryOk && !hasLineOfSight;
+    state.losQueryOk = spatial.losQueryOk;
+    state.hasLineOfSight = spatial.losQueryOk && spatial.hasLineOfSight;
+    state.losBlocked = spatial.losQueryOk && !spatial.hasLineOfSight;
     if (state.losBlocked) {
         state.muffled = true;
         state.losPenalty = 0.85f;
@@ -931,6 +1091,44 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     bool hasBeenAborted = false;
     logger::debug("[SpeakManager] Loading WAV");
     am.setSpatialUpdatesEnabled(enable3DAudioPlayback);
+    auto updatePlaybackSpatialPosition = [&]() {
+        if (!DXinitOK) {
+            return;
+        }
+
+        if (!enable3DAudioPlayback) {
+            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            am.Update(noopPosition, noopPosition, 0.0f);
+            return;
+        }
+
+        auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
+        auto camera = RE::PlayerCamera::GetSingleton();
+
+        if (GlobalCameraBasedAudio && camera) {
+            auto cameraState = camera->currentState.get();
+            if (cameraState) {
+                RE::NiQuaternion rotation;
+                cameraState->GetRotation(rotation);
+                auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
+                if (std::isfinite(cameraHeadingAngle)) {
+                    headingAngle = cameraHeadingAngle;
+                }
+            }
+        }
+
+        if (GlobalInvertHeadingState)
+            headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+
+        auto speakerPos = GetActorHeadPosition(speakerActorPointer);
+
+        // Use the player as the audio listener. In VR, cameraTarget can be a
+        // transient/scene ref, collapsing NPC speech into the player's head.
+        am.Update(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
+                  AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(
+                      RE::PlayerCharacter::GetSingleton()->GetPosition()),
+                  headingAngle);
+    };
     _dap_phase("before_LoadWAV");
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         _dap_phase("after_LoadWAV_ok");
@@ -942,8 +1140,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
         am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
         scopedVolumeRestore.active = true;
+        DXinitOK = true;
+        updatePlaybackSpatialPosition();
         _dap_phase("before_Play");
-        if (am.Play()) DXinitOK = true;
+        if (!am.Play()) DXinitOK = false;
         _dap_phase("after_Play");
     } else {
         _dap_phase("after_LoadWAV_failed");
@@ -955,10 +1155,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     std::vector<SilenceSegment> silences;
     auto avoidClick = std::chrono::steady_clock::now() + std::chrono::duration<double>(preclip);
     // if (!PlaySoundA(buffer, NULL, SND_MEMORY | SND_ASYNC | SND_SYSTEM)) {
+    const bool usingTextOnlyTiming = !DXinitOK;
+
     if (!DXinitOK) {
         logger::info("Could not play buffer:  {}, we should now make something here", GetLastError());
-        auto secondsToWait = static_cast<int>(std::ceil(static_cast<double>(text.length()) / 14.0));
-        duration = secondsToWait;
+        duration = static_cast<double>(EstimateTextOnlySpeechDurationMs(text)) / 1000.0;
         if (forcedDuration > 0) {
             duration = forcedDuration;
         }
@@ -1002,19 +1203,22 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     float intensityDecal = 0;
 
     auto fgen = speakerActorPointer->GetFaceGenAnimationData();
-
-    if (fgen) {
-        logger::debug("[SpeakManager] Attempting to acquire FaceGen lock for animation frame");
-        RE::BSSpinLockGuard locker(fgen->lock);
-        logger::debug("[SpeakManager] FaceGen lock acquired for animation frame");
-    }
     auto lastTime = std::chrono::steady_clock::now();
+    const bool useVrVisemeGuard = REL::Module::IsVR();
+    const auto visemeTaskMinInterval = useVrVisemeGuard ? kVrVisemeTaskMinInterval : kFlatVisemeTaskMinInterval;
+    auto lastVisemeTaskQueued = startTime - visemeTaskMinInterval;
+    auto lastVisemeTaskGuardLog = startTime - kVisemeTaskGuardLogInterval;
+    auto visemeTaskInFlightSince = startTime;
+    auto visemeTaskInFlight = std::make_shared<std::atomic<bool>>(false);
+    bool visemeTaskGuardDisabled = false;
+    int skippedVisemeTasks = 0;
 
     auto game = RE::UI::GetSingleton();
 
     bool recovery = false;
 
-    auto intensityModifier = SpeakManager::getInstance().getAnimIntensity() * intensityModifierDyn;
+    const float lipIntensityBaseline = std::max(0.0f, SpeakManager::getInstance().getAnimIntensity());
+    auto intensityModifier = lipIntensityBaseline * intensityModifierDyn;
     auto animationDelayMicroSecs = SpeakManager::getInstance().getResolution();
 
     
@@ -1028,11 +1232,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     bool hasLastRuntimeSpatialLogSignature = false;
     bool appliedMuffleFilter = runtimeMuffleFilter;
     float appliedLineVolumeMultiplier = runtimeLineVolumeMultiplier;
+    const std::string expectedSubtitleText = text;
+    const bool holdNpcTextOnlySubtitle = usingTextOnlyTiming && speaker != "Player" && !expectedSubtitleText.empty();
+    constexpr auto kNpcTextOnlySubtitleKeepAliveInterval = std::chrono::milliseconds(250);
+    auto lastNpcSubtitleRefresh = std::chrono::steady_clock::now() - kNpcTextOnlySubtitleKeepAliveInterval;
 
     speakerActorPointer->IncRefCount();  // Increment reference count to prevent actor from being unloaded
-
-    //speakerActorPointer->GetActorRuntimeData().voiceTimer =
-    bool unstablerun = false;
 
     _dap_phase("before_playback_wait_loop");
     _dap_phase("pre_watchdog_setup");
@@ -1105,6 +1310,24 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("iter_top");
         // Your loop code here
         lastLost = false;
+
+        if (holdNpcTextOnlySubtitle) {
+            auto* subtitleManager = RE::SubtitleManager::GetSingleton();
+            const auto now = std::chrono::steady_clock::now();
+            const auto subtitleCount = subtitleManager ? subtitleManager->subtitles.size() : 0;
+            const std::string currentSubtitle = GetCurrentSubtitleManagerText(subtitleManager);
+            const bool matchesExpected = subtitleCount > 0 &&
+                                         TrimSubtitleLogText(currentSubtitle) == TrimSubtitleLogText(expectedSubtitleText);
+            const bool keepAliveDue = now - lastNpcSubtitleRefresh >= kNpcTextOnlySubtitleKeepAliveInterval;
+            if ((subtitleCount == 0 || !matchesExpected || keepAliveDue) && subtitleManager && speakerActorPointer) {
+                PushForcedActorSubtitle(subtitleManager,
+                                        speakerActorPointer,
+                                        expectedSubtitleText,
+                                        isNarrator);
+                lastNpcSubtitleRefresh = now;
+            }
+        }
+
         setPhase("get_facegen_anim_data");
         fgen = speakerActorPointer->GetFaceGenAnimationData();
         if (!fgen) {
@@ -1116,7 +1339,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                 lastLost = true;
                 break;
             }
-            unstablerun = true;
             // lastLost = true;
             // break;
         }
@@ -1172,8 +1394,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
         if (DXinitOK && enable3DAudioPlayback) {
             const auto now = std::chrono::steady_clock::now();
-            // 500ms (was 120ms): each refresh runs a navmesh Dijkstra, 8Hz froze dense interiors.
-            if (now - lastRuntimeSpatialRefresh >= std::chrono::milliseconds(500)) {
+            // 1500ms (was 500ms): each refresh can run a navmesh Dijkstra; avoid playback hitches in dense interiors.
+            if (now - lastRuntimeSpatialRefresh >= std::chrono::milliseconds(1500)) {
                 lastRuntimeSpatialRefresh = now;
                 setPhase("evaluate_spatial_audio");
                 const PlaybackSpatialAudioState runtimeSpatialState =
@@ -1274,15 +1496,32 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                 }
 
                 float intensityStep = 0.02 * (elapsedSeconds2 / 0.0019) * intensityModifier;
-                float intensityStepDecal = intensityStep * 1;
+                float intensityStepDecal = useVrVisemeGuard ? std::min(intensityStep * 1.25f, 0.12f) : intensityStep;
 
                 //if (visemeCode == -1) visemeCode = 7;
 
-                if (lastViseme == visemeCode) {
-                    //intensity += intensityStep;
-                    intensity = (intensity+intensityStep)*1.01;
-                        
+                int candidateLastViseme = visemeCode;
+                float candidateIntensity = intensity;
+                if (useVrVisemeGuard) {
+                    const float visemeMaxIntensity =
+                        std::min(GetVisemeMaxIntensity(visemeCode) * lipIntensityBaseline, kVisemeAbsoluteMaxIntensity);
+                    if (lastViseme == visemeCode) {
+                        candidateIntensity = candidateIntensity + intensityStep;
+                    } else {
+                        /*
+                        logger::info("At time {} segment: {} (Duration:{} seconds)", elapsedSeconds,
+                            currentSegment.sourcetext, currentSegment.duration);
 
+                        logger::info("Viseme code {}, label:{}, last intensity (last viseme ended at) {}", visemeCode, getVISEMEName(visemeCode),
+                                        intensity);
+                        */
+                        const float attackFloor = 0.10f * lipIntensityBaseline;
+                        candidateIntensity = visemeCode >= 0 ? std::min(std::max(intensityStep, attackFloor), visemeMaxIntensity) : 0.0f;
+                    }
+
+                    if (candidateIntensity > visemeMaxIntensity) candidateIntensity = visemeMaxIntensity;
+                } else if (lastViseme == visemeCode) {
+                    candidateIntensity = (candidateIntensity + intensityStep) * 1.01f;
                 } else {
                     /*
                     logger::info("At time {} segment: {} (Duration:{} seconds)", elapsedSeconds,
@@ -1291,41 +1530,117 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     logger::info("Viseme code {}, label:{}, last intensity (last viseme ended at) {}", visemeCode, getVISEMEName(visemeCode),
                                     intensity);
                     */
-                    lastViseme = visemeCode;
-                    intensity = 0;
+                    candidateLastViseme = visemeCode;
+                    candidateIntensity = 0.0f;
+                }
+                if (!useVrVisemeGuard && candidateIntensity > 0.99f) {
+                    candidateIntensity = 1.0f;
                 }
 
-                if (intensity > 0.99) intensity = 1.00f;
+                auto commitVisemeCandidate = [&]() {
+                    lastViseme = candidateLastViseme;
+                    intensity = candidateIntensity;
+                };
 
                 if (fgen) {
-                    // Worker-side fgen->lock removed: 90Hz worker contention with main-thread
-                    // morpher tick on the same BSSpinLock starved render thread → 5min freeze.
-                    // All viseme mutation now dispatched to main thread via SKSE TaskInterface.
-                    setPhase("write_voice_timer");
-                    speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
+                    if (!useVrVisemeGuard) {
+                        commitVisemeCandidate();
+                        setPhase("write_voice_timer");
+                        speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
 
-                    setPhase("queue_viseme_task");
-                    auto* taskInterface = SKSE::GetTaskInterface();
-                    if (taskInterface) {
-                        auto actorHandle = speakerActorPointer->GetHandle();
-                        taskInterface->AddTask(
-                            [actorHandle, lastViseme, visemeCode, intensity, intensityStepDecal]() {
-                                auto* actor = actorHandle.get().get();
-                                if (!actor || !actor->Is3DLoaded()) {
-                                    return;
+                        setPhase("queue_viseme_task");
+                        auto* taskInterface = SKSE::GetTaskInterface();
+                        if (taskInterface) {
+                            auto actorHandle = speakerActorPointer->GetHandle();
+                            const int queuedLastViseme = lastViseme;
+                            const float queuedIntensity = intensity;
+                            taskInterface->AddTask(
+                                [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
+                                    auto* actor = actorHandle.get().get();
+                                    if (!actor || !actor->Is3DLoaded()) {
+                                        return;
+                                    }
+
+                                    auto deferredFgen = actor->GetFaceGenAnimationData();
+                                    if (!deferredFgen) {
+                                        return;
+                                    }
+
+                                    RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                    ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                     intensityStepDecal);
+                                });
+                        } else {
+                            logger::warn("[SpeakManager] Task interface unavailable for viseme update");
+                        }
+                    } else if (!visemeTaskGuardDisabled) {
+                        const auto visemeTaskNow = std::chrono::steady_clock::now();
+                        if (visemeTaskNow - lastVisemeTaskQueued >= visemeTaskMinInterval) {
+                            bool expected = false;
+                            if (!visemeTaskInFlight->compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                                ++skippedVisemeTasks;
+                                const auto stuckFor = visemeTaskNow - visemeTaskInFlightSince;
+                                if (stuckFor >= kVisemeTaskStaleDisableAfter) {
+                                    visemeTaskGuardDisabled = true;
+                                    logger::warn(
+                                        "[SpeakManager] Viseme freeze guard disabled lip updates for {}: previous task stuck {}ms, skipped {} frames",
+                                        speaker,
+                                        std::chrono::duration_cast<std::chrono::milliseconds>(stuckFor).count(),
+                                        skippedVisemeTasks);
+                                } else if (visemeTaskNow - lastVisemeTaskGuardLog >= kVisemeTaskGuardLogInterval) {
+                                    lastVisemeTaskGuardLog = visemeTaskNow;
+                                    logger::debug(
+                                        "[SpeakManager] Viseme freeze guard skipped {} queued frames for {}",
+                                        skippedVisemeTasks, speaker);
                                 }
+                                setPhase("viseme_task_skipped_inflight");
+                            } else {
+                                auto* taskInterface = SKSE::GetTaskInterface();
+                                if (taskInterface) {
+                                    commitVisemeCandidate();
+                                    lastVisemeTaskQueued = visemeTaskNow;
+                                    visemeTaskInFlightSince = visemeTaskNow;
 
-                                auto deferredFgen = actor->GetFaceGenAnimationData();
-                                if (!deferredFgen) {
-                                    return;
+                                    setPhase("write_voice_timer");
+                                    speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
+
+                                    setPhase("queue_viseme_task");
+                                    auto actorHandle = speakerActorPointer->GetHandle();
+                                    auto inFlight = visemeTaskInFlight;
+                                    const int queuedLastViseme = lastViseme;
+                                    const float queuedIntensity = intensity;
+                                    taskInterface->AddTask(
+                                        [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, inFlight]() {
+                                            struct VisemeTaskReset {
+                                                std::shared_ptr<std::atomic<bool>> flag;
+                                                ~VisemeTaskReset() {
+                                                    flag->store(false, std::memory_order_release);
+                                                }
+                                            } reset{inFlight};
+
+                                            auto* actor = actorHandle.get().get();
+                                            if (!actor || !actor->Is3DLoaded()) {
+                                                return;
+                                            }
+
+                                            auto deferredFgen = actor->GetFaceGenAnimationData();
+                                            if (!deferredFgen) {
+                                                return;
+                                            }
+
+                                            RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                            ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                             intensityStepDecal);
+                                        });
+                                    setPhase("viseme_task_queued");
+                                } else {
+                                    visemeTaskInFlight->store(false, std::memory_order_release);
+                                    logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                                 }
-
-                                RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                ApplyVisemeFrame(deferredFgen, lastViseme, visemeCode, intensity,
-                                                 intensityStepDecal);
-                            });
-                    } else {
-                        logger::warn("[SpeakManager] Task interface unavailable for viseme update");
+                            }
+                        } else {
+                            commitVisemeCandidate();
+                        }
                     }
                 } else {
                     // logger::warn("[SpeakManager] Failed to get FaceGen animation data for animation update");
@@ -1334,60 +1649,30 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
 
         setPhase("avoid_click_check");
-        if (std::chrono::steady_clock::now() > avoidClick) {
-            if (DXinitOK) {  // Only if audio being reproduced,
-                setPhase("player_looking_at");
-                auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
-                auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
-                auto camera = RE::PlayerCamera::GetSingleton();
-
-                if (GlobalCameraBasedAudio && camera) {
-                    setPhase("camera_state_rotation");
-                    auto cameraState = camera->currentState.get();
-                    if (cameraState) {
-                        RE::NiQuaternion rotation;
-                        cameraState->GetRotation(rotation);
-                        auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
-                        if (std::isfinite(cameraHeadingAngle)) {
-                            headingAngle = cameraHeadingAngle;
-                        }
-                    }
-                }
-
-                if (GlobalInvertHeadingState)
-                    headingAngle = headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
-
-                auto cameraTarget = camera ? camera->cameraTarget : RE::ActorHandle{};
-
-                setPhase("get_actor_head_position");
-                auto speakerPos = GetActorHeadPosition(speakerActorPointer);
-
-                if (cameraTarget && cameraTarget.get()) {
-                    setPhase("am_update_camera_target");
-                    am.Update(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
-                              AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(cameraTarget.get()->GetPosition()),
-                              AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(ppos), headingAngle);
-
-                } else {
-                    setPhase("am_update_player_pos");
-                    am.Update(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
-                              AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(
-                                  RE::PlayerCharacter::GetSingleton()->GetPosition()),
-                              AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(ppos), headingAngle);
-                }
+        if (DXinitOK) {  // Only if audio being reproduced,
+            const bool shouldUpdatePlaybackState =
+                !enable3DAudioPlayback || std::chrono::steady_clock::now() > avoidClick;
+            if (shouldUpdatePlaybackState) {
+                setPhase("spatial_audio_position_update");
+                updatePlaybackSpatialPosition();
             }
         }
 
         // Mark last time talk, so we don't restore actor voice (previously was updated only at the end of the process,
         // causing issues with voice restoration when speech is still being played, so NPC will mix AI speech and
         // vanilla speech)
-        currentActor->SetLastTimeTalk();
+        if (currentActor) {
+            currentActor->SetLastTimeTalk();
+            // logger::info("Updated last time talk for actor {}", currentActor->getCurrentAnimation());
+        }
         
         setPhase("iter_sleep");
 
 
         std::this_thread::sleep_for(std::chrono::microseconds(animationDelayMicroSecs));
     }
+
+
     setPhase("loop_exit");
     loopRunning.store(false, std::memory_order_relaxed);
     loopWakeCv.notify_all();
@@ -1395,6 +1680,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         loopWatchdog.join();
     }
     _dap_phase("after_playback_wait_loop");
+    if (useVrVisemeGuard) {
+        QueueMouthReset(speakerActorPointer->GetHandle());
+    }
     speakerActorPointer->GetActorRuntimeData().voiceTimer = 0.0;
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
 
@@ -2039,13 +2327,16 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     SPGResponse& spgResponse = SPGResponse::getInstance();
     bool commandInQueue = spgResponse.getSize("command") > 0;
 
-    int n = ThreadPool::getInstance().runningTasksByType("HTTPStream");
+    int activeHttpStreams = ThreadPool::getInstance().runningTasksByType("HTTPStream");
+    int activeRechatStreams = ThreadPool::getInstance().runningTasksByType("HTTPStreamRechat");
+
+    int n = activeHttpStreams;
     if (n > 0 && GlobalRechatPolicyAsap == 0) {
         logger::info("[RECHAT] Rechat avoid because another stream is active HTTPStream ");
         return 0;
     }
 
-    n = ThreadPool::getInstance().runningTasksByType("HTTPStreamRechat");
+    n = activeRechatStreams;
     if (n > 0 && GlobalRechatPolicyAsap==0) {
         logger::info("[RECHAT] Rechat avoid because another stream is active HTTPStreamRechat");
         return 0;
@@ -2057,36 +2348,17 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
             return 0;
         }
 
-        std::vector<std::string> audienceSnapshot;
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            audienceSnapshot = audienceSnapshotCompanions;
-        }
-
         json rechatPayload = json::object();
         const std::string rechatChainId = ensureRechatChainId(speaker, targetedNpc, explicitRechatTarget);
+        const std::string resolvedRechatTarget =
+            !explicitRechatTarget.empty() ? explicitRechatTarget : targetedNpc;
         rechatPayload["speaker"] = speaker;
         rechatPayload["listener_hint"] = targetedNpc;
         rechatPayload["rechat_target_hint"] = explicitRechatTarget;
+        rechatPayload["resolved_rechat_target"] = resolvedRechatTarget;
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
-        rechatPayload["audience"] = audienceSnapshot;
         rechatPayload["chain_id"] = rechatChainId;
-
-        std::vector<std::string> chainMembers = audienceSnapshot;
-        if (!speaker.empty() &&
-            std::find(chainMembers.begin(), chainMembers.end(), speaker) == chainMembers.end()) {
-            chainMembers.push_back(speaker);
-        }
-        if (!targetedNpc.empty() &&
-            std::find(chainMembers.begin(), chainMembers.end(), targetedNpc) == chainMembers.end()) {
-            chainMembers.push_back(targetedNpc);
-        }
-        if (!explicitRechatTarget.empty() &&
-            std::find(chainMembers.begin(), chainMembers.end(), explicitRechatTarget) == chainMembers.end()) {
-            chainMembers.push_back(explicitRechatTarget);
-        }
-        rechatPayload["chain_members"] = chainMembers;
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
@@ -2130,12 +2402,9 @@ void SpeakManager::process(AIAgent *agent) {
         return;
     }
 
-    std::string beings = InspectSurroundings(RE::PlayerCharacter::GetSingleton(), true, HERIKA_MAX_VISION_RANGE, ",",
-                                             DISTANCE_ACTIVATING_NPC_OUT);
-    logger::debug("[SPEAKERMANAGER {}] Current surroundings inspection: {}", tid,beings);
-
-    if (!agent->isPresent(beings) && !agent->isNarrator()) {
-        logger::info("[SPEAKERMANAGER {}] Agent {} is not present in surroundings and is not narrator. Skipping.", tid,agent->getActorName());
+    if (!agent->isNarrator() && (!npc->GetActorRuntimeData().currentProcess || !npc->Is3DLoaded())) {
+        logger::info("[SPEAKERMANAGER {}] Agent {} is not currently loaded for dialogue. Skipping.", tid,
+                     agent->getActorName());
         dequeueFirstItem();
         setProcessing(false);
         return;
@@ -2188,7 +2457,6 @@ void SpeakManager::process(AIAgent *agent) {
         // Reset bored
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
 
-
         int res = 0;
 
         if (!SM::trim(scriptLine.expression).empty() && !agent->isNarrator()) {
@@ -2215,8 +2483,6 @@ void SpeakManager::process(AIAgent *agent) {
 
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
-            RE::SubtitleInfo toSay;
-
             if (scriptLine.actor != agent->getActorName()) {  // Character change
                 // If the mismatched item is a "Player" line, dequeue it — no NPC agent
                 // will ever match "Player", so it blocks the queue head forever.
@@ -2259,21 +2525,29 @@ void SpeakManager::process(AIAgent *agent) {
             }
 
             auto* sm = RE::SubtitleManager::GetSingleton();
-            toSay.forceDisplay = true;
-            toSay.targetDistance = 10;
-            if (!agent->isNarrator()) {
-                toSay.speaker = npc->GetHandle();
-            } else {
-                RE::PlayerCharacter::GetSingleton()->SetDisplayName(NARRATOR_NAME, true);
-                toSay.speaker = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
-            }
-
             releasePendingPlayerSubtitle();
+            PushForcedActorSubtitle(sm,
+                                    npc,
+                                    scriptLine.subtitle,
+                                    agent->isNarrator());
 
-            toSay.subtitle = scriptLine.subtitle;
-            toSay.pad04 = 0xabcd;
-            sm->KillSubtitles();
-            sm->subtitles.push_back(toSay);
+            if (PrismaUIBridge::IsAvailable()) {
+                char timeDateString[200];
+                RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                const std::string speakerType = agent->isNarrator() ? "narrator" : "npc";
+                PrismaUIBridge::PushChatboxMessage(
+                    agent->getActorName(),
+                    scriptLine.subtitle,
+                    std::string(timeDateString),
+                    speakerType,
+                    "llm");
+                PrismaUIBridge::PushDialogueEntry(
+                    agent->getActorName(),
+                    scriptLine.subtitle,
+                    std::string(timeDateString),
+                    "chat",
+                    "llm");
+            }
 
             hasTalked = true;
 
@@ -2461,8 +2735,7 @@ void SpeakManager::process(AIAgent *agent) {
             // Dynamic attenuation/muffle is handled during playback in DownloadAndPlay so
             // door/LOS/navmesh changes can update while the line is still playing.
 
-            const bool whisperModeActive =
-                (DISTANCE_ACTIVATING_NPC_IN <= 200.0f && DISTANCE_ACTIVATING_NPC_OUT <= 200.0f);
+            const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
             const bool directedToPlayer = IsDirectlyAddressingPlayer(scriptLine.action, aiam);
             if (whisperModeActive && directedToPlayer && !agent->isNarrator()) {
                 playbackVolumeBoost = 0.25f;
@@ -2597,15 +2870,34 @@ void SpeakManager::process(AIAgent *agent) {
             try {
                 json sData;
                 const std::string speakerName = agent->getActorName();
+                const bool speakerIsNarrator = agent->isNarrator() || speakerName == NARRATOR_NAME;
                 sData["speaker"] = speakerName;
                 sData["location"] = GetPlayerLocation();
-                sData["speech"] = toSay.subtitle;
+                sData["speech"] = scriptLine.subtitle;
                 sData["utterance_id"] = scriptLine.utteranceId;
                 const std::string resolvedListenerName =
                     speechListener.empty() ? RE::PlayerCharacter::GetSingleton()->GetName() : speechListener;
                 sData["listener"] = resolvedListenerName;
                 std::vector<std::string> audibleCompanions;
-                json spatialAudibility = json::array();
+                const auto addCompanion = [&](const std::string& name) {
+                    if (name.empty()) {
+                        return;
+                    }
+                    if (std::find(audibleCompanions.begin(), audibleCompanions.end(), name) ==
+                        audibleCompanions.end()) {
+                        audibleCompanions.push_back(name);
+                    }
+                };
+                const auto joinCompanions = [](const std::vector<std::string>& names) {
+                    std::string joined;
+                    for (const auto& name : names) {
+                        if (!joined.empty()) {
+                            joined += "|";
+                        }
+                        joined += name;
+                    }
+                    return joined;
+                };
 
                 // Calculate distance and v1-lite spatial context from speaker to listener.
                 float distance = 0.0f;
@@ -2668,111 +2960,153 @@ void SpeakManager::process(AIAgent *agent) {
                     listenerActor = player;
                 }
 
-                if (agent->getActor() && listenerActor) {
+                if (!speakerIsNarrator && agent->getActor() && listenerActor) {
                     spatialResult = SpatialAwareness::Evaluate(agent->getActor(), listenerActor);
                     hasSpatialContext = true;
                     distance = spatialResult.airDistance;
                 }
 
-                // Authoritative audience scope is evaluated from the speaking actor.
-                RE::Actor* audibilitySource = agent->getActor();
-                if (!audibilitySource) {
-                    audibilitySource = listenerActor ? listenerActor : RE::PlayerCharacter::GetSingleton();
-                }
-
-                // Keep audience stable for multi-line NPC responses.
-                const std::string audienceSnapshotKey =
-                    normalizeName(speakerName) + "->" + normalizeName(resolvedListenerName);
-                bool reusedAudienceSnapshot = false;
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    if (audienceSnapshotReady && audienceSnapshotKey == this->audienceSnapshotKey &&
-                        !audienceSnapshotCompanions.empty()) {
-                        audibleCompanions = audienceSnapshotCompanions;
-                        reusedAudienceSnapshot = true;
+                if (!speakerIsNarrator) {
+                    // Authoritative audience scope is evaluated from the speaking actor.
+                    RE::Actor* audibilitySource = agent->getActor();
+                    if (!audibilitySource) {
+                        audibilitySource = listenerActor ? listenerActor : RE::PlayerCharacter::GetSingleton();
                     }
-                }
 
-                if (!reusedAudienceSnapshot) {
-                    float audienceMaxDistance = DISTANCE_ACTIVATING_NPC_OUT;
-                    if (audibilitySource) {
-                        auto* sourceCell = audibilitySource->GetParentCell();
-                        if (sourceCell && sourceCell->IsInteriorCell()) {
-                            audienceMaxDistance = DISTANCE_ACTIVATING_NPC_IN;
+                    // Keep audience stable for multi-line NPC responses.
+                    const std::string audienceSnapshotKey =
+                        normalizeName(speakerName) + "->" + normalizeName(resolvedListenerName);
+                    bool reusedAudienceSnapshot = false;
+                    bool speakerWithinAutoHearingRadius = false;
+                    std::size_t playerNearbyContextCount = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(mtx);
+                        if (audienceSnapshotReady && audienceSnapshotKey == this->audienceSnapshotKey &&
+                            !audienceSnapshotCompanions.empty()) {
+                            audibleCompanions = audienceSnapshotCompanions;
+                            reusedAudienceSnapshot = true;
                         }
                     }
 
-                    // Build companions based on spatial audibility from the speaker,
-                    // instead of generic "near player" lists.
-                    for (const auto& candidateAgent : aiam.getAgents()) {
-                        if (!candidateAgent) {
-                            continue;
+                    if (!reusedAudienceSnapshot) {
+                        speakerWithinAutoHearingRadius = audibilitySource &&
+                            SpatialSnapshotManager::IsActorWithinAutoHearingRadius(audibilitySource);
+                        if (speakerWithinAutoHearingRadius) {
+                            const float autoHearingRadiusUnits =
+                                SpatialSnapshotManager::GetAutoHearingRadiusUnits();
+                            const auto playerNearbyTargets =
+                                SpatialSnapshotManager::GetPlayerNearbyManagedTargets(autoHearingRadiusUnits);
+                            for (const auto& target : playerNearbyTargets) {
+                                addCompanion(target.name);
+                                ++playerNearbyContextCount;
+                            }
                         }
+                        const float autoHearingRadiusUnits =
+                            SpatialSnapshotManager::GetAutoHearingRadiusUnits();
+                        const float autoHearingRadiusMeters =
+                            autoHearingRadiusUnits / SpatialAwareness::kSkyrimUnitsPerMeter;
+                        logger::info(
+                            "[rework_debug][nearby_context] npc_prescan speaker='{}' listener='{}' radius_units={:.1f} radius_m={:.1f} speaker_within_auto_hearing_radius={} count={} names='{}'",
+                            speakerName, resolvedListenerName, autoHearingRadiusUnits, autoHearingRadiusMeters,
+                            speakerWithinAutoHearingRadius ? 1 : 0, playerNearbyContextCount,
+                            joinCompanions(audibleCompanions));
 
-                        const std::string candidateName = candidateAgent->getActorName();
-                        if (candidateName.empty() || candidateName == NARRATOR_NAME) {
-                            continue;
-                        }
-
-                        auto* candidateActor = candidateAgent->getActor();
-                        if (!candidateActor || candidateActor->IsDead()) {
-                            continue;
-                        }
-
+                        // Audience scope is speech audibility, not auto-activate population.
+                        // Auto-activate can keep broader scene agents alive, but NPC speech fanout
+                        // should use the MCM spatial hearing distances before running Evaluate().
+                        const auto spatialSettings = SpatialAwareness::GetSettings();
+                        float audienceMaxDistance = spatialSettings.exteriorMaxDistance;
                         if (audibilitySource) {
-                            const float candidateDistance =
-                                audibilitySource->GetPosition().GetDistance(candidateActor->GetPosition());
-                            if (candidateDistance > audienceMaxDistance) {
+                            auto* sourceCell = audibilitySource->GetParentCell();
+                            if (sourceCell && sourceCell->IsInteriorCell()) {
+                                audienceMaxDistance = spatialSettings.interiorMaxDistance;
+                            }
+                        }
+                        if (spatialSettings.maxAirDistance > 0.0f) {
+                            audienceMaxDistance = std::min(audienceMaxDistance, spatialSettings.maxAirDistance);
+                        }
+
+                        struct AudienceCandidate {
+                            std::shared_ptr<AIAgent> agent;
+                            RE::Actor* actor = nullptr;
+                            float distance = 0.0f;
+                        };
+
+                        std::vector<AudienceCandidate> audienceCandidates;
+                        audienceCandidates.reserve(8);
+
+                        // Build companions by cheap distance first; the MCM hearing radius is the hard fanout guard.
+                        for (const auto& candidateAgent : aiam.getAgents()) {
+                            if (!candidateAgent) {
                                 continue;
+                            }
+
+                            const std::string candidateName = candidateAgent->getActorName();
+                            if (candidateName.empty() || candidateName == NARRATOR_NAME) {
+                                continue;
+                            }
+
+                            auto* candidateActor = candidateAgent->getActor();
+                            if (!candidateActor || candidateActor->IsDead()) {
+                                continue;
+                            }
+                            if (audibilitySource && candidateActor->GetFormID() == audibilitySource->GetFormID()) {
+                                continue;
+                            }
+
+                            float candidateDistance = 0.0f;
+                            if (audibilitySource) {
+                                candidateDistance = audibilitySource->GetPosition().GetDistance(candidateActor->GetPosition());
+                                if (candidateDistance > audienceMaxDistance) {
+                                    continue;
+                                }
+                            }
+
+                            audienceCandidates.push_back(AudienceCandidate{candidateAgent, candidateActor, candidateDistance});
+                        }
+
+                        std::sort(audienceCandidates.begin(), audienceCandidates.end(),
+                                  [](const auto& lhs, const auto& rhs) {
+                                      return lhs.distance < rhs.distance;
+                                  });
+
+                        for (const auto& candidate : audienceCandidates) {
+                            const auto& candidateAgent = candidate.agent;
+                            auto* candidateActor = candidate.actor;
+                            const std::string candidateName = candidateAgent->getActorName();
+
+                            SpatialAwareness::Result candidateSpatial =
+                                SpatialAwareness::Evaluate(audibilitySource, candidateActor);
+
+                            if (candidateSpatial.canCommunicate) {
+                                addCompanion(candidateName);
                             }
                         }
 
-                        SpatialAwareness::Result candidateSpatial =
-                            SpatialAwareness::Evaluate(audibilitySource, candidateActor);
-
-                        json candidateDebug;
-                        candidateDebug["name"] = candidateName;
-                        candidateDebug["can_communicate"] = candidateSpatial.canCommunicate;
-                        candidateDebug["volume"] = candidateSpatial.volume;
-                        candidateDebug["reason"] = candidateSpatial.reason;
-                        candidateDebug["distance"] = candidateSpatial.airDistance;
-                        spatialAudibility.push_back(candidateDebug);
-
-                        if (candidateSpatial.canCommunicate &&
-                            std::find(audibleCompanions.begin(), audibleCompanions.end(), candidateName) ==
-                                audibleCompanions.end()) {
-                            audibleCompanions.push_back(candidateName);
+                        {
+                            std::lock_guard<std::mutex> lock(mtx);
+                            this->audienceSnapshotKey = audienceSnapshotKey;
+                            audienceSnapshotCompanions = audibleCompanions;
+                            audienceSnapshotReady = !audienceSnapshotCompanions.empty();
                         }
                     }
 
-                    {
-                        std::lock_guard<std::mutex> lock(mtx);
-                        this->audienceSnapshotKey = audienceSnapshotKey;
-                        audienceSnapshotCompanions = audibleCompanions;
-                        audienceSnapshotReady = !audienceSnapshotCompanions.empty();
-                    }
-                } else {
-                }
-
-                if (!speakerName.empty() &&
-                    std::find(audibleCompanions.begin(), audibleCompanions.end(), speakerName) ==
-                        audibleCompanions.end()) {
-                    audibleCompanions.push_back(speakerName);
-                }
-
-                // Preserve intended dialogue target for context stitching.
-                if (!speechListener.empty() &&
-                    std::find(audibleCompanions.begin(), audibleCompanions.end(), speechListener) ==
-                        audibleCompanions.end()) {
-                    audibleCompanions.push_back(speechListener);
+                    addCompanion(speakerName);
+                    addCompanion(speechListener);
+                    addCompanion(configuredPlayerName.empty() ? playerName : configuredPlayerName);
+                    logger::info(
+                        "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_auto_hearing_radius={} nearby_count={} companions='{}'",
+                        speakerName, resolvedListenerName, reusedAudienceSnapshot ? 1 : 0,
+                        speakerWithinAutoHearingRadius ? 1 : 0, playerNearbyContextCount,
+                        joinCompanions(audibleCompanions));
                 }
 
                 sData["companions"] = audibleCompanions;
                 sData["distance"] = distance;
                 sData["spatial_can_communicate"] = hasSpatialContext ? spatialResult.canCommunicate : false;
                 sData["spatial_volume"] = hasSpatialContext ? spatialResult.volume : 0.0f;
-                sData["spatial_reason"] = hasSpatialContext ? spatialResult.reason : "no_listener_context";
-                sData["spatial_audibility"] = spatialAudibility;
+                sData["spatial_reason"] = speakerIsNarrator ? "narrator" :
+                    (hasSpatialContext ? spatialResult.reason : "no_listener_context");
 
                 {
                     std::lock_guard<std::mutex> lock(mtx);
@@ -2800,6 +3134,9 @@ void SpeakManager::process(AIAgent *agent) {
         }
 
         setProcessing(false);
+        if (hasTalked) {
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+        }
 
         // Narrator cleanup MUST run before checking for more queue items.
         // If the queue has items from other actors, the recursive process() call
@@ -2881,7 +3218,17 @@ void SpeakManager::processPlayer() {
         }
 
         dequeueFirstItem();
-        setProcessing(false);       
+        setProcessing(false);
+        if (isTextOnlyPlayerLine) {
+            // Text-only STT captions are a short echo of what the player said.
+            // If no NPC/Narrator subtitle replaces them, release the pending state so
+            // clearVisibleSubtitles() can remove the echo instead of refreshing it forever.
+            releasePendingPlayerSubtitle();
+            clearVisibleSubtitles();
+        }
+        if (hasTalked) {
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+        }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         auto originalName = aiam.getPlayerName();

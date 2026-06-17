@@ -15,6 +15,81 @@
 
     // Update timer
     let updateInterval = null;
+    let lastSpatialAgentsAt = 0;
+    const agentRowsByKey = new Map();
+
+    function setHtmlIfChanged(element, html) {
+        if (!element || element.__chimLastHtml === html) return false;
+        element.innerHTML = html;
+        element.__chimLastHtml = html;
+        return true;
+    }
+
+    function setTextIfChanged(element, text) {
+        if (!element || element.__chimLastText === text) return false;
+        element.textContent = text;
+        element.__chimLastText = text;
+        return true;
+    }
+
+    function setClassNameIfChanged(element, className) {
+        if (!element || element.className === className) return false;
+        element.className = className;
+        return true;
+    }
+
+    function makeAgentRow(isEmpty) {
+        const row = document.createElement('div');
+        if (isEmpty) {
+            row.className = 'empty-agents';
+            return row;
+        }
+
+        row.className = 'agent-item';
+        row.__chimNameElement = document.createElement('div');
+        row.__chimNameElement.className = 'agent-name';
+        row.__chimMetaElement = document.createElement('div');
+        row.__chimMetaElement.className = 'agent-meta';
+        row.appendChild(row.__chimNameElement);
+        row.appendChild(row.__chimMetaElement);
+        return row;
+    }
+
+    function updateAgentRow(row, spec) {
+        if (spec.empty) {
+            setClassNameIfChanged(row, 'empty-agents');
+            setTextIfChanged(row, spec.message);
+            return;
+        }
+
+        setClassNameIfChanged(row, spec.className);
+        setTextIfChanged(row.__chimNameElement, spec.name);
+        setTextIfChanged(row.__chimMetaElement, spec.meta);
+    }
+
+    function syncAgentRows(specs) {
+        const seen = new Set();
+        specs.forEach(function(spec, index) {
+            seen.add(spec.key);
+            let row = agentRowsByKey.get(spec.key);
+            if (!row) {
+                row = makeAgentRow(!!spec.empty);
+                agentRowsByKey.set(spec.key, row);
+            }
+
+            updateAgentRow(row, spec);
+            if (agentsListElement.children[index] !== row) {
+                agentsListElement.insertBefore(row, agentsListElement.children[index] || null);
+            }
+        });
+
+        agentRowsByKey.forEach(function(row, key) {
+            if (!seen.has(key)) {
+                row.remove();
+                agentRowsByKey.delete(key);
+            }
+        });
+    }
 
     // Mode display names and classes
     const modeConfig = {
@@ -55,8 +130,10 @@
             // Update focus chat
             updateFocusChat(overlay.focus_chat);
             
-            // Update active agents
-            updateActiveAgents(overlay.active_agents);
+            // Update active agents from server only until the DLL starts pushing local spatial truth.
+            if (!lastSpatialAgentsAt || Date.now() - lastSpatialAgentsAt > 5000) {
+                updateActiveAgents(overlay.active_agents);
+            }
             
             // Update profile slots
             updateProfileSlots(overlay.profile_slots, overlay.active_model_slot);
@@ -72,7 +149,7 @@
     function updateMode(mode) {
         const modeUpper = mode ? mode.toUpperCase().trim() : 'STANDARD';
         const config = modeConfig[modeUpper] || { label: mode || 'Unknown', class: 'standard' };
-        modeElement.innerHTML = `<span class="mode-badge ${config.class}">${config.label}</span>`;
+        setHtmlIfChanged(modeElement, `<span class="mode-badge ${config.class}">${config.label}</span>`);
     }
 
     /**
@@ -94,7 +171,7 @@
             modelClass = 'experimental';
         }
         
-        activeModelElement.innerHTML = `<span class="mode-badge ${modelClass}">${escapeHtml(modelLabel)}</span>`;
+        setHtmlIfChanged(activeModelElement, `<span class="mode-badge ${modelClass}">${escapeHtml(modelLabel)}</span>`);
     }
 
     /**
@@ -103,7 +180,7 @@
     function updateFocusChat(enabled) {
         const statusClass = enabled ? 'on' : 'off';
         const statusText = enabled ? 'ON' : 'OFF';
-        focusChatElement.innerHTML = `<span class="toggle-indicator ${statusClass}">${statusText}</span>`;
+        setHtmlIfChanged(focusChatElement, `<span class="toggle-indicator ${statusClass}">${statusText}</span>`);
     }
 
     /**
@@ -111,22 +188,58 @@
      */
     function updateActiveAgents(agents) {
         const countElement = document.querySelector('.agent-count');
+        const previousScrollTop = agentsListElement.scrollTop;
         
         if (!agents || agents.length === 0) {
-            agentsListElement.innerHTML = '<div class="empty-agents">No agents nearby</div>';
-            countElement.textContent = '0';
+            syncAgentRows([{ key: 'empty', empty: true, message: 'No agents nearby' }]);
+            setTextIfChanged(countElement, '0');
             return;
         }
 
-        countElement.textContent = agents.length.toString();
-        
-        let html = '';
-        agents.forEach(agent => {
-            html += `<div class="agent-item">${escapeHtml(agent)}</div>`;
+        setTextIfChanged(countElement, agents.length.toString());
+
+        const specs = agents.map((agent, index) => {
+            if (typeof agent === 'string') {
+                return {
+                    key: `name:${agent}`,
+                    className: 'agent-item',
+                    name: agent,
+                    meta: ''
+                };
+            }
+
+            const name = agent && agent.name ? agent.name : 'Unknown Target';
+            const distance = Number(agent && agent.distance ? agent.distance : 0).toFixed(1);
+            const status = agent && agent.status ? agent.status : '';
+            const meta = status ? `${distance}m - ${status}` : `${distance}m`;
+            const classes = ['agent-item'];
+            if (agent && agent.active) classes.push('active');
+            if (agent && agent.targetable === false) classes.push('blocked');
+            if (agent && agent.look_target) classes.push('look-target');
+
+            const formId = agent && (agent.form_id || agent.formId) ? (agent.form_id || agent.formId) : '';
+            return {
+                key: formId ? `form:${formId}` : `name:${name}:${index}`,
+                className: classes.join(' '),
+                name,
+                meta
+            };
         });
         
-        agentsListElement.innerHTML = html;
+        syncAgentRows(specs);
+        agentsListElement.scrollTop = previousScrollTop;
     }
+
+    window.updateSpatialAgents = function(payloadJson) {
+        try {
+            const parsed = JSON.parse(payloadJson);
+            const agents = Array.isArray(parsed) ? parsed : [];
+            lastSpatialAgentsAt = Date.now();
+            updateActiveAgents(agents);
+        } catch (e) {
+            console.error('Error parsing spatial agents:', e);
+        }
+    };
 
     /**
      * Update the profile slots grid
@@ -172,7 +285,7 @@
             }
         }
         
-        slotsGridElement.innerHTML = html;
+        setHtmlIfChanged(slotsGridElement, html);
     }
 
     /**
@@ -191,16 +304,28 @@
      * Update the crosshair target display
      * @param {string} name - Name of the targeted NPC
      * @param {number} distance - Distance to the NPC in meters
+     * @param {string} status - Spatial targeting status
+     * @param {boolean} targetable - Whether this is an active valid target
      */
-    window.updateCrosshairTarget = function(name, distance) {
+    window.updateCrosshairTarget = function(name, distance, status, targetable) {
         const targetElement = document.getElementById('crosshair-target');
+        const safeStatus = status ? escapeHtml(status) : '';
+        const statusHtml = safeStatus ? `<div class="target-status">${safeStatus}</div>` : '';
+        const isTargetable = targetable !== false;
+
         if (name && name !== '') {
-            targetElement.innerHTML = `
-                <span class="target-name">${escapeHtml(name)}</span>
-                <span class="target-distance">(${distance.toFixed(1)}m)</span>
-            `;
+            setHtmlIfChanged(targetElement, `
+                <div>
+                    <span class="target-name ${isTargetable ? '' : 'blocked-target'}">${escapeHtml(name)}</span>
+                    <span class="target-distance">(${distance.toFixed(1)}m)</span>
+                </div>
+                ${statusHtml}
+            `);
         } else {
-            targetElement.innerHTML = '<span class="target-name no-target">No target</span>';
+            setHtmlIfChanged(targetElement, `
+                <div><span class="target-name no-target">No target</span></div>
+                ${statusHtml}
+            `);
         }
     };
 
@@ -214,8 +339,16 @@
         }
     };
 
+    window.onOverlayShown = function() {
+        window.startAutoUpdate();
+    };
+
+    window.onOverlayHidden = function() {
+        stopAutoUpdate();
+    };
+
     /**
-     * Start auto-updating every 5 seconds
+     * Start auto-updating every 3 seconds
      */
     window.startAutoUpdate = function() {
         stopAutoUpdate(); // Clear any existing interval
@@ -224,7 +357,7 @@
             if (window.chimOverlayCommand) {
                 window.chimOverlayCommand('refresh');
             }
-        }, 5000); // 5 seconds
+        }, 3000); // 3 seconds
         console.log('CHIM Overlay auto-update started');
     };
 
@@ -239,6 +372,8 @@
         }
     }
 
+    window.stopAutoUpdate = stopAutoUpdate;
+
     // Apply corner placement via shared layout manager
     var overlayRoot = document.getElementById('chim-overlay');
     if (window.chimLayout) {
@@ -247,8 +382,5 @@
 
     // Initialize with loading state
     console.log('CHIM Overlay initialized');
-    
-    // Start auto-update when overlay is shown
-    window.startAutoUpdate();
     
 })();

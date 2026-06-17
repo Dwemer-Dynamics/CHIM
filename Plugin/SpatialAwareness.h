@@ -6,10 +6,18 @@
 
 namespace SpatialAwareness
 {
+    inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
+    inline constexpr float kAutoHearingRadiusMeters = 8.0f;
+    inline constexpr float kMinAutoHearingRadiusMeters = 1.0f;
+    inline constexpr float kMaxAutoHearingRadiusMeters = 20.0f;
+    inline constexpr float kAutoHearingDistance =
+        kAutoHearingRadiusMeters * kSkyrimUnitsPerMeter;
+
     struct Settings
     {
         float maxAirDistance = 4000.0f;
         float immediateDistance = 150.0f;
+        float autoHearingDistance = kAutoHearingDistance;
         // Tuned so clear-line practical audibility (volume >= 0.15) is roughly:
         // - indoors:  ~22.5 ft (~750 units)
         // - outdoors: ~37.5 ft (~1250 units)
@@ -26,6 +34,8 @@ namespace SpatialAwareness
         float pathRatioReject = 4.0f;
         float pathRatioDistanceReject = 2.5f;
         float pathRatioDistanceRejectMinAir = 500.0f;
+        float losConfirmPathRatio = 2.0f;
+        float losConfirmMinAirDistance = 400.0f;
         float pathComplexityStartRatio = 1.2f;
         float pathComplexityScale = 0.6f;
         float pathComplexityMin = 0.3f;
@@ -45,6 +55,7 @@ namespace SpatialAwareness
         bool navmeshPathUsed = false;
         bool navmeshPathFound = false;
         bool losFallbackUsed = false;
+        bool losQueryOk = false;
         bool hasLineOfSight = false;
         std::string reason = "unknown";
     };
@@ -66,6 +77,9 @@ namespace SpatialAwareness
     Settings GetSettings();
     void SetInteriorMaxDistance(float interiorMaxDistance);
     void SetExteriorMaxDistance(float exteriorMaxDistance);
+    void SetAutoHearingRadiusMeters(float meters);
+    float GetAutoHearingRadiusMeters();
+    void InvalidateCache();
 
     PathResult EvaluatePath(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());
     Result Evaluate(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());

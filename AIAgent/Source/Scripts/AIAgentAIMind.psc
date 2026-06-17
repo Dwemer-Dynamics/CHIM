@@ -11,7 +11,7 @@ Actor lastTarget
 
 function Test() global
 
-Debug.Notification("Ok");
+Debug.Notification("[CHIM] OK.");
 
 endFunction
 
@@ -141,7 +141,7 @@ function MoveToTargetEnd(Actor npc) global
 						; Use MoveInventoryItem for proper transfer with confirmation for gold
 						MoveInventoryItem(npc, destinationActor, itemForm, itemAmount, itemName)
 						
-						Debug.Notification(npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName())
+						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName()+".")
 						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName(),"itemtransfer",npc.GetDisplayName())
 					else
 						Debug.Trace("[CHIM] ERROR: Could not find Form with ID "+formID)
@@ -219,8 +219,9 @@ function MoveToTargetEnd(Actor npc) global
 					ObjectReference itemRef
 					itemRef = destination as ObjectReference
 					if (itemRef)
-						npc.Activate(itemRef)
-						
+						;npc.Activate(itemRef)
+						npc.AddItem(itemRef)
+						Debug.Trace("[CHIM] MoveToTargetEnd, "+npc.GetDisplayName()+". picked item "+itemRef.GetDisplayName())
 						; Wait a moment for the pickup to process
 						Utility.Wait(0.5)
 						
@@ -237,7 +238,7 @@ function MoveToTargetEnd(Actor npc) global
 						Debug.TraceUser("ChimHTTPSender", logMessage)
 						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 						
-						Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
 					
 					; Clear the pending pickup data
@@ -274,7 +275,7 @@ function MoveToTargetEnd(Actor npc) global
 						Debug.TraceUser("ChimHTTPSender", logMessage)
 						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 						
-						Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
 				endif
 				; Clear the pending pickup data
@@ -788,7 +789,7 @@ function TravelToTargetEnd(Actor npc) global
 					Debug.TraceUser("ChimHTTPSender", logMessage)
 					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 					
-					Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+					Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 				endif
 			endif
 			; Clear the pending pickup data
@@ -1187,7 +1188,11 @@ function ShowDebugNotification(String text) global
 
 	Utility.WaitMenuMode(0.05)
 
-	Debug.Notification(text)
+	if StringUtil.Substring(text, 0, 6) == "[CHIM]"
+		Debug.Notification(text)
+	else
+		Debug.Notification("[CHIM] "+text)
+	endif
 endFunction
 
 function ShowTopLeftNotification(String text) global
@@ -2246,7 +2251,7 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 				Debug.Trace("[CHIM] [SPAWN_ITEM] NO location, checking if reference is a ObjectReference for "+itemname);
 				ObjectReference genericRef = Game.GetFormEx(locationMarker) as ObjectReference
 				if (genericRef)
-					Debug.Trace("[CHIM] [SPAWN_ITEM] Reference is a ObjectReference "+itemname+", ref: 0x"+DecToHex(genericRef.GetFormId()));
+					Debug.Trace("[CHIM] [SPAWN_ITEM] Reference is a ObjectReference (ref)"+itemname+", ref: 0x"+DecToHex(genericRef.GetFormId()));
 					ref = genericRef
 				else
 					Debug.Trace("[CHIM] [SPAWN_ITEM] Reference is NOT a ObjectReference "+DecToHex(locationMarker));
@@ -2315,12 +2320,25 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 			finalItem.SetDisplayName(itemname,true)
 			finalItem.SetName(itemname)
 			
-			;if (finalItem.Is3DLoaded())
-				float deltaX=Utility.RandomFloat(-1, 1)
-				float deltaY=Utility.RandomFloat(-1, 1)
-				float deltaZ=Utility.RandomFloat(1,1)*-1
-				finalItem.MoveTo(ref, 0,0,deltaZ)
-				finalItem.SetAngle(0,-180,0)
+			
+			float deltaX=Utility.RandomFloat(-1, 1)
+			float deltaY=Utility.RandomFloat(-1, 1)
+			float deltaZ=Utility.RandomFloat(1,1)*-1
+			finalItem.MoveTo(ref, 0,0,deltaZ)
+			finalItem.SetAngle(0,-180,0)
+			
+			;if (finalItem.Is3DLoaded())			
+				if (finalItem.GetDistance(Game.GetPlayer())< 4096)
+					; Spawnning on a close location, lets find a container
+					Debug.Trace("[CHIM] [SPAWN_ITEM] Spawning on NEARBY location "+DecToHex(ref.GetFormId()));
+					ObjectReference[] candidates=PO3_SKSEFunctions.FindAllReferencesOfFormType(finalItem,28,512)
+					if (candidates.length>0)
+						Debug.Trace("[CHIM] [SPAWN_ITEM] Spawning on NEARBY location->container "+DecToHex(candidates[0].GetFormId()));
+						candidates[0].AddItem(finalItem,1,true)
+					endif
+				
+				endif
+				
 			;Endif
 		
 		endif;
@@ -2757,7 +2775,7 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 		
 	else
 		source.RemoveItem(akItemToRemove, amount, false, target)
-		Debug.Notification(source.GetDisplayName()+ " gives "+amount+" "+realName+" to "+target.getDisplayName());
+		Debug.Notification("[CHIM] "+source.GetDisplayName()+ " gave "+amount+" "+realName+" to "+target.getDisplayName()+".");
 		;TESCOntainerEvent will take care of the transaction
 	endif
 	Debug.Trace("MoveInventoryItem end");
@@ -2916,9 +2934,9 @@ Function AddBounty(Actor player, Actor guard, Faction crimeFaction, int amount, 
 	endif
 
 	if (holdName != "")
-		Debug.Notification(amount+" gold added to bounty in "+holdName+".")
+		Debug.Notification("[CHIM] Added "+amount+" gold to bounty in "+holdName+".")
 	else
-		Debug.Notification(amount+" gold added to bounty.")
+		Debug.Notification("[CHIM] Added "+amount+" gold to bounty.")
 	endif
 
 	if (updatedBounty <= previousBounty)
@@ -3215,7 +3233,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Utility.Wait(0.5)
 		
 		; Activate the item to pick it up
-		npc.Activate(itemRef)
+		npc.Additem(itemRef)
 		
 		; Wait a moment for the pickup to process
 		Utility.Wait(0.5)
@@ -3232,13 +3250,38 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 		Debug.TraceUser("ChimHTTPSender", logMessage)
 		
-		Debug.Notification(npc.GetDisplayName()+" picked up "+itemName)
+		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 	else
 		; Too far - store details and initiate movement
-		StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
-		
+		;StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
 		; Make the NPC walk to the item (intent=4 for pickup)
-		MoveToTarget(npc, itemRef, 4)
+		;MoveToTarget(npc, itemRef, 4)
+		
+		npc.PathToReference(itemRef, 1);Move it next to it
+
+		Debug.SendAnimationEvent(npc, "IdlePickup")
+		Utility.Wait(0.5)
+		
+		; Activate the item to pick it up
+		npc.Additem(itemRef)
+		
+		; Wait a moment for the pickup to process
+		Utility.Wait(0.5)
+		
+		; Refresh the NPC's inventory so they know what they picked up
+		Debug.TraceUser("ChimHTTPSender", "AIAgentRefreshInventory|"+npc.GetFormID())
+		
+		; Notify server of the pickup
+		int currentTime
+		currentTime = Utility.GetCurrentRealTime() as int
+		int gameTime
+		gameTime = Utility.GetCurrentGameTime() as int
+		string logMessage
+		logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
+		Debug.TraceUser("ChimHTTPSender", logMessage)
+		
+		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
+		
 	endif
 EndFunction
 

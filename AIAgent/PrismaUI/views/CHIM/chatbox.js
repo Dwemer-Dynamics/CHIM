@@ -21,8 +21,9 @@
     const currentModelElement = document.getElementById('chatbox-current-model');
     const modelSelectElement = document.getElementById('chatbox-model-select');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
-    const focusPositionSelect = document.getElementById('chatbox-position-select');
-    const deleteEventButtons = document.querySelectorAll('.focus-btn-delete-events');
+    const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
+    const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
+    const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
 
     // State
     let currentTab = 'chat';
@@ -39,8 +40,9 @@
     let currentTargetFormId = 0;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
-    let pendingDeleteConfirmButton = null;
+    let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
+    const targetRowsByKey = new Map();
     
     // Server URL
     const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
@@ -77,13 +79,14 @@
     /**
      * Push a new chat message (called from C++ via Invoke)
      */
-    window.pushChatMessage = function(speaker, text, timestamp, type) {
+    window.pushChatMessage = function(speaker, text, timestamp, type, source) {
         if (!speaker || !text) return;
         type = type || 'npc';
+        source = source || 'llm';
         timestamp = timestamp || getCurrentTime();
 
         var messageDiv = document.createElement('div');
-        messageDiv.className = 'message ' + type;
+        messageDiv.className = 'message ' + type + (source === 'subtitle' ? ' non-llm' : '');
 
         var headerDiv = document.createElement('div');
         headerDiv.className = 'message-header';
@@ -153,6 +156,101 @@
         return div.innerHTML;
     }
 
+    function setHtmlIfChanged(element, html) {
+        if (!element || element.__chimLastHtml === html) return false;
+        element.innerHTML = html;
+        element.__chimLastHtml = html;
+        return true;
+    }
+
+    function setTextIfChanged(element, text) {
+        if (!element || element.__chimLastText === text) return false;
+        element.textContent = text;
+        element.__chimLastText = text;
+        return true;
+    }
+
+    function setClassNameIfChanged(element, className) {
+        if (!element || element.className === className) return false;
+        element.className = className;
+        return true;
+    }
+
+    function setDatasetValue(element, key, value) {
+        if (!element) return;
+        if (value === null || value === undefined || value === false) {
+            delete element.dataset[key];
+            return;
+        }
+
+        const text = String(value);
+        if (element.dataset[key] !== text) {
+            element.dataset[key] = text;
+        }
+    }
+
+    function makeTargetRow(isEmpty) {
+        const row = document.createElement(isEmpty ? 'div' : 'button');
+        if (isEmpty) {
+            row.className = 'chatbox-target-empty';
+            return row;
+        }
+
+        row.type = 'button';
+        row.className = 'chatbox-target-item';
+        row.__chimMetaElement = document.createElement('span');
+        row.__chimMetaElement.className = 'chatbox-target-meta';
+        row.__chimNameElement = document.createElement('span');
+        row.__chimNameElement.className = 'chatbox-target-name';
+        row.__chimDistanceElement = document.createElement('span');
+        row.__chimDistanceElement.className = 'chatbox-target-distance';
+        row.__chimMetaElement.appendChild(row.__chimNameElement);
+        row.appendChild(row.__chimMetaElement);
+        row.appendChild(row.__chimDistanceElement);
+        return row;
+    }
+
+    function updateTargetRow(row, spec) {
+        if (spec.empty) {
+            setClassNameIfChanged(row, 'chatbox-target-empty');
+            setTextIfChanged(row, spec.message);
+            return;
+        }
+
+        setClassNameIfChanged(row, spec.className);
+        setTextIfChanged(row.__chimNameElement, spec.name);
+        setTextIfChanged(row.__chimDistanceElement, spec.distance);
+        setDatasetValue(row, 'auto', spec.auto ? 'true' : null);
+        setDatasetValue(row, 'everyone', spec.everyone ? 'true' : null);
+        setDatasetValue(row, 'formId', spec.formId);
+        setDatasetValue(row, 'targetName', spec.targetName);
+    }
+
+    function syncTargetRows(specs) {
+        if (!targetsListElement) return;
+        const seen = new Set();
+        specs.forEach(function(spec, index) {
+            seen.add(spec.key);
+            let row = targetRowsByKey.get(spec.key);
+            if (!row) {
+                row = makeTargetRow(!!spec.empty);
+                targetRowsByKey.set(spec.key, row);
+            }
+
+            updateTargetRow(row, spec);
+            if (targetsListElement.children[index] !== row) {
+                targetsListElement.insertBefore(row, targetsListElement.children[index] || null);
+            }
+        });
+
+        targetRowsByKey.forEach(function(row, key) {
+            if (!seen.has(key)) {
+                row.remove();
+                targetRowsByKey.delete(key);
+            }
+        });
+    }
+
     function updateFocusIndicator(enabled) {
         if (!focusToggleButton) return;
         focusToggleButton.classList.remove('on', 'off');
@@ -160,6 +258,14 @@
         focusToggleButton.textContent = enabled ? 'ON' : 'OFF';
         focusToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
         focusToggleButton.title = enabled ? 'Disable Focus Chat' : 'Enable Focus Chat';
+    }
+
+    function updateFocusPositionButtons() {
+        focusPositionButtons.forEach(function(button) {
+            const isActive = button.dataset.position === currentFocusPosition;
+            button.classList.toggle('active', isActive);
+            button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
     }
 
     function normalizeFocusPosition(position) {
@@ -196,40 +302,60 @@
             focusModal.classList.remove(className);
         });
         focusModal.classList.add('focus-position-' + currentFocusPosition);
-        if (focusPositionSelect) {
-            focusPositionSelect.value = currentFocusPosition;
+        updateFocusPositionButtons();
+    }
+
+    function setDeleteEventControlsBusy(isBusy) {
+        if (deleteEventSelect) {
+            deleteEventSelect.disabled = !!isBusy;
+        }
+        if (deleteEventConfirmButton) {
+            deleteEventConfirmButton.disabled = !!isBusy;
         }
     }
 
-    function setDeleteEventButtonsBusy(isBusy) {
-        deleteEventButtons.forEach(function(button) {
-            button.disabled = !!isBusy;
-        });
-    }
-
     function clearPendingDeleteConfirmation() {
+        pendingDeleteCount = 0;
         if (pendingDeleteConfirmTimeoutId) {
             window.clearTimeout(pendingDeleteConfirmTimeoutId);
             pendingDeleteConfirmTimeoutId = null;
         }
 
-        if (pendingDeleteConfirmButton) {
-            pendingDeleteConfirmButton.textContent = pendingDeleteConfirmButton.dataset.defaultLabel || pendingDeleteConfirmButton.textContent;
-            pendingDeleteConfirmButton.removeAttribute('data-confirm-armed');
-            pendingDeleteConfirmButton = null;
+        if (deleteEventConfirmButton) {
+            deleteEventConfirmButton.textContent = 'Delete';
         }
     }
 
-    function armDeleteConfirmation(button, deleteCount) {
+    function armDeleteConfirmation(deleteCount) {
         clearPendingDeleteConfirmation();
-        button.dataset.defaultLabel = button.dataset.defaultLabel || button.textContent;
-        button.textContent = `Confirm Delete ${deleteCount}`;
-        button.setAttribute('data-confirm-armed', 'true');
-        pendingDeleteConfirmButton = button;
-        pushChatboxSystemMessage(`Click the button again within 5 seconds to delete the last ${deleteCount} visible events.`);
+        pendingDeleteCount = deleteCount;
+        if (deleteEventConfirmButton) {
+            deleteEventConfirmButton.textContent = 'Confirm Delete';
+        }
         pendingDeleteConfirmTimeoutId = window.setTimeout(function() {
             clearPendingDeleteConfirmation();
         }, 5000);
+    }
+
+    function resetTargetSelectionForModeChange() {
+        if (!targetsListElement) {
+            sendControlCommand('target_override_clear');
+            return;
+        }
+
+        const hasAutoTarget = !!targetsListElement.querySelector('.chatbox-target-item[data-auto="true"]');
+        if (hasAutoTarget) {
+            sendControlCommand('target_override_clear');
+            return;
+        }
+
+        const hasEveryoneTarget = !!targetsListElement.querySelector('.chatbox-target-item[data-everyone="true"]');
+        if (hasEveryoneTarget) {
+            sendControlCommand('target_override_everyone');
+            return;
+        }
+
+        sendControlCommand('target_override_clear');
     }
 
     /**
@@ -338,7 +464,7 @@
         const deleteCount = Number(count || 0);
         if (![20, 50, 100].includes(deleteCount)) return;
 
-        setDeleteEventButtonsBusy(true);
+        setDeleteEventControlsBusy(true);
         try {
             const formData = new FormData();
             formData.append('count', String(deleteCount));
@@ -368,24 +494,10 @@
         } catch (_err) {
             pushChatboxSystemMessage(`Failed to delete the last ${deleteCount} events.`);
         } finally {
-            setDeleteEventButtonsBusy(false);
+            setDeleteEventControlsBusy(false);
             clearPendingDeleteConfirmation();
         }
     };
-
-    deleteEventButtons.forEach(function(button) {
-        button.addEventListener('click', function() {
-            const deleteCount = Number(button.dataset.deleteCount || 0);
-            if (![20, 50, 100].includes(deleteCount)) return;
-
-            if (pendingDeleteConfirmButton === button && button.getAttribute('data-confirm-armed') === 'true') {
-                window.deleteRecentEvents(deleteCount);
-                return;
-            }
-
-            armDeleteConfirmation(button, deleteCount);
-        });
-    });
 
     if (focusInput) {
         focusInput.addEventListener('keydown', function(e) {
@@ -428,24 +540,26 @@
         currentTargetName = name || '';
         const suffix = currentTargetOverrideActive ? '<span class="target-distance">(Override)</span>' : '';
         if (currentTargetOverrideMode === 'everyone') {
-            currentTargetElement.innerHTML = `
+            setHtmlIfChanged(currentTargetElement, `
                 <span class="target-name">Everyone</span>
                 <span class="target-distance">(Broadcast)</span>
                 ${suffix}
-            `;
+            `);
         } else if (name && name !== '') {
-            currentTargetElement.innerHTML = `
+            setHtmlIfChanged(currentTargetElement, `
                 <span class="target-name">${escapeHtml(name)}</span>
                 <span class="target-distance">(${distance.toFixed(1)}m)</span>
                 ${suffix}
-            `;
+            `);
         } else {
-            currentTargetElement.innerHTML = '<span class="target-name no-target">No target</span>';
+            setHtmlIfChanged(currentTargetElement, '<span class="target-name no-target">No target</span>');
         }
     };
 
     window.updateChatboxTargets = function(payloadJson) {
-        if (!targetsListElement) return;
+        // Keep spatial targets live while focused so the quick chat UI reflects
+        // the current audience snapshot. Scroll position is preserved below to
+        // avoid jumpiness while the player is selecting a target.
 
         let payload = null;
         try {
@@ -459,50 +573,53 @@
         currentTargetOverrideMode = payload.override_mode || 'auto';
         currentTargetFormId = Number(payload.active_form_id || 0);
         currentTargetName = payload.active_name || '';
+        const previousScrollTop = targetsListElement ? targetsListElement.scrollTop : 0;
 
-        const parts = [];
+        const specs = [];
         if (payload.show_auto) {
-            parts.push(`
-                <button class="chatbox-target-item auto-target ${payload.auto_active ? 'active' : ''}" type="button" data-auto="true">
-                    <span class="chatbox-target-meta">
-                        <span class="chatbox-target-name">Auto</span>
-                    </span>
-                    <span class="chatbox-target-distance">Mode</span>
-                </button>
-            `);
+            specs.push({
+                key: 'mode:auto',
+                className: `chatbox-target-item auto-target ${payload.auto_active ? 'active' : ''}`,
+                name: 'Auto',
+                distance: 'Mode',
+                auto: true
+            });
         }
         if (payload.show_everyone) {
-            parts.push(`
-                <button class="chatbox-target-item everyone-target ${payload.everyone_active ? 'active' : ''}" type="button" data-everyone="true">
-                    <span class="chatbox-target-meta">
-                        <span class="chatbox-target-name">Everyone</span>
-                    </span>
-                    <span class="chatbox-target-distance">Broadcast</span>
-                </button>
-            `);
+            specs.push({
+                key: 'mode:everyone',
+                className: `chatbox-target-item everyone-target ${payload.everyone_active ? 'active' : ''}`,
+                name: 'Everyone',
+                distance: 'Broadcast',
+                everyone: true
+            });
         }
 
-        targets.forEach(function(target) {
+        const visibleTargets = targets.filter(function(target) {
+            if (target.override) return true;
+            return target.targetable !== false;
+        });
+        visibleTargets.forEach(function(target) {
             const formId = Number(target.form_id || 0);
             const itemClasses = ['chatbox-target-item'];
             if (target.active) itemClasses.push('active');
             if (target.override) itemClasses.push('override');
-            const distanceLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
-            parts.push(`
-                <button class="${itemClasses.join(' ')}" type="button" data-form-id="${formId}" data-target-name="${escapeHtml(target.name || '')}">
-                    <span class="chatbox-target-meta">
-                        <span class="chatbox-target-name">${escapeHtml(target.name || 'Unknown Target')}</span>
-                    </span>
-                    <span class="chatbox-target-distance">${escapeHtml(distanceLabel)}</span>
-                </button>
-            `);
+            const statusLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
+            const name = target.name || 'Unknown Target';
+            specs.push({
+                key: formId ? `form:${formId}` : `name:${name}`,
+                className: itemClasses.join(' '),
+                name,
+                distance: statusLabel,
+                formId,
+                targetName: target.name || ''
+            });
         });
 
-        if (parts.length === 0) {
-            parts.push(`<div class="chatbox-target-empty">${escapeHtml(payload.empty_message || 'No spatially available targets right now.')}</div>`);
+        if (targetsListElement) {
+            syncTargetRows(specs);
+            targetsListElement.scrollTop = previousScrollTop;
         }
-
-        targetsListElement.innerHTML = parts.join('');
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
@@ -561,6 +678,7 @@
         modeSelectElement.addEventListener('change', function() {
             const action = modeSelectElement.value;
             if (!action || action === currentModeAction) return;
+            resetTargetSelectionForModeChange();
             sendControlCommand(action);
         });
     }
@@ -579,10 +697,30 @@
         });
     }
 
-    if (focusPositionSelect) {
-        focusPositionSelect.addEventListener('change', function() {
-            applyFocusPosition(focusPositionSelect.value);
+    focusPositionButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            const nextPosition = button.dataset.position || 'center';
+            applyFocusPosition(nextPosition);
             saveFocusPosition(currentFocusPosition);
+        });
+    });
+
+    if (deleteEventConfirmButton) {
+        deleteEventConfirmButton.addEventListener('click', function() {
+            const deleteCount = Number(deleteEventSelect ? deleteEventSelect.value : 0);
+            if (![20, 50, 100].includes(deleteCount)) return;
+            if (pendingDeleteCount === deleteCount) {
+                window.deleteRecentEvents(deleteCount);
+                return;
+            }
+
+            armDeleteConfirmation(deleteCount);
+        });
+    }
+
+    if (deleteEventSelect) {
+        deleteEventSelect.addEventListener('change', function() {
+            clearPendingDeleteConfirmation();
         });
     }
 
@@ -603,7 +741,18 @@
             const formId = targetButton.dataset.formId || '0';
             const targetName = targetButton.dataset.targetName || '';
             if (!targetName) return;
+            if (targetButton.classList.contains('override')) {
+                sendControlCommand('target_override_clear');
+                // Optimistic: clear local highlight before the next bridge refresh lands
+                targetsListElement.querySelectorAll('.chatbox-target-item.override')
+                    .forEach(function(el) { el.classList.remove('override'); });
+                return;
+            }
             sendControlCommand(`target_override|${formId}|${targetName}`);
+            // Optimistic: move local highlight immediately before the bridge refresh lands
+            targetsListElement.querySelectorAll('.chatbox-target-item.override')
+                .forEach(function(el) { el.classList.remove('override'); });
+            targetButton.classList.add('override');
         });
     }
 

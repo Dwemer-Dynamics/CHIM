@@ -29,7 +29,7 @@ body {
     box-shadow: 
         0 4px 20px rgba(0, 0, 0, 0.7),
         0 0 15px rgba(242, 124, 17, 0.15);
-    backdrop-filter: blur(10px);
+    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
     display: flex;
     flex-direction: column;
     animation: slideIn 0.3s ease;
@@ -461,6 +461,15 @@ body {
     color: #ec7063;
 }
 
+.message.non-llm {
+    opacity: 0.82;
+    background: rgba(28, 28, 34, 0.32);
+}
+
+.message.non-llm .message-text {
+    color: #c4c4c4;
+}
+
 /* System Messages */
 .message-system {
     display: block;
@@ -634,11 +643,13 @@ body {
     gap: 8px;
     padding: 12px;
     min-height: 0;
-    overflow-y: auto;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    scrollbar-width: auto;
 }
 
 .chatbox-targets-list::-webkit-scrollbar {
-    width: 6px;
+    width: 12px;
 }
 
 .chatbox-targets-list::-webkit-scrollbar-track {
@@ -647,7 +658,7 @@ body {
 
 .chatbox-targets-list::-webkit-scrollbar-thumb {
     background: rgba(242, 124, 17, 0.35);
-    border-radius: 3px;
+    border-radius: 6px;
 }
 
 .chatbox-targets-list::-webkit-scrollbar-thumb:hover {
@@ -682,6 +693,14 @@ body {
 
 .chatbox-target-item.override {
     background: rgba(242, 124, 17, 0.16);
+}
+
+.chatbox-target-item.blocked {
+    opacity: 0.62;
+}
+
+.chatbox-target-item.blocked .chatbox-target-name {
+    color: #b9b9c4;
 }
 
 .chatbox-target-item.auto-target {
@@ -770,23 +789,31 @@ body {
     flex-direction: column;
     gap: 4px;
     margin-right: auto;
-    min-width: 140px;
+    min-width: 116px;
 }
 
-.focus-chatbox-event-buttons {
+.focus-chatbox-position-buttons {
     display: flex;
     gap: 6px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    align-items: center;
 }
 
-.focus-btn-delete-events {
-    min-width: 88px;
+.focus-chatbox-position-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 6px;
+    border: 1px solid rgba(242, 124, 17, 0.32);
+    background: rgba(30, 30, 40, 0.9);
+    color: #ddd;
+    font-size: 0.95em;
+    cursor: pointer;
+    transition: all 0.15s ease;
 }
 
-.focus-btn-delete-events[disabled] {
-    opacity: 0.55;
-    cursor: wait;
+.focus-chatbox-position-btn:hover {
+    background: rgba(242, 124, 17, 0.22);
+    border-color: rgba(242, 124, 17, 0.55);
 }
 
 .focus-chatbox-position-label {
@@ -796,8 +823,41 @@ body {
     letter-spacing: 0.45px;
 }
 
-.focus-chatbox-position-select {
-    min-width: 140px;
+.focus-chatbox-position-btn.active {
+    background: rgba(242, 124, 17, 0.34);
+    color: #fff;
+    border-color: rgba(242, 124, 17, 0.72);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.focus-chatbox-event-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+}
+
+.focus-chatbox-delete-label {
+    font-size: 0.72em;
+    color: #a7a7b0;
+    text-transform: uppercase;
+    letter-spacing: 0.45px;
+}
+
+.focus-chatbox-delete-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.focus-chatbox-delete-select {
+    min-width: 116px;
+}
+
+#chatbox-delete-events-confirm[disabled],
+.focus-chatbox-position-btn[disabled] {
+    opacity: 0.55;
+    cursor: wait;
 }
 
 @media (max-width: 920px) {
@@ -821,13 +881,14 @@ body {
         margin-right: 0;
     }
 
-    .focus-chatbox-position-select {
+    .focus-chatbox-position-buttons,
+    .focus-chatbox-delete-controls {
         width: 100%;
     }
 
     .focus-chatbox-actions-row-primary,
     .focus-chatbox-actions-row-secondary,
-    .focus-chatbox-event-buttons {
+    .focus-chatbox-event-controls {
         width: 100%;
     }
 }
@@ -848,8 +909,14 @@ body {
 }
 
 .focus-btn-primary {
-    background: rgba(242, 124, 17, 0.35);
+    border-color: rgba(46, 204, 113, 0.5);
+    background: rgba(46, 204, 113, 0.3);
     color: #fff;
+}
+
+.focus-btn-primary:hover {
+    background: rgba(46, 204, 113, 0.46);
+    border-color: rgba(46, 204, 113, 0.72);
 }
 
 .focus-btn-danger {

@@ -1,5 +1,6 @@
 #include "Papyrus.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // Windows audio includes
 #include <windows.h>
@@ -25,6 +27,7 @@
 #include "Misc.h"
 #include "SpeakManager.h"
 #include "SpatialAwareness.h"
+#include "SpatialSnapshotManager.h"
 #include "SPGResponse.h"
 #include "ThreadPool.h"
 #include "Voicerec.h"
@@ -1117,13 +1120,15 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     if (!already->isManuallyAdded()) {
                         // Upgrade to manually-activated instead of removing
                         already->setManuallyAdded(true);
-                        std::string s(targetActor->GetDisplayFullName());
-                        s.append(" is now manually activated");
+                        std::string s("[CHIM] ");
+                        s.append(targetActor->GetDisplayFullName());
+                        s.append(" is now active.");
                         if (warn) RE::DebugNotification(s.c_str());
                     } else {
                         // Already manually-activated, remove as before
-                        std::string s(targetActor->GetDisplayFullName());
-                        s.append(" is already driven by AI, removing");
+                        std::string s("[CHIM] ");
+                        s.append(targetActor->GetDisplayFullName());
+                        s.append(" was already active. Removing from CHIM.");
                         targetActor->GetActorBase()->voiceType = already->getOriginalVoice();
                         aiam.deleteAgent(already);
                         if (warn) RE::DebugNotification(s.c_str());
@@ -1399,8 +1404,9 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     logger::info("{} IS NOW DRIVEN BY AI. Total AI Agents {}", targetActor->GetDisplayFullName(),
                                  aiam.getAgents().size());
 
-                    std::string s(targetActor->GetDisplayFullName());
-                    s.append(" is now AI assisted");
+                    std::string s("[CHIM] ");
+                    s.append(targetActor->GetDisplayFullName());
+                    s.append(" is now active.");
                     if (warn) RE::DebugNotification(s.c_str());
 
                     // commandAnimation("IdleDrunk", agent->getActor());
@@ -1435,7 +1441,7 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     // Check if NPC is on conversation cooldown
                     if (agent->hasConversationCooldown()) {
                         logger::info("{} is on conversation cooldown, showing message", agent->getActorName());
-                        std::string cooldownMsg = std::format("{} does not want to talk right now", agent->getActorName());
+                        std::string cooldownMsg = std::format("[CHIM] {} does not want to talk right now.", agent->getActorName());
                         RE::DebugNotification(cooldownMsg.c_str());
                         return 0;
                     }
@@ -1501,7 +1507,7 @@ int sendMessageReal(std::string msg, std::string type) {
     // SpeakManager::getInstance().setProcessing(false);
 
     if (!Conf::getInstance().isOk()) {
-        RE::DebugNotification("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         return -1;
     }
 
@@ -1759,58 +1765,155 @@ void addAllNPC() {
     std::lock_guard<std::mutex> lock(mtx);  // Lock the function, unlocks at the end
 
     auto player = RE::PlayerCharacter::GetSingleton();
-    if (!player) return;
+    if (!player) {
+        return;
+    }
 
-    auto cell = RE::PlayerCharacter::GetSingleton()->GetParentCell();
-    if (!cell) return;
+    auto cell = player->GetParentCell();
+    if (!cell) {
+        return;
+    }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
+    const bool playerInterior = cell->IsInteriorCell();
+    const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
+    std::unordered_set<RE::FormID> queuedFormIds;
 
     // Actors lurking around
     if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
         for (auto& targetHandle : processLists->highActorHandles) {
             if (auto target = targetHandle.get(); target && target->GetActorRuntimeData().currentProcess) {
-                std::string actorLabel(target->GetDisplayFullName());
-                if (!actorLabel.empty()) {
-                    auto actor = targetHandle.get().get();
-
-                    auto already = aiam.getAgentByName(actorLabel);
-                    if (already) continue;
-
-                    if (actor->IsDead())
-                        continue;
-                    else if (!actor->Is3DLoaded())
-                        continue;
-                    else if (!actor->GetRace()->AllowsPCDialogue() && AutoAddAllRaces==false) {
-                        // logger::info("NPC {} skipped as cannot talk to player", actorLabel);
-                        continue;
-                    } else if (actor->IsHostileToActor(player) && AutoAddHostile==false)
-                        continue;
-                    else if (actor->GetRace()->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces==false)
-                        continue;
-
-                    
-
-                    float distance = player->GetPosition().GetDistance(actor->GetPosition());
-                    float maxDistance = DISTANCE_ACTIVATING_NPC_OUT;
-                    if (player->GetParentCell()->IsInteriorCell()) maxDistance = DISTANCE_ACTIVATING_NPC_IN;
-
-                    if (distance > maxDistance) continue;
-                    logger::info("Auto-adding {}", actorLabel); 
-
-                    
-
-                    ThreadPool::getInstance().enqueue(
-                        "AddAllNPC", [actor]() { setDrivenByAIReal(actor->GetHandle(), false, false, false, false); },
-                        actorLabel);
-                    
-                    // Add NPC
-
-                    // return RE::BSContainer::ForEachResult::kStop;
+                auto actor = target.get();
+                if (!actor || actor->GetFormID() == player->GetFormID()) {
+                    continue;
                 }
+
+                std::string actorLabel(actor->GetDisplayFullName());
+                if (actorLabel.empty()) {
+                    continue;
+                }
+
+                const auto actorFormId = actor->GetFormID();
+                if ((actorFormId != 0 && (aiam.getAgentByFormId(actorFormId) ||
+                                           !queuedFormIds.insert(actorFormId).second)) ||
+                    aiam.getAgentByName(actorLabel)) {
+                    continue;
+                }
+
+                if (actor->IsDead()) {
+                    continue;
+                } else if (!actor->Is3DLoaded()) {
+                    continue;
+                }
+
+                auto* actorCell = actor->GetParentCell();
+                if (!actorCell || !actorCell->IsAttached()) {
+                    continue;
+                }
+                if (playerInterior != actorCell->IsInteriorCell()) {
+                    continue;
+                }
+                if (playerInterior && actorCell != cell) {
+                    continue;
+                }
+
+                auto* race = actor->GetRace();
+                if (!race) {
+                    continue;
+                }
+                if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) {
+                    continue;
+                } else if (actor->IsHostileToActor(player) && AutoAddHostile == false) {
+                    continue;
+                } else if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) {
+                    continue;
+                }
+
+                float distance = player->GetPosition().GetDistance(actor->GetPosition());
+                if (!std::isfinite(distance) || distance > maxDistance) {
+                    continue;
+                }
+                logger::info("Auto-adding {}", actorLabel);
+
+                auto actorHandle = actor->GetHandle();
+                ThreadPool::getInstance().enqueue(
+                    "AddAllNPC", [actorHandle]() { setDrivenByAIReal(actorHandle, false, false, false, false); },
+                    actorLabel);
             }
         }
     }
+}
+
+bool promoteCrosshairTargetToAI() {
+    static std::mutex mtx;
+    static RE::FormID lastPromoteFormId = 0;
+    static auto lastPromoteAttempt = std::chrono::steady_clock::time_point{};
+    constexpr auto kCrosshairPromoteCooldown = std::chrono::milliseconds(750);
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return false;
+
+    auto* cell = player->GetParentCell();
+    if (!cell) return false;
+
+    auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
+    if (!crosshairPickData || !crosshairPickData->target) return false;
+
+    auto targetRef = crosshairPickData->target.get();
+    if (!targetRef || targetRef->GetFormType() != RE::FormType::ActorCharacter) return false;
+
+    auto* actor = targetRef->As<RE::Actor>();
+    if (!actor || actor->IsPlayer() || actor->IsDead() || !actor->Is3DLoaded()) return false;
+
+    auto* actorCell = actor->GetParentCell();
+    if (!actorCell || !actorCell->IsAttached()) return false;
+
+    const bool playerInterior = cell->IsInteriorCell();
+    if (playerInterior != actorCell->IsInteriorCell()) return false;
+    if (playerInterior && actorCell != cell) return false;
+
+    std::string actorLabel(actor->GetDisplayFullName());
+    if (actorLabel.empty()) return false;
+
+    auto& aiam = AIAgentManager::getInstance();
+    if (aiam.getAgentByName(actorLabel)) return false;
+
+    const RE::FormID actorFormId = actor->GetFormID();
+    for (const auto& agent : aiam.getAgents()) {
+        if (agent && agent->GetFormId() == actorFormId) {
+            return false;
+        }
+    }
+
+    auto* race = actor->GetRace();
+    if (!race) return false;
+    if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) return false;
+    if (actor->IsHostileToActor(player) && AutoAddHostile == false) return false;
+    if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) return false;
+
+    const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
+    const float distance = player->GetPosition().GetDistance(actor->GetPosition());
+    if (!std::isfinite(distance) || distance > maxDistance) return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (actorFormId == lastPromoteFormId && lastPromoteAttempt.time_since_epoch().count() != 0 &&
+        now - lastPromoteAttempt < kCrosshairPromoteCooldown) {
+        return true;
+    }
+
+    lastPromoteFormId = actorFormId;
+    lastPromoteAttempt = now;
+
+    logger::info("[AUTOADD] Fast-promoting crosshair NPC {} dist={:.0f}", actorLabel, distance);
+    auto actorHandle = actor->GetHandle();
+    ThreadPool::getInstance().enqueue(
+        "AddAllNPC",
+        [actorHandle]() { setDrivenByAIReal(actorHandle, false, false, false, false); },
+        actorLabel);
+
+    return true;
 }
 
 int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::string s_value) {
@@ -1947,6 +2050,14 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         if (f_Value > 0) SpatialAwareness::SetExteriorMaxDistance(f_Value);
 
         logger::info("Setting _spatial_hearing_outside to {} ", f_Value);
+
+    } else if (code == "_auto_hearing_radius_m" || code == "_player_auto_include_radius_m") {
+        if (f_Value > 0) {
+            SpatialAwareness::SetAutoHearingRadiusMeters(f_Value);
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        }
+
+        logger::info("Setting _auto_hearing_radius_m to {} ", f_Value);
 
     } else if (code == "_playback_dropoff_inside") {
         SpeakManager::getInstance().setPlaybackDropoffInside(f_Value);
@@ -2330,13 +2441,18 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     SpeakManager::getInstance().setLastUsedTime();  // To avoid trigger bored event from now
     SpeakManager::getInstance().deleteQueue();
     SPGResponse::getInstance().clearAllQueues();  // To avoid trigger bored event from now
+    if (SpeakManager::getInstance().getProcessing()) {
+        SpeakManager::getInstance().abortPlay(true);
+        SpeakManager::getInstance().setProcessing(false);
+    }
 
     // New. Must evaluate impact. Anyway, the queue was being deleted
-    logger::info("[RECORDSOUND] Cancelling all ongoing HTTP stream messages before sendMessage");
     ThreadPool::getInstance().cancelTasksByType("HTTPStream");
     ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
     AudioManagerController::GetInstance().Stop();
 
+    // Disabled: froze game thread on STT press; makeSTT() does the same logging post-STT off-thread.
+    /*
     auto player = RE::PlayerCharacter::GetSingleton();
     if (player) {
         char timeDateString[200];
@@ -2352,6 +2468,7 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "beings in range:" + result + ")"));
     }
+    */
 
     VoiceRecordControl::getInstance().setRecording(true);
 
@@ -2542,6 +2659,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
 
     } else if (code == "_spatial_hearing_outside") {
         result = static_cast<int>(SpatialAwareness::GetSettings().exteriorMaxDistance);
+
+    } else if (code == "_auto_hearing_radius_m" || code == "_player_auto_include_radius_m") {
+        result = static_cast<int>(std::lround(SpatialAwareness::GetAutoHearingRadiusMeters()));
 
     } else if (code == "_playback_dropoff_inside") {
         result = static_cast<int>(SpeakManager::getInstance().getPlaybackDropoffInside());

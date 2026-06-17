@@ -14,6 +14,9 @@
 #include "json.hpp"
 #include "RE/Skyrim.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <mutex>
 
 
@@ -1456,8 +1459,8 @@ void parseRoleCommand(std::string rawCommand) {
             logger::info("Command has not enough parms {}", command);
         } else {
             std::string message(splitResult[0].c_str());
-            const bool addPrefix = !command.contains("RawDebugNotification");
-            if (addPrefix && message.find("[CHIM]") != 0 && message.find("Diary Entry") != 0) {
+            const bool addPrefix = true;
+            if (addPrefix && message.find("[CHIM]") != 0) {
                 message = std::format("[CHIM] {}", message);
             }
 
@@ -1468,7 +1471,7 @@ void parseRoleCommand(std::string rawCommand) {
             if (!dispatched) {
                 logger::warn("[DebugNotification] Failed to dispatch Papyrus notification helper, falling back to RE::DebugNotification");
                 auto fallbackMessage = splitResult[0];
-                if (addPrefix && fallbackMessage.find("[CHIM]") != 0 && fallbackMessage.find("Diary Entry") != 0) {
+                if (addPrefix && fallbackMessage.find("[CHIM]") != 0) {
                     fallbackMessage = std::format("[CHIM] {}", fallbackMessage);
                 }
                 RE::DebugNotification(fallbackMessage.c_str());
@@ -2046,6 +2049,98 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         /*
         HTTPLogger->critical("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                              "command@" + command + "@" + trim(parameter) + "@");*/
+
+    } else if (command.contains("MoveTo")) {
+        responsePop("command");
+
+        auto npc = agentPtr->getActor();
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!npc || !player) {
+            return;
+        }
+
+        float distance = npc->GetPosition().GetDistance(player->GetPosition());
+        if (distance > 2048) {
+            logger::info("{} is {} units away (too far)", npc->GetDisplayFullName(), distance);
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@" + command + "@" + trim(parameter) +
+                                             "@Error: actor is too far away"),
+                             npc);
+            return;
+        }
+
+        if (agentPtr.get()->isCommandBusy()) {
+            logger::info("[CHIM] Actor {} busy : {}", agentPtr.get()->getActorName(),
+                         agentPtr.get()->getCurrentCommand().c_str());
+            RE::DebugNotification(std::format("[CHIM] Actor {} busy : {}", agentPtr.get()->getActorName(),
+                                              agentPtr.get()->getCurrentCommand())
+                                      .c_str());
+            return;
+        }
+
+        std::string targetName = trim(parameter);
+        if (targetName.empty()) {
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@" + command + "@" + targetName + "@Error: missing target"),
+                             npc);
+            return;
+        }
+
+        auto playerActor = player->As<RE::Actor>();
+        auto normalizeActorName = [](std::string value) {
+            value = trim(value);
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return value;
+        };
+
+        const std::string normalizedTargetName = normalizeActorName(targetName);
+        bool targetIsPlayer = normalizedTargetName == "player";
+        if (!targetIsPlayer && playerActor) {
+            const std::string playerDisplayName = normalizeActorName(playerActor->GetDisplayFullName());
+            const std::string playerName = normalizeActorName(playerActor->GetName());
+            targetIsPlayer = (!playerDisplayName.empty() && normalizedTargetName == playerDisplayName) ||
+                             (!playerName.empty() && normalizedTargetName == playerName);
+        }
+
+        RE::TESObjectREFR* target = nullptr;
+        RE::Actor* targetAsActor = nullptr;
+        if (targetIsPlayer) {
+            target = playerActor;
+            targetAsActor = playerActor;
+        } else {
+            target = findActorInCell(targetName, npc->GetParentCell(), npc, 2048, false);
+            targetAsActor = target ? target->As<RE::Actor>() : nullptr;
+        }
+
+        if (!target || !targetAsActor) {
+            logger::info("[MoveTo] target {} not found", targetName);
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@" + command + "@" + targetName + "@Error: target not found"),
+                             npc);
+            return;
+        }
+
+        std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
+        if (resolvedTargetName.empty()) resolvedTargetName = targetName;
+
+        const std::string notificationText =
+            std::format("[CHIM] {} moves to {}", npc->GetDisplayFullName(), resolvedTargetName);
+        RE::DebugNotification(notificationText.c_str());
+
+        HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                     "command@" + command + "@" + resolvedTargetName + "@" +
+                                         npc->GetDisplayFullName() + " starts moving to " + resolvedTargetName),
+                         npc);
+
+        int intent = 0;
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+        auto args = RE::MakeFunctionArguments(std::move(npc), std::move(target), std::move(intent));
+        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "MoveToTarget",
+                                                                                   args, callback);
+
+        agentPtr.get()->setCurrentCommand("MoveTo");
 
     } else if (command.contains("TravelToRaw")) {
         // This used when server finds location on database, and sends formid
@@ -3812,7 +3907,7 @@ std::string InspectLocations(RE::TESObjectREFR* reference) {
 }
 
 std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange, std::string separator,
-                                float farAwayLimit) {
+                                 float farAwayLimit) {
     std::vector<std::string> results;
 
     // logger::info("InspectSurroundings: running");
@@ -3917,6 +4012,124 @@ std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, flo
     return buffer;
 }
 
+std::string InspectManagedAgents(RE::TESObjectREFR* reference, float visionRange, const std::string& separator,
+                                 float farAwayLimit, bool includeNarrator) {
+    struct ManagedAgentContext {
+        float distance = 0.0f;
+        std::string label;
+    };
+
+    std::vector<ManagedAgentContext> results;
+
+    RE::Actor* source = reference ? reference->As<RE::Actor>() : nullptr;
+    if (!source) {
+        source = RE::PlayerCharacter::GetSingleton();
+    }
+    if (!source) {
+        logger::error("InspectManagedAgents: source actor is null.");
+        return "";
+    }
+
+    auto* sourceCell = source->GetParentCell();
+    if (!sourceCell || !sourceCell->IsAttached()) {
+        logger::warn("InspectManagedAgents: source cell is unavailable or detached.");
+        return "";
+    }
+
+    const bool sourceInterior = sourceCell->IsInteriorCell();
+    const auto sourcePosition = source->GetPosition();
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent) {
+            continue;
+        }
+
+        if (agent->isNarrator() && !includeNarrator) {
+            continue;
+        }
+
+        auto* target = agent->getActor();
+        if (!target) {
+            target = agent->getActorByFormId();
+        }
+        if (!target || target->GetFormID() == source->GetFormID()) {
+            continue;
+        }
+
+        if (target->IsDeleted() || target->IsDisabled()) {
+            continue;
+        }
+
+        if (!target->GetActorRuntimeData().currentProcess) {
+            continue;
+        }
+
+        auto* targetCell = target->GetParentCell();
+        if (!targetCell || !targetCell->IsAttached()) {
+            continue;
+        }
+
+        const bool targetInterior = targetCell->IsInteriorCell();
+        if (sourceInterior != targetInterior) {
+            continue;
+        }
+        if (sourceInterior && targetCell != sourceCell) {
+            continue;
+        }
+
+        const float distance = sourcePosition.GetDistance(target->GetPosition());
+        if (!std::isfinite(distance) || distance >= visionRange) {
+            continue;
+        }
+
+        std::string actorLabel = agent->getActorName();
+        if (actorLabel.empty()) {
+            try {
+                actorLabel = target->GetDisplayFullName();
+            } catch (...) {
+                actorLabel.clear();
+            }
+        }
+        if (actorLabel.empty()) {
+            continue;
+        }
+
+        if (target->IsDead()) {
+            actorLabel += " (dead)";
+        } else if (target->IsHostileToActor(source)) {
+            actorLabel += " (hostile)";
+        } else if (target->GetCurrentScene()) {
+            actorLabel += " (busy)";
+        } else if (target->IsInCombat()) {
+            actorLabel += " (in combat)";
+        } else if (distance > farAwayLimit) {
+            actorLabel += " (far away)";
+        } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
+            actorLabel += " (restrained)";
+        }
+
+        results.push_back({distance, std::move(actorLabel)});
+    }
+
+    std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.distance == rhs.distance) {
+            return lhs.label < rhs.label;
+        }
+        return lhs.distance < rhs.distance;
+    });
+
+    std::string buffer;
+    for (size_t i = 0; i < results.size(); ++i) {
+        buffer += results[i].label;
+        if (i + 1 < results.size()) {
+            buffer += separator;
+        }
+    }
+
+    return buffer;
+}
+
 SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, float visionRange) {
     SpatialAwareness::Settings spatialSettings = SpatialAwareness::GetSettings();
     if (visionRange > 0.0f) {
@@ -3927,9 +4140,9 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
         const float distanceMultiplier = PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();
         spatialSettings.maxAirDistance *= distanceMultiplier;
-        spatialSettings.immediateDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
         spatialSettings.exteriorMaxDistance *= distanceMultiplier;
+        spatialSettings.immediateDistance = spatialSettings.autoHearingDistance;
     }
 
     return spatialSettings;
@@ -3946,10 +4159,16 @@ struct AudibleActorsCacheEntry {
     std::vector<AudibleActorDescriptor> actors;
 };
 
+struct AudibleActorCandidate {
+    RE::Actor* actor = nullptr;
+    float airDistance = 0.0f;
+};
+
 std::mutex g_audibleActorsCacheMutex;
 AudibleActorsCacheEntry g_audibleActorsCache;
-constexpr auto kAudibleActorsCacheTtl = std::chrono::milliseconds(200);
+constexpr auto kAudibleActorsCacheTtl = std::chrono::milliseconds(2500);
 constexpr float kAudibleActorsCacheMoveTolerance = 64.0f;
+constexpr std::size_t kMaxSpatialEvaluationsPerAudibleScan = 6;
 
 float GetAudibleActorsDistanceMultiplier(RE::Actor* speaker)
 {
@@ -4006,59 +4225,94 @@ std::vector<AudibleActorDescriptor> CollectAudibleActorsUncached(RE::Actor* spea
         return results;
     }
 
-    auto* processLists = RE::ProcessLists::GetSingleton();
-    if (!processLists) {
-        logger::warn("CollectAudibleActors: ProcessLists is null.");
-        return results;
-    }
-
     const SpatialAwareness::Settings spatialSettings = GetPlayerSpeechSpatialSettings(speaker, visionRange);
+    const bool speakerInterior = speakerCell->IsInteriorCell();
+    const RE::NiPoint3 speakerPosition = speaker->GetPosition();
+    std::vector<AudibleActorCandidate> candidates;
+    candidates.reserve(32);
 
-    for (auto& targetHandle : processLists->highActorHandles) {
-        if (!targetHandle || !targetHandle.get()) {
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    for (const auto& agent : aiam.getAgents()) {
+        if (!agent || agent->isNarrator()) {
             continue;
         }
 
-        targetHandle.get()->IncRefCount();
-        auto* target = targetHandle.get().get();
+        auto* target = agent->getActor();
         if (!target) {
-            targetHandle.get()->DecRefCount();
+            auto* targetForm = RE::TESForm::LookupByID(agent->GetFormId());
+            target = targetForm ? targetForm->As<RE::Actor>() : nullptr;
+        }
+
+        if (!target) {
             continue;
         }
 
         if (speaker->GetFormID() == target->GetFormID()) {
-            targetHandle.get()->DecRefCount();
             continue;
         }
 
         if (!target->GetActorRuntimeData().currentProcess || !target->Is3DLoaded()) {
-            targetHandle.get()->DecRefCount();
             continue;
         }
 
         auto* targetCell = target->GetParentCell();
         if (!targetCell || !targetCell->IsAttached()) {
-            targetHandle.get()->DecRefCount();
             continue;
         }
 
-        const float airDistance = speaker->GetPosition().GetDistance(target->GetPosition());
-        if (spatialSettings.maxAirDistance > 0.0f && airDistance >= spatialSettings.maxAirDistance) {
-            targetHandle.get()->DecRefCount();
+        const bool targetInterior = targetCell->IsInteriorCell();
+        if (speakerInterior != targetInterior) {
             continue;
         }
+
+        if (speakerInterior && targetCell != speakerCell) {
+            continue;
+        }
+
+        const float airDistance = speakerPosition.GetDistance(target->GetPosition());
+        if (spatialSettings.maxAirDistance > 0.0f && airDistance >= spatialSettings.maxAirDistance) {
+            continue;
+        }
+
+        candidates.push_back(AudibleActorCandidate{target, airDistance});
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.airDistance < rhs.airDistance;
+    });
+
+    std::size_t spatialEvaluations = 0;
+    std::size_t budgetSkipped = 0;
+
+    for (auto& candidate : candidates) {
+        auto* target = candidate.actor;
+        if (!target) {
+            continue;
+        }
+
+        const auto releaseTarget = [&]() {
+            target = nullptr;
+        };
+
+        if (spatialEvaluations >= kMaxSpatialEvaluationsPerAudibleScan) {
+            ++budgetSkipped;
+            releaseTarget();
+            continue;
+        }
+
+        ++spatialEvaluations;
 
         SpatialAwareness::Result spatialResult{};
         try {
             spatialResult = SpatialAwareness::Evaluate(speaker, target, spatialSettings);
         } catch (...) {
             logger::warn("CollectAudibleActors: spatial evaluation failed for {:08X}", target->GetFormID());
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
         if (!spatialResult.canCommunicate) {
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
@@ -4066,19 +4320,19 @@ std::vector<AudibleActorDescriptor> CollectAudibleActorsUncached(RE::Actor* spea
         try {
             actorLabel = target->GetDisplayFullName();
         } catch (...) {
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
         if (actorLabel.empty()) {
-            targetHandle.get()->DecRefCount();
+            releaseTarget();
             continue;
         }
 
         AudibleActorDescriptor audibleActor{};
         audibleActor.formId = target->GetFormID();
         audibleActor.label = std::move(actorLabel);
-        audibleActor.airDistance = airDistance;
+        audibleActor.airDistance = candidate.airDistance;
         audibleActor.volume = spatialResult.volume;
         audibleActor.pathDistance = spatialResult.pathDistance;
         audibleActor.pathRatio = spatialResult.pathRatio;
@@ -4094,9 +4348,15 @@ std::vector<AudibleActorDescriptor> CollectAudibleActorsUncached(RE::Actor* spea
         audibleActor.inCombat = !audibleActor.hostile && !audibleActor.busy && target->IsInCombat();
         audibleActor.restrained = !audibleActor.hostile && !audibleActor.busy && !audibleActor.inCombat &&
                                   target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained;
+        audibleActor.canCommunicate = true;
 
         results.push_back(std::move(audibleActor));
-        targetHandle.get()->DecRefCount();
+        releaseTarget();
+    }
+
+    if (budgetSkipped > 0) {
+        logger::debug("CollectAudibleActors: skipped {} low-priority candidates after {} spatial evaluations",
+                      budgetSkipped, spatialEvaluations);
     }
 
     return results;
@@ -4836,8 +5096,6 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
     return foundTarget;
 }
 
-void StartMoveTo(std::string targetName, bool log) {}
-
 void StartSneakTo(std::string targetName) {}
 
 RE::Actor* findClosestAgent() {
@@ -4926,7 +5184,7 @@ RE::Actor* findClosestAgent() {
     }
 
     if (index == -1) {
-        logger::info("No agent available, trying {}", NARRATOR_NAME);
+        logger::info("No non-narrator agent available; returning null actor");
         return nullptr;
 
     } else {
@@ -4954,6 +5212,14 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
     }
     if (target != nullptr) {
         agentPtr.get()->setAttackTarget(target);
+        auto targetActor = target->As<RE::Actor>();
+        std::string resolvedTargetName = targetActor ? targetActor->GetDisplayFullName() : targetName;
+        if (resolvedTargetName.empty()) resolvedTargetName = targetName;
+        const std::string notificationText =
+            lethal ? std::format("[CHIM] {} attacks {}", actor->GetDisplayFullName(), resolvedTargetName)
+                   : std::format("[CHIM] {} brawls with {}", actor->GetDisplayFullName(), resolvedTargetName);
+        RE::DebugNotification(notificationText.c_str());
+
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         auto args = RE::MakeFunctionArguments(std::move(actor), std::move(target->AsReference()), std::move(lethal));
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "AttackTarget",
@@ -4980,7 +5246,7 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
                             "command@Attack@" + targetName + "@Error. target " + targetName + " not found "),
                 agentPtr->getActor());
 
-        RE::DebugNotification(std::string("[AIFF] Target Not found ").append(targetName).c_str());
+        RE::DebugNotification(std::string("[CHIM] Target not found: ").append(targetName).append(".").c_str());
         EndCommandError("Attack", actor->GetDisplayFullName());
     }
 }
@@ -4996,7 +5262,7 @@ void StopCurrent(RE::Actor* npc) {
 }
 
 void EndCommand(std::string command, std::string actor) {
-    if (command.contains("TravelTo")) {
+    if (command.contains("TravelTo") || command.contains("MoveTo")) {
         AIAgentManager& aiam = AIAgentManager::getInstance();
         auto agentPtr = aiam.getAgentByName(actor);
 

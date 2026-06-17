@@ -148,6 +148,12 @@ body {
     background: rgba(40, 45, 50, 0.6);
 }
 
+.history-entry.non-llm {
+    opacity: 0.84;
+    background: rgba(30, 30, 34, 0.55);
+    border-left-color: rgba(150, 150, 160, 0.55);
+}
+
 /* Entry Header */
 .entry-header {
     display: flex;

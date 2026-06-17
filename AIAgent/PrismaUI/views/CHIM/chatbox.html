@@ -10,7 +10,7 @@
     <div id="chim-chatbox">
         <!-- Tab Bar -->
         <div class="chatbox-tabs">
-            <button class="tab-button active" data-tab="chat" onclick="switchTab('chat')">Chat</button>
+            <button class="tab-button active" data-tab="chat" onclick="switchTab('chat')" aria-label="Chat"></button>
             <button class="btn-close" onclick="closeChat()" title="Close">&times;</button>
         </div>
         
@@ -30,9 +30,7 @@
             <div class="chatbox-targets-window" aria-label="Conversation Targets">
                 <div class="chatbox-targets-panel">
                     <div class="chatbox-side-header">Targets</div>
-                    <div id="chatbox-targets-list" class="chatbox-targets-list">
-                        <div class="chatbox-target-empty">No spatially available targets right now.</div>
-                    </div>
+                    <div id="chatbox-targets-list" class="chatbox-targets-list"></div>
                 </div>
             </div>
             <div class="focus-chatbox-panel" role="dialog" aria-modal="true" aria-label="CHIM Chat">
@@ -100,24 +98,30 @@
                     <div class="focus-chatbox-actions">
                         <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">
                             <div class="focus-chatbox-position-picker">
-                                <label class="focus-chatbox-position-label" for="chatbox-position-select">Position</label>
-                                <select id="chatbox-position-select" class="chatbox-mode-select focus-chatbox-position-select" title="Choose chatbox position">
-                                    <option value="center">Center</option>
-                                    <option value="bottom">Bottom</option>
-                                    <option value="top">Top</option>
-                                </select>
+                                <span class="focus-chatbox-position-label">Position</span>
+                                <div class="focus-chatbox-position-buttons" role="group" aria-label="Choose chatbox position">
+                                    <button id="chatbox-position-top" class="focus-chatbox-position-btn" type="button" data-position="top" title="Move chatbox to top" aria-label="Move chatbox to top">&#8593;</button>
+                                    <button id="chatbox-position-center" class="focus-chatbox-position-btn" type="button" data-position="center" title="Center chatbox" aria-label="Center chatbox">&#8722;</button>
+                                    <button id="chatbox-position-bottom" class="focus-chatbox-position-btn" type="button" data-position="bottom" title="Move chatbox to bottom" aria-label="Move chatbox to bottom">&#8595;</button>
+                                </div>
                             </div>
                             <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
-                            <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
                             <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
+                            <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
                             <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
                             <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
                         </div>
                         <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
-                            <div class="focus-chatbox-event-buttons">
-                                <button class="focus-btn focus-btn-danger focus-btn-delete-events" type="button" data-delete-count="20">Delete 20 Events</button>
-                                <button class="focus-btn focus-btn-danger focus-btn-delete-events" type="button" data-delete-count="50">Delete 50</button>
-                                <button class="focus-btn focus-btn-danger focus-btn-delete-events" type="button" data-delete-count="100">Delete 100</button>
+                            <div class="focus-chatbox-event-controls">
+                                <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
+                                <div class="focus-chatbox-delete-controls">
+                                    <select id="chatbox-delete-events-select" class="chatbox-mode-select focus-chatbox-delete-select" title="Choose how many recent events to delete">
+                                        <option value="20">Last 20</option>
+                                        <option value="50">Last 50</option>
+                                        <option value="100">Last 100</option>
+                                    </select>
+                                    <button id="chatbox-delete-events-confirm" class="focus-btn focus-btn-danger" type="button">Delete</button>
+                                </div>
                             </div>
                         </div>
                     </div>

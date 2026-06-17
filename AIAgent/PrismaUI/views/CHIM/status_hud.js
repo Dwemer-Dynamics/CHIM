@@ -18,6 +18,7 @@
     const focusIndicator = document.getElementById('focus-indicator');
     const targetRow = document.getElementById('target-row');
     const targetName = document.getElementById('target-name');
+    const targetStatus = document.getElementById('target-status');
     
     // Mode configuration
     const modeConfig = {
@@ -42,6 +43,17 @@
     // State
     let pollTimer = null;
     let initialized = false;
+    let hudVisible = false;
+
+    function setTextIfChanged(element, text) {
+        if (!element || element.textContent === text) return;
+        element.textContent = text;
+    }
+
+    function setClassNameIfChanged(element, className) {
+        if (!element || element.className === className) return;
+        element.className = className;
+    }
 
     /**
      * Update status from API response
@@ -77,8 +89,8 @@
         const modeUpper = mode ? mode.toUpperCase().trim() : 'STANDARD';
         const config = modeConfig[modeUpper] || { label: mode || 'Standard', class: '' };
         
-        modeBadge.textContent = config.label;
-        modeBadge.className = 'badge mode-badge' + (config.class ? ' ' + config.class : '');
+        setTextIfChanged(modeBadge, config.label);
+        setClassNameIfChanged(modeBadge, 'badge mode-badge' + (config.class ? ' ' + config.class : ''));
     }
     
     /**
@@ -88,22 +100,30 @@
         const slotLower = slotLabel ? slotLabel.toLowerCase().trim() : 'standard';
         const config = modelConfig[slotLower] || { label: slotLabel || 'Std', class: 'standard' };
         
-        modelBadge.textContent = config.label;
-        modelBadge.className = 'badge model-badge ' + config.class;
+        setTextIfChanged(modelBadge, config.label);
+        setClassNameIfChanged(modelBadge, 'badge model-badge ' + config.class);
     }
     
     /**
      * Update target NPC (called from C++)
      */
-    function updateTarget(name, distance) {
+    function updateTarget(name, distance, status, targetable) {
+        const isTargetable = targetable !== false;
+        const statusText = status || '';
+
         if (name && name.length > 0) {
             targetRow.classList.add('has-target');
-            targetName.textContent = name;
-            targetName.title = distance > 0 ? name + ' (' + distance.toFixed(1) + 'm)' : name;
+            targetRow.classList.toggle('blocked-target', !isTargetable);
+            setTextIfChanged(targetName, name);
+            if (targetStatus) setTextIfChanged(targetStatus, statusText);
+            targetName.title = (distance > 0 ? name + ' (' + distance.toFixed(1) + 'm)' : name) +
+                (statusText ? ' - ' + statusText : '');
         } else {
             targetRow.classList.remove('has-target');
-            targetName.textContent = '—';
-            targetName.title = '';
+            targetRow.classList.remove('blocked-target');
+            setTextIfChanged(targetName, 'No target');
+            if (targetStatus) setTextIfChanged(targetStatus, statusText);
+            targetName.title = statusText;
         }
     }
     
@@ -123,6 +143,7 @@
      * Start polling
      */
     function startPolling() {
+        if (!hudVisible) return;
         if (pollTimer) clearInterval(pollTimer);
         fetchStatus();
         pollTimer = setInterval(fetchStatus, POLL_INTERVAL);
@@ -157,7 +178,21 @@
         serverUrl = url;
         initialized = true;
         console.log('CHIM Status HUD: Init with', serverUrl);
-        startPolling();
+        if (hudVisible) {
+            startPolling();
+        }
+    }
+
+    function onStatusHUDShown() {
+        hudVisible = true;
+        if (initialized) {
+            startPolling();
+        }
+    }
+
+    function onStatusHUDHidden() {
+        hudVisible = false;
+        stopPolling();
     }
     
     // Apply corner placement via shared layout manager
@@ -172,6 +207,8 @@
     // Expose to C++
     window.initStatusHUD = initStatusHUD;
     window.updateStatusHUDTarget = updateTarget;
+    window.onStatusHUDShown = onStatusHUDShown;
+    window.onStatusHUDHidden = onStatusHUDHidden;
     
     // Expose controls
     window.chimStatusHUD = {

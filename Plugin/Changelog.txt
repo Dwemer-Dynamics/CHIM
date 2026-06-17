@@ -1,4 +1,7 @@
-2.8.0 - 2026-05-10
+3.0.0 - 2026-06-17
+* Release version and date update.
+
+2.8.2 - 2026-06-07
 * Combatend raises 50% chance and 30 seconds cooldown. If player still fighting , dont' do
 * Added wavcutter. Cuts one half second at the end of wavs (silence at the end prevents stop mouth movement)
 * Bored event from time to time

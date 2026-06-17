@@ -1,4 +1,6 @@
-# Pull Requests Must Target `main`
+# Pull Requests Must Target `unstable`
+
+> Open PRs against `unstable` unless a maintainer explicitly asks for a different base branch.
 
 ## Summary
 
@@ -18,6 +20,13 @@
 ## Why
 
 <!-- Why was this change needed? What problem does it solve? -->
+
+
+## Maintainer Discussion
+
+<!-- PRs should be discussed with RANGROO or tyler.maister in Discord before submission. -->
+
+- [ ] I discussed this PR with `RANGROO` or `tyler.maister` in Discord.
 
 
 ## Validation

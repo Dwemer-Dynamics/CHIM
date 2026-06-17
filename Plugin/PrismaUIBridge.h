@@ -59,7 +59,8 @@ namespace PrismaUIBridge {
 
     // Push a single new dialogue entry to the UI (for real-time updates)
     void PushDialogueEntry(const std::string& speaker, const std::string& text, 
-                           const std::string& timestamp, const std::string& eventType);
+                           const std::string& timestamp, const std::string& eventType,
+                           const std::string& source = "llm");
 
     // ===== CHIM Overlay Functions =====
 
@@ -273,7 +274,8 @@ namespace PrismaUIBridge {
 
     // Push a new chat message to the chatbox (real-time)
     void PushChatboxMessage(const std::string& speaker, const std::string& text, 
-                            const std::string& timestamp, const std::string& type);
+                            const std::string& timestamp, const std::string& type,
+                            const std::string& source = "llm");
 
     // Push a system log entry to the chatbox system tab
     void PushSystemLogEntry(const std::string& level, const std::string& message, 

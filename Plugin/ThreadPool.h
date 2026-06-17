@@ -471,7 +471,7 @@ public:
                 auto timeSinceLastWarning = std::chrono::duration_cast<std::chrono::seconds>(now - lastWarningTime).count();
                 
                 if (timeSinceLastWarning >= 30) {  // Only show warning every 30 seconds
-                    RE::DebugNotification("Warning: CHIM can't keep up with game load! Check AIAgent.log for details.");
+                    RE::DebugNotification("[CHIM] Warning: Can't keep up with game load. Check AIAgent.log.");
                     lastWarningTime = now;
                 }
                 

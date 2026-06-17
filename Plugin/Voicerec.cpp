@@ -35,9 +35,9 @@ extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 
 namespace {
     void HardStopDialogueForPlayerVoiceInput() {
-        logger::info("[VOICERECORD] Hard-stopping active dialogue before recording");
-
-        controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
+        const auto now = std::chrono::high_resolution_clock::now();
+        controlLastBoredTriggerTS = now;
+        ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
         PrismaUIBridge::BumpDialogueStopGeneration();
 
         SpeakManager& speakManager = SpeakManager::getInstance();
@@ -47,6 +47,7 @@ namespace {
         speakManager.deleteQueuedPlayerLines();
         if (speakManager.getProcessing()) {
             speakManager.abortPlay(true);
+            speakManager.setProcessing(false);
         }
         speakManager.stopRechatForNseconds(3);
 
@@ -235,7 +236,7 @@ std::string makeSTT(std::string wavData) {
 
     if (!Conf::getInstance().isOk()) {
         logger::error("AIAgent.ini file not present or invalid");
-        RE::DebugNotification("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
         return "";
     }
 
@@ -251,10 +252,11 @@ std::string makeSTT(std::string wavData) {
 
     logger::info("Response received from STT service (size: {} bytes)", buffer.size());
 
+    ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
+
     auto player = RE::PlayerCharacter::GetSingleton();
     logger::debug("Processing response and gathering context information...");
     
-    RE::TESObjectCELL* cell = player->GetParentCell();
     auto result = InspectLocations(player->AsReference());
 
     char timeDateString[200];
@@ -263,10 +265,6 @@ std::string makeSTT(std::string wavData) {
     HTTPManager::log(std::format("infoloc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(Context location: " + std::string(GetPlayerLocation()) + ", Buildings to go:" +
                                      result + ", Current Date in Skyrim World: " + timeDateString + ")"));
-
-    result = InspectAudibleActors(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",");
-    HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                 "(beings in range:" + result + ")"));
 
     std::string type;
     
@@ -415,7 +413,11 @@ int VoiceRecordThread(int bindedKey) {
                     windowsKeyCode = bindedKey;
                     logger::debug("Using direct key code: {}", bindedKey);
                 } else {
-                    logger::error("Unsupported key code: {}", bindedKey);
+                    // Skyrim VR controller codes do not always map to Windows VK codes.
+                    // VR recording is stopped through VoiceRecordControl, so this fallback is expected.
+                    if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+                        logger::warn("Unsupported key code: {}", bindedKey);
+                    }
                     windowsKeyCode = bindedKey;  // Fall back to original code
                 }
         }
@@ -581,7 +583,14 @@ int VoiceRecordThread(int bindedKey) {
 }
 
 int VoiceRecord(int bindedKey) {
-    ThreadPool::getInstance().enqueue("VoiceRecord", [bindedKey]() { 
+    ThreadPool::getInstance().enqueue("VoiceRecord", [bindedKey]() {
+        struct RecordingStateGuard {
+            ~RecordingStateGuard()
+            {
+                VoiceRecordControl::getInstance().setRecording(false);
+            }
+        } recordingStateGuard;
+
         VoiceRecordThread(bindedKey);
         logger::info("Voice thread ended");
     }, "", std::chrono::seconds(60));
