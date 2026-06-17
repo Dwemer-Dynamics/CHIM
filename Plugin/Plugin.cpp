@@ -41,6 +41,7 @@
 #include "PrismaUIBridge.h"
 #include "SpatialAwareness.h"
 #include "SpatialSnapshotManager.h"
+#include "VRItemAwareness.h"
 
 using json = nlohmann::json;
 
@@ -2208,6 +2209,7 @@ private:
                 if (!game->GameIsPaused()) {
                     if (!RE::UI::GetSingleton()->IsApplicationMenuOpen()) {
                         // logger::debug("[ManagerMainQueue] Processing cycle starting - Game active and menu closed");
+                        VRItemAwareness::Tick();
                         
                         if (recordingActive) {
                             // STT capture is latency-sensitive in VR. Do not run overlay refresh,
@@ -2244,11 +2246,13 @@ private:
                                     logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
                                     auto player = RE::PlayerCharacter::GetSingleton();
                                     auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
-                                    // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
-                                    std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-                                    if (!itemsResult.empty()) {
-                                        HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(),
-                                                                     GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+                                    if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+                                        // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
+                                        std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+                                        if (!itemsResult.empty()) {
+                                            HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(),
+                                                                         GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+                                        }
                                     }
 
                                     if (!result.empty()) {
@@ -5949,11 +5953,13 @@ OnLoadedGame {
                                      "(Context location: " + std::string(GetPlayerLocation()) + ", Buildings to go:" +
                                          resultLoc + ", Current Date in Skyrim World: " + timeDateString + ")"));
 
-        // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
-        std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-        if (!itemsResult.empty()) {
-            HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), 
-                                         GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+        if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+            // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
+            std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+            if (!itemsResult.empty()) {
+                HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(),
+                                             GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+            }
         }
         
         auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
@@ -6031,11 +6037,13 @@ OnLoadedGame {
                                      "(Context location: " + std::string(GetPlayerLocation()) + ", Buildings to go:" +
                                          resultLoc + ", Current Date in Skyrim World: " + timeDateString + ")"));
 
-        // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
-        std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-        if (!itemsResult.empty()) {
-            HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), 
-                                         GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+        if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+            // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
+            std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+            if (!itemsResult.empty()) {
+                HTTPManager::log(std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(),
+                                             GetGameTimeStamp(), "(items in range:" + itemsResult + ")"));
+            }
         }
         
         auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
@@ -6237,19 +6245,20 @@ OnNewGame {
 OnDataLoaded {
     
     logger::info("OnDataLoaded");
+    VRItemAwareness::Initialize();
     logger::trace("Initializing trampoline...");
     auto& trampoline = SKSE::GetTrampoline();
     trampoline.create(42);
 
-    if ((REL::Module::GetRuntime() != REL::Module::Runtime::VR)) {
-        
+    const bool isVrRuntime = REL::Module::GetRuntime() == REL::Module::Runtime::VR;
+    if (!isVrRuntime) {
         ProcessorScreenShot::InstallHooks();
+        ProcessorNativeScreenShot::InstallHooks();
+        ProcessorActorDialogue::InstallHooks();
+        ProcessorDialogueMenu::InstallHooks();
+    } else {
+        logger::info("VR runtime detected; skipping flat Skyrim native screenshot/dialogue hooks");
     }
-
-    
-    ProcessorNativeScreenShot::InstallHooks();
-    ProcessorActorDialogue::InstallHooks();
-    ProcessorDialogueMenu::InstallHooks();
 
     const auto papyrus = SKSE::GetPapyrusInterface();
     papyrus->Register(Papyrus::RegisterSGPFuncs);
@@ -8713,10 +8722,15 @@ EventHandlers {
 
     */
     On<RE::TESGrabReleaseEvent>([](const RE::TESGrabReleaseEvent* event) {
-            
+        VRItemAwareness::HandleFlatGrabReleaseEvent(event);
+        if (!event) {
+            return;
+        }
         auto itemGrabbed = event->ref;
 
-        logger::info("TESGrabReleaseEvent item:{} ", itemGrabbed->GetDisplayFullName());
+        if (itemGrabbed) {
+            logger::info("TESGrabReleaseEvent item:{} grabbed:{}", itemGrabbed->GetDisplayFullName(), event->grabbed);
+        }
         
                                  
         
