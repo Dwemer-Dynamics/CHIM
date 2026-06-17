@@ -84,6 +84,14 @@ namespace Papyrus {
     int getPlayerBountyForGuard(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                 RE::StaticFunctionTag*, std::string guardName);
 
+    int requestMoveInventoryItemConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                             RE::StaticFunctionTag*, RE::Actor* source, RE::Actor* target,
+                                             RE::TESForm* itemForm, int amount, std::string realName);
+
+    int requestArrestConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                  RE::StaticFunctionTag*, RE::Actor* player, RE::Actor* guard,
+                                  RE::TESFaction* crimeFaction);
+
     int hardResetExpression(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                             RE::StaticFunctionTag*);
 

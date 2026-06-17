@@ -2383,6 +2383,124 @@ int Papyrus::getPlayerBountyForGuard(RE::BSScript::Internal::VirtualMachine* a_v
     return static_cast<int>(crimeGold);
 }
 
+int Papyrus::requestMoveInventoryItemConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm,
+                                                  RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                                  RE::Actor* source, RE::Actor* target, RE::TESForm* itemForm,
+                                                  int amount, std::string realName) {
+    ScopedPapyrusLock lock("requestMoveInventoryItemConfirmation");
+
+    if (!source || !target || !itemForm || amount <= 0) {
+        logger::warn("[PAPYRUS] requestMoveInventoryItemConfirmation: invalid arguments");
+        return 0;
+    }
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        logger::warn("[PAPYRUS] requestMoveInventoryItemConfirmation: Prisma UI not available");
+        return 0;
+    }
+
+    if (realName.empty()) {
+        realName = "Gold";
+    }
+
+    auto sourceHandle = source->GetHandle();
+    auto targetHandle = target->GetHandle();
+    const RE::FormID itemFormId = itemForm->GetFormID();
+    const std::string itemName = realName;
+    const std::string sourceName = source->GetDisplayFullName();
+    const std::string targetName = target->GetDisplayFullName();
+    const std::string message = sourceName + " will transfer " + std::to_string(amount) + " gold to " + targetName + ".";
+
+    bool shown = PrismaUIBridge::ShowConfirmation(
+        "Confirm gold transfer", message, "No", "Confirm",
+        [sourceHandle, targetHandle, itemFormId, amount, itemName](bool accepted) {
+            auto dispatch = [sourceHandle, targetHandle, itemFormId, amount, itemName, accepted]() mutable {
+                auto sourceRef = sourceHandle.get();
+                auto targetRef = targetHandle.get();
+                auto* resolvedSource = sourceRef ? sourceRef->As<RE::Actor>() : nullptr;
+                auto* resolvedTarget = targetRef ? targetRef->As<RE::Actor>() : nullptr;
+                auto* resolvedItem = RE::TESForm::LookupByID(itemFormId);
+
+                if (!resolvedSource || !resolvedTarget || !resolvedItem) {
+                    logger::warn("[PAPYRUS] ConfirmMoveInventoryItem skipped; source/target/item no longer valid");
+                    return;
+                }
+
+                int amountArg = amount;
+                std::string itemNameArg = itemName;
+                bool acceptedArg = accepted;
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(resolvedSource), std::move(resolvedTarget),
+                                                      std::move(resolvedItem), std::move(amountArg),
+                                                      std::move(itemNameArg), std::move(acceptedArg));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "ConfirmMoveInventoryItem", args, callback);
+            };
+
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask(std::move(dispatch));
+            } else {
+                dispatch();
+            }
+        });
+
+    return shown ? 1 : 0;
+}
+
+int Papyrus::requestArrestConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                       RE::StaticFunctionTag*, RE::Actor* player, RE::Actor* guard,
+                                       RE::TESFaction* crimeFaction) {
+    ScopedPapyrusLock lock("requestArrestConfirmation");
+
+    if (!player || !guard || !crimeFaction) {
+        logger::warn("[PAPYRUS] requestArrestConfirmation: invalid arguments");
+        return 0;
+    }
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        logger::warn("[PAPYRUS] requestArrestConfirmation: Prisma UI not available");
+        return 0;
+    }
+
+    auto playerHandle = player->GetHandle();
+    auto guardHandle = guard->GetHandle();
+    const RE::FormID crimeFactionId = crimeFaction->GetFormID();
+    const std::string guardName = guard->GetDisplayFullName();
+    const std::string message = guardName + " is placing you under arrest. Submit?";
+
+    bool shown = PrismaUIBridge::ShowConfirmation(
+        "Confirm arrest", message, "Resist", "Submit",
+        [playerHandle, guardHandle, crimeFactionId](bool accepted) {
+            auto dispatch = [playerHandle, guardHandle, crimeFactionId, accepted]() mutable {
+                auto playerRef = playerHandle.get();
+                auto guardRef = guardHandle.get();
+                auto* resolvedPlayer = playerRef ? playerRef->As<RE::Actor>() : nullptr;
+                auto* resolvedGuard = guardRef ? guardRef->As<RE::Actor>() : nullptr;
+                auto* resolvedFaction = RE::TESForm::LookupByID<RE::TESFaction>(crimeFactionId);
+
+                if (!resolvedPlayer || !resolvedGuard || !resolvedFaction) {
+                    logger::warn("[PAPYRUS] ConfirmArrestPlayer skipped; player/guard/faction no longer valid");
+                    return;
+                }
+
+                bool acceptedArg = accepted;
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(resolvedPlayer), std::move(resolvedGuard),
+                                                      std::move(resolvedFaction), std::move(acceptedArg));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "ConfirmArrestPlayer", args, callback);
+            };
+
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask(std::move(dispatch));
+            } else {
+                dispatch();
+            }
+        });
+
+    return shown ? 1 : 0;
+}
+
 int Papyrus::commandEnded(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                           std::string command) {
     // EndCommand(command, akACtor->GetDisplayFullName());
@@ -4288,6 +4406,9 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("setLocked", "AIAgentFunctions", setLocked, false);
     a_vm->RegisterFunction("isActorTalking", "AIAgentFunctions", isActorTalking, false);
     a_vm->RegisterFunction("getPlayerBountyForGuard", "AIAgentFunctions", getPlayerBountyForGuard, false);
+    a_vm->RegisterFunction("requestMoveInventoryItemConfirmation", "AIAgentFunctions",
+                           requestMoveInventoryItemConfirmation, false);
+    a_vm->RegisterFunction("requestArrestConfirmation", "AIAgentFunctions", requestArrestConfirmation, false);
     a_vm->RegisterFunction("sendRequest", "AIAgentFunctions", sendRequest, false);
     a_vm->RegisterFunction("stopRecording", "AIAgentFunctions", stopRecording, false);
     a_vm->RegisterFunction("startOpenMicMonitoring", "AIAgentFunctions", startOpenMicMonitoring, false);
