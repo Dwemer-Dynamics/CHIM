@@ -44,8 +44,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.0.0"
-#define PLUGIN_RELEASE_DATE "2026-06-17"
+#define PLUGIN_VERSION "3.0.1"
+#define PLUGIN_RELEASE_DATE "2026-06-18"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -231,7 +231,7 @@ static void QueueDelayedSendCellInfo(RE::FormID cellFormID)
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(cellFormID);
                 if (!game || game->GameIsPaused() || !player || !cell) {
-                    logger::info("[TESCellFullyLoadedEvent] Skipping delayed SendCellInfo; game not settled cell <{:#x}>",
+                    logger::trace("[TESCellFullyLoadedEvent] Skipping delayed SendCellInfo; game not settled cell <{:#x}>",
                                  cellFormID);
                     return;
                 }
@@ -240,7 +240,7 @@ static void QueueDelayedSendCellInfo(RE::FormID cellFormID)
                 auto args = RE::MakeFunctionArguments(std::move(cell));
                 RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                     "AIAgentAIMind", "SendCellInfo", args, callback);
-                logger::info("[TESCellFullyLoadedEvent] Delayed SendCellInfo dispatch for cell <{:#x}>", cellFormID);
+                logger::trace("[TESCellFullyLoadedEvent] Delayed SendCellInfo dispatch for cell <{:#x}>", cellFormID);
             });
         },
         std::format("{:08X}", cellFormID),
@@ -4397,6 +4397,19 @@ std::unordered_map<uint32_t, std::string> lastSpellsHash;
 std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastSkillsUpdate;
 std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastStatsUpdate;
 
+static bool IsWornHeadgear(RE::Actor* actor, RE::TESBoundObject* boundObject)
+{
+    if (!actor || !boundObject) {
+        return false;
+    }
+
+    using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+    return actor->GetWornArmor(Slot::kHead) == boundObject ||
+           actor->GetWornArmor(Slot::kHair) == boundObject ||
+           actor->GetWornArmor(Slot::kLongHair) == boundObject ||
+           actor->GetWornArmor(Slot::kCirclet) == boundObject;
+}
+
 // Helper function to refresh equipment for an AI Agent (with hash-based diffing)
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
@@ -4477,7 +4490,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             // Check worn equipment slots - these can crash if actor becomes invalid
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 flagWorn = true;
-            } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(npc, boundObject)) {
                 flagWorn = true;
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
                 flagWorn = true;
@@ -4552,7 +4565,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
-            } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(npc, boundObject)) {
                 helmet.assign(itemName);
                 helmet_baseid.assign(baseID);
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
@@ -5159,7 +5172,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             bool flagWorn = false;
             if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 flagWorn = true;
-            } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(player, boundObject)) {
                 flagWorn = true;
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
                 flagWorn = true;
@@ -5217,7 +5230,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
-            } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(player, boundObject)) {
                 helmet.assign(itemName);
                 helmet_baseid.assign(baseID);
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
@@ -6305,7 +6318,7 @@ EventHandlers {
         if (GetGameTimeStamp() == 13333334) return;
 
         if (!pluginInited) {
-            logger::info("[TESCellFullyLoadedEvent] Cell loaded event bypassed");
+            logger::trace("[TESCellFullyLoadedEvent] Cell loaded event bypassed");
             return;
         }
 
@@ -6406,7 +6419,7 @@ EventHandlers {
             std::lock_guard<std::mutex> lk(lastDispatchMtx);
             const auto now = std::chrono::steady_clock::now();
             if (now - lastDispatch < std::chrono::milliseconds(6000)) {
-                logger::info("[TESCellFullyLoadedEvent] Throttled cell <{:#x}>", cellFormID);
+                logger::trace("[TESCellFullyLoadedEvent] Throttled cell <{:#x}>", cellFormID);
                 return;
             }
             lastDispatch = now;
@@ -6414,7 +6427,7 @@ EventHandlers {
 
         QueueDelayedSendCellInfo(cellFormID);
         
-        logger::info("[TESCellFullyLoadedEvent] Queued delayed SendCellInfo for cell <{:#x}>", cellFormID);
+        logger::trace("[TESCellFullyLoadedEvent] Queued delayed SendCellInfo for cell <{:#x}>", cellFormID);
         
         
     }
