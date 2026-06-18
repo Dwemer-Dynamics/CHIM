@@ -2991,8 +2991,9 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
         auto worldMarker = marker.get();
         if (worldMarker->GetParentCell()) {
             if (!worldMarker->GetParentCell()->IsExteriorCell() ) {
-                if (worldMarker->GetCurrentLocation()->parentLoc) {
-                    auto parentLoc = worldMarker->GetCurrentLocation()->parentLoc;
+                auto currentLocation = worldMarker->GetCurrentLocation();
+                if (currentLocation && currentLocation->parentLoc) {
+                    auto parentLoc = currentLocation->parentLoc;
                     auto parentMarker = parentLoc->worldLocMarker.get();
                     if (parentMarker) {
                         logger::info("getWorldLocationMarkerFor: returning parent location world marker");
@@ -3026,30 +3027,54 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
         // Iterate over specialRefs using begin()/end()
         for (auto it = refs->begin(); it != refs->end(); ++it) {
             const auto& refData = *it;
-            if (refData.type->formType == RE::FormType::LocationRefType) {
-                if (refData.type->GetFormID() == 0x10f63c) {  // MapMarkerRefType
-                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+            if (!refData.type || refData.type->formType != RE::FormType::LocationRefType) {
+                continue;
+            }
 
-                    logger::info("getWorldLocationMarkerFor: Found special ref MapMarkerRefType {:08X}",
+            auto typeFormID = refData.type->GetFormID();
+            if (typeFormID == 0x10f63c) {  // MapMarkerRefType
+                RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                logger::info("getWorldLocationMarkerFor: Found special ref MapMarkerRefType {:08X}",
+                             refData.refData.refID);
+
+                if (!t) {
+                    logger::warn("getWorldLocationMarkerFor: MapMarkerRefType {:08X} could not be resolved",
                                  refData.refData.refID);
+                    continue;
+                }
 
-                    auto localresult = t->AsReference();
-                    if (localresult) {
-                        result = t->AsReference();
-                        break;
-                    }
-                } else if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
-                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                auto localresult = t->AsReference();
+                if (localresult) {
+                    result = localresult;
+                    break;
+                }
 
-                    logger::info("getWorldLocationMarkerFor: Found special ref LocationCenterMarker {:08X}",
+                logger::warn("getWorldLocationMarkerFor: MapMarkerRefType {:08X} is not a reference",
+                             refData.refData.refID);
+            } else if (typeFormID == 0x1bdf1) {  // LocationCenterMarker
+                RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                logger::info("getWorldLocationMarkerFor: Found special ref LocationCenterMarker {:08X}",
+                             refData.refData.refID);
+
+                if (!t) {
+                    logger::warn("getWorldLocationMarkerFor: LocationCenterMarker {:08X} could not be resolved",
                                  refData.refData.refID);
+                    continue;
+                }
 
-                    auto localresult= t->AsReference();
-                    if (localresult->GetParentCell()) {
-                        if (localresult && !localresult->GetParentCell()->IsInteriorCell()) {
-                            result = t->AsReference();
-                        }
-                    }
+                auto localresult = t->AsReference();
+                if (!localresult) {
+                    logger::warn("getWorldLocationMarkerFor: LocationCenterMarker {:08X} is not a reference",
+                                 refData.refData.refID);
+                    continue;
+                }
+
+                auto parentCell = localresult->GetParentCell();
+                if (parentCell && !parentCell->IsInteriorCell()) {
+                    result = localresult;
+                    break;
                 }
             }
         }
