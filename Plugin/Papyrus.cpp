@@ -3082,15 +3082,18 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
     // Iterate over specialRefs using begin()/end()
     for (auto it = refs->begin(); it != refs->end(); ++it) {
         const auto& refData = *it;
-        if (refData.type->formType == RE::FormType::LocationRefType) {
-            if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
-                RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+        if (refData.type) {
+            if (refData.type->formType == RE::FormType::LocationRefType) {
+                if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
 
-                logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
-                                refData.refData.refID);
-
-                result = t->AsReference();
-                break;
+                    logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
+                                 refData.refData.refID);
+                    if (t) {
+                        result = t->AsReference();
+                        break;
+                    }
+                }
             }
         }
     }
