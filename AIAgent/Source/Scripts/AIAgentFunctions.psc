@@ -48,6 +48,7 @@ int[] function findAllAgentsFormId() Global Native;
 ; Helpers
 ObjectReference function getLocationMarkerFor(Location loc) Global Native
 ObjectReference function getWorldLocationMarkerFor(Location loc) Global Native
+ObjectReference function getLocationCenterMarker(Location loc) Global Native
 ObjectReference function getNearestDoor() global Native
 ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restriction=true) global Native;restriction, ref must have a name
 
