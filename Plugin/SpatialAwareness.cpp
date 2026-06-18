@@ -397,7 +397,7 @@ namespace SpatialAwareness
                 }
 
                 if (extraEdgeInfoIndex != meshData.mesh->extraEdgeInfo.size()) {
-                    logger::debug(
+                    logger::trace(
                         "[SPATIAL_V1L] navmesh portal mapping partially consumed for mesh {:08X} ({}/{})",
                         meshData.meshFormID, extraEdgeInfoIndex, meshData.mesh->extraEdgeInfo.size());
                 }
