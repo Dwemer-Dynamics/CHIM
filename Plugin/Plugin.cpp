@@ -44,8 +44,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.0.0"
-#define PLUGIN_RELEASE_DATE "2026-06-17"
+#define PLUGIN_VERSION "3.0.1"
+#define PLUGIN_RELEASE_DATE "2026-06-18"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -231,7 +231,7 @@ static void QueueDelayedSendCellInfo(RE::FormID cellFormID)
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(cellFormID);
                 if (!game || game->GameIsPaused() || !player || !cell) {
-                    logger::info("[TESCellFullyLoadedEvent] Skipping delayed SendCellInfo; game not settled cell <{:#x}>",
+                    logger::trace("[TESCellFullyLoadedEvent] Skipping delayed SendCellInfo; game not settled cell <{:#x}>",
                                  cellFormID);
                     return;
                 }
@@ -240,7 +240,7 @@ static void QueueDelayedSendCellInfo(RE::FormID cellFormID)
                 auto args = RE::MakeFunctionArguments(std::move(cell));
                 RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                     "AIAgentAIMind", "SendCellInfo", args, callback);
-                logger::info("[TESCellFullyLoadedEvent] Delayed SendCellInfo dispatch for cell <{:#x}>", cellFormID);
+                logger::trace("[TESCellFullyLoadedEvent] Delayed SendCellInfo dispatch for cell <{:#x}>", cellFormID);
             });
         },
         std::format("{:08X}", cellFormID),
@@ -6318,7 +6318,7 @@ EventHandlers {
         if (GetGameTimeStamp() == 13333334) return;
 
         if (!pluginInited) {
-            logger::info("[TESCellFullyLoadedEvent] Cell loaded event bypassed");
+            logger::trace("[TESCellFullyLoadedEvent] Cell loaded event bypassed");
             return;
         }
 
@@ -6419,7 +6419,7 @@ EventHandlers {
             std::lock_guard<std::mutex> lk(lastDispatchMtx);
             const auto now = std::chrono::steady_clock::now();
             if (now - lastDispatch < std::chrono::milliseconds(6000)) {
-                logger::info("[TESCellFullyLoadedEvent] Throttled cell <{:#x}>", cellFormID);
+                logger::trace("[TESCellFullyLoadedEvent] Throttled cell <{:#x}>", cellFormID);
                 return;
             }
             lastDispatch = now;
@@ -6427,7 +6427,7 @@ EventHandlers {
 
         QueueDelayedSendCellInfo(cellFormID);
         
-        logger::info("[TESCellFullyLoadedEvent] Queued delayed SendCellInfo for cell <{:#x}>", cellFormID);
+        logger::trace("[TESCellFullyLoadedEvent] Queued delayed SendCellInfo for cell <{:#x}>", cellFormID);
         
         
     }
