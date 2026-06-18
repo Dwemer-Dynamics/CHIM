@@ -2336,7 +2336,7 @@ int Papyrus::setLocked(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStack
         logger::debug("Papyrus::setLocked - End");
         return 0;
     } else {
-        logger::debug("Papyrus::setLocked - failed");
+        logger::debug("Papyrus::setLocked - failed {}",actor);
         return -1;
     }
 }
@@ -4344,6 +4344,23 @@ void Papyrus::releasePlayerMenuTopicTimer(std::string reason) {
     QueuePlayerMenuTopicTimerOff(std::move(reason));
 }
 
+int Papyrus::scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                     RE::StaticFunctionTag*, RE::Actor* target) {
+    
+    ScopedPapyrusLock lock("scanActorsAroundOffline");
+        // Run GetLowProcessActorNamesFromRef in a separate thread - no need to wait for result
+    ThreadPool::getInstance().enqueue(
+        "ScanActorsAroundOffline",
+        [target]() {
+            GetLowProcessActorNamesFromRef(target);
+            // Result is handled internally by GetLowProcessActorNamesFromRef
+        },
+        target ? target->GetDisplayFullName() : "unknown");
+
+    return 0;
+}
+
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
@@ -4458,6 +4475,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
 
     a_vm->RegisterFunction("startMusicScene", "AIAgentFunctions", startMusicScene, false);
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
+
+    a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
     
     return true;
 }

@@ -1228,3 +1228,96 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
 
     return pitch;  // Returns radians
 }
+
+
+std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
+    auto processLists = RE::ProcessLists::GetSingleton();
+
+    if (!processLists) {
+        return {};
+    }
+
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
+
+    auto startTime = std::chrono::high_resolution_clock::now();
+    std::vector<std::pair<std::string, RE::FormID>> results;
+    int n = 0;
+
+    RE::TESObjectCELL* targetCell = target->GetParentCell();
+    RE::TESWorldSpace* targetWorldspace = target->GetWorldspace();
+
+    // lowActorHandles contains weak handles to Actor processes
+    for (auto& handle : processLists->lowActorHandles) {
+        // Convert handle -> ActorPtr safely
+        RE::Actor* actor = handle.get().get();
+        if (!actor) {
+            continue;
+        }
+
+        if (actor->GetFormID() == target->GetFormID()) {
+            // Skip the target actor itself
+            continue;
+        }
+        // Basic validity checks
+        if (!actor->Is3DLoaded() && !actor->GetParentCell()) {
+            // still may be valid persistent actor, so don't skip blindly
+        }
+
+        // Actor identity
+        auto baseForm = actor->GetBaseObject();
+        if (!baseForm) {
+            continue;
+        }
+
+        std::string name = actor->GetDisplayFullName();
+        RE::FormID id = actor->GetFormID();
+        RE::TESObjectCELL* cell = actor->GetParentCell();
+
+        if (!cell || !targetCell || cell != targetCell) {
+            // Skip actors that are in a different cell than the target, or cells are null
+            continue;
+        }
+
+        // Distance from target
+
+        float distance = target->GetPosition().GetDistance(actor->GetPosition());
+        if (distance > 4096) {
+            // Skip actors that are too far from the target
+            continue;
+        }
+
+        RE::TESWorldSpace* worldspace = actor->GetWorldspace();
+        if (targetWorldspace != worldspace) {
+            // Skip actors that are in a different worldspace than the target
+            continue;
+        }
+
+        auto pos = actor->GetPosition();
+
+        logger::info("[LOW ACTOR] {} ({:X}) pos=({}, {}, {}), distance {}", name.empty() ? "Unknown" : name, id, pos.x,
+                     pos.y, pos.z, distance);
+
+        results.push_back({name.empty() ? "Unknown" : name, actor->GetFormID()});
+        n++;
+    }
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms", duration);
+
+    json actorsNearby = json::array();
+    for (const auto& [actorName, formId] : results) {
+        actorsNearby.push_back({{"name", actorName}, {"formId", formId}});
+    }
+
+    json finalData;
+    finalData["type"] = "low_process_actors";
+    finalData["actor_name"] = target->GetDisplayFullName();
+    finalData["actor_type"] = "npc";
+    finalData["actors_nearby"] = actorsNearby;
+    finalData["gamets"] = GetGameTimeStamp();
+    finalData["ts"] = getCurrentTimeMillis();
+
+    HTTPManager::postGameData("gamedata.php", finalData);
+    return results;
+}

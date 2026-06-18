@@ -611,6 +611,9 @@ std::string FindVoiceInCSV(const std::string& voiceType);
 std::unordered_map<std::string, std::string> ParseVoiceCSV(const std::string& filePath);
 void ReloadVoiceCSVData();
 
+// Low process actors;
+std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target);
+
 #endif // SPG_MISC_H
 
 // VoiceRecordControl.h
