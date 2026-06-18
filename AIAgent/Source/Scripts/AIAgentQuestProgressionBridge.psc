@@ -25,6 +25,18 @@ Function SetQuestObjectiveDisplayed(int questFormId, int objectiveIndex, bool di
     endif
 EndFunction
 
+Function SetQuestStageObjective(int questFormId, int stage, int objectiveIndex) Global
+    Quest targetQuest = Game.GetForm(questFormId) as Quest
+    Debug.Trace("[AIAgentQuestProgressionBridge] SetQuestStageObjective quest=" + questFormId + " stage=" + stage + " objective=" + objectiveIndex + " found=" + (targetQuest != None))
+    if targetQuest
+        targetQuest.SetStage(stage)
+        Debug.Trace("[AIAgentQuestProgressionBridge] SetQuestStageObjective after SetStage running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
+        Utility.Wait(0.25)
+        targetQuest.SetObjectiveDisplayed(objectiveIndex, true, true)
+        Debug.Trace("[AIAgentQuestProgressionBridge] SetQuestStageObjective after SetObjectiveDisplayed running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
+    endif
+EndFunction
+
 Function FailAllQuestObjectives(int questFormId) Global
     Quest targetQuest = Game.GetForm(questFormId) as Quest
     if targetQuest
@@ -44,9 +56,13 @@ Function StartQuestStageObjective(int questFormId, int stage, int objectiveIndex
     Quest targetQuest = Game.GetForm(questFormId) as Quest
     Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective quest=" + questFormId + " stage=" + stage + " objective=" + objectiveIndex + " found=" + (targetQuest != None))
     if targetQuest
-        bool startResult = targetQuest.Start()
-        Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective after Start result=" + startResult + " running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
-        Utility.Wait(0.25)
+        if !targetQuest.IsRunning()
+            bool startResult = targetQuest.Start()
+            Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective after Start result=" + startResult + " running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
+            Utility.Wait(0.25)
+        else
+            Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective quest already running stage=" + targetQuest.GetStage())
+        endif
         targetQuest.SetStage(stage)
         Debug.Trace("[AIAgentQuestProgressionBridge] StartQuestStageObjective after SetStage running=" + targetQuest.IsRunning() + " stage=" + targetQuest.GetStage())
         Utility.Wait(0.25)
