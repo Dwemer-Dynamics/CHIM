@@ -52,6 +52,8 @@ ObjectReference function getLocationCenterMarker(Location loc) Global Native
 ObjectReference function getNearestDoor() global Native
 ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restriction=true) global Native;restriction, ref must have a name
 
+int function scanActorsAroundOffline(Actor akActor)  global Native; This will send data to server, should retun 0
+
 string function GetLocationSpecialRefsString(int locationFormId)  Global Native
 ObjectReference function loadReference(int refFormId) global native
 

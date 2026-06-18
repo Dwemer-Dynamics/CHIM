@@ -3812,6 +3812,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			else
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+", No randomActor actor around "+x+","+y+","+z);
 			endif
+			
+			;AIAgentFunctions.scanActorsAroundOffline(akTarget);
+			
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
 			ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
