@@ -136,6 +136,10 @@ namespace Papyrus {
     RE::TESObjectREFR* getWorldLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                                  RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
+    RE::TESObjectREFR* getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
+
+
     RE::TESObjectREFR* getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                       RE::StaticFunctionTag*);
 

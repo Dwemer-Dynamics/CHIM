@@ -3064,6 +3064,45 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
 }
 
 
+RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc) {
+    ScopedPapyrusLock lock("getLocationCenterMarker");
+    if (!a_loc) {
+        a_vm->TraceStack("Location is None", a_stackID);
+        logger::error("getLocationCenterMarker: Location is None");
+        return nullptr;
+    }
+    logger::info("getLocationCenterMarker: Location is {},{:08X}", a_loc->GetName(), a_loc->GetFormID());
+    
+    RE::TESObjectREFR* result = nullptr;
+
+    logger::info("getLocationCenterMarker: Location has no world marker");
+    RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
+
+    // Iterate over specialRefs using begin()/end()
+    for (auto it = refs->begin(); it != refs->end(); ++it) {
+        const auto& refData = *it;
+        if (refData.type->formType == RE::FormType::LocationRefType) {
+            if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
+                                refData.refData.refID);
+
+                result = t->AsReference();
+                break;
+            }
+        }
+    }
+    
+
+    if (!result)
+        logger::debug("getLocationCenterMarker: returning EMPTY world marker");
+    else
+        logger::debug("getLocationCenterMarker: marker {:08X}", result->GetFormID());
+
+    return result;
+}
 
 RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                            RE::StaticFunctionTag*) {
@@ -4309,6 +4348,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("getAgentByName", "AIAgentFunctions", getAgentByName, false);
     a_vm->RegisterFunction("getLocationMarkerFor", "AIAgentFunctions", getLocationMarkerFor, false);
     a_vm->RegisterFunction("getWorldLocationMarkerFor", "AIAgentFunctions", getWorldLocationMarkerFor, false);
+    a_vm->RegisterFunction("getLocationCenterMarker", "AIAgentFunctions", getLocationCenterMarker, false);
     a_vm->RegisterFunction("sendAllVoices", "AIAgentFunctions", sendAllVoices, false);
     a_vm->RegisterFunction("findAllNearbyAgents", "AIAgentFunctions", findAllNearbyAgents, false);
     a_vm->RegisterFunction("findAllAgents", "AIAgentFunctions", findAllAgents, false);
