@@ -4397,6 +4397,19 @@ std::unordered_map<uint32_t, std::string> lastSpellsHash;
 std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastSkillsUpdate;
 std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastStatsUpdate;
 
+static bool IsWornHeadgear(RE::Actor* actor, RE::TESBoundObject* boundObject)
+{
+    if (!actor || !boundObject) {
+        return false;
+    }
+
+    using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+    return actor->GetWornArmor(Slot::kHead) == boundObject ||
+           actor->GetWornArmor(Slot::kHair) == boundObject ||
+           actor->GetWornArmor(Slot::kLongHair) == boundObject ||
+           actor->GetWornArmor(Slot::kCirclet) == boundObject;
+}
+
 // Helper function to refresh equipment for an AI Agent (with hash-based diffing)
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
@@ -4477,7 +4490,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             // Check worn equipment slots - these can crash if actor becomes invalid
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 flagWorn = true;
-            } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(npc, boundObject)) {
                 flagWorn = true;
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
                 flagWorn = true;
@@ -4552,7 +4565,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
-            } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(npc, boundObject)) {
                 helmet.assign(itemName);
                 helmet_baseid.assign(baseID);
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
@@ -5159,7 +5172,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             bool flagWorn = false;
             if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 flagWorn = true;
-            } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(player, boundObject)) {
                 flagWorn = true;
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
                 flagWorn = true;
@@ -5217,7 +5230,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
-            } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead) == boundObject) {
+            } else if (IsWornHeadgear(player, boundObject)) {
                 helmet.assign(itemName);
                 helmet_baseid.assign(baseID);
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
