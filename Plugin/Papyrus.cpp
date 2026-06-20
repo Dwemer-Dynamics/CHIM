@@ -1529,13 +1529,14 @@ int sendMessageReal(std::string msg, std::string type) {
     HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(beings in range:" + result + ")"));
 
-    // Always scan for nearby items
-    std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-    
-    if (!itemsResult.empty()) {
-        std::string logMessage = std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(items in range:" + itemsResult + ")");
-        HTTPManager::log(logMessage);
+    if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+        std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+
+        if (!itemsResult.empty()) {
+            std::string logMessage = std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "(items in range:" + itemsResult + ")");
+            HTTPManager::log(logMessage);
+        }
     }
 
     std::string typeRevised;
@@ -2561,11 +2562,13 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
 
     auto targetObject = RE::CrosshairPickData::GetSingleton()->targetActor;
 
-    if (!targetObject) {
+    if (!targetObject && REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
         logger::info("Checking NPC via grabbed ref");
         auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
         targetObject = targetObjectRef.get();
         if (targetObject) logger::info("Checked NPC via grabbed ref {}", targetObject.get()->GetDisplayFullName());
+    } else if (!targetObject) {
+        logger::debug("Skipping grabbed ref target fallback in VR");
     }
 
     ThreadPool::getInstance().enqueue(
