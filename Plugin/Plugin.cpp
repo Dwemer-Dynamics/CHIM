@@ -2,6 +2,7 @@
 #include <SkyrimScripting/Plugin.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -5806,6 +5807,124 @@ static bool IsWornHeadgear(RE::Actor* actor, RE::TESBoundObject* boundObject)
            actor->GetWornArmor(Slot::kCirclet) == boundObject;
 }
 
+struct EquipmentSlotItem
+{
+    std::string name;
+    std::string baseid;
+};
+
+struct ModdedEquipmentSlot
+{
+    const char* key;
+    RE::BGSBipedObjectForm::BipedObjectSlot slot;
+};
+
+static constexpr std::array<ModdedEquipmentSlot, 15> kModdedEquipmentSlots{{
+    {"mod_mouth", RE::BGSBipedObjectForm::BipedObjectSlot::kModMouth},
+    {"mod_neck", RE::BGSBipedObjectForm::BipedObjectSlot::kModNeck},
+    {"cape", RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary},
+    {"backpack", RE::BGSBipedObjectForm::BipedObjectSlot::kModBack},
+    {"mod_misc1", RE::BGSBipedObjectForm::BipedObjectSlot::kModMisc1},
+    {"mod_pelvis_primary", RE::BGSBipedObjectForm::BipedObjectSlot::kModPelvisPrimary},
+    {"mod_pelvis_secondary", RE::BGSBipedObjectForm::BipedObjectSlot::kModPelvisSecondary},
+    {"mod_leg_right", RE::BGSBipedObjectForm::BipedObjectSlot::kModLegRight},
+    {"mod_leg_left", RE::BGSBipedObjectForm::BipedObjectSlot::kModLegLeft},
+    {"mod_face_jewelry", RE::BGSBipedObjectForm::BipedObjectSlot::kModFaceJewelry},
+    {"shirt", RE::BGSBipedObjectForm::BipedObjectSlot::kModChestSecondary},
+    {"mod_shoulder", RE::BGSBipedObjectForm::BipedObjectSlot::kModShoulder},
+    {"mod_arm_left", RE::BGSBipedObjectForm::BipedObjectSlot::kModArmLeft},
+    {"mod_arm_right", RE::BGSBipedObjectForm::BipedObjectSlot::kModArmRight},
+    {"mod_misc2", RE::BGSBipedObjectForm::BipedObjectSlot::kModMisc2},
+}};
+
+static bool HasWornExtra(const std::unique_ptr<RE::InventoryEntryData>& entryData)
+{
+    if (!entryData || !entryData->extraLists) {
+        return false;
+    }
+
+    for (auto* xList : *entryData->extraLists) {
+        if (xList && xList->HasType(RE::ExtraDataType::kWorn)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool HasArmorSlot(RE::TESObjectARMO* armor, RE::BGSBipedObjectForm::BipedObjectSlot slot)
+{
+    if (!armor) {
+        return false;
+    }
+
+    auto slotMask = static_cast<uint64_t>(armor->GetSlotMask());
+    return (slotMask & static_cast<uint64_t>(slot)) != 0;
+}
+
+static void AddModdedEquipmentSlots(RE::TESObjectARMO* armor, const std::string& itemName, const std::string& baseID, std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment)
+{
+    if (!armor || itemName.empty()) {
+        return;
+    }
+
+    for (const auto& slot : kModdedEquipmentSlots) {
+        if (HasArmorSlot(armor, slot.slot)) {
+            moddedEquipment[slot.key] = {itemName, baseID};
+        }
+    }
+}
+
+static bool HasAnyModdedEquipmentSlot(RE::TESObjectARMO* armor)
+{
+    if (!armor) {
+        return false;
+    }
+
+    for (const auto& slot : kModdedEquipmentSlots) {
+        if (HasArmorSlot(armor, slot.slot)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void ApplyLegacyModdedEquipmentSlot(const std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment, const std::string& key, std::string& itemName, std::string& baseID)
+{
+    auto found = moddedEquipment.find(key);
+    if (found == moddedEquipment.end()) {
+        return;
+    }
+
+    itemName = found->second.name;
+    baseID = found->second.baseid;
+}
+
+static void AddModdedEquipmentToJson(json& equipmentJson, const std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment)
+{
+    for (const auto& slot : kModdedEquipmentSlots) {
+        auto found = moddedEquipment.find(slot.key);
+        const std::string name = found != moddedEquipment.end() ? found->second.name : "";
+        const std::string baseID = found != moddedEquipment.end() ? found->second.baseid : "";
+        equipmentJson[slot.key] = {{"name", name}, {"baseid", baseID}};
+    }
+}
+
+static std::string BuildModdedEquipmentHash(const std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment)
+{
+    std::string hash;
+    for (const auto& slot : kModdedEquipmentSlots) {
+        auto found = moddedEquipment.find(slot.key);
+        hash.append("|").append(slot.key).append("=");
+        if (found != moddedEquipment.end()) {
+            hash.append(found->second.name).append("^").append(found->second.baseid);
+        }
+    }
+
+    return hash;
+}
+
 // Helper function to refresh equipment for an AI Agent (with hash-based diffing)
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
@@ -5852,6 +5971,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
     std::string rightHand, rightHand_baseid;
 
     std::string shirt, shirt_baseid;
+    std::unordered_map<std::string, EquipmentSlotItem> moddedEquipment;
     // Declare these outside try block so they can be used after
     std::string equipment;
     std::string equipmentHash;
@@ -5901,28 +6021,9 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             } else if (npc->GetEquippedObject(true) == boundObject) {
                 flagWorn = true;
             } else {
-                // Check if it's a worn armor in cape/backpack slots
-                if (auto* armor = boundObject->As<RE::TESObjectARMO>()) {
-                    auto slotMask = static_cast<uint64_t>(armor->GetSlotMask());
-                    
-                    // Check if item has worn flag
-                    bool hasWornFlag = false;
-                    if (entryData && entryData->extraLists) {
-                        for (auto* xList : *entryData->extraLists) {
-                            if (xList && xList->HasType(RE::ExtraDataType::kWorn)) {
-                                hasWornFlag = true;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    // Check if it's a cape (slots 10 or 16) or backpack (slot 17)
-                    bool isCape = (slotMask & (1ULL << 10)) || (slotMask & (1ULL << 16));
-                    bool isBackpack = (slotMask & (1ULL << 17));
-                    bool isShirt = (slotMask & 0x0000000004000000);
-                    //0x0000000004000000
-                    
-                    if ((isCape || isBackpack || isShirt) && hasWornFlag) {
+                // Check if it's a worn armor in modded biped slots.
+                if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
+                    if (HasAnyModdedEquipmentSlot(armorItem) && HasWornExtra(entryData)) {
                         flagWorn = true;
                     }
                 }
@@ -5958,6 +6059,10 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
                 }
             }
 
+            if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
+                AddModdedEquipmentSlots(armorItem, itemName, baseID, moddedEquipment);
+            }
+
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
@@ -5984,26 +6089,27 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
                 leftHand_baseid.assign(baseID);
             } else {
                 // Check if it's cape or backpack
-                if (auto* armor = boundObject->As<RE::TESObjectARMO>()) {
-                    auto slotMask = static_cast<uint64_t>(armor->GetSlotMask());
-                    
-                    // Check if it's a cape (slots 10 or 16)
-                    if ((slotMask & (1ULL << 10)) || (slotMask & (1ULL << 16))) {
+                if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
+                    if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary)) {
                         cape.assign(itemName);
                         cape_baseid.assign(baseID);
                     }
-                    // Check if it's a backpack (slot 17)
-                    if (slotMask & (1ULL << 17)) {
+                    if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModBack)) {
                         backpack.assign(itemName);
                         backpack_baseid.assign(baseID);
                     }
-                    if ( slotMask & 0x0000000004000000) {
+                    if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestSecondary)) {
                         shirt.assign(itemName);
                         shirt_baseid.assign(baseID);
                     }
                 }
             }
         }
+
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "cape", cape, cape_baseid);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "backpack", backpack, backpack_baseid);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "shirt", shirt, shirt_baseid);
+
         // Build equipment string with baseids (format: name^baseid)
         equipment.append(!helmet.empty() ? helmet + "^" + helmet_baseid : "").append("@");
         equipment.append(!armor.empty() ? armor + "^" + armor_baseid : "").append("@");
@@ -6043,6 +6149,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             !shirt.empty() ? shirt : "", 
             !shirt.empty() ? shirt_baseid : ""
         );
+        equipmentHash.append(BuildModdedEquipmentHash(moddedEquipment));
         
         logger::debug("[EQUIPMENT {}", equipmentHash);
 
@@ -6084,6 +6191,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
         {"left_hand", {{"name", leftHand}, {"baseid", leftHand_baseid}}},
         {"right_hand", {{"name", rightHand}, {"baseid", rightHand_baseid}}}
     };
+    AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
     
     HTTPManager::postGameData("gamedata.php", equipmentData);
     
@@ -6547,6 +6655,8 @@ void RefreshPlayerEquipment(bool forceUpdate) {
     std::string backpack, backpack_baseid;
     std::string leftHand, leftHand_baseid;
     std::string rightHand, rightHand_baseid;
+    std::string shirt, shirt_baseid;
+    std::unordered_map<std::string, EquipmentSlotItem> moddedEquipment;
     
     std::string equipmentHash;
     
@@ -6584,19 +6694,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
                 flagWorn = true;
             } else {
                 if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
-                    auto slotMask = static_cast<uint64_t>(armorItem->GetSlotMask());
-                    bool hasWornFlag = false;
-                    if (entryData && entryData->extraLists) {
-                        for (auto* xList : *entryData->extraLists) {
-                            if (xList && xList->HasType(RE::ExtraDataType::kWorn)) {
-                                hasWornFlag = true;
-                                break;
-                            }
-                        }
-                    }
-                    bool isCape = (slotMask & (1ULL << 10)) || (slotMask & (1ULL << 16));
-                    bool isBackpack = (slotMask & (1ULL << 17));
-                    if ((isCape || isBackpack) && hasWornFlag) {
+                    if (HasAnyModdedEquipmentSlot(armorItem) && HasWornExtra(entryData)) {
                         flagWorn = true;
                     }
                 }
@@ -6621,6 +6719,10 @@ void RefreshPlayerEquipment(bool forceUpdate) {
                         }
                     }
                 }
+            }
+
+            if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
+                AddModdedEquipmentSlots(armorItem, itemName, baseID, moddedEquipment);
             }
             
             if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
@@ -6649,18 +6751,25 @@ void RefreshPlayerEquipment(bool forceUpdate) {
                 leftHand_baseid.assign(baseID);
             } else {
                 if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
-                    auto slotMask = static_cast<uint64_t>(armorItem->GetSlotMask());
-                    if ((slotMask & (1ULL << 10)) || (slotMask & (1ULL << 16))) {
+                    if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary)) {
                         cape.assign(itemName);
                         cape_baseid.assign(baseID);
                     }
-                    if (slotMask & (1ULL << 17)) {
+                    if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModBack)) {
                         backpack.assign(itemName);
                         backpack_baseid.assign(baseID);
+                    }
+                    if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestSecondary)) {
+                        shirt.assign(itemName);
+                        shirt_baseid.assign(baseID);
                     }
                 }
             }
         }
+
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "cape", cape, cape_baseid);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "backpack", backpack, backpack_baseid);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "shirt", shirt, shirt_baseid);
         
         equipmentHash = std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", 
             !helmet.empty() ? helmet : "",
@@ -6684,6 +6793,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             !rightHand.empty() ? rightHand : "",
             !rightHand.empty() ? rightHand_baseid : ""
         );
+        equipmentHash.append(BuildModdedEquipmentHash(moddedEquipment));
     } catch (...) {
         logger::trace("[PLAYER_EQUIPMENT_SKIP] Exception during equipment read");
         return;
@@ -6717,6 +6827,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
         {"left_hand", {{"name", leftHand}, {"baseid", leftHand_baseid}}},
         {"right_hand", {{"name", rightHand}, {"baseid", rightHand_baseid}}}
     };
+    AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
     
     HTTPManager::postGameData("gamedata.php", equipmentData);
     logger::info("[PLAYER_EQUIPMENT_UPDATE] Player equipment updated");

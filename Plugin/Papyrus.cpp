@@ -1229,8 +1229,8 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                         auto* gloves = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands);
                         auto* amulet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet);
                         auto* ring = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
-                        auto* cape = targetActor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(46));
-                        auto* backpack = targetActor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(47));
+                        auto* cape = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary);
+                        auto* backpack = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModBack);
                         auto* leftHand = targetActor->GetEquippedObject(true);   // Left hand
                         auto* rightHand = targetActor->GetEquippedObject(false); // Right hand
 
