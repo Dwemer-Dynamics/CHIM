@@ -6,13 +6,17 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <ctime>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "ThreadPool.h"
 
@@ -298,6 +302,41 @@ int inSexLastStage = 0;
 bool pluginInited = false;
 bool pendingLoadedPluginManifestSync = false;
 bool importDataDetectionDone = false;  // Track if we've already done import data detection this session
+
+namespace
+{
+    constexpr auto kQuestProgressionPollInterval = std::chrono::seconds(2);
+    constexpr auto kQuestProgressionStatusPollInterval = std::chrono::seconds(10);
+
+    struct QuestActionExecutionResult
+    {
+        bool success{ false };
+        std::string status{ "failed" };
+        json result{ json::object() };
+    };
+
+    std::mutex g_questProgressionMutex;
+    std::unordered_map<std::string, int> g_questProgressionLastStages;
+    std::unordered_set<std::string> g_questProgressionDeadActors;
+    std::unordered_map<std::string, int> g_questProgressionSuppressedAdds;
+    std::unordered_map<std::string, int> g_questProgressionSuppressedRemovals;
+    std::unordered_set<std::int64_t> g_questProgressionActionsInFlight;
+    RE::FormID g_questProgressionLastLocationFormID = 0;
+    bool g_questProgressionResyncScheduled = false;
+    bool g_questProgressionResyncIncludeInventory = true;
+    std::chrono::steady_clock::time_point g_questProgressionResyncDueAt =
+        std::chrono::steady_clock::time_point::max();
+    std::chrono::steady_clock::time_point g_questProgressionLastPollAt =
+        std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point g_questProgressionLastStatusPollAt =
+        std::chrono::steady_clock::time_point::min();
+}
+
+void ResetQuestProgressionBridgeState();
+void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory);
+static void MaybeRunScheduledQuestProgressionResync();
+static void PollQuestProgressionActions();
+static void SyncQuestProgressionEnabledFromServer();
 
 
 RE::TESFaction *AIAgentRoleMasterFaction = nullptr;
@@ -2199,6 +2238,9 @@ private:
                 }
 
                 UpdatePlayerMenuDialogueGate();
+                SyncQuestProgressionEnabledFromServer();
+                MaybeRunScheduledQuestProgressionResync();
+                PollQuestProgressionActions();
 
                 const bool recordingActive = VoiceRecordControl::getInstance().getRecording();
                 const bool hardWorldMaintenanceSuppressed = IsWorldMaintenanceSuppressed();
@@ -4278,6 +4320,1354 @@ namespace RE {
     }
 }
 
+namespace
+{
+    std::string QuestProgressionToLower(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    }
+
+    std::string GetQuestProgressionPluginName(const RE::TESForm* form)
+    {
+        if (!form) {
+            return {};
+        }
+
+        RE::TESFile* sourceFile = form->GetFile(0);
+        if (!sourceFile || !sourceFile->fileName || !sourceFile->fileName[0]) {
+            return {};
+        }
+
+        return sourceFile->fileName;
+    }
+
+    std::string FormatQuestProgressionFormID(RE::FormID formID)
+    {
+        return std::format("0x{:08X}", static_cast<std::uint32_t>(formID));
+    }
+
+    bool TryParseQuestProgressionFormID(const std::string& value, RE::FormID& outFormID)
+    {
+        std::string trimmed = trim(value);
+        if (trimmed.empty()) {
+            return false;
+        }
+
+        int base = 10;
+        if (trimmed.rfind("0x", 0) == 0 || trimmed.rfind("0X", 0) == 0) {
+            trimmed = trimmed.substr(2);
+            base = 16;
+        }
+
+        try {
+            const unsigned long parsed = std::stoul(trimmed, nullptr, base);
+            if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+                return false;
+            }
+            outFormID = static_cast<RE::FormID>(parsed);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    std::string BuildQuestProgressionFormKey(const std::string& pluginName, const std::string& formID)
+    {
+        if (pluginName.empty() || formID.empty()) {
+            return {};
+        }
+
+        return QuestProgressionToLower(pluginName) + "|" + QuestProgressionToLower(formID);
+    }
+
+    std::string BuildQuestProgressionFormKey(const RE::TESForm* form)
+    {
+        if (!form) {
+            return {};
+        }
+
+        return BuildQuestProgressionFormKey(
+            GetQuestProgressionPluginName(form),
+            FormatQuestProgressionFormID(form->GetLocalFormID()));
+    }
+
+    bool PopulateQuestProgressionFormPayload(json& payload, const char* formField, const char* pluginField,
+                                             const RE::TESForm* form)
+    {
+        if (!form || !formField || !pluginField) {
+            return false;
+        }
+
+        const std::string pluginName = GetQuestProgressionPluginName(form);
+        if (pluginName.empty()) {
+            return false;
+        }
+
+        payload[formField] = FormatQuestProgressionFormID(form->GetLocalFormID());
+        payload[pluginField] = pluginName;
+        return true;
+    }
+
+    RE::FormID ResolveQuestProgressionRuntimeFormID(const std::string& pluginName, const std::string& formID)
+    {
+        RE::FormID localFormID = 0;
+        if (!TryParseQuestProgressionFormID(formID, localFormID)) {
+            return 0;
+        }
+
+        auto* dataHandler = RE::TESDataHandler::GetSingleton();
+        if (!dataHandler) {
+            return 0;
+        }
+
+        return dataHandler->LookupFormID(localFormID, pluginName.c_str());
+    }
+
+    bool PostQuestProgressionEvent(const std::string& eventType, json payload)
+    {
+        if (!pluginInited || !AIQuestProgressionEnabled || eventType.empty()) {
+            return false;
+        }
+
+        payload["event_source"] = "skse_plugin";
+        if (!payload.contains("gamets")) {
+            payload["gamets"] = GetGameTimeStamp();
+        }
+
+        HTTPManager::postGameData("gamedata.php", json{
+            {"type", "quest_event"},
+            {"event_type", eventType},
+            {"payload", payload}
+        });
+        return true;
+    }
+
+    std::unordered_map<std::uint32_t, std::string> BuildQuestProgressionAliasInstanceText(RE::TESQuest* quest)
+    {
+        std::unordered_map<std::uint32_t, std::string> aliasText;
+        if (!quest) {
+            return aliasText;
+        }
+
+        for (auto iter = quest->instanceData.begin(); iter != quest->instanceData.end(); ++iter) {
+            RE::BGSQuestInstanceText* instanceText = *iter;
+            if (!instanceText) {
+                continue;
+            }
+
+            for (auto textIter = instanceText->stringData.begin(); textIter != instanceText->stringData.end(); ++textIter) {
+                RE::TESForm* resolved = RE::TESForm::LookupByID(textIter->fullNameFormID);
+                if (!resolved || !resolved->GetName() || !resolved->GetName()[0]) {
+                    continue;
+                }
+
+                aliasText[textIter->aliasID] = std::string(resolved->GetName());
+            }
+        }
+
+        return aliasText;
+    }
+
+    json BuildQuestProgressionAliasPayload(RE::TESQuest* quest)
+    {
+        json aliases = json::array();
+        if (!quest) {
+            return aliases;
+        }
+
+        const auto instanceText = BuildQuestProgressionAliasInstanceText(quest);
+
+        for (auto iter = quest->aliases.begin(); iter != quest->aliases.end(); ++iter) {
+            RE::BGSBaseAlias* alias = *iter;
+            if (!alias) {
+                continue;
+            }
+
+            json aliasPayload;
+            aliasPayload["id"] = alias->aliasID;
+            aliasPayload["name"] = std::string(alias->aliasName);
+            aliasPayload["type"] = "unknown";
+
+            auto textIt = instanceText.find(alias->aliasID);
+            if (textIt != instanceText.end() && !textIt->second.empty()) {
+                aliasPayload["display_name"] = textIt->second;
+                aliasPayload["instance_text"] = textIt->second;
+            }
+
+            if (auto* refAlias = skyrim_cast<RE::BGSRefAlias*>(alias)) {
+                aliasPayload["type"] = "reference";
+
+                RE::TESObjectREFR* ref = refAlias->GetReference();
+                if (ref) {
+                    PopulateQuestProgressionFormPayload(aliasPayload, "form_id", "plugin", ref);
+                    aliasPayload["is_actor"] = refAlias->GetActorReference() != nullptr;
+
+                    if (auto* displayName = ref->GetDisplayFullName(); displayName && displayName[0]) {
+                        aliasPayload["display_name"] = std::string(displayName);
+                    } else if (auto* refName = ref->GetName(); refName && refName[0]) {
+                        aliasPayload["display_name"] = std::string(refName);
+                    }
+
+                    if (auto* baseObject = ref->GetBaseObject()) {
+                        PopulateQuestProgressionFormPayload(aliasPayload, "base_form_id", "base_plugin", baseObject);
+                        if (auto* baseName = baseObject->GetName(); baseName && baseName[0]) {
+                            aliasPayload["base_name"] = std::string(baseName);
+                            if (!aliasPayload.contains("display_name")) {
+                                aliasPayload["display_name"] = std::string(baseName);
+                            }
+                        }
+                    }
+                }
+            } else if (skyrim_cast<RE::BGSLocAlias*>(alias)) {
+                aliasPayload["type"] = "location";
+            }
+
+            aliases.push_back(aliasPayload);
+        }
+
+        return aliases;
+    }
+
+    void AddSuppressedInventoryDelta(std::unordered_map<std::string, int>& suppressionMap, const std::string& formKey,
+                                     int count)
+    {
+        if (formKey.empty() || count <= 0) {
+            return;
+        }
+
+        suppressionMap[formKey] += count;
+    }
+
+    int ConsumeSuppressedInventoryDelta(std::unordered_map<std::string, int>& suppressionMap, const std::string& formKey,
+                                        int count)
+    {
+        if (formKey.empty() || count <= 0) {
+            return 0;
+        }
+
+        auto it = suppressionMap.find(formKey);
+        if (it == suppressionMap.end()) {
+            return 0;
+        }
+
+        const int consumed = std::min(it->second, count);
+        it->second -= consumed;
+        if (it->second <= 0) {
+            suppressionMap.erase(it);
+        }
+
+        return consumed;
+    }
+
+    void PostQuestProgressionQuestStage(RE::TESQuest* quest, int stage)
+    {
+        if (!quest || stage < 0) {
+            return;
+        }
+
+        json payload;
+        if (!PopulateQuestProgressionFormPayload(payload, "quest_form_id", "quest_plugin", quest)) {
+            return;
+        }
+
+        std::string questKey = BuildQuestProgressionFormKey(
+            payload.value("quest_plugin", std::string()),
+            payload.value("quest_form_id", std::string()));
+
+        {
+            std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+            auto it = g_questProgressionLastStages.find(questKey);
+            if (it != g_questProgressionLastStages.end() && it->second == stage) {
+                return;
+            }
+            g_questProgressionLastStages[questKey] = stage;
+        }
+
+        if (auto* editorId = quest->GetFormEditorID(); editorId && editorId[0]) {
+            payload["quest_editor_id"] = std::string(editorId);
+        }
+        if (auto* questName = quest->GetName(); questName && questName[0]) {
+            payload["quest_name"] = std::string(questName);
+        }
+        json aliases = BuildQuestProgressionAliasPayload(quest);
+        if (!aliases.empty()) {
+            payload["aliases"] = aliases;
+        }
+        payload["stage"] = stage;
+        PostQuestProgressionEvent("quest_stage", payload);
+    }
+
+    void PostQuestProgressionLocationEntered(RE::TESForm* locationForm)
+    {
+        if (!locationForm) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+            if (g_questProgressionLastLocationFormID == locationForm->GetFormID()) {
+                return;
+            }
+            g_questProgressionLastLocationFormID = locationForm->GetFormID();
+        }
+
+        json payload;
+        if (!PopulateQuestProgressionFormPayload(payload, "form_id", "plugin", locationForm)) {
+            return;
+        }
+        if (locationForm->GetName() && locationForm->GetName()[0]) {
+            payload["location_name"] = std::string(locationForm->GetName());
+        }
+        PostQuestProgressionEvent("location_entered", payload);
+    }
+
+    void PostQuestProgressionActorDead(RE::Actor* actor)
+    {
+        if (!actor) {
+            return;
+        }
+
+        const std::string actorKey = BuildQuestProgressionFormKey(actor);
+        if (actorKey.empty()) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+            if (g_questProgressionDeadActors.contains(actorKey)) {
+                return;
+            }
+            g_questProgressionDeadActors.insert(actorKey);
+        }
+
+        json payload;
+        if (!PopulateQuestProgressionFormPayload(payload, "form_id", "plugin", actor)) {
+            return;
+        }
+        if (actor->GetDisplayFullName() && actor->GetDisplayFullName()[0]) {
+            payload["actor_name"] = std::string(actor->GetDisplayFullName());
+        }
+        PostQuestProgressionEvent("actor_dead", payload);
+    }
+
+    void PostQuestProgressionInventoryDelta(const char* eventType, RE::TESForm* itemForm, int count)
+    {
+        if (!eventType || count <= 0 || !itemForm) {
+            return;
+        }
+
+        json payload;
+        if (!PopulateQuestProgressionFormPayload(payload, "form_id", "plugin", itemForm)) {
+            return;
+        }
+
+        payload["count"] = count;
+        if (itemForm->GetName() && itemForm->GetName()[0]) {
+            payload["name"] = std::string(itemForm->GetName());
+        }
+
+        PostQuestProgressionEvent(eventType, payload);
+    }
+
+    void PostQuestProgressionInventorySync()
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return;
+        }
+
+        json items = json::array();
+        auto inventory = player->GetInventory();
+        for (const auto& entry : inventory) {
+            RE::TESBoundObject* item = entry.first;
+            const auto count = entry.second.first;
+            const std::unique_ptr<RE::InventoryEntryData>& entryData = entry.second.second;
+
+            if (!item || count <= 0) {
+                continue;
+            }
+
+            const std::string pluginName = GetQuestProgressionPluginName(item);
+            if (pluginName.empty()) {
+                continue;
+            }
+
+            std::string itemName;
+            if (auto baseName = item->GetName(); baseName && baseName[0]) {
+                itemName = baseName;
+            }
+
+            if (entryData) {
+                if (auto display = entryData->GetDisplayName(); display && display[0]) {
+                    itemName = display;
+                }
+            }
+
+            items.push_back({
+                {"name", itemName},
+                {"baseid", FormatQuestProgressionFormID(item->GetLocalFormID())},
+                {"plugin", pluginName},
+                {"count", count}
+            });
+        }
+
+        PostQuestProgressionEvent("player_inventory_sync", json{
+            {"items", items}
+        });
+    }
+
+    template <class... Args>
+    bool DispatchQuestProgressionPapyrusCall(const char* functionName, Args... args)
+    {
+        auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm) {
+            logger::error("[QuestProgression] Papyrus VM unavailable for {}", functionName);
+            return false;
+        }
+
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+        auto packedArgs = RE::MakeFunctionArguments(std::move(args)...);
+        const bool dispatched =
+            vm->DispatchStaticCall("AIAgentQuestProgressionBridge", functionName, packedArgs, callback);
+        if (!dispatched) {
+            logger::error("[QuestProgression] Failed dispatching Papyrus bridge call {}", functionName);
+        }
+        return dispatched;
+    }
+
+    struct QuestProgressionActorDialogueStoryEvent
+    {
+        [[nodiscard]] static std::uint32_t& GetIndex()
+        {
+            static std::uint32_t index = 0;
+            return index;
+        }
+
+        RE::ObjectRefHandle actor;
+        RE::ObjectRefHandle target;
+        RE::BGSLocation* location{ nullptr };
+        std::uint32_t value1{ 0 };
+        std::uint32_t value2{ 0 };
+    };
+
+    struct QuestProgressionChangeLocationStoryEvent
+    {
+        [[nodiscard]] static std::uint32_t& GetIndex()
+        {
+            static std::uint32_t index = 0;
+            return index;
+        }
+
+        RE::ObjectRefHandle actor;
+        RE::BGSLocation* oldLocation{ nullptr };
+        RE::BGSLocation* newLocation{ nullptr };
+    };
+
+    json BuildQuestProgressionQuestState(RE::FormID questFormID)
+    {
+        json state = json::object();
+        state["runtime_quest_form_id"] = questFormID;
+
+        auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questFormID);
+        state["quest_found"] = quest != nullptr;
+        if (!quest) {
+            return state;
+        }
+
+        const char* editorID = quest->formEditorID.c_str();
+        if (editorID && editorID[0] != '\0') {
+            state["quest_editor_id"] = editorID;
+        }
+        state["running"] = quest->IsRunning();
+        state["starting"] = quest->IsStarting();
+        state["stopped"] = quest->IsStopped();
+        state["stopping"] = quest->IsStopping();
+        state["enabled"] = quest->IsEnabled();
+        state["completed"] = quest->IsCompleted();
+        state["current_stage"] = quest->GetCurrentStageID();
+        return state;
+    }
+
+    RE::Actor* ResolveQuestProgressionActor(RE::FormID actorFormID, const std::string& actorName, json& result)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            result["actor_resolution_error"] = "player unavailable";
+            return nullptr;
+        }
+
+        if (actorFormID) {
+            if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormID)) {
+                result["runtime_actor_form_id"] = actor->formID;
+                return actor;
+            }
+            result["requested_actor_form_id"] = actorFormID;
+        }
+
+        std::string actorNameCn = trim(actorName);
+        if (!actorNameCn.empty()) {
+            if (auto* ref = findActorInCell(actorNameCn, player->GetParentCell(), player, 6000.0f, false)) {
+                if (auto* actor = ref->As<RE::Actor>()) {
+                    result["runtime_actor_form_id"] = actor->formID;
+                    result["resolved_actor_name"] = actorNameCn;
+                    return actor;
+                }
+            }
+            result["requested_actor_name"] = actorNameCn;
+        }
+
+        result["runtime_actor_form_id"] = player->formID;
+        result["actor_resolution_fallback"] = "player";
+        return player;
+    }
+
+    bool WaitForQuestProgressionRunning(RE::FormID questFormID, int waitMs, json& result)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, waitMs));
+        while (true) {
+            json questState = BuildQuestProgressionQuestState(questFormID);
+            result["quest_state"] = questState;
+            if (questState.value("quest_found", false) && questState.value("running", false)) {
+                return true;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                result["error"] = "quest did not start from story event";
+                result["verified"] = false;
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    bool WaitForQuestProgressionStage(RE::FormID questFormID, int expectedStage, int waitMs, json& result)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, waitMs));
+        while (true) {
+            json questState = BuildQuestProgressionQuestState(questFormID);
+            result["quest_state"] = questState;
+            const bool reachedStage =
+                questState.value("quest_found", false) &&
+                questState.value("running", false) &&
+                questState.value("current_stage", -1) >= expectedStage;
+            if (reachedStage) {
+                result["verified"] = true;
+                result["stage"] = expectedStage;
+                return true;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                result["error"] = "quest did not reach expected stage";
+                result["verified"] = false;
+                result["expected_stage"] = expectedStage;
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    bool ResolveQuestProgressionStoryEventIndex(RE::QuestEvent eventType, const char uniqueID[4], std::uint32_t& outIndex)
+    {
+        auto* manager = RE::BGSStoryEventManager::GetSingleton();
+        if (!manager) {
+            logger::error("[QuestProgression] Story event manager unavailable");
+            return false;
+        }
+
+        const auto mapped = manager->registeredEventIDs.find(static_cast<std::uint32_t>(eventType));
+        if (mapped != manager->registeredEventIDs.end()) {
+            outIndex = mapped->second;
+            return true;
+        }
+
+        for (std::uint32_t index = 0; index < manager->registeredEvents.size(); ++index) {
+            const auto& registered = manager->registeredEvents[index];
+            if (std::memcmp(registered.uniqueID, uniqueID, 4) == 0) {
+                outIndex = index;
+                return true;
+            }
+        }
+
+        logger::error("[QuestProgression] Story event {}{}{}{} is not registered",
+                      uniqueID[0], uniqueID[1], uniqueID[2], uniqueID[3]);
+        return false;
+    }
+
+    bool SendQuestProgressionActorDialogueStoryEvent(RE::FormID actorFormID, const std::string& actorName, json& result)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* actor = ResolveQuestProgressionActor(actorFormID, actorName, result);
+        auto* manager = RE::BGSStoryEventManager::GetSingleton();
+        if (!actor || !player || !manager) {
+            result["error"] = "missing actor, player, or story event manager";
+            result["runtime_actor_form_id"] = actorFormID;
+            return false;
+        }
+
+        std::uint32_t eventIndex = 0;
+        constexpr char actorDialogueID[4] = { 'A', 'D', 'I', 'A' };
+        if (!ResolveQuestProgressionStoryEventIndex(RE::QuestEvent::kActorDialogue, actorDialogueID, eventIndex)) {
+            result["error"] = "actor dialogue story event not registered";
+            return false;
+        }
+
+        QuestProgressionActorDialogueStoryEvent::GetIndex() = eventIndex;
+        QuestProgressionActorDialogueStoryEvent event;
+        event.actor = actor->GetHandle();
+        event.target = player->GetHandle();
+        event.location = actor->GetCurrentLocation();
+        if (!event.location) {
+            event.location = player->GetCurrentLocation();
+        }
+
+        const std::uint32_t queuedID = manager->AddEvent(event);
+        logger::info("[QuestProgression] Queued ActorDialogue story event actor={:08X} target={:08X} eventIndex={} queuedID={}",
+                     actor->formID, player->formID, eventIndex, queuedID);
+
+        result["runtime_actor_form_id"] = actor->formID;
+        result["story_event"] = "ADIA";
+        result["story_event_index"] = eventIndex;
+        result["story_event_queued_id"] = queuedID;
+        if (event.location) {
+            result["runtime_location_form_id"] = event.location->formID;
+        }
+        return true;
+    }
+
+    bool SendQuestProgressionChangeLocationStoryEvent(RE::FormID actorFormID, const std::string& actorName,
+                                                      RE::FormID locationFormID,
+                                                      RE::FormID oldLocationFormID, json& result)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* actor = ResolveQuestProgressionActor(actorFormID, actorName, result);
+        auto* manager = RE::BGSStoryEventManager::GetSingleton();
+        if (!actor || !player || !manager) {
+            result["error"] = "missing actor, player, or story event manager";
+            result["runtime_actor_form_id"] = actorFormID;
+            return false;
+        }
+
+        auto* newLocation = locationFormID ? RE::TESForm::LookupByID<RE::BGSLocation>(locationFormID) : nullptr;
+        if (!newLocation) {
+            newLocation = actor->GetCurrentLocation();
+        }
+        if (!newLocation) {
+            newLocation = player->GetCurrentLocation();
+        }
+        if (!newLocation) {
+            result["error"] = "missing change-location destination";
+            result["runtime_actor_form_id"] = actor->formID;
+            return false;
+        }
+
+        auto* oldLocation = oldLocationFormID ? RE::TESForm::LookupByID<RE::BGSLocation>(oldLocationFormID) : nullptr;
+        std::uint32_t eventIndex = 0;
+        constexpr char changeLocationID[4] = { 'C', 'L', 'O', 'C' };
+        if (!ResolveQuestProgressionStoryEventIndex(RE::QuestEvent::kChangeLocation, changeLocationID, eventIndex)) {
+            result["error"] = "change location story event not registered";
+            return false;
+        }
+
+        QuestProgressionChangeLocationStoryEvent::GetIndex() = eventIndex;
+        QuestProgressionChangeLocationStoryEvent event;
+        event.actor = actor->GetHandle();
+        event.oldLocation = oldLocation;
+        event.newLocation = newLocation;
+
+        const std::uint32_t queuedID = manager->AddEvent(event);
+        logger::info("[QuestProgression] Queued ChangeLocation story event actor={:08X} oldLocation={:08X} newLocation={:08X} eventIndex={} queuedID={}",
+                     actor->formID, oldLocation ? oldLocation->formID : 0, newLocation->formID, eventIndex, queuedID);
+
+        result["runtime_actor_form_id"] = actor->formID;
+        result["story_event"] = "CLOC";
+        result["story_event_index"] = eventIndex;
+        result["story_event_queued_id"] = queuedID;
+        result["runtime_location_form_id"] = newLocation->formID;
+        if (oldLocation) {
+            result["runtime_old_location_form_id"] = oldLocation->formID;
+        }
+        return true;
+    }
+
+    bool EnsureQuestProgressionQuestStarted(RE::FormID questFormID, int waitMs, json& result)
+    {
+        auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questFormID);
+        if (!quest) {
+            result["error"] = "quest not found for native startup";
+            result["runtime_quest_form_id"] = questFormID;
+            return false;
+        }
+
+        bool ensureQuestResult = false;
+        const bool ensureReturned = quest->EnsureQuestStarted(ensureQuestResult, true);
+        result["ensure_quest_started_return"] = ensureReturned;
+        result["ensure_quest_started_result"] = ensureQuestResult;
+
+        if (auto* storyTeller = RE::BGSStoryTeller::GetSingleton()) {
+            if (!quest->IsRunning() || quest->IsStopped()) {
+                storyTeller->BeginStartUpQuest(quest);
+                result["begin_startup_quest_called"] = true;
+            }
+        } else {
+            result["begin_startup_quest_error"] = "story teller unavailable";
+        }
+
+        if (waitMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+        }
+        result["quest_state_after_native_start"] = BuildQuestProgressionQuestState(questFormID);
+        return true;
+    }
+
+    QuestActionExecutionResult ExecuteQuestProgressionAction(const json& action)
+    {
+        QuestActionExecutionResult execution;
+        execution.result = json::object();
+
+        if (!action.is_object()) {
+            execution.result["error"] = "invalid action payload";
+            return execution;
+        }
+
+        const std::string actionType = action.value("action_type", std::string());
+        const json payload = action.value("payload", json::object());
+        execution.result["action_type"] = actionType;
+
+        auto resolvePayloadForm = [&payload](const char* formField, const char* pluginField) -> RE::FormID {
+            if (!payload.contains(formField) || !payload[formField].is_string()) {
+                return 0;
+            }
+            return ResolveQuestProgressionRuntimeFormID(
+                payload.value(pluginField, std::string()),
+                payload.value(formField, std::string()));
+        };
+
+        auto finishSuccess = [&execution](const json& extraResult = json::object()) {
+            execution.success = true;
+            execution.status = "applied";
+            execution.result["applied_by"] = "skse_plugin";
+            for (auto it = extraResult.begin(); it != extraResult.end(); ++it) {
+                execution.result[it.key()] = it.value();
+            }
+        };
+
+        if (actionType == "set_stage") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const int stage = payload.value("stage", -1);
+            if (!questFormID || stage < 0) {
+                execution.result["error"] = "missing quest or stage";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("SetQuestStage", static_cast<int>(questFormID), stage)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_quest_form_id", questFormID}, {"stage", stage}});
+            return execution;
+        }
+
+        if (actionType == "set_objective_completed" || actionType == "cross_quest_set_objective_completed") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const int objectiveIndex = payload.value("index", -1);
+            const bool completed = payload.value("completed", true);
+            if (!questFormID || objectiveIndex < 0) {
+                execution.result["error"] = "missing quest or objective index";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("SetQuestObjectiveCompleted", static_cast<int>(questFormID),
+                                                     objectiveIndex, completed)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_quest_form_id", questFormID}, {"objective_index", objectiveIndex}});
+            return execution;
+        }
+
+        if (actionType == "set_objective_displayed") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const int objectiveIndex = payload.value("index", -1);
+            const bool displayed = payload.value("displayed", true);
+            const bool forceDisplayed = payload.value("force_displayed", false);
+            if (!questFormID || objectiveIndex < 0) {
+                execution.result["error"] = "missing quest or objective index";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("SetQuestObjectiveDisplayed", static_cast<int>(questFormID),
+                                                     objectiveIndex, displayed, forceDisplayed)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_quest_form_id", questFormID}, {"objective_index", objectiveIndex}});
+            return execution;
+        }
+
+        if (actionType == "fail_all_objectives") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            if (!questFormID) {
+                execution.result["error"] = "missing quest";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("FailAllQuestObjectives", static_cast<int>(questFormID))) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_quest_form_id", questFormID}});
+            return execution;
+        }
+
+        if (actionType == "cross_quest_start") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            if (!questFormID) {
+                execution.result["error"] = "missing quest";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("StartQuest", static_cast<int>(questFormID))) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_quest_form_id", questFormID}});
+            return execution;
+        }
+
+        if (actionType == "start_quest_stage_objective") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const int stage = payload.value("stage", -1);
+            const int objectiveIndex = payload.value("objective_index", -1);
+            const int verifyWaitMs = std::max(0, payload.value("verify_wait_ms", 1500));
+            if (!questFormID || stage < 0 || objectiveIndex < 0) {
+                execution.result["error"] = "missing quest, stage, or objective index";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("StartQuestStageObjective", static_cast<int>(questFormID), stage,
+                                                     objectiveIndex)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            if (!WaitForQuestProgressionStage(questFormID, stage, verifyWaitMs, execution.result)) {
+                return execution;
+            }
+            finishSuccess({
+                {"runtime_quest_form_id", questFormID},
+                {"stage", stage},
+                {"objective_index", objectiveIndex}
+            });
+            return execution;
+        }
+
+        if (actionType == "actor_dialogue_start_quest_stage_objective") {
+            const RE::FormID actorFormID = resolvePayloadForm("actor_form_id", "actor_plugin");
+            const std::string actorName = payload.value("actor_name", payload.value("npc_name", std::string()));
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const int stage = payload.value("stage", -1);
+            const int objectiveIndex = payload.value("objective_index", -1);
+            const int waitMs = std::max(0, payload.value("story_event_wait_ms", 500));
+            const int verifyWaitMs = std::max(0, payload.value("verify_wait_ms", 1500));
+            if ((!actorFormID && trim(actorName).empty()) || !questFormID || stage < 0 || objectiveIndex < 0) {
+                execution.result["error"] = "missing actor, quest, stage, or objective index";
+                return execution;
+            }
+            execution.result["quest_state_before"] = BuildQuestProgressionQuestState(questFormID);
+            if (!SendQuestProgressionActorDialogueStoryEvent(actorFormID, actorName, execution.result)) {
+                return execution;
+            }
+            if (waitMs > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+            }
+            execution.result["quest_state_after_story_event"] = BuildQuestProgressionQuestState(questFormID);
+            if (!DispatchQuestProgressionPapyrusCall("StartQuestStageObjective", static_cast<int>(questFormID), stage,
+                                                     objectiveIndex)) {
+                execution.result["error"] = "papyrus dispatch failed after actor dialogue story event";
+                return execution;
+            }
+            if (!WaitForQuestProgressionStage(questFormID, stage, verifyWaitMs, execution.result)) {
+                return execution;
+            }
+            finishSuccess({
+                {"runtime_quest_form_id", questFormID},
+                {"stage", stage},
+                {"objective_index", objectiveIndex}
+            });
+            return execution;
+        }
+
+        if (actionType == "change_location_start_quest_stage_objective") {
+            const RE::FormID actorFormID = resolvePayloadForm("actor_form_id", "actor_plugin");
+            const std::string actorName = payload.value("actor_name", payload.value("npc_name", std::string()));
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            const RE::FormID locationFormID = resolvePayloadForm("location_form_id", "location_plugin");
+            const RE::FormID oldLocationFormID = resolvePayloadForm("old_location_form_id", "old_location_plugin");
+            const int stage = payload.value("stage", -1);
+            const int objectiveIndex = payload.value("objective_index", -1);
+            const int waitMs = std::max(0, payload.value("story_event_wait_ms", 1000));
+            const int verifyWaitMs = std::max(0, payload.value("verify_wait_ms", 1500));
+            const int nativeStartWaitMs = std::max(0, payload.value("native_start_wait_ms", 750));
+            if (!questFormID || stage < 0 || objectiveIndex < 0) {
+                execution.result["error"] = "missing quest, stage, or objective index";
+                return execution;
+            }
+
+            execution.result["quest_state_before"] = BuildQuestProgressionQuestState(questFormID);
+            if (execution.result["quest_state_before"].value("current_stage", -1) >= stage) {
+                execution.result["verified"] = true;
+                finishSuccess({
+                    {"runtime_quest_form_id", questFormID},
+                    {"stage", stage},
+                    {"objective_index", objectiveIndex},
+                    {"already_at_stage", true}
+                });
+                return execution;
+            }
+
+            if (!SendQuestProgressionChangeLocationStoryEvent(actorFormID, actorName, locationFormID, oldLocationFormID,
+                                                               execution.result)) {
+                return execution;
+            }
+            if (waitMs > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+            }
+            execution.result["quest_state_after_story_event"] = BuildQuestProgressionQuestState(questFormID);
+            if (payload.value("native_ensure_start", true)) {
+                if (!EnsureQuestProgressionQuestStarted(questFormID, nativeStartWaitMs, execution.result)) {
+                    return execution;
+                }
+            }
+
+            if (!DispatchQuestProgressionPapyrusCall("SetQuestStageObjective", static_cast<int>(questFormID), stage,
+                                                     objectiveIndex)) {
+                execution.result["error"] = "papyrus stage/objective dispatch failed after change location story event";
+                return execution;
+            }
+            if (!WaitForQuestProgressionStage(questFormID, stage, verifyWaitMs, execution.result)) {
+                return execution;
+            }
+            finishSuccess({
+                {"runtime_quest_form_id", questFormID},
+                {"stage", stage},
+                {"objective_index", objectiveIndex}
+            });
+            return execution;
+        }
+
+        if (actionType == "console_command") {
+            const std::string command = payload.value("command", std::string());
+            if (command.empty()) {
+                execution.result["error"] = "missing command";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("ExecuteConsoleCommand", command)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"command", command}});
+            return execution;
+        }
+
+        if (actionType == "console_command_sequence") {
+            std::vector<std::string> commands;
+            if (payload.contains("commands") && payload["commands"].is_array()) {
+                for (const auto& commandValue : payload["commands"]) {
+                    if (commandValue.is_string()) {
+                        std::string command = commandValue.get<std::string>();
+                        if (!command.empty()) {
+                            commands.push_back(std::move(command));
+                        }
+                    }
+                }
+            }
+
+            std::string commandSequence = payload.value("command_sequence", std::string());
+            if (commandSequence.empty() && !commands.empty()) {
+                for (std::size_t index = 0; index < commands.size(); ++index) {
+                    if (index > 0) {
+                        commandSequence += "||";
+                    }
+                    commandSequence += commands[index];
+                }
+            }
+
+            if (commandSequence.empty()) {
+                execution.result["error"] = "missing commands";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("ExecuteConsoleCommandSequence", commandSequence)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"command_sequence", commandSequence}});
+            return execution;
+        }
+
+        if (actionType == "stop_quest") {
+            const RE::FormID questFormID = resolvePayloadForm("quest_form_id", "quest_plugin");
+            if (!questFormID) {
+                execution.result["error"] = "missing quest";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("StopQuest", static_cast<int>(questFormID))) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_quest_form_id", questFormID}});
+            return execution;
+        }
+
+        if (actionType == "start_scene") {
+            const RE::FormID sceneFormID = resolvePayloadForm("form_id", "plugin");
+            if (!sceneFormID) {
+                execution.result["error"] = "missing scene";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("StartScene", static_cast<int>(sceneFormID))) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_scene_form_id", sceneFormID}});
+            return execution;
+        }
+
+        if (actionType == "set_actor_value") {
+            const RE::FormID actorFormID = resolvePayloadForm("actor_form_id", "plugin");
+            const std::string actorValue = payload.value("av", std::string());
+            const float value = payload.value("value", 0.0f);
+            if (!actorFormID || actorValue.empty()) {
+                execution.result["error"] = "missing actor or actor value";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("SetActorValue", static_cast<int>(actorFormID), actorValue,
+                                                     value)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_actor_form_id", actorFormID}, {"actor_value", actorValue}});
+            return execution;
+        }
+
+        if (actionType == "set_ghost") {
+            const RE::FormID actorFormID = resolvePayloadForm("actor_form_id", "plugin");
+            const bool ghost = payload.value("ghost", true);
+            if (!actorFormID) {
+                execution.result["error"] = "missing actor";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("SetActorGhost", static_cast<int>(actorFormID), ghost)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_actor_form_id", actorFormID}, {"ghost", ghost}});
+            return execution;
+        }
+
+        if (actionType == "evaluate_package") {
+            const RE::FormID actorFormID = resolvePayloadForm("actor_form_id", "plugin");
+            if (!actorFormID) {
+                execution.result["error"] = "missing actor";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("EvaluateActorPackage", static_cast<int>(actorFormID))) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_actor_form_id", actorFormID}});
+            return execution;
+        }
+
+        if (actionType == "remove_item" || actionType == "add_item") {
+            const std::string target = QuestProgressionToLower(payload.value("target", std::string("player")));
+            const RE::FormID itemFormID = resolvePayloadForm("item_form_id", "plugin");
+            const int count = std::max(payload.value("count", 1), 1);
+            const bool silent = payload.value("silent", false);
+            if (!itemFormID) {
+                execution.result["error"] = "missing item";
+                return execution;
+            }
+            if (target != "player") {
+                execution.result["error"] = "unsupported inventory target";
+                return execution;
+            }
+
+            const char* functionName = (actionType == "remove_item") ? "RemoveItemFromPlayer" : "AddItemToPlayer";
+            if (!DispatchQuestProgressionPapyrusCall(functionName, static_cast<int>(itemFormID), count, silent)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+                const std::string formKey = BuildQuestProgressionFormKey(
+                    payload.value("plugin", std::string()),
+                    payload.value("item_form_id", std::string()));
+                if (actionType == "remove_item") {
+                    AddSuppressedInventoryDelta(g_questProgressionSuppressedRemovals, formKey, count);
+                } else {
+                    AddSuppressedInventoryDelta(g_questProgressionSuppressedAdds, formKey, count);
+                }
+            }
+
+            finishSuccess({{"runtime_item_form_id", itemFormID}, {"count", count}});
+            return execution;
+        }
+
+        if (actionType == "enable_ref") {
+            const RE::FormID refFormID = resolvePayloadForm("form_id", "plugin");
+            const bool fadeIn = payload.value("fade_in", false);
+            if (!refFormID) {
+                execution.result["error"] = "missing reference";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("EnableReference", static_cast<int>(refFormID), fadeIn)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_ref_form_id", refFormID}});
+            return execution;
+        }
+
+        if (actionType == "set_relationship_rank") {
+            const RE::FormID actorFormID = resolvePayloadForm("actor_form_id", "plugin");
+            const int rank = payload.value("rank", 0);
+            const std::string target = QuestProgressionToLower(payload.value("target", std::string("player")));
+            if (!actorFormID) {
+                execution.result["error"] = "missing actor";
+                return execution;
+            }
+            if (target != "player") {
+                execution.result["error"] = "unsupported relationship target";
+                return execution;
+            }
+            if (!DispatchQuestProgressionPapyrusCall("SetActorRelationshipToPlayer", static_cast<int>(actorFormID),
+                                                     rank)) {
+                execution.result["error"] = "papyrus dispatch failed";
+                return execution;
+            }
+            finishSuccess({{"runtime_actor_form_id", actorFormID}, {"rank", rank}});
+            return execution;
+        }
+
+        execution.result["error"] = "unsupported action type";
+        return execution;
+    }
+
+    void QueueQuestProgressionAction(const json& action)
+    {
+        if (!action.is_object()) {
+            return;
+        }
+
+        const std::int64_t actionID = action.value("id", static_cast<std::int64_t>(0));
+        if (actionID <= 0) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+            if (g_questProgressionActionsInFlight.contains(actionID)) {
+                return;
+            }
+            g_questProgressionActionsInFlight.insert(actionID);
+        }
+
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            HTTPManager::postGameData("gamedata.php", json{
+                {"type", "quest_action_ack"},
+                {"action_id", actionID},
+                {"status", "failed"},
+                {"result", {{"error", "task interface unavailable"}, {"applied_by", "skse_plugin"}}}
+            });
+            std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+            g_questProgressionActionsInFlight.erase(actionID);
+            return;
+        }
+
+        taskInterface->AddTask([action, actionID]() {
+            QuestActionExecutionResult execution;
+            if (!AIQuestProgressionEnabled || !pluginInited) {
+                execution.success = false;
+                execution.status = "failed";
+                execution.result = {
+                    {"error", "quest progression disabled before execution"},
+                    {"applied_by", "skse_plugin"}
+                };
+            } else {
+                execution = ExecuteQuestProgressionAction(action);
+            }
+            HTTPManager::postGameData("gamedata.php", json{
+                {"type", "quest_action_ack"},
+                {"action_id", actionID},
+                {"status", execution.status},
+                {"result", execution.result}
+            });
+
+            std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+            g_questProgressionActionsInFlight.erase(actionID);
+        });
+    }
+
+    void SyncQuestProgressionState(bool includeInventory, const char* reason)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return;
+        }
+
+        logger::info("[QuestProgression] Running full resync ({}, includeInventory={})",
+                     reason ? reason : "unspecified", includeInventory);
+
+        if (auto* cell = player->GetParentCell()) {
+            PostQuestProgressionLocationEntered(cell);
+        }
+
+        auto* storyTeller = RE::BGSStoryTeller::GetSingleton();
+        if (storyTeller) {
+            for (std::size_t i = 0; i < storyTeller->infoClearQuests.size(); ++i) {
+                RE::TESQuest* quest = storyTeller->infoClearQuests[i];
+                if (!quest || !quest->IsActive() || quest->IsCompleted() || !quest->IsEnabled()) {
+                    continue;
+                }
+                PostQuestProgressionQuestStage(quest, quest->GetCurrentStageID());
+            }
+        }
+
+        if (includeInventory) {
+            PostQuestProgressionInventorySync();
+        }
+    }
+}
+
+void ResetQuestProgressionBridgeState()
+{
+    std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+    g_questProgressionLastStages.clear();
+    g_questProgressionDeadActors.clear();
+    g_questProgressionSuppressedAdds.clear();
+    g_questProgressionSuppressedRemovals.clear();
+    g_questProgressionActionsInFlight.clear();
+    g_questProgressionLastLocationFormID = 0;
+    g_questProgressionResyncScheduled = false;
+    g_questProgressionResyncIncludeInventory = true;
+    g_questProgressionResyncDueAt = std::chrono::steady_clock::time_point::max();
+    g_questProgressionLastPollAt = std::chrono::steady_clock::time_point::min();
+    g_questProgressionLastStatusPollAt = std::chrono::steady_clock::time_point::min();
+}
+
+void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory)
+{
+    if (!AIQuestProgressionEnabled) {
+        return;
+    }
+
+    const auto dueAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(delayMs, 0));
+    {
+        std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+        if (!g_questProgressionResyncScheduled || dueAt < g_questProgressionResyncDueAt) {
+            g_questProgressionResyncDueAt = dueAt;
+        }
+        g_questProgressionResyncScheduled = true;
+        g_questProgressionResyncIncludeInventory =
+            g_questProgressionResyncIncludeInventory || includeInventory;
+    }
+
+    logger::info("[QuestProgression] Scheduled full resync in {} ms ({}, includeInventory={})",
+                 std::max(delayMs, 0), reason ? reason : "unspecified", includeInventory);
+}
+
+static void MaybeRunScheduledQuestProgressionResync()
+{
+    if (!pluginInited || !AIQuestProgressionEnabled) {
+        return;
+    }
+
+    bool shouldRun = false;
+    bool includeInventory = true;
+    {
+        std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+        if (g_questProgressionResyncScheduled &&
+            std::chrono::steady_clock::now() >= g_questProgressionResyncDueAt) {
+            shouldRun = true;
+            includeInventory = g_questProgressionResyncIncludeInventory;
+            g_questProgressionResyncScheduled = false;
+            g_questProgressionResyncIncludeInventory = true;
+            g_questProgressionResyncDueAt = std::chrono::steady_clock::time_point::max();
+        }
+    }
+
+    if (shouldRun) {
+        SyncQuestProgressionState(includeInventory, "scheduled");
+    }
+}
+
+static void PollQuestProgressionActions()
+{
+    if (!pluginInited || !AIQuestProgressionEnabled) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+        if (g_questProgressionLastPollAt != std::chrono::steady_clock::time_point::min() &&
+            now - g_questProgressionLastPollAt < kQuestProgressionPollInterval) {
+            return;
+        }
+        g_questProgressionLastPollAt = now;
+    }
+
+    json response = HTTPManager::postGameDataJson("gamedata.php", json{
+        {"type", "quest_action_poll"},
+        {"limit", 25}
+    }, 5000);
+
+    if (!response.is_object() || !response.value("ok", false) || !response.contains("actions") ||
+        !response["actions"].is_array()) {
+        return;
+    }
+
+    for (const auto& action : response["actions"]) {
+        QueueQuestProgressionAction(action);
+    }
+}
+
+static void SyncQuestProgressionEnabledFromServer()
+{
+    if (!pluginInited) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+        if (g_questProgressionLastStatusPollAt != std::chrono::steady_clock::time_point::min() &&
+            now - g_questProgressionLastStatusPollAt < kQuestProgressionStatusPollInterval) {
+            return;
+        }
+        g_questProgressionLastStatusPollAt = now;
+    }
+
+    json response = HTTPManager::postGameDataJson("gamedata.php", json{
+        {"type", "quest_status"}
+    }, 1500);
+
+    if (!response.is_object() || !response.contains("enabled") || !response["enabled"].is_boolean()) {
+        return;
+    }
+
+    const bool serverEnabled = response["enabled"].get<bool>();
+    const bool wasEnabled = AIQuestProgressionEnabled;
+    if (wasEnabled == serverEnabled) {
+        return;
+    }
+
+    AIQuestProgressionEnabled = serverEnabled;
+    logger::info("[QuestProgression] Server global setting changed to {}", AIQuestProgressionEnabled);
+    if (AIQuestProgressionEnabled) {
+        ResetQuestProgressionBridgeState();
+        ScheduleQuestProgressionFullResync("server_config_enable", 2500, true);
+    } else {
+        ResetQuestProgressionBridgeState();
+    }
+}
+
 /* EVENT HOOKS. */
 
 OnInit {
@@ -4383,6 +5773,8 @@ OnSaveGame{
         HTTPManager::log(std::format("infoplayer|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), playerinfo));
 
         pluginInited = true;
+        ResetQuestProgressionBridgeState();
+        ScheduleQuestProgressionFullResync("startup_save_init", 4000, true);
     } else {
         HTTPManager::log(std::format("infosave|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp()));
     }
@@ -6001,6 +7393,8 @@ OnLoadedGame {
             logger::info("AIAgentRoleMasterFaction not available - skipping setconf");
         }
         pluginInited = true;
+        ResetQuestProgressionBridgeState();
+        ScheduleQuestProgressionFullResync("loaded_game_initial", 4000, true);
 
         RefreshPlayerInventory(true);
         RefreshPlayerTransformationState(true);
@@ -6109,6 +7503,8 @@ OnLoadedGame {
         RefreshPlayerStats(true);
         RefreshPlayerTransformationState(true);
         RefreshPlayerSpells(true);
+        ResetQuestProgressionBridgeState();
+        ScheduleQuestProgressionFullResync("loaded_game_reload", 4000, true);
 
     }
 
@@ -6160,6 +7556,7 @@ OnLoadingGame {
     ResetGameTimeStamp();
     ManagerMainQueue& mmq = ManagerMainQueue::getInstance();
     mmq.stopThread();
+    ResetQuestProgressionBridgeState();
     pluginInited = false; 
 }
 
@@ -6176,6 +7573,7 @@ OnNewGame {
 
     // Reset game timestamp to allow changes when starting a new game
     ResetGameTimeStamp();
+    ResetQuestProgressionBridgeState();
 
     RE::FormID NullVoiceTypeId = RE::TESDataHandler::GetSingleton()->LookupFormID((RE::FormID)0x1D70E, "AIAgent.esp");
     NullVoiceType = RE::TESForm::LookupByID(NullVoiceTypeId);
@@ -6359,6 +7757,7 @@ EventHandlers {
             auto player = RE::PlayerCharacter::GetSingleton();
 
             RE::TESObjectCELL* cell = player->GetParentCell();
+            PostQuestProgressionLocationEntered(cell);
             auto resultLoc = InspectLocations(player->AsReference());
             
             RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, true);
@@ -6885,6 +8284,9 @@ EventHandlers {
             if (!event->actorDying) return;
             if (!event->actorKiller) {
                 //Died
+                if (event->dead == 0) {
+                    PostQuestProgressionActorDead(event->actorDying.get()->As<RE::Actor>());
+                }
 
                 auto activated = event->actorDying->GetDisplayFullName();
                 std::string victimLegend;
@@ -6912,6 +8314,7 @@ EventHandlers {
             victimRace.append(" lvl: " + std::format("{}",victim->GetLevel()));
             // logger::info("death,{},{},{},{}", GetGameTimeStamp(), GetPlayerLocation(), activator, activated);
             if (event->dead == 0) {  // Died
+                PostQuestProgressionActorDead(event->actorDying.get()->As<RE::Actor>());
                 // Notice ASAP
                 if (event->actorKiller->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
                     // Only player kills
@@ -8322,6 +9725,8 @@ EventHandlers {
         // Quest obtained
         RE::TESForm* qData = RE::TESForm::LookupByID(event->formID);
         RE::TESQuest* qqData = qData->As<RE::TESQuest>();
+        if (!qqData) return;
+        PostQuestProgressionQuestStage(qqData, event->stage);
         
         if (false)
             logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID,
@@ -8462,6 +9867,33 @@ EventHandlers {
          std::string destinationName;
 
          auto itemPointer = RE::TESForm::LookupByID(item);
+         if (itemPointer && event->itemCount > 0) {
+             auto* player = RE::PlayerCharacter::GetSingleton();
+             const RE::FormID playerFormID = player ? player->GetFormID() : 0;
+             const std::string questItemKey = BuildQuestProgressionFormKey(itemPointer);
+             if (destination == playerFormID) {
+                 int forwardedCount = event->itemCount;
+                 {
+                     std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+                     forwardedCount -= ConsumeSuppressedInventoryDelta(
+                         g_questProgressionSuppressedAdds, questItemKey, forwardedCount);
+                 }
+                 if (forwardedCount > 0) {
+                     PostQuestProgressionInventoryDelta("item_acquired", itemPointer, forwardedCount);
+                 }
+             }
+             if (source == playerFormID) {
+                 int forwardedCount = event->itemCount;
+                 {
+                     std::lock_guard<std::mutex> lock(g_questProgressionMutex);
+                     forwardedCount -= ConsumeSuppressedInventoryDelta(
+                         g_questProgressionSuppressedRemovals, questItemKey, forwardedCount);
+                 }
+                 if (forwardedCount > 0) {
+                     PostQuestProgressionInventoryDelta("item_removed", itemPointer, forwardedCount);
+                 }
+             }
+         }
 
          bool log = false;
          int transferValue = 0;
