@@ -5811,6 +5811,16 @@ struct EquipmentSlotItem
 {
     std::string name;
     std::string baseid;
+    json keywords = json::array();
+};
+
+struct InventoryItemSnapshot
+{
+    std::string name;
+    std::string baseid;
+    int count = 0;
+    json keywords = json::array();
+    std::string hashEntry;
 };
 
 struct ModdedEquipmentSlot
@@ -5862,7 +5872,40 @@ static bool HasArmorSlot(RE::TESObjectARMO* armor, RE::BGSBipedObjectForm::Biped
     return (slotMask & static_cast<uint64_t>(slot)) != 0;
 }
 
-static void AddModdedEquipmentSlots(RE::TESObjectARMO* armor, const std::string& itemName, const std::string& baseID, std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment)
+static json CollectItemKeywords(RE::TESBoundObject* boundObject)
+{
+    json keywords = json::array();
+    if (!boundObject) {
+        return keywords;
+    }
+
+    auto* keywordForm = boundObject->As<RE::BGSKeywordForm>();
+    if (!keywordForm) {
+        return keywords;
+    }
+
+    std::set<std::string> seen;
+    for (auto* keyword : keywordForm->GetKeywords()) {
+        if (!keyword) {
+            continue;
+        }
+
+        std::string keywordID;
+        if (const char* editorID = keyword->GetFormEditorID(); editorID && editorID[0]) {
+            keywordID = editorID;
+        } else {
+            keywordID = std::format("{:08X}", keyword->GetFormID());
+        }
+
+        if (!keywordID.empty() && seen.insert(keywordID).second) {
+            keywords.push_back(keywordID);
+        }
+    }
+
+    return keywords;
+}
+
+static void AddModdedEquipmentSlots(RE::TESObjectARMO* armor, const std::string& itemName, const std::string& baseID, const json& keywords, std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment)
 {
     if (!armor || itemName.empty()) {
         return;
@@ -5870,7 +5913,7 @@ static void AddModdedEquipmentSlots(RE::TESObjectARMO* armor, const std::string&
 
     for (const auto& slot : kModdedEquipmentSlots) {
         if (HasArmorSlot(armor, slot.slot)) {
-            moddedEquipment[slot.key] = {itemName, baseID};
+            moddedEquipment[slot.key] = {itemName, baseID, keywords};
         }
     }
 }
@@ -5890,7 +5933,7 @@ static bool HasAnyModdedEquipmentSlot(RE::TESObjectARMO* armor)
     return false;
 }
 
-static void ApplyLegacyModdedEquipmentSlot(const std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment, const std::string& key, std::string& itemName, std::string& baseID)
+static void ApplyLegacyModdedEquipmentSlot(const std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment, const std::string& key, std::string& itemName, std::string& baseID, json& keywords)
 {
     auto found = moddedEquipment.find(key);
     if (found == moddedEquipment.end()) {
@@ -5899,6 +5942,16 @@ static void ApplyLegacyModdedEquipmentSlot(const std::unordered_map<std::string,
 
     itemName = found->second.name;
     baseID = found->second.baseid;
+    keywords = found->second.keywords;
+}
+
+static json BuildEquipmentItemJson(const std::string& name, const std::string& baseID, const json& keywords)
+{
+    return {
+        {"name", name},
+        {"baseid", baseID},
+        {"keywords", keywords.is_array() ? keywords : json::array()}
+    };
 }
 
 static void AddModdedEquipmentToJson(json& equipmentJson, const std::unordered_map<std::string, EquipmentSlotItem>& moddedEquipment)
@@ -5907,7 +5960,8 @@ static void AddModdedEquipmentToJson(json& equipmentJson, const std::unordered_m
         auto found = moddedEquipment.find(slot.key);
         const std::string name = found != moddedEquipment.end() ? found->second.name : "";
         const std::string baseID = found != moddedEquipment.end() ? found->second.baseid : "";
-        equipmentJson[slot.key] = {{"name", name}, {"baseid", baseID}};
+        const json keywords = found != moddedEquipment.end() ? found->second.keywords : json::array();
+        equipmentJson[slot.key] = BuildEquipmentItemJson(name, baseID, keywords);
     }
 }
 
@@ -5918,7 +5972,7 @@ static std::string BuildModdedEquipmentHash(const std::unordered_map<std::string
         auto found = moddedEquipment.find(slot.key);
         hash.append("|").append(slot.key).append("=");
         if (found != moddedEquipment.end()) {
-            hash.append(found->second.name).append("^").append(found->second.baseid);
+            hash.append(found->second.name).append("^").append(found->second.baseid).append("^").append(found->second.keywords.dump());
         }
     }
 
@@ -5971,6 +6025,17 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
     std::string rightHand, rightHand_baseid;
 
     std::string shirt, shirt_baseid;
+    json helmet_keywords = json::array();
+    json armor_keywords = json::array();
+    json boots_keywords = json::array();
+    json gloves_keywords = json::array();
+    json amulet_keywords = json::array();
+    json ring_keywords = json::array();
+    json cape_keywords = json::array();
+    json backpack_keywords = json::array();
+    json leftHand_keywords = json::array();
+    json rightHand_keywords = json::array();
+    json shirt_keywords = json::array();
     std::unordered_map<std::string, EquipmentSlotItem> moddedEquipment;
     // Declare these outside try block so they can be used after
     std::string equipment;
@@ -6035,6 +6100,7 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
 
             // Get baseid (FormID in hex format)
             std::string baseID = std::format("{:08X}", boundObject->GetFormID());
+            json itemKeywords = CollectItemKeywords(boundObject);
 
             //  Check for custom name in InventoryEntryData and ExtraDataList
             if (entryData) {
@@ -6060,55 +6126,66 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             }
 
             if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
-                AddModdedEquipmentSlots(armorItem, itemName, baseID, moddedEquipment);
+                AddModdedEquipmentSlots(armorItem, itemName, baseID, itemKeywords, moddedEquipment);
             }
 
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
+                ring_keywords = itemKeywords;
             } else if (IsWornHeadgear(npc, boundObject)) {
                 helmet.assign(itemName);
                 helmet_baseid.assign(baseID);
+                helmet_keywords = itemKeywords;
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
                 amulet.assign(itemName);
                 amulet_baseid.assign(baseID);
+                amulet_keywords = itemKeywords;
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kBody) == boundObject) {
                 armor.assign(itemName);
                 armor_baseid.assign(baseID);
+                armor_keywords = itemKeywords;
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands) == boundObject) {
                 gloves.assign(itemName);
                 gloves_baseid.assign(baseID);
+                gloves_keywords = itemKeywords;
             } else if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kFeet) == boundObject) {
                 boots.assign(itemName);
                 boots_baseid.assign(baseID);
+                boots_keywords = itemKeywords;
             } else if (npc->GetEquippedObject(false) == boundObject) {
                 rightHand.assign(itemName);
                 rightHand_baseid.assign(baseID);
+                rightHand_keywords = itemKeywords;
             } else if (npc->GetEquippedObject(true) == boundObject) {
                 leftHand.assign(itemName);
                 leftHand_baseid.assign(baseID);
+                leftHand_keywords = itemKeywords;
             } else {
                 // Check if it's cape or backpack
                 if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
                     if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary)) {
                         cape.assign(itemName);
                         cape_baseid.assign(baseID);
+                        cape_keywords = itemKeywords;
                     }
                     if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModBack)) {
                         backpack.assign(itemName);
                         backpack_baseid.assign(baseID);
+                        backpack_keywords = itemKeywords;
                     }
                     if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestSecondary)) {
                         shirt.assign(itemName);
                         shirt_baseid.assign(baseID);
+                        shirt_keywords = itemKeywords;
                     }
                 }
             }
         }
 
-        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "cape", cape, cape_baseid);
-        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "backpack", backpack, backpack_baseid);
-        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "shirt", shirt, shirt_baseid);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "cape", cape, cape_baseid, cape_keywords);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "backpack", backpack, backpack_baseid, backpack_keywords);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "shirt", shirt, shirt_baseid, shirt_keywords);
 
         // Build equipment string with baseids (format: name^baseid)
         equipment.append(!helmet.empty() ? helmet + "^" + helmet_baseid : "").append("@");
@@ -6149,6 +6226,18 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
             !shirt.empty() ? shirt : "", 
             !shirt.empty() ? shirt_baseid : ""
         );
+        equipmentHash.append("|keywords=")
+            .append(helmet_keywords.dump()).append("|")
+            .append(armor_keywords.dump()).append("|")
+            .append(boots_keywords.dump()).append("|")
+            .append(gloves_keywords.dump()).append("|")
+            .append(amulet_keywords.dump()).append("|")
+            .append(ring_keywords.dump()).append("|")
+            .append(cape_keywords.dump()).append("|")
+            .append(backpack_keywords.dump()).append("|")
+            .append(leftHand_keywords.dump()).append("|")
+            .append(rightHand_keywords.dump()).append("|")
+            .append(shirt_keywords.dump());
         equipmentHash.append(BuildModdedEquipmentHash(moddedEquipment));
         
         logger::debug("[EQUIPMENT {}", equipmentHash);
@@ -6180,16 +6269,16 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
     equipmentData["timestamp"] = getCurrentTimeMillis();
     equipmentData["gamets"] = GetGameTimeStamp();
     equipmentData["equipment"] = {
-        {"helmet", {{"name", helmet}, {"baseid", helmet_baseid}}},
-        {"armor", {{"name", armor}, {"baseid", armor_baseid}}},
-        {"boots", {{"name", boots}, {"baseid", boots_baseid}}},
-        {"gloves", {{"name", gloves}, {"baseid", gloves_baseid}}},
-        {"amulet", {{"name", amulet}, {"baseid", amulet_baseid}}},
-        {"ring", {{"name", ring}, {"baseid", ring_baseid}}},
-        {"cape", {{"name", cape}, {"baseid", cape_baseid}}},
-        {"backpack", {{"name", backpack}, {"baseid", backpack_baseid}}},
-        {"left_hand", {{"name", leftHand}, {"baseid", leftHand_baseid}}},
-        {"right_hand", {{"name", rightHand}, {"baseid", rightHand_baseid}}}
+        {"helmet", BuildEquipmentItemJson(helmet, helmet_baseid, helmet_keywords)},
+        {"armor", BuildEquipmentItemJson(armor, armor_baseid, armor_keywords)},
+        {"boots", BuildEquipmentItemJson(boots, boots_baseid, boots_keywords)},
+        {"gloves", BuildEquipmentItemJson(gloves, gloves_baseid, gloves_keywords)},
+        {"amulet", BuildEquipmentItemJson(amulet, amulet_baseid, amulet_keywords)},
+        {"ring", BuildEquipmentItemJson(ring, ring_baseid, ring_keywords)},
+        {"cape", BuildEquipmentItemJson(cape, cape_baseid, cape_keywords)},
+        {"backpack", BuildEquipmentItemJson(backpack, backpack_baseid, backpack_keywords)},
+        {"left_hand", BuildEquipmentItemJson(leftHand, leftHand_baseid, leftHand_keywords)},
+        {"right_hand", BuildEquipmentItemJson(rightHand, rightHand_baseid, rightHand_keywords)}
     };
     AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
     
@@ -6204,7 +6293,7 @@ void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool 
     if (npc->IsPlayer()) return;  // Skip player
 
     std::string inventoryData;
-    std::vector<std::string> inventoryItems; // For sorted hash
+    std::vector<InventoryItemSnapshot> inventoryItems; // For sorted hash
     auto inventory = npc->GetInventory();
     
     for (const auto& item : inventory) {
@@ -6229,6 +6318,7 @@ void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool 
 
         // Get baseid (FormID in hex format)
         std::string baseID = std::format("{:08X}", boundObject->GetFormID());
+        json itemKeywords = CollectItemKeywords(boundObject);
 
         //  Check for custom name in InventoryEntryData and ExtraDataList
         if (entryData) {
@@ -6262,7 +6352,7 @@ void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool 
         // Skip items with missing or invalid names
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
-            inventoryItems.push_back(itemEntry);
+            inventoryItems.push_back({itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump()});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6272,11 +6362,13 @@ void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool 
     }
     
     // Create hash by sorting items (order-independent comparison)
-    std::sort(inventoryItems.begin(), inventoryItems.end());
+    std::sort(inventoryItems.begin(), inventoryItems.end(), [](const InventoryItemSnapshot& lhs, const InventoryItemSnapshot& rhs) {
+        return lhs.hashEntry < rhs.hashEntry;
+    });
     std::string inventoryHash;
     for (const auto& item : inventoryItems) {
         if (!inventoryHash.empty()) inventoryHash.append("|");
-        inventoryHash.append(item);
+        inventoryHash.append(item.hashEntry);
     }
 
     
@@ -6301,23 +6393,13 @@ void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool 
     inventoryDataJson["gamets"] = GetGameTimeStamp();
     inventoryDataJson["items"] = json::array();
 
-    // Parse the inventory items and build JSON array
-    for (const auto& itemEntry : inventoryItems) {
-        // Parse format: "name^baseid::count"
-        size_t nameDelim = itemEntry.find("^");
-        size_t countDelim = itemEntry.find("::");
-
-        if (nameDelim != std::string::npos && countDelim != std::string::npos) {
-            std::string itemName = itemEntry.substr(0, nameDelim);
-            std::string baseid = itemEntry.substr(nameDelim + 1, countDelim - nameDelim - 1);
-            int count = std::stoi(itemEntry.substr(countDelim + 2));
-
-            inventoryDataJson["items"].push_back({
-                {"name", itemName},
-                {"baseid", baseid},
-                {"count", count}
-            });
-        }
+    for (const auto& item : inventoryItems) {
+        inventoryDataJson["items"].push_back({
+            {"name", item.name},
+            {"baseid", item.baseid},
+            {"count", item.count},
+            {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
+        });
     }
 
     if (synchronous) {
@@ -6656,6 +6738,17 @@ void RefreshPlayerEquipment(bool forceUpdate) {
     std::string leftHand, leftHand_baseid;
     std::string rightHand, rightHand_baseid;
     std::string shirt, shirt_baseid;
+    json helmet_keywords = json::array();
+    json armor_keywords = json::array();
+    json boots_keywords = json::array();
+    json gloves_keywords = json::array();
+    json amulet_keywords = json::array();
+    json ring_keywords = json::array();
+    json cape_keywords = json::array();
+    json backpack_keywords = json::array();
+    json leftHand_keywords = json::array();
+    json rightHand_keywords = json::array();
+    json shirt_keywords = json::array();
     std::unordered_map<std::string, EquipmentSlotItem> moddedEquipment;
     
     std::string equipmentHash;
@@ -6703,6 +6796,7 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             if (!flagWorn) continue;
             
             std::string baseID = std::format("{:08X}", boundObject->GetFormID());
+            json itemKeywords = CollectItemKeywords(boundObject);
             
             if (entryData) {
                 if (entryData->GetDisplayName()) {
@@ -6722,54 +6816,65 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             }
 
             if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
-                AddModdedEquipmentSlots(armorItem, itemName, baseID, moddedEquipment);
+                AddModdedEquipmentSlots(armorItem, itemName, baseID, itemKeywords, moddedEquipment);
             }
             
             if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
                 ring.assign(itemName);
                 ring_baseid.assign(baseID);
+                ring_keywords = itemKeywords;
             } else if (IsWornHeadgear(player, boundObject)) {
                 helmet.assign(itemName);
                 helmet_baseid.assign(baseID);
+                helmet_keywords = itemKeywords;
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet) == boundObject) {
                 amulet.assign(itemName);
                 amulet_baseid.assign(baseID);
+                amulet_keywords = itemKeywords;
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kBody) == boundObject) {
                 armor.assign(itemName);
                 armor_baseid.assign(baseID);
+                armor_keywords = itemKeywords;
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands) == boundObject) {
                 gloves.assign(itemName);
                 gloves_baseid.assign(baseID);
+                gloves_keywords = itemKeywords;
             } else if (player->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kFeet) == boundObject) {
                 boots.assign(itemName);
                 boots_baseid.assign(baseID);
+                boots_keywords = itemKeywords;
             } else if (player->GetEquippedObject(false) == boundObject) {
                 rightHand.assign(itemName);
                 rightHand_baseid.assign(baseID);
+                rightHand_keywords = itemKeywords;
             } else if (player->GetEquippedObject(true) == boundObject) {
                 leftHand.assign(itemName);
                 leftHand_baseid.assign(baseID);
+                leftHand_keywords = itemKeywords;
             } else {
                 if (auto* armorItem = boundObject->As<RE::TESObjectARMO>()) {
                     if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary)) {
                         cape.assign(itemName);
                         cape_baseid.assign(baseID);
+                        cape_keywords = itemKeywords;
                     }
                     if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModBack)) {
                         backpack.assign(itemName);
                         backpack_baseid.assign(baseID);
+                        backpack_keywords = itemKeywords;
                     }
                     if (HasArmorSlot(armorItem, RE::BGSBipedObjectForm::BipedObjectSlot::kModChestSecondary)) {
                         shirt.assign(itemName);
                         shirt_baseid.assign(baseID);
+                        shirt_keywords = itemKeywords;
                     }
                 }
             }
         }
 
-        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "cape", cape, cape_baseid);
-        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "backpack", backpack, backpack_baseid);
-        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "shirt", shirt, shirt_baseid);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "cape", cape, cape_baseid, cape_keywords);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "backpack", backpack, backpack_baseid, backpack_keywords);
+        ApplyLegacyModdedEquipmentSlot(moddedEquipment, "shirt", shirt, shirt_baseid, shirt_keywords);
         
         equipmentHash = std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", 
             !helmet.empty() ? helmet : "",
@@ -6793,6 +6898,18 @@ void RefreshPlayerEquipment(bool forceUpdate) {
             !rightHand.empty() ? rightHand : "",
             !rightHand.empty() ? rightHand_baseid : ""
         );
+        equipmentHash.append("|keywords=")
+            .append(helmet_keywords.dump()).append("|")
+            .append(armor_keywords.dump()).append("|")
+            .append(boots_keywords.dump()).append("|")
+            .append(gloves_keywords.dump()).append("|")
+            .append(amulet_keywords.dump()).append("|")
+            .append(ring_keywords.dump()).append("|")
+            .append(cape_keywords.dump()).append("|")
+            .append(backpack_keywords.dump()).append("|")
+            .append(leftHand_keywords.dump()).append("|")
+            .append(rightHand_keywords.dump()).append("|")
+            .append(shirt_keywords.dump());
         equipmentHash.append(BuildModdedEquipmentHash(moddedEquipment));
     } catch (...) {
         logger::trace("[PLAYER_EQUIPMENT_SKIP] Exception during equipment read");
@@ -6816,16 +6933,16 @@ void RefreshPlayerEquipment(bool forceUpdate) {
     equipmentData["timestamp"] = getCurrentTimeMillis();
     equipmentData["gamets"] = GetGameTimeStamp();
     equipmentData["equipment"] = {
-        {"helmet", {{"name", helmet}, {"baseid", helmet_baseid}}},
-        {"armor", {{"name", armor}, {"baseid", armor_baseid}}},
-        {"boots", {{"name", boots}, {"baseid", boots_baseid}}},
-        {"gloves", {{"name", gloves}, {"baseid", gloves_baseid}}},
-        {"amulet", {{"name", amulet}, {"baseid", amulet_baseid}}},
-        {"ring", {{"name", ring}, {"baseid", ring_baseid}}},
-        {"cape", {{"name", cape}, {"baseid", cape_baseid}}},
-        {"backpack", {{"name", backpack}, {"baseid", backpack_baseid}}},
-        {"left_hand", {{"name", leftHand}, {"baseid", leftHand_baseid}}},
-        {"right_hand", {{"name", rightHand}, {"baseid", rightHand_baseid}}}
+        {"helmet", BuildEquipmentItemJson(helmet, helmet_baseid, helmet_keywords)},
+        {"armor", BuildEquipmentItemJson(armor, armor_baseid, armor_keywords)},
+        {"boots", BuildEquipmentItemJson(boots, boots_baseid, boots_keywords)},
+        {"gloves", BuildEquipmentItemJson(gloves, gloves_baseid, gloves_keywords)},
+        {"amulet", BuildEquipmentItemJson(amulet, amulet_baseid, amulet_keywords)},
+        {"ring", BuildEquipmentItemJson(ring, ring_baseid, ring_keywords)},
+        {"cape", BuildEquipmentItemJson(cape, cape_baseid, cape_keywords)},
+        {"backpack", BuildEquipmentItemJson(backpack, backpack_baseid, backpack_keywords)},
+        {"left_hand", BuildEquipmentItemJson(leftHand, leftHand_baseid, leftHand_keywords)},
+        {"right_hand", BuildEquipmentItemJson(rightHand, rightHand_baseid, rightHand_keywords)}
     };
     AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
     
@@ -6837,7 +6954,7 @@ void RefreshPlayerInventory(bool forceUpdate) {
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
     
-    std::vector<std::string> inventoryItems;
+    std::vector<InventoryItemSnapshot> inventoryItems;
     auto inventory = player->GetInventory();
     
     for (const auto& item : inventory) {
@@ -6857,6 +6974,7 @@ void RefreshPlayerInventory(bool forceUpdate) {
         }
         
         std::string baseID = std::format("{:08X}", boundObject->GetFormID());
+        json itemKeywords = CollectItemKeywords(boundObject);
         
         if (entryData) {
             if (auto display = entryData->GetDisplayName(); display && display[0]) {
@@ -6878,15 +6996,17 @@ void RefreshPlayerInventory(bool forceUpdate) {
         // Skip items with missing or invalid names
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
-            inventoryItems.push_back(itemEntry);
+            inventoryItems.push_back({itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump()});
         }
     }
     
-    std::sort(inventoryItems.begin(), inventoryItems.end());
+    std::sort(inventoryItems.begin(), inventoryItems.end(), [](const InventoryItemSnapshot& lhs, const InventoryItemSnapshot& rhs) {
+        return lhs.hashEntry < rhs.hashEntry;
+    });
     std::string inventoryHash;
     for (const auto& item : inventoryItems) {
         if (!inventoryHash.empty()) inventoryHash.append("|");
-        inventoryHash.append(item);
+        inventoryHash.append(item.hashEntry);
     }
     
     auto formID = player->GetFormID();
@@ -6908,21 +7028,13 @@ void RefreshPlayerInventory(bool forceUpdate) {
         inventoryDataJson["gamets"] = GetGameTimeStamp();
         inventoryDataJson["items"] = json::array();
         
-        for (const auto& itemEntry : inventoryItems) {
-            size_t nameDelim = itemEntry.find("^");
-            size_t countDelim = itemEntry.find("::");
-            
-            if (nameDelim != std::string::npos && countDelim != std::string::npos) {
-                std::string itemName = itemEntry.substr(0, nameDelim);
-                std::string baseid = itemEntry.substr(nameDelim + 1, countDelim - nameDelim - 1);
-                int count = std::stoi(itemEntry.substr(countDelim + 2));
-                
-                inventoryDataJson["items"].push_back({
-                    {"name", itemName},
-                    {"baseid", baseid},
-                    {"count", count}
-                });
-            }
+        for (const auto& item : inventoryItems) {
+            inventoryDataJson["items"].push_back({
+                {"name", item.name},
+                {"baseid", item.baseid},
+                {"count", item.count},
+                {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
+            });
         }
         
         HTTPManager::postGameData("gamedata.php", inventoryDataJson);
