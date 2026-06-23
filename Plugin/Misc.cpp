@@ -1233,11 +1233,12 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
 std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
     auto processLists = RE::ProcessLists::GetSingleton();
 
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
     if (!processLists) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: processLists is null");
         return {};
     }
 
-    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
 
     auto startTime = std::chrono::high_resolution_clock::now();
     std::vector<std::pair<std::string, RE::FormID>> results;
