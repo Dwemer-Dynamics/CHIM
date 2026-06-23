@@ -90,6 +90,16 @@ namespace PrismaUIBridge {
     static bool g_chatboxModelInitialized = false;
     static std::string g_lastChatboxModelLabel = "";
     static std::atomic<std::uint64_t> g_dialogueStopGeneration{0};
+
+    // Confirmation modal state
+    static PrismaView g_confirmationView = 0;
+    static std::atomic<bool> g_confirmationCreated{false};
+    static std::atomic<bool> g_confirmationDomReady{false};
+    static std::atomic<bool> g_confirmationVisible{false};
+    static std::mutex g_confirmationMutex;
+    static ConfirmationCallback g_confirmationCallback;
+    static std::string g_confirmationPayload;
+    static std::uint64_t g_confirmationRequestId = 0;
     
     // AI View target state
     static std::string g_lastAIViewTarget = "";
@@ -168,6 +178,11 @@ namespace PrismaUIBridge {
     static void OnMasterMenuCommand(const char* argument);
     static void OnQuestManagerDomReady(PrismaView view);
     static void OnQuestManagerCommand(const char* argument);
+    static void OnConfirmationDomReady(PrismaView view);
+    static void OnConfirmationCommand(const char* argument);
+    static void CreateConfirmationPanel();
+    static bool PresentConfirmationPayload();
+    static void ResolveConfirmation(bool accepted);
     static void OnBrowserCommand(const char* argument);
     void HideSettingsMenu();
     void HideMasterMenu();
@@ -4108,6 +4123,17 @@ R"CHIM(
                 g_debuggerView = 0;
                 g_debuggerCreated.store(false);
             }
+
+            if (g_confirmationCreated.load()) {
+                g_prismaUI->Destroy(g_confirmationView);
+                g_confirmationView = 0;
+                g_confirmationCreated.store(false);
+                g_confirmationDomReady.store(false);
+                g_confirmationVisible.store(false);
+                std::lock_guard<std::mutex> lock(g_confirmationMutex);
+                g_confirmationCallback = nullptr;
+                g_confirmationPayload.clear();
+            }
         }
 
         g_prismaUI = nullptr;
@@ -4449,6 +4475,227 @@ R"CHIM(
 
     static void OnChatboxDomReady(PrismaView view);
     static void OnChatboxCommand(const char* argument);
+
+    static void CreateConfirmationPanel() {
+        if (!g_prismaUI) {
+            logger::error("[PrismaUIBridge] Cannot create confirmation modal - Prisma UI not initialized");
+            return;
+        }
+
+        if (g_confirmationCreated.load()) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating CHIM confirmation modal from CHIM/confirmation.html...");
+
+        g_confirmationView = g_prismaUI->CreateView("CHIM/confirmation.html", OnConfirmationDomReady);
+        if (g_confirmationView == 0) {
+            g_lastError = "Failed to create confirmation view - check that Data/PrismaUI/views/CHIM/confirmation.html exists";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_confirmationView, 260);
+        g_prismaUI->RegisterJSListener(g_confirmationView, "chimConfirmationCommand", OnConfirmationCommand);
+        g_prismaUI->Hide(g_confirmationView);
+        g_confirmationCreated.store(true);
+
+        logger::info("[PrismaUIBridge] Confirmation modal created successfully");
+    }
+
+    static void UnfocusPrismaViewIfFocused(PrismaView view, bool created) {
+        if (!g_prismaUI || !created || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        if (g_prismaUI->HasFocus(view)) {
+            g_prismaUI->Unfocus(view);
+        }
+    }
+
+    static bool PresentConfirmationPayload() {
+        if (!g_prismaUI || !g_confirmationCreated.load() || !g_confirmationDomReady.load()) {
+            return false;
+        }
+
+        if (!g_prismaUI->IsValid(g_confirmationView)) {
+            logger::warn("[PrismaUIBridge] Confirmation modal view is invalid");
+            return false;
+        }
+
+        std::string payload;
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            payload = g_confirmationPayload;
+        }
+
+        if (payload.empty()) {
+            return false;
+        }
+
+        UnfocusPrismaViewIfFocused(g_historyView, g_panelCreated.load());
+        UnfocusPrismaViewIfFocused(g_overlayView, g_overlayCreated.load());
+        UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
+        UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
+        UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
+        UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
+        UnfocusPrismaViewIfFocused(g_debuggerView, g_debuggerCreated.load());
+        UnfocusPrismaViewIfFocused(g_statusHUDView, g_statusHUDCreated.load());
+        UnfocusPrismaViewIfFocused(g_settingsMenuView, g_settingsMenuCreated.load());
+        UnfocusPrismaViewIfFocused(g_masterMenuView, g_masterMenuCreated.load());
+        if (g_chatboxCreated.load() && g_prismaUI->HasFocus(g_chatboxView)) {
+            UnfocusChatboxPanel();
+        }
+
+        g_prismaUI->Show(g_confirmationView);
+        g_confirmationVisible.store(true);
+
+        std::string jsCall = "window.showChimConfirmation('" + EscapeForJS(payload) + "')";
+        g_prismaUI->Invoke(g_confirmationView, jsCall.c_str(), nullptr);
+
+        bool focused = false;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            focused = g_prismaUI->Focus(g_confirmationView, true, false);
+            if (focused) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        if (!focused) {
+            logger::warn("[PrismaUIBridge] Failed to focus confirmation modal");
+            g_prismaUI->Hide(g_confirmationView);
+            g_confirmationVisible.store(false);
+            return false;
+        }
+
+        logger::info("[PrismaUIBridge] Confirmation modal shown");
+        return true;
+    }
+
+    static void OnConfirmationDomReady(PrismaView view) {
+        logger::info("[PrismaUIBridge] Confirmation modal DOM ready");
+        g_confirmationDomReady.store(true);
+
+        if (!g_confirmationPayload.empty() && !g_confirmationVisible.load()) {
+            PresentConfirmationPayload();
+        }
+    }
+
+    static void ResolveConfirmation(bool accepted) {
+        ConfirmationCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            callback = std::move(g_confirmationCallback);
+            g_confirmationCallback = nullptr;
+            g_confirmationPayload.clear();
+        }
+
+        if (g_prismaUI && g_confirmationCreated.load() && g_prismaUI->IsValid(g_confirmationView)) {
+            if (g_prismaUI->HasFocus(g_confirmationView)) {
+                g_prismaUI->Unfocus(g_confirmationView);
+            }
+            g_prismaUI->Hide(g_confirmationView);
+        }
+        g_confirmationVisible.store(false);
+
+        if (callback) {
+            callback(accepted);
+        }
+    }
+
+    static void OnConfirmationCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        std::string cmd(argument);
+        logger::debug("[PrismaUIBridge] Received confirmation command: {}", cmd);
+
+        if (cmd == "accept") {
+            ResolveConfirmation(true);
+        } else if (cmd == "cancel" || cmd == "close" || cmd == "escape") {
+            ResolveConfirmation(false);
+        } else if (cmd == "dom_ready") {
+            g_confirmationDomReady.store(true);
+        } else {
+            logger::warn("[PrismaUIBridge] Unknown confirmation command: {}", cmd);
+        }
+    }
+
+    bool ShowConfirmation(const std::string& title, const std::string& message,
+                          const std::string& cancelLabel, const std::string& acceptLabel,
+                          ConfirmationCallback callback) {
+        if (!g_prismaUI) {
+            logger::warn("[PrismaUIBridge] Cannot show confirmation - Prisma UI not initialized");
+            return false;
+        }
+
+        if (!callback) {
+            logger::warn("[PrismaUIBridge] Cannot show confirmation - callback missing");
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            if (g_confirmationCallback) {
+                logger::warn("[PrismaUIBridge] Replacing active confirmation; dropping previous request");
+                g_confirmationCallback = nullptr;
+                g_confirmationPayload.clear();
+            }
+        }
+
+        if (!g_confirmationCreated.load()) {
+            CreateConfirmationPanel();
+        }
+        if (!g_confirmationCreated.load()) {
+            return false;
+        }
+
+        json payload = {
+            {"id", ++g_confirmationRequestId},
+            {"title", title},
+            {"message", message},
+            {"cancelLabel", cancelLabel},
+            {"acceptLabel", acceptLabel}
+        };
+
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            g_confirmationCallback = std::move(callback);
+            g_confirmationPayload = payload.dump();
+        }
+
+        if (!g_confirmationDomReady.load()) {
+            constexpr auto kDomReadyPollInterval = std::chrono::milliseconds(20);
+            constexpr auto kDomReadyTimeout = std::chrono::milliseconds(3000);
+            const auto waitStart = std::chrono::steady_clock::now();
+            while (!g_confirmationDomReady.load()) {
+                const auto waited = std::chrono::steady_clock::now() - waitStart;
+                if (waited >= kDomReadyTimeout) {
+                    logger::warn("[PrismaUIBridge] Confirmation DOM ready timeout");
+                    std::lock_guard<std::mutex> lock(g_confirmationMutex);
+                    g_confirmationCallback = nullptr;
+                    g_confirmationPayload.clear();
+                    return false;
+                }
+                std::this_thread::sleep_for(kDomReadyPollInterval);
+            }
+        }
+
+        if (g_confirmationVisible.load()) {
+            return true;
+        }
+
+        if (!PresentConfirmationPayload()) {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            g_confirmationCallback = nullptr;
+            g_confirmationPayload.clear();
+            return false;
+        }
+
+        return true;
+    }
 
     struct ChatboxNearbyAgent {
         RE::Actor* actor;
