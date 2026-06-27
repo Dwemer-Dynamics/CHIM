@@ -6131,8 +6131,34 @@ static std::string BuildModdedEquipmentHash(const std::unordered_map<std::string
     return hash;
 }
 
-// Helper function to refresh equipment for an AI Agent (with hash-based diffing)
+static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
+static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
+    if (!npc) return;
+
+    auto actorHandle = npc->GetHandle();
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[EQUIPMENT_UPDATE] SKSE task interface unavailable; reading {} equipment directly", agentName);
+        RefreshAIAgentEquipmentImpl(npc, agentName, forceUpdate);
+        return;
+    }
+
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate]() {
+        auto actorRef = actorHandle.get();
+        auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::trace("[EQUIPMENT_SKIP] {} - actor handle no longer valid", agentName);
+            return;
+        }
+
+        RefreshAIAgentEquipmentImpl(actor, agentName, forceUpdate);
+    });
+}
+
+// Helper function to refresh equipment for an AI Agent (with hash-based diffing)
+static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
     
     // Skip player
@@ -6439,8 +6465,31 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
     logger::info("[EQUIPMENT_UPDATE] {} equipment updated", agentName);
 }
 
-// Helper function to refresh inventory for an AI Agent (with hash-based diffing)
 void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
+    if (!npc) return;
+
+    auto actorHandle = npc->GetHandle();
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[INVENTORY_UPDATE] SKSE task interface unavailable; reading {} inventory directly", agentName);
+        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous);
+        return;
+    }
+
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous]() {
+        auto actorRef = actorHandle.get();
+        auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::trace("[INVENTORY_SKIP] {} - actor handle no longer valid", agentName);
+            return;
+        }
+
+        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous);
+    });
+}
+
+// Helper function to refresh inventory for an AI Agent (with hash-based diffing)
+static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
     if (!npc) return;
     if (npc->IsPlayer()) return;  // Skip player
 
