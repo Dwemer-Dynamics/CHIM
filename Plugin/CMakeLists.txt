@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AIAgent VERSION 3.0.1)
+project(AIAgent VERSION 3.1.0)
 
 find_package(SkyrimScripting.CMake CONFIG REQUIRED)
 find_package(SkyrimScripting.Plugin CONFIG REQUIRED)
@@ -28,7 +28,7 @@ endif()
 add_skse_plugin(${PROJECT_NAME}
 SKYRIM_FOLDER "${AIAGENT_SKYRIM_FOLDER}"
 
-SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp
+SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE SkyrimScriptingPlugin::SkyrimScripting.Plugin)
 

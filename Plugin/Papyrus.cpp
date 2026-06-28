@@ -349,6 +349,7 @@ extern int GlobalCombatBarksPeriod;
 bool PreserveQueueDuringAction = false;
 bool PauseDialogueWhenMenuOpen = false;
 bool PlayerTtsTraditionalDialogueEnabled = false;
+bool AIQuestProgressionEnabled = false;
 bool AllowActorsOnScene = true;
 bool GodMode = false;
 bool AutoAddHostile = false;
@@ -1228,8 +1229,8 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                         auto* gloves = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands);
                         auto* amulet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet);
                         auto* ring = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
-                        auto* cape = targetActor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(46));
-                        auto* backpack = targetActor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(47));
+                        auto* cape = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary);
+                        auto* backpack = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModBack);
                         auto* leftHand = targetActor->GetEquippedObject(true);   // Left hand
                         auto* rightHand = targetActor->GetEquippedObject(false); // Right hand
 
@@ -1529,13 +1530,14 @@ int sendMessageReal(std::string msg, std::string type) {
     HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(beings in range:" + result + ")"));
 
-    // Always scan for nearby items
-    std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-    
-    if (!itemsResult.empty()) {
-        std::string logMessage = std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(items in range:" + itemsResult + ")");
-        HTTPManager::log(logMessage);
+    if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+        std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+
+        if (!itemsResult.empty()) {
+            std::string logMessage = std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "(items in range:" + itemsResult + ")");
+            HTTPManager::log(logMessage);
+        }
     }
 
     std::string typeRevised;
@@ -2336,7 +2338,7 @@ int Papyrus::setLocked(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStack
         logger::debug("Papyrus::setLocked - End");
         return 0;
     } else {
-        logger::debug("Papyrus::setLocked - failed");
+        logger::debug("Papyrus::setLocked - failed {}",actor);
         return -1;
     }
 }
@@ -2381,6 +2383,124 @@ int Papyrus::getPlayerBountyForGuard(RE::BSScript::Internal::VirtualMachine* a_v
     logger::info("[getPlayerBountyForGuard] {} crime faction 0x{:08x}, bounty={}", guardName,
                  crimeFaction->GetFormID(), crimeGold);
     return static_cast<int>(crimeGold);
+}
+
+int Papyrus::requestMoveInventoryItemConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm,
+                                                  RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                                  RE::Actor* source, RE::Actor* target, RE::TESForm* itemForm,
+                                                  int amount, std::string realName) {
+    ScopedPapyrusLock lock("requestMoveInventoryItemConfirmation");
+
+    if (!source || !target || !itemForm || amount <= 0) {
+        logger::warn("[PAPYRUS] requestMoveInventoryItemConfirmation: invalid arguments");
+        return 0;
+    }
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        logger::warn("[PAPYRUS] requestMoveInventoryItemConfirmation: Prisma UI not available");
+        return 0;
+    }
+
+    if (realName.empty()) {
+        realName = "Gold";
+    }
+
+    auto sourceHandle = source->GetHandle();
+    auto targetHandle = target->GetHandle();
+    const RE::FormID itemFormId = itemForm->GetFormID();
+    const std::string itemName = realName;
+    const std::string sourceName = source->GetDisplayFullName();
+    const std::string targetName = target->GetDisplayFullName();
+    const std::string message = sourceName + " will transfer " + std::to_string(amount) + " gold to " + targetName + ".";
+
+    bool shown = PrismaUIBridge::ShowConfirmation(
+        "Confirm gold transfer", message, "No", "Confirm",
+        [sourceHandle, targetHandle, itemFormId, amount, itemName](bool accepted) {
+            auto dispatch = [sourceHandle, targetHandle, itemFormId, amount, itemName, accepted]() mutable {
+                auto sourceRef = sourceHandle.get();
+                auto targetRef = targetHandle.get();
+                auto* resolvedSource = sourceRef ? sourceRef->As<RE::Actor>() : nullptr;
+                auto* resolvedTarget = targetRef ? targetRef->As<RE::Actor>() : nullptr;
+                auto* resolvedItem = RE::TESForm::LookupByID(itemFormId);
+
+                if (!resolvedSource || !resolvedTarget || !resolvedItem) {
+                    logger::warn("[PAPYRUS] ConfirmMoveInventoryItem skipped; source/target/item no longer valid");
+                    return;
+                }
+
+                int amountArg = amount;
+                std::string itemNameArg = itemName;
+                bool acceptedArg = accepted;
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(resolvedSource), std::move(resolvedTarget),
+                                                      std::move(resolvedItem), std::move(amountArg),
+                                                      std::move(itemNameArg), std::move(acceptedArg));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "ConfirmMoveInventoryItem", args, callback);
+            };
+
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask(std::move(dispatch));
+            } else {
+                dispatch();
+            }
+        });
+
+    return shown ? 1 : 0;
+}
+
+int Papyrus::requestArrestConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                       RE::StaticFunctionTag*, RE::Actor* player, RE::Actor* guard,
+                                       RE::TESFaction* crimeFaction) {
+    ScopedPapyrusLock lock("requestArrestConfirmation");
+
+    if (!player || !guard || !crimeFaction) {
+        logger::warn("[PAPYRUS] requestArrestConfirmation: invalid arguments");
+        return 0;
+    }
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        logger::warn("[PAPYRUS] requestArrestConfirmation: Prisma UI not available");
+        return 0;
+    }
+
+    auto playerHandle = player->GetHandle();
+    auto guardHandle = guard->GetHandle();
+    const RE::FormID crimeFactionId = crimeFaction->GetFormID();
+    const std::string guardName = guard->GetDisplayFullName();
+    const std::string message = guardName + " is placing you under arrest. Submit?";
+
+    bool shown = PrismaUIBridge::ShowConfirmation(
+        "Confirm arrest", message, "Resist", "Submit",
+        [playerHandle, guardHandle, crimeFactionId](bool accepted) {
+            auto dispatch = [playerHandle, guardHandle, crimeFactionId, accepted]() mutable {
+                auto playerRef = playerHandle.get();
+                auto guardRef = guardHandle.get();
+                auto* resolvedPlayer = playerRef ? playerRef->As<RE::Actor>() : nullptr;
+                auto* resolvedGuard = guardRef ? guardRef->As<RE::Actor>() : nullptr;
+                auto* resolvedFaction = RE::TESForm::LookupByID<RE::TESFaction>(crimeFactionId);
+
+                if (!resolvedPlayer || !resolvedGuard || !resolvedFaction) {
+                    logger::warn("[PAPYRUS] ConfirmArrestPlayer skipped; player/guard/faction no longer valid");
+                    return;
+                }
+
+                bool acceptedArg = accepted;
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(resolvedPlayer), std::move(resolvedGuard),
+                                                      std::move(resolvedFaction), std::move(acceptedArg));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "ConfirmArrestPlayer", args, callback);
+            };
+
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask(std::move(dispatch));
+            } else {
+                dispatch();
+            }
+        });
+
+    return shown ? 1 : 0;
 }
 
 int Papyrus::commandEnded(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
@@ -2561,11 +2681,13 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
 
     auto targetObject = RE::CrosshairPickData::GetSingleton()->targetActor;
 
-    if (!targetObject) {
+    if (!targetObject && REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
         logger::info("Checking NPC via grabbed ref");
         auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
         targetObject = targetObjectRef.get();
         if (targetObject) logger::info("Checked NPC via grabbed ref {}", targetObject.get()->GetDisplayFullName());
+    } else if (!targetObject) {
+        logger::debug("Skipping grabbed ref target fallback in VR");
     }
 
     ThreadPool::getInstance().enqueue(
@@ -3089,6 +3211,48 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
 }
 
 
+RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc) {
+    ScopedPapyrusLock lock("getLocationCenterMarker");
+    if (!a_loc) {
+        a_vm->TraceStack("Location is None", a_stackID);
+        logger::error("getLocationCenterMarker: Location is None");
+        return nullptr;
+    }
+    logger::info("getLocationCenterMarker: Location is {},{:08X}", a_loc->GetName(), a_loc->GetFormID());
+    
+    RE::TESObjectREFR* result = nullptr;
+
+    logger::info("getLocationCenterMarker: Location has no world marker");
+    RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
+
+    // Iterate over specialRefs using begin()/end()
+    for (auto it = refs->begin(); it != refs->end(); ++it) {
+        const auto& refData = *it;
+        if (refData.type) {
+            if (refData.type->formType == RE::FormType::LocationRefType) {
+                if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                    logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
+                                 refData.refData.refID);
+                    if (t) {
+                        result = t->AsReference();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+
+    if (!result)
+        logger::debug("getLocationCenterMarker: returning EMPTY world marker");
+    else
+        logger::debug("getLocationCenterMarker: marker {:08X}", result->GetFormID());
+
+    return result;
+}
 
 RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                            RE::StaticFunctionTag*) {
@@ -4302,6 +4466,23 @@ void Papyrus::releasePlayerMenuTopicTimer(std::string reason) {
     QueuePlayerMenuTopicTimerOff(std::move(reason));
 }
 
+int Papyrus::scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                     RE::StaticFunctionTag*, RE::Actor* target) {
+    
+    ScopedPapyrusLock lock("scanActorsAroundOffline");
+        // Run GetLowProcessActorNamesFromRef in a separate thread - no need to wait for result
+    ThreadPool::getInstance().enqueue(
+        "ScanActorsAroundOffline",
+        [target]() {
+            GetLowProcessActorNamesFromRef(target);
+            // Result is handled internally by GetLowProcessActorNamesFromRef
+        },
+        target ? target->GetDisplayFullName() : "unknown");
+
+    return 0;
+}
+
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
@@ -4313,6 +4494,9 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("setLocked", "AIAgentFunctions", setLocked, false);
     a_vm->RegisterFunction("isActorTalking", "AIAgentFunctions", isActorTalking, false);
     a_vm->RegisterFunction("getPlayerBountyForGuard", "AIAgentFunctions", getPlayerBountyForGuard, false);
+    a_vm->RegisterFunction("requestMoveInventoryItemConfirmation", "AIAgentFunctions",
+                           requestMoveInventoryItemConfirmation, false);
+    a_vm->RegisterFunction("requestArrestConfirmation", "AIAgentFunctions", requestArrestConfirmation, false);
     a_vm->RegisterFunction("sendRequest", "AIAgentFunctions", sendRequest, false);
     a_vm->RegisterFunction("stopRecording", "AIAgentFunctions", stopRecording, false);
     a_vm->RegisterFunction("startOpenMicMonitoring", "AIAgentFunctions", startOpenMicMonitoring, false);
@@ -4334,6 +4518,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("getAgentByName", "AIAgentFunctions", getAgentByName, false);
     a_vm->RegisterFunction("getLocationMarkerFor", "AIAgentFunctions", getLocationMarkerFor, false);
     a_vm->RegisterFunction("getWorldLocationMarkerFor", "AIAgentFunctions", getWorldLocationMarkerFor, false);
+    a_vm->RegisterFunction("getLocationCenterMarker", "AIAgentFunctions", getLocationCenterMarker, false);
     a_vm->RegisterFunction("sendAllVoices", "AIAgentFunctions", sendAllVoices, false);
     a_vm->RegisterFunction("findAllNearbyAgents", "AIAgentFunctions", findAllNearbyAgents, false);
     a_vm->RegisterFunction("findAllAgents", "AIAgentFunctions", findAllAgents, false);
@@ -4415,6 +4600,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
 
     a_vm->RegisterFunction("startMusicScene", "AIAgentFunctions", startMusicScene, false);
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
+
+    a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
     
     return true;
 }

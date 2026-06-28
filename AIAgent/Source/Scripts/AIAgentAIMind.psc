@@ -702,7 +702,7 @@ function TravelToTargetEnd(Actor npc) global
 
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
 	npc.EvaluatePackage()
-	
+	Debug.Trace("[CHIM] TravelToTargetEnd: Start processing for "+npc.GetDisplayName()+" ")
 	ObjectReference destination=StorageUtil.GetFormValue(npc, "LastTravelToLocation") as ObjectReference;
 	if (destination)
 		String destinationName=StorageUtil.GetStringValue(npc, "LastTravelToLocationName") as String;
@@ -727,7 +727,7 @@ function TravelToTargetEnd(Actor npc) global
 		elseif (dest.GetType()==34) ; Static
 					; TravelToLocation case?
 			if (destinationName)
-				Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType())
+				Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was a static "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType())
 				if (!npc.Is3DLoaded())
 					;Only log as background event id npc is not 3dloaded
 					;AIAgentFunctions.logMessageForActor(npc.GetDisplayName() +" reaches destination "+destinationName,"backgroundaction",npc.GetDisplayName())
@@ -806,7 +806,7 @@ function TravelToTargetEnd(Actor npc) global
 		Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+" no destination")
 	endif
 		
-	
+	Debug.Trace("[CHIM] TravelToTargetEnd: End processing for "+npc.GetDisplayName()+" ")
 	AIAgentFunctions.commandEndedForActor("TravelTo",npc.GetDisplayName())
 	;Debug.Notification("[CHIM] End travelling for "+npc.GetDisplayName() )
 
@@ -2761,17 +2761,10 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	
 	Debug.Trace("MoveInventoryItem start");
 	if (akItemToRemove.GetFormID()==0xf)
-	
-		
-		string result = SkyMessage.Show(source.GetDisplayName()+ " will transfer "+amount+" gold to "+target.getDisplayName()+". Accept?", "No, thanks", "Yes, please!")
-
-		if result == "Yes, please!"
-			source.RemoveItem(akItemToRemove, amount)
-			target.AddItem(akItemToRemove,amount)
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())	
-		else
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())	
-		endif	
+		int requestResult = AIAgentFunctions.requestMoveInventoryItemConfirmation(source, target, akItemToRemove, amount, realName)
+		if requestResult == 0
+			AIAgentFunctions.logMessageForActor("Gold transfer confirmation could not be shown. No gold was transferred.","itemfound",target.GetDisplayName())
+		endif
 		
 	else
 		source.RemoveItem(akItemToRemove, amount, false, target)
@@ -2782,6 +2775,23 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	
 	
 
+EndFunction
+
+Function ConfirmMoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int amount,string realName,bool accepted) global
+	Debug.Trace("ConfirmMoveInventoryItem start");
+	if (!source || !target || !akItemToRemove || amount <= 0)
+		Debug.Trace("ConfirmMoveInventoryItem invalid args");
+		return
+	endif
+
+	if accepted
+		source.RemoveItem(akItemToRemove, amount)
+		target.AddItem(akItemToRemove,amount)
+		AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())
+	else
+		AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())
+	endif
+	Debug.Trace("ConfirmMoveInventoryItem end");
 EndFunction
 
 Function RentRoom(Actor player, Actor innkeeper, int cost) global
@@ -3030,8 +3040,18 @@ Function ArrestPlayer(Actor player, Actor guard, Faction crimeFaction) global
 		endif
 	endwhile
 
-	string arrestChoice = SkyMessage.Show(guard.GetDisplayName()+" is placing you under arrest. Submit?", "Resist", "Submit")
-	if (arrestChoice == "Submit")
+	int requestResult = AIAgentFunctions.requestArrestConfirmation(player, guard, crimeFaction)
+	if requestResult == 0
+		AIAgentFunctions.logMessageForActor("Arrest confirmation could not be shown. No arrest action was applied.","itemfound",guard.GetDisplayName())
+	endif
+EndFunction
+
+Function ConfirmArrestPlayer(Actor player, Actor guard, Faction crimeFaction, bool accepted) global
+	if (!player || !guard || !crimeFaction)
+		return
+	endif
+
+	if accepted
 		AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" submitted to arrest and was sent to jail.","itemfound",guard.GetDisplayName())
 		crimeFaction.SendPlayerToJail(true, true)
 	else
@@ -3662,10 +3682,17 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			if (destination)
 				Debug.Trace("[CHIM] BackgroundCmd, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
 				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
-				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
+				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination);
 				
-				if (destMarker)
+				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
+				Debug.Trace("[CHIM] BackgroundCmd, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
+				
+				if (destMarkerMain)
+					TravelToLocation(akTarget,destMarkerMain,destination.GetName())
+				elseif (destMarker)
 					TravelToLocation(akTarget,destMarker,destination.GetName())
+				else
+					Debug.Trace("[CHIM] BackgroundCmd, failed to find destMarker")
 				endif
 			else
 				ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
@@ -3801,10 +3828,13 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
-				Debug.Trace("[CHIM] BackgroundCmd, "+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
+				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
 			else
-				Debug.Trace("[CHIM] BackgroundCmd, No randomActor actor around "+x+","+y+","+z);
+				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+", No randomActor actor around "+x+","+y+","+z);
 			endif
+			
+			;AIAgentFunctions.scanActorsAroundOffline(akTarget);
+			
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
 			ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;

@@ -2284,6 +2284,11 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     logger::info("[RECHAT] spoke: {} , listener: {}, explicit target: {}, depth  {},taskid {} ", speaker, targetedNpc,
                  explicitRechatTarget, rechatDepth, tid);
     logger::debug("[RECHAT] origin line: {} ", debugLauncherLine);
+    if (PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER") {
+        logger::info("[RECHAT] Rechat avoided because WHISPER mode is private: {}", speaker);
+        return 0;
+    }
+
     auto player = RE::PlayerCharacter::GetSingleton();
     if (player->IsSneaking()) {
         logger::info("[RECHAT] Rechat avoided because stealth: {}", speaker);
@@ -2688,7 +2693,8 @@ void SpeakManager::process(AIAgent *agent) {
             bool earlyRechat = false;
             std::string phoneticTrimmed = SM::trim(scriptLine.phonetic);
             bool unfinished = spgResponse.isUnfinished();
-            if (GlobalRechatPolicyAsap == 0) {
+            const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
+            if (GlobalRechatPolicyAsap == 0 && !whisperModeActive) {
                 if (countItems() == 1 && !unfinished) {
                     // Last item in queue and SGPQueue is finished
                     std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
@@ -2735,7 +2741,6 @@ void SpeakManager::process(AIAgent *agent) {
             // Dynamic attenuation/muffle is handled during playback in DownloadAndPlay so
             // door/LOS/navmesh changes can update while the line is still playing.
 
-            const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
             const bool directedToPlayer = IsDirectlyAddressingPlayer(scriptLine.action, aiam);
             if (whisperModeActive && directedToPlayer && !agent->isNarrator()) {
                 playbackVolumeBoost = 0.25f;
@@ -2766,6 +2771,8 @@ void SpeakManager::process(AIAgent *agent) {
                 logger::info("[RECHAT {}] Rechat evaluation", tid);
                 if (playerInDialog) {
                     logger::info("[RECHAT {}] Avoiding rechat, player is in dialog", tid);
+                } else if (whisperModeActive) {
+                    logger::info("[RECHAT {}] Avoiding rechat, WHISPER mode is private", tid);
                 } else if (GlobalRechatPolicyAsap == 0 && res != 2 && earlyRechat == false) {
                     bool unfinished = spgResponse.isUnfinished();
 

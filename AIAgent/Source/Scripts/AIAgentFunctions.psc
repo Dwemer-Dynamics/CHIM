@@ -20,6 +20,8 @@ int function setAnimationBusy(int busy,String npc) Global Native
 int function setLocked(int locked,String npc) Global Native; 1 locks agent for talking, 0 releases.
 int function isActorTalking(String npc) Global Native
 int function getPlayerBountyForGuard(String guardName) Global Native
+int function requestMoveInventoryItemConfirmation(Actor source, Actor target, Form itemForm, int amount, String realName) Global Native
+int function requestArrestConfirmation(Actor player, Actor guard, Faction crimeFaction) Global Native
 int function sendRequest() Global Native
 int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
@@ -48,8 +50,11 @@ int[] function findAllAgentsFormId() Global Native;
 ; Helpers
 ObjectReference function getLocationMarkerFor(Location loc) Global Native
 ObjectReference function getWorldLocationMarkerFor(Location loc) Global Native
+ObjectReference function getLocationCenterMarker(Location loc) Global Native
 ObjectReference function getNearestDoor() global Native
 ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restriction=true) global Native;restriction, ref must have a name
+
+int function scanActorsAroundOffline(Actor akActor)  global Native; This will send data to server, should retun 0
 
 string function GetLocationSpecialRefsString(int locationFormId)  Global Native
 ObjectReference function loadReference(int refFormId) global native
