@@ -4323,6 +4323,11 @@ namespace RE {
 
 namespace
 {
+    constexpr auto kPlayerItemPickupBatchDelay = std::chrono::milliseconds(500);
+    std::mutex g_playerItemPickupBatchMutex;
+    std::vector<json> g_playerItemPickupBatch;
+    std::atomic_bool g_playerItemPickupFlushScheduled{false};
+
     std::string QuestProgressionToLower(std::string value)
     {
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -4671,6 +4676,153 @@ namespace
         }
 
         PostQuestProgressionEvent(eventType, payload);
+    }
+
+    std::string GetItemPickupFormTypeName(RE::FormType formType)
+    {
+        switch (formType) {
+        case RE::FormType::Armor:
+            return "armor";
+        case RE::FormType::Weapon:
+            return "weapon";
+        case RE::FormType::Ammo:
+            return "ammo";
+        case RE::FormType::Book:
+            return "book";
+        case RE::FormType::Scroll:
+            return "scroll";
+        case RE::FormType::AlchemyItem:
+            return "alchemy_item";
+        case RE::FormType::Ingredient:
+            return "ingredient";
+        case RE::FormType::SoulGem:
+            return "soul_gem";
+        case RE::FormType::KeyMaster:
+            return "key";
+        case RE::FormType::Misc:
+            return "misc";
+        default:
+            return "other";
+        }
+    }
+
+    void FlushPlayerItemAcquiredTelemetryBatch()
+    {
+        while (true) {
+            std::this_thread::sleep_for(kPlayerItemPickupBatchDelay);
+
+            std::vector<json> batch;
+            {
+                std::lock_guard<std::mutex> lock(g_playerItemPickupBatchMutex);
+                batch.swap(g_playerItemPickupBatch);
+            }
+
+            if (!batch.empty()) {
+                if (batch.size() == 1) {
+                    HTTPManager::postGameData("gamedata.php", batch.front());
+                } else {
+                    std::string actorName = "Player";
+                    if (batch.front().contains("actor_name") && batch.front()["actor_name"].is_string()) {
+                        actorName = batch.front()["actor_name"].get<std::string>();
+                    }
+
+                    HTTPManager::postGameData("gamedata.php", json{
+                        {"type", "player_items_acquired"},
+                        {"actor_type", "player"},
+                        {"actor_name", actorName},
+                        {"items", batch}
+                    });
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_playerItemPickupBatchMutex);
+                if (g_playerItemPickupBatch.empty()) {
+                    g_playerItemPickupFlushScheduled.store(false);
+                    return;
+                }
+            }
+        }
+    }
+
+    void QueuePlayerItemAcquiredTelemetry(json payload)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_playerItemPickupBatchMutex);
+            g_playerItemPickupBatch.push_back(std::move(payload));
+        }
+
+        bool expected = false;
+        if (g_playerItemPickupFlushScheduled.compare_exchange_strong(expected, true)) {
+            std::thread(FlushPlayerItemAcquiredTelemetryBatch).detach();
+        }
+    }
+
+    void PostPlayerItemAcquiredTelemetry(RE::TESForm* itemForm, const std::string& displayName, int count,
+                                         RE::FormID source, bool barterSuppressed, bool craftingActive)
+    {
+        if (!pluginInited || !itemForm || count <= 0) {
+            return;
+        }
+
+        const std::string pluginName = GetQuestProgressionPluginName(itemForm);
+        if (pluginName.empty()) {
+            return;
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        std::string itemName = displayName;
+        if (itemName.empty() && itemForm->GetName() && itemForm->GetName()[0]) {
+            itemName = itemForm->GetName();
+        }
+
+        const int goldValue = itemForm->GetGoldValue();
+        json payload{
+            {"type", "player_item_acquired"},
+            {"actor_type", "player"},
+            {"actor_name", player ? std::string(player->GetName()) : std::string("Player")},
+            {"name", itemName},
+            {"count", count},
+            {"form_id", FormatQuestProgressionFormID(itemForm->GetLocalFormID())},
+            {"plugin", pluginName},
+            {"form_type", GetItemPickupFormTypeName(itemForm->GetFormType())},
+            {"form_type_id", static_cast<std::uint32_t>(itemForm->GetFormType())},
+            {"gold_value", goldValue},
+            {"total_value", goldValue * count},
+            {"gamets", GetGameTimeStamp()},
+            {"barter_suppressed", barterSuppressed},
+            {"crafting_active", craftingActive}
+        };
+
+        if (source != 0) {
+            payload["source_form_id"] = FormatQuestProgressionFormID(source);
+            auto* sourceForm = RE::TESForm::LookupByID(source);
+            if (sourceForm) {
+                payload["source_type"] = GetItemPickupFormTypeName(sourceForm->GetFormType());
+                if (sourceForm->GetName() && sourceForm->GetName()[0]) {
+                    payload["source_name"] = std::string(sourceForm->GetName());
+                }
+
+                if (auto* sourceActor = sourceForm->As<RE::Actor>()) {
+                    payload["source_type"] = "actor";
+                    if (sourceActor->GetDisplayFullName() && sourceActor->GetDisplayFullName()[0]) {
+                        payload["source_name"] = std::string(sourceActor->GetDisplayFullName());
+                    }
+                } else if (auto* sourceRef = sourceForm->AsReference()) {
+                    payload["source_type"] = "reference";
+                    if (sourceRef->GetDisplayFullName() && sourceRef->GetDisplayFullName()[0]) {
+                        payload["source_name"] = std::string(sourceRef->GetDisplayFullName());
+                    }
+                    if (auto* owner = sourceRef->GetActorOwner()) {
+                        if (owner->GetFullName() && owner->GetFullName()[0]) {
+                            payload["source_owner"] = std::string(owner->GetFullName());
+                        }
+                    }
+                }
+            }
+        }
+
+        QueuePlayerItemAcquiredTelemetry(std::move(payload));
     }
 
     void PostQuestProgressionInventorySync()
@@ -5979,8 +6131,34 @@ static std::string BuildModdedEquipmentHash(const std::unordered_map<std::string
     return hash;
 }
 
-// Helper function to refresh equipment for an AI Agent (with hash-based diffing)
+static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
+static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
+    if (!npc) return;
+
+    auto actorHandle = npc->GetHandle();
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[EQUIPMENT_UPDATE] SKSE task interface unavailable; reading {} equipment directly", agentName);
+        RefreshAIAgentEquipmentImpl(npc, agentName, forceUpdate);
+        return;
+    }
+
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate]() {
+        auto actorRef = actorHandle.get();
+        auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::trace("[EQUIPMENT_SKIP] {} - actor handle no longer valid", agentName);
+            return;
+        }
+
+        RefreshAIAgentEquipmentImpl(actor, agentName, forceUpdate);
+    });
+}
+
+// Helper function to refresh equipment for an AI Agent (with hash-based diffing)
+static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
     
     // Skip player
@@ -6287,8 +6465,31 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
     logger::info("[EQUIPMENT_UPDATE] {} equipment updated", agentName);
 }
 
-// Helper function to refresh inventory for an AI Agent (with hash-based diffing)
 void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
+    if (!npc) return;
+
+    auto actorHandle = npc->GetHandle();
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[INVENTORY_UPDATE] SKSE task interface unavailable; reading {} inventory directly", agentName);
+        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous);
+        return;
+    }
+
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous]() {
+        auto actorRef = actorHandle.get();
+        auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::trace("[INVENTORY_SKIP] {} - actor handle no longer valid", agentName);
+            return;
+        }
+
+        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous);
+    });
+}
+
+// Helper function to refresh inventory for an AI Agent (with hash-based diffing)
+static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
     if (!npc) return;
     if (npc->IsPlayer()) return;  // Skip player
 
@@ -10086,9 +10287,6 @@ EventHandlers {
          std::string itemName;
          std::string itemNameEx;
 
-         std::string sourceName;
-         std::string destinationName;
-
          auto itemPointer = RE::TESForm::LookupByID(item);
          if (itemPointer && event->itemCount > 0) {
              auto* player = RE::PlayerCharacter::GetSingleton();
@@ -10118,10 +10316,11 @@ EventHandlers {
              }
          }
 
-         bool log = false;
          int transferValue = 0;
          if (itemPointer) {
-             itemName.append(RE::TESForm::LookupByID(item)->GetName());
+             if (itemPointer->GetName() && itemPointer->GetName()[0]) {
+                 itemName.append(itemPointer->GetName());
+             }
 
              
              auto reference = RE::TESForm::LookupByID(event->reference);
@@ -10131,9 +10330,6 @@ EventHandlers {
                  if (ref) {
                      itemNameEx.append(ref->GetDisplayFullName());
                      logger::info("[TESContainerChangedEvent] <{}> vs <{}>", ref->GetDisplayFullName(), ref->GetName());
-                     if (ref->GetFactionOwner() == AIAgentRoleMasterFaction) {
-                         log = true;
-                     }
                  }
              }
 
@@ -10141,50 +10337,6 @@ EventHandlers {
                  itemName.assign(itemNameEx);
 
              transferValue += itemPointer->GetGoldValue() * event->itemCount;
-
-             if (itemPointer->GetFormType() == RE::FormType::Misc) {
-                 
-                 //log = true;
-                 //itemName.append("[MISC]");
-                 if (itemPointer->GetGoldValue() == 0) {
-                     log = true;
-                     // itemName.append("[W500]");
-                 }
-
-
-             } else if (itemPointer->GetFormType() == RE::FormType::Weapon) {
-                 
-                 if (itemPointer->GetGoldValue() >= 500) {
-                     log = true;
-                     //itemName.append("[W500]");
-                 }
-
-             } else if (itemPointer->GetFormType() == RE::FormType::Armor) {
-                 if (itemPointer->GetGoldValue() >= 500) {
-                     log = true;
-                     //itemName.append("[W500]");
-                 }
-             } else if (itemPointer->GetFormType() == RE::FormType::AlchemyItem) {
-                 
-                 log = true;
-                     // itemName.append("[W500]");
-                 
-             } else if (itemPointer->GetFormType() == RE::FormType::Book) {
-                 log = true;
-                 itemName.append(" (a book)");
-
-             } else if (itemPointer->GetFormType() == RE::FormType::Scroll) {
-                 log = true;
-                 itemName.append(" (a scroll)");
-
-             }  else {
-             
-                if (itemPointer->GetGoldValue() == 0) {
-                     log = true;
-                 }
-             }
-
-
          }
          
          auto destinationPointer = RE::TESForm::LookupByID(destination);
@@ -10196,51 +10348,17 @@ EventHandlers {
                  itemPointer,
                  itemName);
 
+         if (destination == RE::PlayerCharacter::GetSingleton()->GetFormID() && itemPointer && event->itemCount > 0) {
+             PostPlayerItemAcquiredTelemetry(
+                 itemPointer,
+                 itemName,
+                 event->itemCount,
+                 source,
+                 suppressPlayerItemLoggingForBarter,
+                 ProcessorMenu::IsCraftingActive());
+         }
 
          if (!suppressPlayerItemLoggingForBarter &&
-             destination == RE::PlayerCharacter::GetSingleton()->GetFormID() && log) {  // Player is getting something
-              
-              // Skip itemfound events during crafting - they'll be logged as crafted items instead
-              if (ProcessorMenu::IsCraftingActive()) {
-                  // Item added during crafting session - will be logged when menu closes
-              } else if (source) {
-                 auto sourceContainer = RE::TESForm::LookupByID(source);
-                 if (sourceContainer->GetFormType() == RE::FormType::Reference) {
-                     RE::TESObjectREFR *sourceContainerBase = sourceContainer->AsReference();
-                     
-                     auto owner = sourceContainerBase->GetActorOwner();
-                     if (owner) {
-                         sourceName = owner->GetFullName();
-                         HTTPManager::log(std::format(
-                             "itemfound|{}|{}|{} took/traded {} {} from {}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                             RE::PlayerCharacter::GetSingleton()->GetName(), event->itemCount, itemName, sourceName));
-                     } else {
-                         sourceName = sourceContainerBase->GetName();
-                         HTTPManager::log(std::format(
-                             "itemfound|{}|{}|{} found {} {} in a {}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                             RE::PlayerCharacter::GetSingleton()->GetName(), event->itemCount, itemName, sourceName));
-                     }
-
-
-                     
-
-                 } else if (sourceContainer->GetFormType() == RE::FormType::ActorCharacter) {
-
-                     auto actorContainer = sourceContainer->As<RE::Actor>();
-                     HTTPManager::log(std::format("itemfound|{}|{}|{} looted {} {} from {}", getCurrentTimeMillis(),
-                                                  GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
-                                                  event->itemCount, itemName, actorContainer->GetDisplayFullName()));
-
-                     
-                 }
-             } else {
-                 HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
-                                              GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
-                                              event->itemCount, itemName));
-             }
-
-
-         } else if (!suppressPlayerItemLoggingForBarter &&
             destinationPointer && destinationPointer->GetFormType() == RE::FormType::ActorCharacter && 
            source ==  RE::PlayerCharacter::GetSingleton()->GetFormID() ) {
              
