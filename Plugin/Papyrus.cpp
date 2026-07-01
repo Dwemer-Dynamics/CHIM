@@ -42,9 +42,12 @@
 
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
-void SkipNextPlayerMenuTopicLocalPlayback();
-#include "json.hpp"
 
+extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+
+void SkipNextPlayerMenuTopicLocalPlayback();
+
+#include "json.hpp"
 using json = nlohmann::json;
 
 namespace logger = SKSE::log;
@@ -4509,6 +4512,287 @@ int Papyrus::scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VM
     return 0;
 }
 
+int addBasicProfileReal(RE::ObjectRefHandle targetObject) {
+    if (targetObject) {
+        auto rawTarget = targetObject.get();
+        // logger::info("Checking {}", rawTarget->GetFormType());
+
+        if (targetObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
+            auto targetActor = targetObject.get()->As<RE::Actor>();
+
+            if (!targetActor->IsPlayerTeammate() && false) {
+                logger::info("{} is not a PlayerTeammate", targetObject.get()->GetName());
+
+            } else if (targetActor->IsPlayer()) {
+                logger::info("{} is  the player, refusing", targetObject.get()->GetName());
+
+            } else if (!targetActor->GetRace()->GetPlayable()) {
+                logger::info("{} is not playable, refusing", targetObject.get()->GetName());
+
+            } else {
+                std::string category;
+
+                auto baseActor = targetActor->GetActorBase();
+
+                if (baseActor) {
+                    category.assign(baseActor->GetName());
+                    std::string metainfo;
+                    if (baseActor->GetSex() == RE::SEX::kMale) {
+                        metainfo.append("@male");
+                    } else if (baseActor->GetSex() == RE::SEX::kFemale) {
+                        metainfo.append("@female");
+                    } else {
+                        metainfo.append("@nogender");
+                    }
+
+                    std::string race;
+                    if (baseActor->GetRace()->GetName()) {
+                        metainfo.append("@").append(baseActor->GetRace()->GetName());
+                    }
+
+                    metainfo.append("@").append(std::format("{:08X}", targetActor->GetFormID()));
+
+                    /* Stats gathering */
+                    auto stats = targetActor->AsActorValueOwner();
+
+                    float archery = stats->GetActorValue(RE::ActorValue::kArchery);
+                    float block = stats->GetActorValue(RE::ActorValue::kBlock);
+                    float onehanded = stats->GetActorValue(RE::ActorValue::kOneHanded);
+                    float twohanded = stats->GetActorValue(RE::ActorValue::kTwoHanded);
+
+                    float conjuration = stats->GetActorValue(RE::ActorValue::kConjuration);
+                    float destruction = stats->GetActorValue(RE::ActorValue::kDestruction);
+                    float restoration = stats->GetActorValue(RE::ActorValue::kRestoration);
+                    float alteration = stats->GetActorValue(RE::ActorValue::kAlteration);
+                    float illusion = stats->GetActorValue(RE::ActorValue::kIllusion);  // Use your illusion, great album
+
+                    float heavyarmor = stats->GetActorValue(RE::ActorValue::kHeavyArmor);
+                    float lightarmor = stats->GetActorValue(RE::ActorValue::kLightArmor);
+
+                    float lockpicking = stats->GetActorValue(RE::ActorValue::kLockpicking);
+                    float pickpocket = stats->GetActorValue(RE::ActorValue::kPickpocket);
+                    float sneak = stats->GetActorValue(RE::ActorValue::kSneak);
+
+                    float speech = stats->GetActorValue(RE::ActorValue::kSpeech);
+                    float smithing = stats->GetActorValue(RE::ActorValue::kSmithing);
+                    float alchemy = stats->GetActorValue(RE::ActorValue::kAlchemy);
+                    float enchanting = stats->GetActorValue(RE::ActorValue::kEnchanting);  // enchanting? enchaaantiing
+
+                    metainfo.append("@").append(std::format("{}", archery));
+                    metainfo.append("@").append(std::format("{}", block));
+                    metainfo.append("@").append(std::format("{}", onehanded));
+                    metainfo.append("@").append(std::format("{}", twohanded));
+                    metainfo.append("@").append(std::format("{}", conjuration));
+                    metainfo.append("@").append(std::format("{}", destruction));
+                    metainfo.append("@").append(std::format("{}", restoration));
+                    metainfo.append("@").append(std::format("{}", alteration));
+                    metainfo.append("@").append(std::format("{}", illusion));
+                    metainfo.append("@").append(std::format("{}", heavyarmor));
+                    metainfo.append("@").append(std::format("{}", lightarmor));
+                    metainfo.append("@").append(std::format("{}", lockpicking));
+                    metainfo.append("@").append(std::format("{}", pickpocket));
+                    metainfo.append("@").append(std::format("{}", sneak));
+                    metainfo.append("@").append(std::format("{}", speech));
+                    metainfo.append("@").append(std::format("{}", smithing));
+                    metainfo.append("@").append(std::format("{}", alchemy));
+                    metainfo.append("@").append(std::format("{}", enchanting));
+
+                    /* Equipment gathering (10 slots: helmet, armor, boots, gloves, amulet, ring, cape, backpack,
+                     * left hand, right hand) */
+                    auto* helmet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead);
+                    auto* armor = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kBody);
+                    auto* boots = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kFeet);
+                    auto* gloves = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands);
+                    auto* amulet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet);
+                    auto* ring = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
+                    auto* cape = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary);
+                    auto* backpack = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModBack);
+                    auto* leftHand = targetActor->GetEquippedObject(true);    // Left hand
+                    auto* rightHand = targetActor->GetEquippedObject(false);  // Right hand
+
+                    metainfo.append("@").append(helmet ? helmet->GetName() : "");
+                    metainfo.append("@").append(armor ? armor->GetName() : "");
+                    metainfo.append("@").append(boots ? boots->GetName() : "");
+                    metainfo.append("@").append(gloves ? gloves->GetName() : "");
+                    metainfo.append("@").append(amulet ? amulet->GetName() : "");
+                    metainfo.append("@").append(ring ? ring->GetName() : "");
+                    metainfo.append("@").append(cape ? cape->GetName() : "");
+                    metainfo.append("@").append(backpack ? backpack->GetName() : "");
+                    metainfo.append("@").append(leftHand ? leftHand->GetName() : "");
+                    metainfo.append("@").append(rightHand ? rightHand->GetName() : "");
+
+                    /* Stats gathering (core attributes) */
+                    auto level = targetActor->GetLevel();
+                    float health = stats->GetActorValue(RE::ActorValue::kHealth);
+                    float healthMax = stats->GetBaseActorValue(RE::ActorValue::kHealth);
+                    float magicka = stats->GetActorValue(RE::ActorValue::kMagicka);
+                    float magickaMax = stats->GetBaseActorValue(RE::ActorValue::kMagicka);
+                    float stamina = stats->GetActorValue(RE::ActorValue::kStamina);
+                    float staminaMax = stats->GetBaseActorValue(RE::ActorValue::kStamina);
+                    float scale = targetActor->GetScale();
+
+                    metainfo.append("@").append(std::format("{}", level));
+                    metainfo.append("@").append(std::format("{}", health));
+                    metainfo.append("@").append(std::format("{}", healthMax));
+                    metainfo.append("@").append(std::format("{}", magicka));
+                    metainfo.append("@").append(std::format("{}", magickaMax));
+                    metainfo.append("@").append(std::format("{}", stamina));
+                    metainfo.append("@").append(std::format("{}", staminaMax));
+                    metainfo.append("@").append(std::format("{:.2f}", scale));
+
+                    auto* modFiles = targetActor->sourceFiles.array;
+                    if (!modFiles) {
+                        if (targetActor->GetActorBase()) modFiles = targetActor->GetActorBase()->sourceFiles.array;
+                    }
+
+                    if (modFiles && modFiles->size() > 0) {
+                        metainfo.append("@");
+                        for (std::uint32_t i = 0; i < modFiles->size(); ++i) {
+                            RE::TESFile* file = (*modFiles)[i];
+                            if (file) {
+                                if (i > 0) metainfo.append("#");
+                                metainfo.append(file->fileName);
+                            }
+                        }
+                    } else {
+                        metainfo.append("@");
+                    }
+
+                    /* Faction gathering */
+                    std::string factionData;
+                    if (baseActor && baseActor->factions.size() > 0) {
+                        for (std::uint32_t i = 0; i < baseActor->factions.size(); ++i) {
+                            auto factionInfo = baseActor->factions[i];
+                            if (factionInfo.faction) {
+                                if (!factionData.empty()) factionData.append("#");
+                                std::string stableFactionReference;
+                                if (auto* factionFile = factionInfo.faction->GetFile(0)) {
+                                    const std::string pluginName(factionFile->GetFilename());
+                                    const auto localFormId =
+                                        static_cast<std::uint32_t>(factionInfo.faction->GetLocalFormID());
+                                    if (!pluginName.empty()) {
+                                        stableFactionReference = std::format("{}/{:08X}", pluginName, localFormId);
+                                    }
+                                }
+                                // Format: formID:rank:PluginName.esp|LocalFormId
+                                factionData.append(std::format("{:08X}:{:d}:{}", factionInfo.faction->GetFormID(),
+                                                               static_cast<int>(factionInfo.rank),
+                                                               stableFactionReference));
+                            }
+                        }
+                    }
+                    metainfo.append("@").append(factionData);
+
+                    /* Class gathering */
+                    std::string classData;
+                    if (baseActor && baseActor->npcClass) {
+                        auto npcClass = baseActor->npcClass;
+                        std::string className = npcClass->GetName() ? npcClass->GetName() : "";
+
+                        // Get training data from class data
+                        std::string trainSkill = "";
+                        int trainLevel = 0;
+
+                        // TESClass data structure contains training info
+                        // Check if maximumTrainingLevel is greater than 0 to determine if this class trains
+                        if (npcClass->data.maximumTrainingLevel > 0) {
+                            // Convert CLASS_DATA::Skill to skill name string
+                            auto skillValue = npcClass->data.teaches;
+                            switch (skillValue.underlying()) {
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kOneHanded):
+                                    trainSkill = "OneHanded";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kTwoHanded):
+                                    trainSkill = "TwoHanded";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kArchery):
+                                    trainSkill = "Archery";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kBlock):
+                                    trainSkill = "Block";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kSmithing):
+                                    trainSkill = "Smithing";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kHeavyArmor):
+                                    trainSkill = "HeavyArmor";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kLightArmor):
+                                    trainSkill = "LightArmor";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kPickpocket):
+                                    trainSkill = "Pickpocket";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kLockpicking):
+                                    trainSkill = "Lockpicking";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kSneak):
+                                    trainSkill = "Sneak";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kAlchemy):
+                                    trainSkill = "Alchemy";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kSpeech):
+                                    trainSkill = "Speech";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kAlteration):
+                                    trainSkill = "Alteration";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kConjuration):
+                                    trainSkill = "Conjuration";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kDestruction):
+                                    trainSkill = "Destruction";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kIllusion):
+                                    trainSkill = "Illusion";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kRestoration):
+                                    trainSkill = "Restoration";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kEnchanting):
+                                    trainSkill = "Enchanting";
+                                    break;
+                                default:
+                                    trainSkill = "";
+                                    break;
+                            }
+                            trainLevel = static_cast<int>(npcClass->data.maximumTrainingLevel);
+                        }
+
+                        classData =
+                            std::format("{}:{:08X}:{}:{}", className, npcClass->GetFormID(), trainSkill, trainLevel);
+                    }
+                    metainfo.append("@").append(classData);
+
+                    category.append(metainfo);
+
+                    HTTPManager::log(std::format("addbgnpc|{}|{}|{}@{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                 targetActor->GetDisplayFullName(), category));
+                }
+            }
+
+        } else {
+            logger::info("{} is not an NPC", targetObject.get()->GetName());
+        }
+    }
+    return 0;
+}
+
+
+int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                     RE::StaticFunctionTag*, RE::Actor* target) {
+    ScopedPapyrusLock lock("addBasicProfile");
+    
+    if (target->GetHandle()) {
+        addBasicProfileReal(target->GetHandle());
+        RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, true);
+    } else {
+        logger::warn("[addBasicProfile] Target actor has no valid handle.");
+    }
+    return 0;
+}
+
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
@@ -4540,6 +4824,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);
     a_vm->RegisterFunction("setDrivenByAI", "AIAgentFunctions", setDrivenByAI, false);
     a_vm->RegisterFunction("setDrivenByAIA", "AIAgentFunctions", setDrivenByAIA, false);
+    a_vm->RegisterFunction("addBasicProfile", "AIAgentFunctions", addBasicProfile, false);
     a_vm->RegisterFunction("setNewActionMode", "AIAgentFunctions", setNewActionMode, false);
     a_vm->RegisterFunction("getClosestAgent", "AIAgentFunctions", getClosestAgent, false);
     a_vm->RegisterFunction("getAgentByName", "AIAgentFunctions", getAgentByName, false);

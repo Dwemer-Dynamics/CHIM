@@ -138,6 +138,8 @@ namespace Papyrus {
     int removeAgentByName(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                           std::string name);
 
+    int addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                 RE::Actor* target);
     RE::TESObjectREFR* getLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                             RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
