@@ -2180,7 +2180,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _keymap_chatbox_focus)
-		SetInfoText("Open Text Chat in Prisma UI so you can type and send a message, then return control to the game.")
+		SetInfoText("Open Text Chat in Prisma UI so you can type and send a message, or summarize an open book, then return control to the game.")
 	endIf
 	
 	if (a_option == _keymap_settingsmenu)
