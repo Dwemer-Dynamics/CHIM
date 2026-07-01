@@ -1299,7 +1299,7 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                                         const std::string pluginName(factionFile->GetFilename());
                                         const auto localFormId = static_cast<std::uint32_t>(factionInfo.faction->GetLocalFormID());
                                         if (!pluginName.empty()) {
-                                            stableFactionReference = std::format("{}|{:08X}", pluginName, localFormId);
+                                            stableFactionReference = std::format("{}/{:08X}", pluginName, localFormId);
                                         }
                                     }
                                     // Format: formID:rank:PluginName.esp|LocalFormId
