@@ -3212,7 +3212,7 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
 
 
 RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc) {
+                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier) {
     ScopedPapyrusLock lock("getLocationCenterMarker");
     if (!a_loc) {
         a_vm->TraceStack("Location is None", a_stackID);
@@ -3226,19 +3226,46 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
     logger::info("getLocationCenterMarker: Location has no world marker");
     RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
 
+    
+    auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
+    auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
+    auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
+
     // Iterate over specialRefs using begin()/end()
     for (auto it = refs->begin(); it != refs->end(); ++it) {
         const auto& refData = *it;
         if (refData.type) {
             if (refData.type->formType == RE::FormType::LocationRefType) {
-                if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
-                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                if (modifier == 0) {
+                    if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
 
-                    logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
-                                 refData.refData.refID);
-                    if (t) {
-                        result = t->AsReference();
-                        break;
+                        logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 1) {
+                    if (refData.type->GetFormID() == 0x000130fc) {  // insideMarkerRefType
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref insideMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 2) {
+                    if (refData.type->GetFormID() == 0x000130f9) {  // bossTreasureMarkerRefType
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref bossTreasureMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
                     }
                 }
             }

@@ -145,7 +145,7 @@ namespace Papyrus {
                                                  RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
     RE::TESObjectREFR* getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
+                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier);
 
     int scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                                 RE::Actor* target);
