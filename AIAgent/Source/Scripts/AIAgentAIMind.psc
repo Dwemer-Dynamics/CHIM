@@ -3682,7 +3682,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			if (destination)
 				Debug.Trace("[CHIM] BackgroundCmd, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
 				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
-				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination);
+				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination,0);
 				
 				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
 				Debug.Trace("[CHIM] BackgroundCmd, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
@@ -3785,7 +3785,6 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			Worldspace cws= akTarget.GetWorldSpace()
 			
 			
-
 			if (cws)
 				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetName())
 				if (cws.GetName() == "Skyrim" || cws.GetName() == "")
@@ -3833,7 +3832,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+", No randomActor actor around "+x+","+y+","+z);
 			endif
 			
-			;AIAgentFunctions.scanActorsAroundOffline(akTarget);
+			AIAgentFunctions.scanActorsAroundOffline(akTarget);
 			
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
@@ -3898,9 +3897,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					endif
 				endif
 
-				if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
+				;if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
 					int retFnc=AIAgentFunctions.logMessage(destinationRef.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
-				endif
+				;endif
 			endif
 		endif
 	endif

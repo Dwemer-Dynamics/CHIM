@@ -38,6 +38,7 @@ int function setAIKeyWord(Actor targetActor) Global Native
 ; Agent functions
 int function setDrivenByAI() Global Native
 int function setDrivenByAIA(Actor forcedActor,bool salutation) Global Native
+int function addBasicProfile(Actor forcedActor) Global Native
 int function removeAgentByName(String name) Global Native
 Actor function getClosestAgent() Global Native
 Actor function getAgentByName(String npcName) Global Native
@@ -50,7 +51,7 @@ int[] function findAllAgentsFormId() Global Native;
 ; Helpers
 ObjectReference function getLocationMarkerFor(Location loc) Global Native
 ObjectReference function getWorldLocationMarkerFor(Location loc) Global Native
-ObjectReference function getLocationCenterMarker(Location loc) Global Native
+ObjectReference function getLocationCenterMarker(Location loc,int mode) Global Native ; mode. 0 localtioncenter,1 insideMarker,2 bossTreasure
 ObjectReference function getNearestDoor() global Native
 ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restriction=true) global Native;restriction, ref must have a name
 
