@@ -1,6 +1,7 @@
 #include "SpatialAwareness.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -36,20 +37,35 @@ namespace SpatialAwareness
         if (!REL::Module::IsVR()) {
             return;
         }
-        auto* cam = RE::PlayerCamera::GetSingleton();
-        RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
-        if (!camRoot) {
+        // Reading camRoot->world at Present time returned a STATIC transform (log-proven: scene partner
+        // distance frozen at exactly 2122.0 across every tick while adjacent) - the live HMD-following
+        // world transform is only current on the GAME thread. The Present hook now just paces the capture:
+        // queue at most one game-thread task per frame; the task takes the tear-free read and publishes it.
+        static std::atomic<bool> pending{false};
+        bool expected = false;
+        if (!pending.compare_exchange_strong(expected, true)) {
+            return; // a capture task is already queued
+        }
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            pending.store(false);
             return;
         }
-        const RE::NiPoint3 p = camRoot->world.translate;
-        if (!(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) ||
-            (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) <= 0.001f) {
-            return;
-        }
-        std::lock_guard<std::mutex> lk(g_camSnapMutex);
-        g_camSnapPos = p;
-        g_camSnapWhen = std::chrono::steady_clock::now();
-        g_camSnapValid = true;
+        tasks->AddTask([]() {
+            auto* cam = RE::PlayerCamera::GetSingleton();
+            RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
+            if (camRoot) {
+                const RE::NiPoint3 p = camRoot->world.translate;
+                if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+                    (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) > 0.001f) {
+                    std::lock_guard<std::mutex> lk(g_camSnapMutex);
+                    g_camSnapPos = p;
+                    g_camSnapWhen = std::chrono::steady_clock::now();
+                    g_camSnapValid = true;
+                }
+            }
+            pending.store(false);
+        });
     }
 
     RE::NiPoint3 GetEffectiveActorPosition(RE::Actor* actor)
