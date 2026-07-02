@@ -3820,6 +3820,10 @@ namespace ProcessorScreenShot {
     void DXGIPresentHook::thunk(std::uint32_t a_p1) {
         func(a_p1);
 
+        // Per-frame VR camera snapshot for the spatial audio engine - transforms are final at Present, so this
+        // is the tear-free read the audio worker threads consume via GetEffectiveActorPosition (fix 2026-07-01).
+        SpatialAwareness::UpdatePlayerCameraSnapshot();
+
         if (MutexIsMakeShotActivated()) {
             MutexSetMakeShotActive(false);
             ProcedureTakeShot();
@@ -3941,6 +3945,26 @@ namespace ProcessorActorDialogue {
         }
 
         return func(actor, response, a_unused);
+    }
+}
+
+namespace ProcessorVrVisemePump {
+    struct PlayerUpdateHook {
+        static void thunk(RE::PlayerCharacter* player, float deltaSeconds);
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    void InstallHooks()
+    {
+        REL::Relocation<std::uintptr_t> playerVtbl{RE::VTABLE_PlayerCharacter[0]};
+        PlayerUpdateHook::func = playerVtbl.write_vfunc(0xAD, PlayerUpdateHook::thunk);
+        logger::info("[SpeakManager] Installed VR player-update viseme pump hook");
+    }
+
+    void PlayerUpdateHook::thunk(RE::PlayerCharacter* player, float deltaSeconds)
+    {
+        func(player, deltaSeconds);
+        ProcessVrVisemePumpOnGameThread(deltaSeconds);
     }
 }
 
@@ -8081,6 +8105,7 @@ OnDataLoaded {
         ProcessorDialogueMenu::InstallHooks();
     } else {
         logger::info("VR runtime detected; skipping flat Skyrim native screenshot/dialogue hooks");
+        ProcessorVrVisemePump::InstallHooks();
     }
 
     const auto papyrus = SKSE::GetPapyrusInterface();

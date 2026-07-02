@@ -22,6 +22,72 @@ namespace SpatialAwareness
 {
     namespace
     {
+        // Per-frame VR camera position snapshot (see UpdatePlayerCameraSnapshot in the header). Mutex-guarded:
+        // one writer per frame (Present hook) + a handful of audio-tick readers per second - contention is nil.
+        std::mutex g_camSnapMutex;
+        RE::NiPoint3 g_camSnapPos{};
+        std::chrono::steady_clock::time_point g_camSnapWhen{};
+        bool g_camSnapValid = false;
+        constexpr auto kCamSnapMaxAge = std::chrono::milliseconds(500);
+    }
+
+    void UpdatePlayerCameraSnapshot()
+    {
+        if (!REL::Module::IsVR()) {
+            return;
+        }
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
+        if (!camRoot) {
+            return;
+        }
+        const RE::NiPoint3 p = camRoot->world.translate;
+        if (!(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) ||
+            (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) <= 0.001f) {
+            return;
+        }
+        std::lock_guard<std::mutex> lk(g_camSnapMutex);
+        g_camSnapPos = p;
+        g_camSnapWhen = std::chrono::steady_clock::now();
+        g_camSnapValid = true;
+    }
+
+    RE::NiPoint3 GetEffectiveActorPosition(RE::Actor* actor)
+    {
+        if (!actor) {
+            return RE::NiPoint3();
+        }
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (actor == player && REL::Module::IsVR()) {
+            // Serve the per-frame snapshot taken on the Present hook. Audio worker threads must NOT read
+            // camRoot->world.translate live: that read races the renderer's transform update and returns torn
+            // positions (log-proven 2026-07-01: partner distance oscillating 228 -> 793 units within 1.5s while
+            // stationary - volume pumping heard as the voice "floating away" mid-scene, then snapping back).
+            {
+                std::lock_guard<std::mutex> lk(g_camSnapMutex);
+                if (g_camSnapValid && (std::chrono::steady_clock::now() - g_camSnapWhen) < kCamSnapMaxAge) {
+                    return g_camSnapPos;
+                }
+            }
+            // Snapshot stale/absent (menu, loading, hook not yet firing): fall back to the live CAMERA ROOT read.
+            // (First attempt used UprightHmdNode: its rotation is valid but its TRANSLATION is playspace-relative,
+            // so the magnitude guard rejected it and everything silently fell back to the ref position. The ref
+            // can strand 20+ m behind the real body in VR - log-proven dist=1575 "too_far" at arm's length.)
+            auto* cam = RE::PlayerCamera::GetSingleton();
+            RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
+            if (camRoot) {
+                const RE::NiPoint3 p = camRoot->world.translate;
+                if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+                    (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) > 0.001f) {
+                    return p;
+                }
+            }
+        }
+        return actor->GetPosition();
+    }
+
+    namespace
+    {
         struct NavNode
         {
             RE::NiPoint3 centroid{};
@@ -664,8 +730,8 @@ namespace SpatialAwareness
             return result;
         }
 
-        const RE::NiPoint3 speakerPosition = speaker->GetPosition();
-        const RE::NiPoint3 listenerPosition = listener->GetPosition();
+        const RE::NiPoint3 speakerPosition = GetEffectiveActorPosition(speaker);
+        const RE::NiPoint3 listenerPosition = GetEffectiveActorPosition(listener);
         const float airDistance = speakerPosition.GetDistance(listenerPosition);
         if (!std::isfinite(airDistance)) {
             return result;
@@ -777,8 +843,8 @@ namespace SpatialAwareness
             return finalize("tier0_cell_boundary");
         }
 
-        const RE::NiPoint3 speakerPosition = speaker->GetPosition();
-        const RE::NiPoint3 listenerPosition = listener->GetPosition();
+        const RE::NiPoint3 speakerPosition = GetEffectiveActorPosition(speaker);
+        const RE::NiPoint3 listenerPosition = GetEffectiveActorPosition(listener);
         const float airDistance = speakerPosition.GetDistance(listenerPosition);
 
         if (!std::isfinite(airDistance)) {
