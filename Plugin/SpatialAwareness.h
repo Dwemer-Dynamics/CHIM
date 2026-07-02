@@ -13,18 +13,14 @@ namespace SpatialAwareness
     inline constexpr float kAutoHearingDistance =
         kAutoHearingRadiusMeters * kSkyrimUnitsPerMeter;
 
-    // Where the actor's perception actually is. For the VR PLAYER this is the HMD node: the ref position
-    // parks/diverges from the headset (OStim pins it AI-driven mid-scene; roomscale/playspace drift is never
-    // written back while pinned), which made scene partners read as 950+ units away at arm's length
-    // (log-proven 2026-07-01: dist=958.5, reason=too_far, volume floor 0.25 while physically touching).
-    // NPCs keep the ref position - the engine holds it under their skeleton.
+    // Where the actor's perception actually is. VR player: the headset position (the ref can park far from
+    // the real body - OStim pins it mid-scene and playspace drift is never written back, so scene partners
+    // read as "too far" at arm's length). NPCs: the ref position (the engine keeps it under their skeleton).
     RE::NiPoint3 GetEffectiveActorPosition(RE::Actor* actor);
 
-    // Refresh the per-frame VR camera position snapshot. Called from the DXGI Present hook (once per frame,
-    // after the frame's transforms are final). GetEffectiveActorPosition serves this snapshot to the audio
-    // worker threads instead of letting them read camRoot->world.translate mid-update - the off-thread read
-    // raced the renderer and returned torn positions (log-proven 2026-07-01: scene partner distance
-    // oscillating 228 -> 793 units within 1.5s while stationary = audio "floating away" mid-scene).
+    // Refresh the per-frame VR camera position snapshot (paced by the Present hook, captured on the game
+    // thread). Audio worker threads must not read camRoot->world.translate directly: off-thread reads race
+    // the renderer and return torn positions, heard as voices drifting away mid-scene.
     void UpdatePlayerCameraSnapshot();
 
     struct Settings

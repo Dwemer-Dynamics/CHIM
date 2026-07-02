@@ -1233,7 +1233,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
         // Use the player as the audio listener. In VR the listener is the HMD node, NOT the ref position -
         // the ref parks/diverges (OStim pins it mid-scene; playspace drift never writes back), which made
-        // voices fade to the 0.25 floor at arm's length (fix 2026-07-01).
+        // voices fade to the 0.25 floor at arm's length.
         am.Update(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
                   AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(
                       SpatialAwareness::GetEffectiveActorPosition(RE::PlayerCharacter::GetSingleton())),
@@ -2511,7 +2511,7 @@ void SpeakManager::process(AIAgent *agent) {
     }
 
     auto player = RE::PlayerCharacter::GetSingleton();
-    float distance = npc->GetPosition().GetDistance(SpatialAwareness::GetEffectiveActorPosition(player)); // VR: HMD, not the parked ref (fix 2026-07-01)
+    float distance = npc->GetPosition().GetDistance(SpatialAwareness::GetEffectiveActorPosition(player)); // VR: headset position, not the parked ref
     logger::debug("[SpeakManager] Distance to player: {} units (min required: {})", distance, MIN_DISTANCE);
 
     if (distance > MIN_DISTANCE) {
