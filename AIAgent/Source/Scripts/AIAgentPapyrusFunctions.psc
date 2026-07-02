@@ -568,6 +568,11 @@ Function TriggerHaltAction()
 EndFunction
 
 Function ToggleChatboxFocusAction(int keyCode = -1)
+	if (UI.IsMenuOpen("Book Menu"))
+		AIAgentFunctions.sendMessage("Please, summarize this book i've just found.","chatnf_book")
+		Return
+	endif
+
 	; Type Message hotkey: opens modal-only quick message mode when panel is hidden.
 	; If already focused, it unfocuses/closes.
 	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
