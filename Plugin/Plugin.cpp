@@ -3820,8 +3820,7 @@ namespace ProcessorScreenShot {
     void DXGIPresentHook::thunk(std::uint32_t a_p1) {
         func(a_p1);
 
-        // Per-frame VR camera snapshot for the spatial audio engine - transforms are final at Present, so this
-        // is the tear-free read the audio worker threads consume via GetEffectiveActorPosition (fix 2026-07-01).
+        // Pace the per-frame VR camera snapshot for the spatial audio engine (VR-only; no-op in SE/AE).
         SpatialAwareness::UpdatePlayerCameraSnapshot();
 
         if (MutexIsMakeShotActivated()) {

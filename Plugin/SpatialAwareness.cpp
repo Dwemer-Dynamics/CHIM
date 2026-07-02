@@ -37,10 +37,9 @@ namespace SpatialAwareness
         if (!REL::Module::IsVR()) {
             return;
         }
-        // Reading camRoot->world at Present time returned a STATIC transform (log-proven: scene partner
-        // distance frozen at exactly 2122.0 across every tick while adjacent) - the live HMD-following
-        // world transform is only current on the GAME thread. The Present hook now just paces the capture:
-        // queue at most one game-thread task per frame; the task takes the tear-free read and publishes it.
+        // camRoot->world is only current on the GAME thread (reading it at Present time returns a static
+        // transform). The Present hook just paces the capture: at most one queued game-thread task per
+        // frame; the task takes the tear-free read and publishes it for the audio threads.
         static std::atomic<bool> pending{false};
         bool expected = false;
         if (!pending.compare_exchange_strong(expected, true)) {
@@ -75,20 +74,16 @@ namespace SpatialAwareness
         }
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (actor == player && REL::Module::IsVR()) {
-            // Serve the per-frame snapshot taken on the Present hook. Audio worker threads must NOT read
-            // camRoot->world.translate live: that read races the renderer's transform update and returns torn
-            // positions (log-proven 2026-07-01: partner distance oscillating 228 -> 793 units within 1.5s while
-            // stationary - volume pumping heard as the voice "floating away" mid-scene, then snapping back).
+            // Serve the per-frame snapshot. A live off-thread read of camRoot->world.translate races the
+            // renderer and returns torn positions (heard as volume pumping / voices drifting mid-scene).
             {
                 std::lock_guard<std::mutex> lk(g_camSnapMutex);
                 if (g_camSnapValid && (std::chrono::steady_clock::now() - g_camSnapWhen) < kCamSnapMaxAge) {
                     return g_camSnapPos;
                 }
             }
-            // Snapshot stale/absent (menu, loading, hook not yet firing): fall back to the live CAMERA ROOT read.
-            // (First attempt used UprightHmdNode: its rotation is valid but its TRANSLATION is playspace-relative,
-            // so the magnitude guard rejected it and everything silently fell back to the ref position. The ref
-            // can strand 20+ m behind the real body in VR - log-proven dist=1575 "too_far" at arm's length.)
+            // Snapshot stale/absent (menus, loading, hook not yet firing): fall back to a live camera-root
+            // read. (Not UprightHmdNode - its translation is playspace-relative and fails the magnitude guard.)
             auto* cam = RE::PlayerCamera::GetSingleton();
             RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
             if (camRoot) {
