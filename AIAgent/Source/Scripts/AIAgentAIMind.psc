@@ -3743,8 +3743,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			
 		elseif 	(cmd[0] == "StayAtPlace") 
 			; TO-DO select a better package here
-			Package doNothing = Game.GetForm(0x654e2) as Package ; Package Travelto
-			ActorUtil.AddPackageOverride(akTarget, doNothing,99)
+			; Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
+			Package SandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
+			ActorUtil.AddPackageOverride(akTarget, SandboxPackage,99)
 		
 		elseif 	(cmd[0] == "MoveToPlayer") 
 			; TO-DO select a better package here
@@ -3761,6 +3762,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			else
 				Debug.Trace("[CHIM] BackgroundCmd->MoveTo Couldn't find destination for formId: "+DecToHex(locrefId)+ " "+cmd[1])
 			endif
+		elseif 	(cmd[0] == "UpdateInventory") 
+			AIAgentFunctions.updateRemoteInventory(akTarget)
+			Debug.Trace("[CHIM] BackgroundCmd->UpdateInventory sent")
 			
 		elseif 	(cmd[0] == "Track") 
 			float x = 0;
