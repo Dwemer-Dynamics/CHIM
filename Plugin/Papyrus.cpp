@@ -4793,6 +4793,18 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     return 0;
 }
 
+ int Papyrus::updateRemoteInventory(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                    RE::StaticFunctionTag*,RE::Actor* target) {
+
+     ScopedPapyrusLock lock("updateRemoteInventory");
+
+     if (target->GetHandle()) {
+         RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, false);
+     } else {
+         logger::warn("[addBasicProfile] Target actor has no valid handle.");
+     }
+     return 0;
+}
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
@@ -4914,6 +4926,6 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
 
     a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
-    
+    a_vm->RegisterFunction("updateRemoteInventory", "AIAgentFunctions", updateRemoteInventory, false);
     return true;
 }
