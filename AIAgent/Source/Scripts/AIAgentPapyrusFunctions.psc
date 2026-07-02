@@ -568,6 +568,11 @@ Function TriggerHaltAction()
 EndFunction
 
 Function ToggleChatboxFocusAction(int keyCode = -1)
+	if (UI.IsMenuOpen("Book Menu"))
+		AIAgentFunctions.sendMessage("Please, summarize this book i've just found.","chatnf_book")
+		Return
+	endif
+
 	; Type Message hotkey: opens modal-only quick message mode when panel is hidden.
 	; If already focused, it unfocuses/closes.
 	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
@@ -1560,6 +1565,7 @@ EndFunction
 Function sendAllLocations() global
 
 	sendAllfactions();
+	sendAllNpcs();
 	; --- Load all location keywords we care about ---
 	Keyword isCave         = Game.GetForm(0x000130ef) as Keyword
 	Keyword isDungeon      = Game.GetForm(0x000130db) as Keyword
@@ -1612,7 +1618,9 @@ Function sendAllLocations() global
 	
 	while i < lengthA
 		Location curr = allLocations[i] as Location
-
+		
+		Debug.Trace("[CHIM] Location: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+		
 		if curr
 			ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
 			if (!destMarker)
@@ -1952,6 +1960,27 @@ Function sendAllfactions() global
 			Debug.Trace("[CHIM] [FACTION] Adding faction "+name + " / "+DecToHex(afFaction.GetFormId()));
 			retFnc=AIAgentFunctions.logMessage(DecToHex(afFaction.GetFormId())+"/"+name+"/"+vendorRef,"util_faction_name")
 		endif
+		i=i+1
+	endwhile
+	return
+EndFunction
+
+;Send all factions names
+Function sendAllNpcs() global
+
+	Actor[] allNpcs=PO3_SKSEFunctions.GetActorsByProcessingLevel(3);Factinos
+	Debug.Trace("[CHIM] [ACTORS] Total "+allNpcs.Length);
+	
+	int lengthA=allNpcs.Length
+	int i=0;
+	while i < lengthA
+		Actor akActor=allNpcs[i] as Actor
+		if (akActor.GetActorBase().isUnique())
+			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
+		endif
+		
+		
 		i=i+1
 	endwhile
 	return

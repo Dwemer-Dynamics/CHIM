@@ -5,6 +5,7 @@
 #include "json.hpp"
 #include <cstdint>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -267,6 +268,14 @@ namespace PrismaUIBridge {
 
     // Clear any active chatbox target override
     void ClearChatboxTargetOverride();
+
+    // ===== CHIM Confirmation Modal Functions =====
+
+    using ConfirmationCallback = std::function<void(bool accepted)>;
+
+    bool ShowConfirmation(const std::string& title, const std::string& message,
+                          const std::string& cancelLabel, const std::string& acceptLabel,
+                          ConfirmationCallback callback);
 
     // Monotonic token used to invalidate late dialogue responses after a hard stop
     std::uint64_t GetDialogueStopGeneration();

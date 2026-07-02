@@ -84,6 +84,14 @@ namespace Papyrus {
     int getPlayerBountyForGuard(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                 RE::StaticFunctionTag*, std::string guardName);
 
+    int requestMoveInventoryItemConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                             RE::StaticFunctionTag*, RE::Actor* source, RE::Actor* target,
+                                             RE::TESForm* itemForm, int amount, std::string realName);
+
+    int requestArrestConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                  RE::StaticFunctionTag*, RE::Actor* player, RE::Actor* guard,
+                                  RE::TESFaction* crimeFaction);
+
     int hardResetExpression(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                             RE::StaticFunctionTag*);
 
@@ -130,6 +138,8 @@ namespace Papyrus {
     int removeAgentByName(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                           std::string name);
 
+    int addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                 RE::Actor* target);
     RE::TESObjectREFR* getLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                             RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
@@ -137,7 +147,7 @@ namespace Papyrus {
                                                  RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
     RE::TESObjectREFR* getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
+                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier);
 
     int scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                                 RE::Actor* target);

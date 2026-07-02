@@ -618,7 +618,8 @@ bool IsValidImportType(const std::string& fileType) {
         "oghma_import", 
         "dynamic_oghma_import",
         "description_import",
-        "custom_action_import"
+        "custom_action_import",
+        "traditional_quest_import"
     };
     
     return std::find(validTypes.begin(), validTypes.end(), fileType) != validTypes.end();
@@ -635,19 +636,21 @@ void DetectAndUploadImportDataFiles() {
         std::vector<std::string> oghmaFiles = FindOghmaImportFiles(chimPath);
         std::vector<std::string> dynamicOghmaFiles = FindDynamicOghmaImportFiles(chimPath);
         std::vector<std::string> itemFiles = FindItemImportFiles(chimPath);
+        std::vector<std::string> traditionalQuestFiles = FindTraditionalQuestImportFiles(chimPath);
         
-        if (importDataFiles.empty() && customActionFiles.empty() && oghmaFiles.empty() && dynamicOghmaFiles.empty() && itemFiles.empty()) {
+        if (importDataFiles.empty() && customActionFiles.empty() && oghmaFiles.empty() && dynamicOghmaFiles.empty() && itemFiles.empty() && traditionalQuestFiles.empty()) {
             logger::info("No import data CSV files found in CHIM directory");
             return;
         }
         
         logger::info(
-            "Found {} biography files, {} custom action files, {} oghma files, {} dynamic oghma files, and {} item files",
+            "Found {} biography files, {} custom action files, {} oghma files, {} dynamic oghma files, {} item files, and {} traditional quest files",
             importDataFiles.size(),
             customActionFiles.size(),
             oghmaFiles.size(),
             dynamicOghmaFiles.size(),
-            itemFiles.size()
+            itemFiles.size(),
+            traditionalQuestFiles.size()
         );
         
         // Process biography files
@@ -684,6 +687,9 @@ void DetectAndUploadImportDataFiles() {
         
         // Process item files
         ProcessItemImportFiles(itemFiles);
+
+        // Process traditional quest files
+        ProcessTraditionalQuestImportFiles(traditionalQuestFiles);
         
     } catch (const std::exception& e) {
         logger::error("Error during import data detection: {}", e.what());
@@ -986,6 +992,58 @@ void ProcessItemImportFiles(const std::vector<std::string>& itemFiles) {
     }
 }
 
+// Traditional Quest Import Detection Functions
+std::vector<std::string> FindTraditionalQuestImportFiles(const std::string& directoryPath) {
+    std::vector<std::string> traditionalQuestFiles;
+
+    try {
+        if (!std::filesystem::exists(directoryPath)) {
+            logger::warn("CHIM directory does not exist: {}", directoryPath);
+            return traditionalQuestFiles;
+        }
+
+        for (const auto& entry : std::filesystem::directory_iterator(directoryPath)) {
+            if (entry.is_regular_file()) {
+                std::string filename = entry.path().filename().string();
+                if (filename.ends_with("_tradquest.csv")) {
+                    traditionalQuestFiles.push_back(entry.path().string());
+                    logger::debug("Found traditional quest import file: {}", filename);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        logger::error("Error scanning for traditional quest import files: {}", e.what());
+    }
+
+    return traditionalQuestFiles;
+}
+
+void ProcessTraditionalQuestImportFiles(const std::vector<std::string>& traditionalQuestFiles) {
+    for (const auto& filePath : traditionalQuestFiles) {
+        try {
+            const std::string fileType = "traditional_quest_import";
+            if (!IsValidImportType(fileType)) {
+                logger::error("Invalid import type: {}", fileType);
+                continue;
+            }
+
+            std::string csvContent = ParseImportDataCSV(filePath);
+            if (!csvContent.empty()) {
+                std::string filename = std::filesystem::path(filePath).filename().string();
+                std::string response = HTTPUploader::UploadCSVFile(csvContent, filename, fileType);
+
+                if (!response.empty() && response != "...") {
+                    logger::info("Successfully uploaded traditional quest import file: {} (Response: {})", filename, response);
+                } else {
+                    logger::error("Failed to upload traditional quest import file: {}", filename);
+                }
+            }
+        } catch (const std::exception& e) {
+            logger::error("Error processing traditional quest file {}: {}", filePath, e.what());
+        }
+    }
+}
+
 // Voice CSV Detection and Management Functions
 static std::unordered_map<std::string, std::string> csvVoiceCache;
 static bool csvVoiceCacheLoaded = false;
@@ -1233,11 +1291,12 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
 std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
     auto processLists = RE::ProcessLists::GetSingleton();
 
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
     if (!processLists) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: processLists is null");
         return {};
     }
 
-    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
 
     auto startTime = std::chrono::high_resolution_clock::now();
     std::vector<std::pair<std::string, RE::FormID>> results;
@@ -1275,6 +1334,8 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
         if (!cell || !targetCell || cell != targetCell) {
             // Skip actors that are in a different cell than the target, or cells are null
+            logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",
+                         name.empty() ? "Unknown" : name, id);
             continue;
         }
 
@@ -1303,7 +1364,7 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms", duration);
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms, actors found {}", duration, n);
 
     json actorsNearby = json::array();
     for (const auto& [actorName, formId] : results) {

@@ -2761,17 +2761,10 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	
 	Debug.Trace("MoveInventoryItem start");
 	if (akItemToRemove.GetFormID()==0xf)
-	
-		
-		string result = SkyMessage.Show(source.GetDisplayName()+ " will transfer "+amount+" gold to "+target.getDisplayName()+". Accept?", "No, thanks", "Yes, please!")
-
-		if result == "Yes, please!"
-			source.RemoveItem(akItemToRemove, amount)
-			target.AddItem(akItemToRemove,amount)
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())	
-		else
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())	
-		endif	
+		int requestResult = AIAgentFunctions.requestMoveInventoryItemConfirmation(source, target, akItemToRemove, amount, realName)
+		if requestResult == 0
+			AIAgentFunctions.logMessageForActor("Gold transfer confirmation could not be shown. No gold was transferred.","itemfound",target.GetDisplayName())
+		endif
 		
 	else
 		source.RemoveItem(akItemToRemove, amount, false, target)
@@ -2782,6 +2775,23 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	
 	
 
+EndFunction
+
+Function ConfirmMoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int amount,string realName,bool accepted) global
+	Debug.Trace("ConfirmMoveInventoryItem start");
+	if (!source || !target || !akItemToRemove || amount <= 0)
+		Debug.Trace("ConfirmMoveInventoryItem invalid args");
+		return
+	endif
+
+	if accepted
+		source.RemoveItem(akItemToRemove, amount)
+		target.AddItem(akItemToRemove,amount)
+		AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())
+	else
+		AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())
+	endif
+	Debug.Trace("ConfirmMoveInventoryItem end");
 EndFunction
 
 Function RentRoom(Actor player, Actor innkeeper, int cost) global
@@ -3030,8 +3040,18 @@ Function ArrestPlayer(Actor player, Actor guard, Faction crimeFaction) global
 		endif
 	endwhile
 
-	string arrestChoice = SkyMessage.Show(guard.GetDisplayName()+" is placing you under arrest. Submit?", "Resist", "Submit")
-	if (arrestChoice == "Submit")
+	int requestResult = AIAgentFunctions.requestArrestConfirmation(player, guard, crimeFaction)
+	if requestResult == 0
+		AIAgentFunctions.logMessageForActor("Arrest confirmation could not be shown. No arrest action was applied.","itemfound",guard.GetDisplayName())
+	endif
+EndFunction
+
+Function ConfirmArrestPlayer(Actor player, Actor guard, Faction crimeFaction, bool accepted) global
+	if (!player || !guard || !crimeFaction)
+		return
+	endif
+
+	if accepted
 		AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" submitted to arrest and was sent to jail.","itemfound",guard.GetDisplayName())
 		crimeFaction.SendPlayerToJail(true, true)
 	else
@@ -3662,7 +3682,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			if (destination)
 				Debug.Trace("[CHIM] BackgroundCmd, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
 				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
-				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination);
+				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination,0);
 				
 				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
 				Debug.Trace("[CHIM] BackgroundCmd, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
@@ -3765,7 +3785,6 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			Worldspace cws= akTarget.GetWorldSpace()
 			
 			
-
 			if (cws)
 				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetName())
 				if (cws.GetName() == "Skyrim" || cws.GetName() == "")
@@ -3813,7 +3832,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+", No randomActor actor around "+x+","+y+","+z);
 			endif
 			
-			;AIAgentFunctions.scanActorsAroundOffline(akTarget);
+			AIAgentFunctions.scanActorsAroundOffline(akTarget);
 			
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
@@ -3878,9 +3897,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					endif
 				endif
 
-				if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
+				;if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
 					int retFnc=AIAgentFunctions.logMessage(destinationRef.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
-				endif
+				;endif
 			endif
 		endif
 	endif
