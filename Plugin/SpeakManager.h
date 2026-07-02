@@ -280,4 +280,6 @@ public:
 
 };
 
+void ProcessVrVisemePumpOnGameThread(float deltaSeconds);
+
 #endif

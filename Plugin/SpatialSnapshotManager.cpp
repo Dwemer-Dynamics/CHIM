@@ -1,5 +1,7 @@
 #include "SpatialSnapshotManager.h"
 
+#include "SpatialAwareness.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
@@ -1752,7 +1754,7 @@ bool SpatialSnapshotManager::IsValidPlayerSpeechTarget(
         return false;
     }
 
-    const auto playerPosition = player->GetPosition();
+    const auto playerPosition = SpatialAwareness::GetEffectiveActorPosition(player); // VR: HMD, not the parked ref - kept scene partners "untargetable" and rerouted speech to the Narrator (fix 2026-07-01)
     const auto targetPosition = target.actor->GetPosition();
     const float airDistance = playerPosition.GetDistance(targetPosition);
     if (!std::isfinite(airDistance)) {
