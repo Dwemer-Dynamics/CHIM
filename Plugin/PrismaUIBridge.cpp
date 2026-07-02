@@ -1195,28 +1195,18 @@ R"CHIM(
                         }
                     }
 
-                    // Escape the JSON string for JavaScript
-                    std::string escaped = response;
-                    // Replace backslashes first, then other special chars
-                    size_t pos = 0;
-                    while ((pos = escaped.find('\\', pos)) != std::string::npos) {
-                        escaped.replace(pos, 1, "\\\\");
-                        pos += 2;
-                    }
-                    pos = 0;
-                    while ((pos = escaped.find('\'', pos)) != std::string::npos) {
-                        escaped.replace(pos, 1, "\\'");
-                        pos += 2;
-                    }
-                    pos = 0;
-                    while ((pos = escaped.find('\n', pos)) != std::string::npos) {
-                        escaped.replace(pos, 1, "\\n");
-                        pos += 2;
-                    }
-                    pos = 0;
-                    while ((pos = escaped.find('\r', pos)) != std::string::npos) {
-                        escaped.replace(pos, 1, "\\r");
-                        pos += 2;
+                    // Escape for JS in a single pass (the payload can be large; repeated find/replace
+                    // scans made this quadratic on big histories).
+                    std::string escaped;
+                    escaped.reserve(response.size() + response.size() / 8);
+                    for (char c : response) {
+                        switch (c) {
+                            case '\\': escaped += "\\\\"; break;
+                            case '\'': escaped += "\\'"; break;
+                            case '\n': escaped += "\\n"; break;
+                            case '\r': escaped += "\\r"; break;
+                            default: escaped += c; break;
+                        }
                     }
 
                     // Invoke the JavaScript update function
@@ -2634,49 +2624,66 @@ R"CHIM(
     }
 
     static bool FocusBrowserPanelView(const char* sourceLabel) {
-        constexpr auto kDomReadyPollInterval = std::chrono::milliseconds(20);
-        constexpr auto kDomReadyTimeout = std::chrono::milliseconds(3000);
 
         if (!g_prismaUI || !g_browserCreated.load() || !g_prismaUI->IsValid(g_browserView)) {
             logger::warn("[PrismaUIBridge] Cannot focus {} view - browser is not ready", sourceLabel);
             return false;
         }
 
-        if (!g_browserDomReady.load()) {
-            logger::info("[PrismaUIBridge] Waiting for {} browser DOM ready...", sourceLabel);
-            const auto waitStart = std::chrono::steady_clock::now();
-            while (!g_browserDomReady.load()) {
-                const auto waited = std::chrono::steady_clock::now() - waitStart;
-                if (waited >= kDomReadyTimeout) {
-                    const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
-                    logger::warn("[PrismaUIBridge] {} browser DOM ready timeout after {} ms", sourceLabel, waitedMs);
+        // DOM-ready wait + focus retries run on a detached thread: this is reached from PrismaUI JS
+        // listener callbacks (UI thread the render thread blocks on) - the up-to-3s poll here was the
+        // longest VR freeze in the bridge. The function now returns immediately; the async completion
+        // installs the debug hooks and settles g_browserVisible.
+        const std::string label = sourceLabel ? sourceLabel : "";
+        std::thread([label]() {
+            constexpr auto kDomReadyPollInterval = std::chrono::milliseconds(20);
+            constexpr auto kDomReadyTimeout = std::chrono::milliseconds(3000);
+            if (!g_browserDomReady.load()) {
+                logger::info("[PrismaUIBridge] Waiting for {} browser DOM ready...", label);
+                const auto waitStart = std::chrono::steady_clock::now();
+                while (!g_browserDomReady.load()) {
+                    const auto waited = std::chrono::steady_clock::now() - waitStart;
+                    if (waited >= kDomReadyTimeout) {
+                        const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
+                        logger::warn("[PrismaUIBridge] {} browser DOM ready timeout after {} ms", label, waitedMs);
+                        break;
+                    }
+                    std::this_thread::sleep_for(kDomReadyPollInterval);
+                }
+            }
+            if (!g_prismaUI || !g_prismaUI->IsValid(g_browserView)) {
+                g_browserVisible.store(false);
+                return;
+            }
+
+            bool success = false;
+            for (int attempt = 0; attempt < 4; ++attempt) {
+                success = g_prismaUI->Focus(g_browserView, true, false);
+                if (success) {
                     break;
                 }
-                std::this_thread::sleep_for(kDomReadyPollInterval);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-        }
 
-        bool success = false;
-        for (int attempt = 0; attempt < 4; ++attempt) {
-            success = g_prismaUI->Focus(g_browserView, true, false);
+            logger::info("[PrismaUIBridge] {} browser focus result: {} (hasFocus={}, anyFocus={})",
+                label,
+                success ? "SUCCESS" : "FAILED",
+                g_prismaUI->HasFocus(g_browserView),
+                g_prismaUI->HasAnyActiveFocus());
+
+            LogBrowserDebugState(success ? "after_focus_success" : "after_focus_failed");
             if (success) {
-                break;
+                g_prismaUI->Invoke(g_browserView, "window.__chimBrowserFocusDeep && window.__chimBrowserFocusDeep('native_after_focus')", nullptr);
+                g_browserVisible.store(true);
+                InstallBrowserDebugHooks();
+                logger::info("[PrismaUIBridge] {} browser panel ready - press the toggle hotkey again to close", label);
+            } else {
+                logger::warn("[PrismaUIBridge] Failed to focus {} browser panel", label);
+                g_browserVisible.store(false);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
+        }).detach();
 
-        logger::info("[PrismaUIBridge] {} browser focus result: {} (hasFocus={}, anyFocus={})",
-            sourceLabel,
-            success ? "SUCCESS" : "FAILED",
-            g_prismaUI->HasFocus(g_browserView),
-            g_prismaUI->HasAnyActiveFocus());
-
-        LogBrowserDebugState(success ? "after_focus_success" : "after_focus_failed");
-        if (success) {
-            g_prismaUI->Invoke(g_browserView, "window.__chimBrowserFocusDeep && window.__chimBrowserFocusDeep('native_after_focus')", nullptr);
-        }
-
-        return success;
+        return true;
     }
 
     static void HideOtherPanelsForBrowser() {
@@ -2732,15 +2739,11 @@ R"CHIM(
             g_prismaUI->Show(g_browserView);
         }
 
-        if (FocusBrowserPanelView(sourceLabel)) {
-            g_browserVisible.store(true);
-            InstallBrowserDebugHooks();
-            logger::info("[PrismaUIBridge] {} browser panel ready - press the toggle hotkey again to close", sourceLabel);
-            return;
+        // Focus completes asynchronously; it settles g_browserVisible and installs the debug hooks.
+        if (!FocusBrowserPanelView(sourceLabel)) {
+            logger::warn("[PrismaUIBridge] Failed to start focus for {} browser panel", sourceLabel);
+            g_browserVisible.store(false);
         }
-
-        logger::warn("[PrismaUIBridge] Failed to focus {} browser panel", sourceLabel);
-        g_browserVisible.store(false);
     }
 
     void ToggleBrowserPanel() {
@@ -2919,38 +2922,46 @@ R"CHIM(
         }
 
         g_prismaUI->Show(g_questManagerView);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        g_prismaUI->SetScrollingPixelSize(g_questManagerView, 90);
-
-        bool focusSuccess = false;
-        for (int attempt = 0; attempt < 4; ++attempt) {
-            focusSuccess = g_prismaUI->Focus(g_questManagerView, true, false);
-            if (focusSuccess) {
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-
-        logger::info("[PrismaUIBridge] Quest manager focus result: {} (hasFocus={})",
-                     focusSuccess ? "SUCCESS" : "FAILED",
-                     g_prismaUI->HasFocus(g_questManagerView) ? "true" : "false");
-
-        if (g_questManagerDomReady.load()) {
-            std::string server = Conf::getInstance().getServer();
-            std::string port = Conf::getInstance().getPort();
-            std::string serverUrl = "http://" + server + ":" + port + "/HerikaServer";
-            std::string jsCall = "window.initQuestManager('" + EscapeForJS(serverUrl) + "')";
-            g_prismaUI->Invoke(g_questManagerView, jsCall.c_str(), nullptr);
-            g_prismaUI->Invoke(g_questManagerView,
-                               "window.onQuestManagerFocused && window.onQuestManagerFocused()",
-                               nullptr);
-            g_prismaUI->Invoke(g_questManagerView,
-                               "window.requestQuestManagerFocus && window.requestQuestManagerFocus('native_after_focus')",
-                               nullptr);
-        }
-
         g_questManagerVisible.store(true);
-        logger::info("[PrismaUIBridge] Quest manager panel shown");
+
+        // Settle + focus retries run on a detached thread: this function is reached from PrismaUI JS
+        // listener callbacks, which execute on the UI thread the render thread blocks on every frame -
+        // any sleep here was a visible VR freeze.
+        std::thread([]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!g_prismaUI || !g_prismaUI->IsValid(g_questManagerView)) {
+                return;
+            }
+            g_prismaUI->SetScrollingPixelSize(g_questManagerView, 90);
+
+            bool focusSuccess = false;
+            for (int attempt = 0; attempt < 4; ++attempt) {
+                focusSuccess = g_prismaUI->Focus(g_questManagerView, true, false);
+                if (focusSuccess) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+
+            logger::info("[PrismaUIBridge] Quest manager focus result: {} (hasFocus={})",
+                         focusSuccess ? "SUCCESS" : "FAILED",
+                         g_prismaUI->HasFocus(g_questManagerView) ? "true" : "false");
+
+            if (g_questManagerDomReady.load()) {
+                std::string server = Conf::getInstance().getServer();
+                std::string port = Conf::getInstance().getPort();
+                std::string serverUrl = "http://" + server + ":" + port + "/HerikaServer";
+                std::string jsCall = "window.initQuestManager('" + EscapeForJS(serverUrl) + "')";
+                g_prismaUI->Invoke(g_questManagerView, jsCall.c_str(), nullptr);
+                g_prismaUI->Invoke(g_questManagerView,
+                                   "window.onQuestManagerFocused && window.onQuestManagerFocused()",
+                                   nullptr);
+                g_prismaUI->Invoke(g_questManagerView,
+                                   "window.requestQuestManagerFocus && window.requestQuestManagerFocus('native_after_focus')",
+                                   nullptr);
+            }
+            logger::info("[PrismaUIBridge] Quest manager panel shown");
+        }).detach();
     }
 
     void HideQuestManagerPanel() {
