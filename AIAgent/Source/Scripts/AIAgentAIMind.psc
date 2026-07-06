@@ -31,7 +31,8 @@ function ResetPackages(Actor npc) global
 	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package		; FollowPlayerPackage
 	Package SandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
 	Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-
+	Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+	
 	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
 
 	
@@ -45,6 +46,7 @@ function ResetPackages(Actor npc) global
 	ActorUtil.RemovePackageOverride(npc, FollowPlayerPackage)
 	ActorUtil.RemovePackageOverride(npc, SandboxPackage)
 	ActorUtil.RemovePackageOverride(npc, doNothing)
+	ActorUtil.RemovePackageOverride(npc, SandboxWorkPackage)
 	;ActorUtil.ClearPackageOverride(npc)
 	
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
@@ -732,14 +734,19 @@ function TravelToTargetEnd(Actor npc) global
 					;Only log as background event id npc is not 3dloaded
 					;AIAgentFunctions.logMessageForActor(npc.GetDisplayName() +" reaches destination "+destinationName,"backgroundaction",npc.GetDisplayName())
 					Debug.Trace("[CHIM] TravelToTargetEnd: not present "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
-					Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-					ActorUtil.AddPackageOverride(npc, doNothing,99)
+					ResetPackages(npc)					
+					;Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
+					;ActorUtil.AddPackageOverride(npc, doNothing,99)
+					;npc.EvaluatePackage()
+					Sandbox(npc,""); doNothing moves the NPC
+					
 				else
 					; If NPC present, issue a low priority donothing
 					if (!npc.isInfaction(VanillaCurrentFollowerFaction))
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
-						Package doNothing = Game.GetForm(0x654e2) as Package ; 
-						ActorUtil.AddPackageOverride(npc, doNothing,10)
+						;Package doNothing = Game.GetForm(0x654e2) as Package ; 
+						;ActorUtil.AddPackageOverride(npc, doNothing,10)
+						Sandbox(npc,"")
 					else
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc is follower, restore")
 					endif
@@ -2395,13 +2402,32 @@ EndFunction
 
 int Function Sandbox(Actor npc,String taskid) global
 
-	Package sandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
-	Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+	if (npc.Is3DLoaded())
 		
-	npc.SetFactionRank(sandboxFaction,1)
-	ActorUtil.AddPackageOverride(npc, sandboxPackage, 100,0)
-	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
-	npc.EvaluatePackage();
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+		Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+		
+		npc.SetFactionRank(sandboxFaction,1)
+
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
+		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+				
+		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
+		npc.EvaluatePackage();
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
+				
+	else 
+		Package sandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+			
+		npc.SetFactionRank(sandboxFaction,1)
+		ActorUtil.AddPackageOverride(npc, sandboxPackage, 100,0)
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
+		npc.EvaluatePackage();
+	
+	endif
 	;AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" talks to "+(Game.GetPlayer().GetDisplayName())+" about the topic he/she knows","instruction",npc.GetDisplayName())
 endFunction
 
@@ -3682,6 +3708,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		
 		if (cmd[0] == "TravelTo") 
 			Int locrefId=StringToInt(cmd[1])
+			ResetPackages(akTarget);
 			Location destination = Game.GetFormEx(locrefId) as Location;
 			if (destination)
 				Debug.Trace("[CHIM] BackgroundCmd, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
@@ -3701,6 +3728,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			else
 				ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
 				if (destinationRef)
+					Debug.Trace("[CHIM] BackgroundCmd, using direct reference")
 					TravelToLocation(akTarget,destinationRef,destinationRef.GetCurrentLocation().GetName())
 				else
 					Debug.Trace("[CHIM] BackgroundCmd, Couldn't find destination for formId: "+DecToHex(locrefId))
@@ -3748,15 +3776,62 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		elseif 	(cmd[0] == "StayAtPlace") 
 			; TO-DO select a better package here
 			; Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-			ResetPackages(akTarget)
-			Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
-			Faction SandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
-			akTarget.SetFactionRank(SandboxFaction,1)
-			ActorUtil.AddPackageOverride(akTarget, SandboxWorkPackage, 99,0)
-			akTarget.EvaluatePackage();
 			
-			Debug.Trace("[CHIM] StayAtPlace. Sandboxing at current location: "+DecToHex(akTarget.getFormId()))
+			ResetPackages(akTarget);
+			
+			Int locrefId=StringToInt(cmd[1])
+			Location destination = Game.GetFormEx(locrefId) as Location;
+			ObjectReference locReference = None
+			if (destination)
+				Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
+				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
+				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination,0);
+				
+				Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, destMarker: "+DecToHex(destMarker.GetFormId()))
+				Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
+				
+				if (destMarkerMain)
+					locReference=destMarkerMain
+					
+				elseif (destMarker)
+					locReference=destMarker
+				else
+					Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, failed to find destMarker")
+				endif
+			else
+				ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
+				if (destinationRef)
+					Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, using direct reference")
+					locReference=destinationRef
+					
+				else
+					Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, Couldn't find destination for formId: "+DecToHex(locrefId))
+				endif
+			endif
+			
+			if (locReference)
+				Faction SandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+				akTarget.RemoveFromFaction(SandboxFaction);
+				Utility.Wait(1);; Give time to package to finish
+				
+				ResetPackages(akTarget)
+				ActorUtil.ClearPackageOverride(akTarget)
+				
+				Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+				Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+				akTarget.SetFactionRank(SandboxFaction,1)
 
+				PO3_SKSEFunctions.SetLinkedRef(akTarget,None,MoveTargetKw)
+				PO3_SKSEFunctions.SetLinkedRef(akTarget,locReference)
+				
+				ActorUtil.AddPackageOverride(akTarget, SandboxWorkPackage, 99)
+				
+				Debug.Trace("[CHIM] StayAtPlace. Sandboxing at current location: npc: "+DecToHex(akTarget.getFormId())+", location reference "+DecToHex(locReference.getFormId()))
+				akTarget.EvaluatePackage();
+			
+			else
+				Debug.Trace("[CHIM] StayAtPlace. NO linked reference found for: "+DecToHex(akTarget.getFormId()))
+			endif
 		
 		elseif 	(cmd[0] == "MoveToPlayer") 
 			; TO-DO select a better package here
