@@ -62,6 +62,7 @@ extern void ProcedureSendShot(const char* a_path);
 
 extern void addAllNPC();
 extern bool promoteCrosshairTargetToAI();
+namespace Sharmat { void PollGaze(); }  // Sharmat.cpp - gaze-staring detection, ticked from ManagerMainQueue
 extern int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool warn, bool removewhenexisting, bool isManualAdd);
 
 
@@ -2165,6 +2166,8 @@ private:
                 ThreadPool::getInstance().logStatus();
                 lastStatusReport = now;
             }
+
+            Sharmat::PollGaze();  // Sharmat gaze-staring detection (self-contained; marshals game-thread reads)
 
            try {
                 // Health check logging every 5 minutes
