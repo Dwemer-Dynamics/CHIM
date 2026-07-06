@@ -1551,7 +1551,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					isCleared="1";
 				endif;
 				if (factionOwner)
-					Debug.Trace("[CHIM] SendLocation Sending Faction: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
 				else
 					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")

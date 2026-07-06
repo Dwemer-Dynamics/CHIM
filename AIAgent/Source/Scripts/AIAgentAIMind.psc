@@ -733,7 +733,7 @@ function TravelToTargetEnd(Actor npc) global
 					;AIAgentFunctions.logMessageForActor(npc.GetDisplayName() +" reaches destination "+destinationName,"backgroundaction",npc.GetDisplayName())
 					Debug.Trace("[CHIM] TravelToTargetEnd: not present "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
 					Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-					ActorUtil.AddPackageOverride(npc, doNothing,100)
+					ActorUtil.AddPackageOverride(npc, doNothing,99)
 				else
 					; If NPC present, issue a low priority donothing
 					if (!npc.isInfaction(VanillaCurrentFollowerFaction))
@@ -808,6 +808,10 @@ function TravelToTargetEnd(Actor npc) global
 		
 	Debug.Trace("[CHIM] TravelToTargetEnd: End processing for "+npc.GetDisplayName()+" ")
 	AIAgentFunctions.commandEndedForActor("TravelTo",npc.GetDisplayName())
+	
+	Cell currCell = npc.GetParentCell()
+	Location currLoc = npc.GetCurrentLocation()
+	AIAgentPapyrusFunctions.sendLocation( currLoc,"",currCell);
 	;Debug.Notification("[CHIM] End travelling for "+npc.GetDisplayName() )
 
 endFunction
@@ -3744,8 +3748,15 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		elseif 	(cmd[0] == "StayAtPlace") 
 			; TO-DO select a better package here
 			; Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-			Package SandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
-			ActorUtil.AddPackageOverride(akTarget, SandboxPackage,99)
+			ResetPackages(akTarget)
+			Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+			Faction SandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+			akTarget.SetFactionRank(SandboxFaction,1)
+			ActorUtil.AddPackageOverride(akTarget, SandboxWorkPackage, 99,0)
+			akTarget.EvaluatePackage();
+			
+			Debug.Trace("[CHIM] StayAtPlace. Sandboxing at current location: "+DecToHex(akTarget.getFormId()))
+
 		
 		elseif 	(cmd[0] == "MoveToPlayer") 
 			; TO-DO select a better package here
@@ -3828,7 +3839,8 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				endif
 			endif
 
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
+			
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID()),"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -3905,6 +3917,8 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					int retFnc=AIAgentFunctions.logMessage(destinationRef.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
 				;endif
 			endif
+		else
+			Debug.Trace("[CHIM] BackgroundCmd unrecogniced "+cmd[0]);
 		endif
 	endif
 	
