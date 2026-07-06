@@ -1348,7 +1348,12 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 		; ---------------------------------------------------------------------------------------------
 		ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
 		if (!destMarker)
-			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+			Debug.Trace("[CHIM] no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName()+" trying with getLocationCenterMarker")
+			destMarker = AIAgentFunctions.getLocationCenterMarker(curr,0); Will search for Location Center Marker.
+		endif
+		
+		if (!destMarker)
+			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor/getLocationCenterMarker: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		elseif (destMarker.isDisabled())
 			Debug.Trace("[CHIM] Bypassing because world location marker is disabled: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		else
@@ -1565,7 +1570,7 @@ EndFunction
 Function sendAllLocations() global
 
 	sendAllfactions();
-	sendAllNpcs();
+	
 	; --- Load all location keywords we care about ---
 	Keyword isCave         = Game.GetForm(0x000130ef) as Keyword
 	Keyword isDungeon      = Game.GetForm(0x000130db) as Keyword
@@ -1755,6 +1760,8 @@ Function sendAllLocations() global
 
 		i += 1
 	endwhile
+
+	sendAllNpcs();
 
 EndFunction
 
@@ -1968,7 +1975,7 @@ EndFunction
 ;Send all factions names
 Function sendAllNpcs() global
 
-	Actor[] allNpcs=PO3_SKSEFunctions.GetActorsByProcessingLevel(3);Factinos
+	Actor[] allNpcs=PO3_SKSEFunctions.GetActorsByProcessingLevel(3);Actors not in high process
 	Debug.Trace("[CHIM] [ACTORS] Total "+allNpcs.Length);
 	
 	int lengthA=allNpcs.Length
@@ -1978,6 +1985,10 @@ Function sendAllNpcs() global
 		if (akActor.GetActorBase().isUnique())
 			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
 			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
+			; Also, send location where this NPC is located at.
+			Cell currCell = akActor.GetParentCell()
+			Location currLoc = akActor.GetCurrentLocation()
+			AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
 		endif
 		
 		
