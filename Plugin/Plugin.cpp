@@ -10567,7 +10567,9 @@ EventHandlers {
         auto actor = actorPtr->As<RE::Actor>();
          if (actor ) {
              if (!aiam.getRenamedNpcNameByFormId(actor->GetFormID()).empty()  ) {
-                 if (!actor->Is3DLoaded()) {
+                 bool is3DLoaded = actor->Is3DLoaded();
+                 bool inHigh = actor->GetActorRuntimeData().currentProcess->InHighProcess();
+                 if (!is3DLoaded || !inHigh) {
                      auto package = RE::TESForm::LookupByID(event->package);
                      auto package2 = static_cast<RE::TESPackage*>(RE::TESForm::LookupByID(event->package));
                      auto location = actor->GetCurrentLocation();
