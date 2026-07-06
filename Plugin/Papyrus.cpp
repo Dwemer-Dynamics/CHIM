@@ -3201,6 +3201,9 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
                     result = localresult;
                     break;
                 }
+                // If no parent cell, maybe is an interior 
+                // Watch this for issues it can generate
+                // result = localresult; // Thhis breaks GPS coords
             }
         }
     }
