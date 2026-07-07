@@ -255,7 +255,24 @@ Function ProcessPendingSettingsAction()
 	Debug.Trace("[CHIM] Pending action processed successfully")
 EndFunction
 
+bool Function ShouldSuppressChatboxFocusedHotkey(int keyCode)
+	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
+		; Opening text chat with Enter can echo one extra key event. Consume it
+		; without letting the next real hotkey press get skipped after close.
+		if (keyCode == _currentChatboxFocusKey && _chatboxFocusHotkeySuppressed)
+			_chatboxFocusHotkeySuppressed = false
+		endif
+		Return true
+	endif
+
+	Return false
+EndFunction
+
 Event OnKeyUp(int keyCode, float holdTime)
+	If ShouldSuppressChatboxFocusedHotkey(keyCode)
+		Return
+	EndIf
+
 	If(keyCode == _currentKeyVoice)
 		if (!UI.IsMenuOpen("Book Menu") && SafeProcess())
 			int externalSTTactive=StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT");
@@ -302,6 +319,9 @@ Event OnKeyUp(int keyCode, float holdTime)
 EndEvent
 
 Event OnKeyDown(int keyCode)
+  If ShouldSuppressChatboxFocusedHotkey(keyCode)
+	Return
+  EndIf
    
   If(keyCode == _currentKey)
 	; Text menu entry
