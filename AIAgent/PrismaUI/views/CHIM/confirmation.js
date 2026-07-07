@@ -74,7 +74,19 @@
         }
     });
 
-    window.addEventListener('DOMContentLoaded', function () {
+    function notifyReady() {
         send('dom_ready');
-    });
+    }
+
+    if (document.readyState === 'loading') {
+        window.addEventListener('DOMContentLoaded', notifyReady, { once: true });
+    } else {
+        notifyReady();
+    }
+
+    // Prisma listener injection timing differs between builds. Repeat readiness
+    // briefly so a listener registered after DOMContentLoaded still sees it.
+    window.setTimeout(notifyReady, 0);
+    window.setTimeout(notifyReady, 100);
+    window.setTimeout(notifyReady, 500);
 })();

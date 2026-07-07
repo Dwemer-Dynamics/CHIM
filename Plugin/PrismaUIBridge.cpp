@@ -4563,21 +4563,23 @@ R"CHIM(
         }
 
         if (!focused) {
-            logger::warn("[PrismaUIBridge] Failed to focus confirmation modal");
-            g_prismaUI->Hide(g_confirmationView);
-            g_confirmationVisible.store(false);
-            return false;
+            logger::warn("[PrismaUIBridge] Failed to focus confirmation modal; leaving it visible because focus can fail on some Prisma builds");
         }
 
-        logger::info("[PrismaUIBridge] Confirmation modal shown");
+        logger::info("[PrismaUIBridge] Confirmation modal shown{}", focused ? "" : " without Prisma focus");
         return true;
+    }
+
+    static bool HasPendingConfirmationPayload() {
+        std::lock_guard<std::mutex> lock(g_confirmationMutex);
+        return !g_confirmationPayload.empty();
     }
 
     static void OnConfirmationDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Confirmation modal DOM ready");
         g_confirmationDomReady.store(true);
 
-        if (!g_confirmationPayload.empty() && !g_confirmationVisible.load()) {
+        if (HasPendingConfirmationPayload() && !g_confirmationVisible.load()) {
             PresentConfirmationPayload();
         }
     }
@@ -4618,6 +4620,9 @@ R"CHIM(
             ResolveConfirmation(false);
         } else if (cmd == "dom_ready") {
             g_confirmationDomReady.store(true);
+            if (HasPendingConfirmationPayload() && !g_confirmationVisible.load()) {
+                PresentConfirmationPayload();
+            }
         } else {
             logger::warn("[PrismaUIBridge] Unknown confirmation command: {}", cmd);
         }
@@ -4667,20 +4672,11 @@ R"CHIM(
         }
 
         if (!g_confirmationDomReady.load()) {
-            constexpr auto kDomReadyPollInterval = std::chrono::milliseconds(20);
-            constexpr auto kDomReadyTimeout = std::chrono::milliseconds(3000);
-            const auto waitStart = std::chrono::steady_clock::now();
-            while (!g_confirmationDomReady.load()) {
-                const auto waited = std::chrono::steady_clock::now() - waitStart;
-                if (waited >= kDomReadyTimeout) {
-                    logger::warn("[PrismaUIBridge] Confirmation DOM ready timeout");
-                    std::lock_guard<std::mutex> lock(g_confirmationMutex);
-                    g_confirmationCallback = nullptr;
-                    g_confirmationPayload.clear();
-                    return false;
-                }
-                std::this_thread::sleep_for(kDomReadyPollInterval);
+            if (g_prismaUI->IsValid(g_confirmationView)) {
+                g_prismaUI->Show(g_confirmationView);
             }
+            logger::info("[PrismaUIBridge] Confirmation modal queued while waiting for DOM ready");
+            return true;
         }
 
         if (g_confirmationVisible.load()) {
