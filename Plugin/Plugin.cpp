@@ -62,6 +62,7 @@ extern void ProcedureSendShot(const char* a_path);
 
 extern void addAllNPC();
 extern bool promoteCrosshairTargetToAI();
+extern void PollPlayerGaze();  // HerikaEyes.cpp - SHARMAT gaze/staring detection
 extern int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool warn, bool removewhenexisting, bool isManualAdd);
 
 
@@ -2253,6 +2254,7 @@ private:
                     if (!RE::UI::GetSingleton()->IsApplicationMenuOpen()) {
                         // logger::debug("[ManagerMainQueue] Processing cycle starting - Game active and menu closed");
                         VRItemAwareness::Tick();
+                        PollPlayerGaze();
                         
                         if (recordingActive) {
                             // STT capture is latency-sensitive in VR. Do not run overlay refresh,
