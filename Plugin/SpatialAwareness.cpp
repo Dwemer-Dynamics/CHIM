@@ -126,6 +126,17 @@ namespace SpatialAwareness
 
         std::mutex g_navCacheMutex;
         std::unordered_map<RE::FormID, std::shared_ptr<NavGraph>> g_navGraphCache;
+
+        // VR-only navmesh build throttle. In VR a location transition can load
+        // several cells at once; without a cap the spatial pass builds every new
+        // cell's nav graph synchronously in one frame (multi-second freeze). We
+        // always allow the player's own cell to build, and rate-limit every other
+        // cell to at most one build per cooldown so the rest amortize across passes.
+        // Flatscreen is left on the original eager path (no gate here changes it).
+        constexpr auto kNavBuildCooldownVR = std::chrono::milliseconds(300);
+        std::mutex g_navBuildThrottleMutex;
+        std::chrono::steady_clock::time_point g_lastNavBuildEnd{};
+
         std::mutex g_settingsMutex;
         Settings g_settings{};
         std::mutex g_spatialEvalLogMutex;
@@ -505,7 +516,31 @@ namespace SpatialAwareness
                 }
             }
 
+            // VR: throttle cache-miss builds so a multi-cell transition can't stack
+            // several full synchronous builds into one frame. The player's current
+            // cell always builds (it's the priority and can't be faked with air
+            // distance); any other cell defers if we built too recently, and the
+            // caller falls back to air-distance audibility (kUnavailable) until a
+            // later pass warms it. Flatscreen keeps the original eager behavior.
+            if (REL::Module::IsVR()) {
+                bool isPlayerCell = false;
+                if (const auto* player = RE::PlayerCharacter::GetSingleton()) {
+                    isPlayerCell = (player->GetParentCell() == cell);
+                }
+                if (!isPlayerCell) {
+                    std::lock_guard<std::mutex> lock(g_navBuildThrottleMutex);
+                    if (std::chrono::steady_clock::now() - g_lastNavBuildEnd < kNavBuildCooldownVR) {
+                        return nullptr;
+                    }
+                }
+            }
+
             std::shared_ptr<NavGraph> graph = BuildGraphForCell(cell);
+
+            if (REL::Module::IsVR()) {
+                std::lock_guard<std::mutex> lock(g_navBuildThrottleMutex);
+                g_lastNavBuildEnd = std::chrono::steady_clock::now();
+            }
 
             {
                 std::lock_guard<std::mutex> lock(g_navCacheMutex);
