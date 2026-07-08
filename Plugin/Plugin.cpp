@@ -4395,8 +4395,13 @@ namespace
             return {};
         }
 
+        const std::string pluginName = GetQuestProgressionPluginName(form);
+        if (pluginName.empty()) {
+            return {};
+        }
+
         return BuildQuestProgressionFormKey(
-            GetQuestProgressionPluginName(form),
+            pluginName,
             FormatQuestProgressionFormID(form->GetLocalFormID()));
     }
 
