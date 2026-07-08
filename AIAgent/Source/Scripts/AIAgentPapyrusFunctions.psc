@@ -2008,7 +2008,9 @@ Function sendAllNpcs() global
 			; Also, send location where this NPC is located at.
 			Cell currCell = akActor.GetParentCell()
 			Location currLoc = akActor.GetCurrentLocation()
+			
 			AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
+			
 		endif
 		
 		

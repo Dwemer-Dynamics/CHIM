@@ -2015,6 +2015,7 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 		if isPrisonerCaptured
 			finalActor.ForceActorValue("Health",10)
 		endif
+		
 		if isEnemy && ref
 			Debug.Trace("[CHIM] [SPAWN_AGENT] mustPatrol : <"+finalActor.GetDisplayName()+"< at <"+ref.getName()+"> <"+DecToHex(ref.GetFormID())+">")
 			PO3_SKSEFunctions.SetLinkedRef(finalActor,ref)
