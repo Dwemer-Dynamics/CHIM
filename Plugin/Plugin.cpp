@@ -62,6 +62,7 @@ extern void ProcedureSendShot(const char* a_path);
 
 extern void addAllNPC();
 extern bool promoteCrosshairTargetToAI();
+extern void PollPlayerGaze();  // HerikaEyes.cpp - SHARMAT gaze/staring detection
 extern int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool warn, bool removewhenexisting, bool isManualAdd);
 
 
@@ -2253,6 +2254,7 @@ private:
                     if (!RE::UI::GetSingleton()->IsApplicationMenuOpen()) {
                         // logger::debug("[ManagerMainQueue] Processing cycle starting - Game active and menu closed");
                         VRItemAwareness::Tick();
+                        PollPlayerGaze();
                         
                         if (recordingActive) {
                             // STT capture is latency-sensitive in VR. Do not run overlay refresh,
@@ -3820,6 +3822,9 @@ namespace ProcessorScreenShot {
     void DXGIPresentHook::thunk(std::uint32_t a_p1) {
         func(a_p1);
 
+        // Pace the per-frame VR camera snapshot for the spatial audio engine (VR-only; no-op in SE/AE).
+        SpatialAwareness::UpdatePlayerCameraSnapshot();
+
         if (MutexIsMakeShotActivated()) {
             MutexSetMakeShotActive(false);
             ProcedureTakeShot();
@@ -3941,6 +3946,26 @@ namespace ProcessorActorDialogue {
         }
 
         return func(actor, response, a_unused);
+    }
+}
+
+namespace ProcessorVrVisemePump {
+    struct PlayerUpdateHook {
+        static void thunk(RE::PlayerCharacter* player, float deltaSeconds);
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    void InstallHooks()
+    {
+        REL::Relocation<std::uintptr_t> playerVtbl{RE::VTABLE_PlayerCharacter[0]};
+        PlayerUpdateHook::func = playerVtbl.write_vfunc(0xAD, PlayerUpdateHook::thunk);
+        logger::info("[SpeakManager] Installed VR player-update viseme pump hook");
+    }
+
+    void PlayerUpdateHook::thunk(RE::PlayerCharacter* player, float deltaSeconds)
+    {
+        func(player, deltaSeconds);
+        ProcessVrVisemePumpOnGameThread(deltaSeconds);
     }
 }
 
@@ -8086,6 +8111,7 @@ OnDataLoaded {
         ProcessorDialogueMenu::InstallHooks();
     } else {
         logger::info("VR runtime detected; skipping flat Skyrim native screenshot/dialogue hooks");
+        ProcessorVrVisemePump::InstallHooks();
     }
 
     const auto papyrus = SKSE::GetPapyrusInterface();
