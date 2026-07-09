@@ -2002,7 +2002,10 @@ Function sendAllNpcs() global
 	int i=0;
 	while i < lengthA
 		Actor akActor=allNpcs[i] as Actor
-		if (akActor.GetActorBase().isUnique())
+		if (!akActor.isEnabled())
+			Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			
+		elseif (akActor.GetActorBase().isUnique())
 			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
 			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
 			; Also, send location where this NPC is located at.
@@ -2013,8 +2016,8 @@ Function sendAllNpcs() global
 			
 		endif
 		
-		
 		i=i+1
+		
 	endwhile
 	return
 EndFunction
