@@ -13,6 +13,16 @@ namespace SpatialAwareness
     inline constexpr float kAutoHearingDistance =
         kAutoHearingRadiusMeters * kSkyrimUnitsPerMeter;
 
+    // Where the actor's perception actually is. VR player: the headset position (the ref can park far from
+    // the real body - OStim pins it mid-scene and playspace drift is never written back, so scene partners
+    // read as "too far" at arm's length). NPCs: the ref position (the engine keeps it under their skeleton).
+    RE::NiPoint3 GetEffectiveActorPosition(RE::Actor* actor);
+
+    // Refresh the per-frame VR camera position snapshot (paced by the Present hook, captured on the game
+    // thread). Audio worker threads must not read camRoot->world.translate directly: off-thread reads race
+    // the renderer and return torn positions, heard as voices drifting away mid-scene.
+    void UpdatePlayerCameraSnapshot();
+
     struct Settings
     {
         float maxAirDistance = 4000.0f;
