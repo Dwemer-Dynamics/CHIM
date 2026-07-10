@@ -89,6 +89,10 @@ namespace PrismaUIBridge {
     static std::string g_chatboxCurrentModelLabel = "Standard";
     static bool g_chatboxModelInitialized = false;
     static std::string g_lastChatboxModelLabel = "";
+    static std::string g_chatboxCurrentRechatMode = "random";
+    static std::atomic<bool> g_chatboxRechatModeLoaded{false};
+    static bool g_chatboxRechatModeSentInitialized = false;
+    static std::string g_lastChatboxRechatMode = "";
     static std::atomic<std::uint64_t> g_dialogueStopGeneration{0};
 
     // Confirmation modal state
@@ -203,6 +207,7 @@ namespace PrismaUIBridge {
     static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
     static void UpdateChatboxFocusUI(bool focused);
+    static void UpdateChatboxRechatModeUI(const std::string& mode);
     static void SyncChatboxStatusFromServerAsync();
     static const char* PrismaConsoleLevelName(PRISMA_UI_API::ConsoleMessageLevel level);
     static void OnBrowserConsoleMessage(PrismaView view, PRISMA_UI_API::ConsoleMessageLevel level, const char* message);
@@ -4913,6 +4918,16 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateChatboxRechatModeUI(const std::string& mode) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
+            return;
+        }
+
+        const std::string normalizedMode = mode.empty() ? "random" : mode;
+        const std::string jsCall = "window.updateChatboxRechatMode('" + EscapeForJS(normalizedMode) + "')";
+        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+    }
+
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification) {
         std::string profileNum;
         std::string label;
@@ -5052,6 +5067,10 @@ R"CHIM(
                             }
                             g_chatboxFocusChatEnabled.store(enabled);
                             g_chatboxFocusChatInitialized.store(true);
+                        }
+                        if (data.contains("rechat_mode") && data["rechat_mode"].is_string()) {
+                            g_chatboxCurrentRechatMode = data["rechat_mode"].get<std::string>();
+                            g_chatboxRechatModeLoaded.store(true);
                         }
                     }
                 } catch (...) {
@@ -5264,6 +5283,13 @@ R"CHIM(
                 g_lastChatboxFocusChatSent = enabled;
                 g_chatboxFocusChatSentInitialized = true;
             }
+        }
+
+        if (g_chatboxRechatModeLoaded.load() &&
+            (!g_chatboxRechatModeSentInitialized || g_lastChatboxRechatMode != g_chatboxCurrentRechatMode)) {
+            UpdateChatboxRechatModeUI(g_chatboxCurrentRechatMode);
+            g_lastChatboxRechatMode = g_chatboxCurrentRechatMode;
+            g_chatboxRechatModeSentInitialized = true;
         }
     }
 
