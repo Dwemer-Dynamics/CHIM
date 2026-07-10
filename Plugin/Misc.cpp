@@ -1289,9 +1289,16 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
 
 
 std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
+
+    if (!target) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: target is null");
+        return {};
+    }
+
     auto processLists = RE::ProcessLists::GetSingleton();
 
-    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
+
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start for: {}",target->GetDisplayFullName());
     if (!processLists) {
         logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: processLists is null");
         return {};
@@ -1334,8 +1341,7 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
         if (!cell || !targetCell || cell != targetCell) {
             // Skip actors that are in a different cell than the target, or cells are null
-            logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",
-                         name.empty() ? "Unknown" : name, id);
+            //logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",name.empty() ? "Unknown" : name, id);
             continue;
         }
 
