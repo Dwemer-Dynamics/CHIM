@@ -369,8 +369,9 @@ void ProcedureSendShot(char const* a_path) {
 // SHARMAT gaze / staring detection. This file is CHIM's "what is being looked at" module (it already
 // reads CrosshairPickData for screenshots and scenario hints), so player-gaze detection lives here too.
 // The player resting the crosshair on an NPC for a sustained moment emits a gaze event down the same
-// ext_nsfw_physics_raw pipe as VR body contact; the SHARMAT server extension turns it into an
-// in-character reaction. The DLL only detects "player stared at <region> of <actor>" - the server owns
+// physics_raw pipe as VR body contact (plain name per upstream review: DLL events are not ext_*;
+// core logs it as a fast command, the SHARMAT server extension renames + turns it into an
+// in-character reaction). The DLL only detects "player stared at <region> of <actor>" - the server owns
 // every reaction, prompt, and relationship/scene/child gate. Inert without that extension. Not VR-gated:
 // the crosshair pick works on flatscreen as well.
 // ---------------------------------------------------------------------------------------------------
@@ -379,7 +380,7 @@ namespace {
     constexpr float       kGazeDistance       = 350.0f;  // max player<->target distance (game units)
     constexpr float       kGazeCooldown       = 20.0f;   // seconds between gaze events for the same actor
     constexpr float       kGazeNodeMaxDist    = 45.0f;   // hit must be within this of a mapped node, else "person"
-    constexpr const char* kGazePhysicsEvent   = "ext_nsfw_physics_raw"; // same pipe as touch/grab/spank
+    constexpr const char* kGazePhysicsEvent   = "physics_raw"; // same pipe as touch/grab/spank (plain name, see header note)
 
     std::mutex                                                            g_gazeMutex;
     RE::FormID                                                            g_gazeDwellActor = 0;
