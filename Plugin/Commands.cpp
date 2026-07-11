@@ -15,9 +15,11 @@
 #include "RE/Skyrim.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <mutex>
+#include <string_view>
 
 
 using json = nlohmann::json;
@@ -35,6 +37,84 @@ int MoveToPlayerRetries = 0;
 using json = nlohmann::json;
 
 extern void ScriptProxyRun(const std::string& jsonStr);
+
+namespace {
+    constexpr std::string_view kApprovedActionPrefix = "__CHIM_APPROVED__";
+    std::atomic_bool g_actionConfirmationActive{false};
+
+    ResponseItem makeQueuedAction(std::string text, std::string actor) {
+        const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        return ResponseItem{std::move(text), timestamp, std::move(actor)};
+    }
+
+    std::string describeActionParameter(const std::string& parameter) {
+        std::string description = trim(parameter);
+        if (description.empty()) {
+            return "";
+        }
+        if (description.size() > 180) {
+            description.resize(177);
+            description += "...";
+        }
+        return "\n\nDetails: " + description;
+    }
+}
+
+void processApprovedCommandQueue() {
+    auto& responses = SPGResponse::getInstance();
+    auto pending = responses.getFirstItem("approvedcommand");
+    if (pending.text.empty()) {
+        return;
+    }
+
+    responses.dequeueFirst("approvedcommand");
+    responses.enqueue("command", makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
+}
+
+void processActionConfirmationQueue() {
+    if (g_actionConfirmationActive.load()) {
+        return;
+    }
+
+    auto& responses = SPGResponse::getInstance();
+    auto pending = responses.getFirstItem("confirmcommand");
+    if (pending.text.empty()) {
+        return;
+    }
+
+    responses.dequeueFirst("confirmcommand");
+
+    const auto delimiterPosition = pending.text.find('@');
+    const std::string action = delimiterPosition == std::string::npos
+        ? trim(pending.text)
+        : trim(pending.text.substr(0, delimiterPosition));
+    const std::string parameter = delimiterPosition == std::string::npos
+        ? ""
+        : pending.text.substr(delimiterPosition + 1);
+    const std::string title = "Allow " + (action.empty() ? std::string("action") : action) + "?";
+    const std::string message = pending.actor + " wants to perform " +
+        (action.empty() ? std::string("this action") : action) + "." + describeActionParameter(parameter);
+
+    g_actionConfirmationActive.store(true);
+    const bool shown = PrismaUIBridge::ShowConfirmation(
+        title, message, "Cancel", "Allow",
+        [pending](bool accepted) mutable {
+            if (accepted) {
+                SPGResponse::getInstance().enqueue(
+                    "command",
+                    makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
+            }
+            // Cancellation intentionally produces no game event or LLM follow-up.
+            g_actionConfirmationActive.store(false);
+        });
+
+    if (!shown) {
+        logger::warn("[ACTION_CONFIRMATION] Prisma confirmation unavailable; discarded {} for {}",
+                     pending.text, pending.actor);
+        g_actionConfirmationActive.store(false);
+    }
+}
 
 
 std::string toLower(const std::string& str) {
@@ -1746,6 +1826,12 @@ void parseRoleCommand(std::string rawCommand) {
 }
 
 void parseCommand(std::string rawCommand, std::string actorname) {
+    bool userApproved = false;
+    if (rawCommand.rfind(kApprovedActionPrefix, 0) == 0) {
+        userApproved = true;
+        rawCommand.erase(0, kApprovedActionPrefix.size());
+    }
+
     static std::string delimiter = "@";
     size_t pos = rawCommand.find(delimiter);
     if (pos == std::string::npos) {
@@ -1948,9 +2034,17 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                          npc);
 
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(crimeFaction));
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "ArrestPlayer",
-                                                                                   args, callback);
+        if (userApproved) {
+            bool accepted = true;
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(crimeFaction),
+                                                  std::move(accepted));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "ConfirmArrestPlayer", args, callback);
+        } else {
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(crimeFaction));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "ArrestPlayer", args, callback);
+        }
 
     } else if (command.contains("ForgiveCrime")) {
         responsePop("command");
@@ -2954,11 +3048,18 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto form = RE::TESForm::LookupByID(0x0f);
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         std::string itemname("Gold");
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(form), std::move(amount),
-                                              std::move(itemname));
-
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "MoveInventoryItem",
-                                                                                   args, callback);
+        if (userApproved) {
+            bool accepted = true;
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(form), std::move(amount),
+                                                  std::move(itemname), std::move(accepted));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "ConfirmMoveInventoryItem", args, callback);
+        } else {
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(form), std::move(amount),
+                                                  std::move(itemname));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "MoveInventoryItem", args, callback);
+        }
 
     } else if (command.contains("RentRoom")) {
         responsePop("command");

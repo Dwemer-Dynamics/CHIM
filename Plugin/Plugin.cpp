@@ -2413,6 +2413,9 @@ private:
                         if (!l.subtitle.empty()) logger::info("Audio line with no actor");
                     }
 
+                    processApprovedCommandQueue();
+                    processActionConfirmationQueue();
+
                     newResponse = spgResponse.getFirstItem("command");
                     if (!newResponse.text.empty()) {
                         logger::info("[COMMAND_QUEUE] Processing command: {} for actor: {}", newResponse.text, newResponse.actor);
