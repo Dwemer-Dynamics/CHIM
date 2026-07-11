@@ -32,3 +32,11 @@ SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE SkyrimScriptingPlugin::SkyrimScripting.Plugin)
 
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(AIAgentItemIdentifierTests tests/ItemIdentifierUtilsTests.cpp)
+    target_include_directories(AIAgentItemIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentItemIdentifierTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentItemIdentifierTests COMMAND AIAgentItemIdentifierTests)
+endif()
+

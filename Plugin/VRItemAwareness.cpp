@@ -1,6 +1,7 @@
 #include "VRItemAwareness.h"
 
 #include "HTTPManager.h"
+#include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "ThreadPool.h"
 
@@ -51,7 +52,11 @@ namespace
     std::mutex g_debounceMutex;
     std::unordered_map<std::string, std::string> g_lastItemBySlot;
     std::unordered_map<std::string, std::string> g_lastActionBySlot;
+    std::unordered_map<std::string, RE::FormID> g_lastRefIdBySlot;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_lastEventBySlot;
+
+    std::mutex g_heldItemMutex;
+    ItemIdentifierUtils::HeldItemTracker g_heldItems;
 
     std::mutex g_flatHeldMutex;
     RE::FormID g_flatHeldRefFormId = 0;
@@ -312,7 +317,8 @@ namespace
         return formType == RE::FormType::NPC || formType == RE::FormType::ActorCharacter;
     }
 
-    bool ShouldDebounce(const std::string& slot, const std::string& action, const std::string& itemName)
+    bool ShouldDebounce(const std::string& slot, const std::string& action, const std::string& itemName,
+                        RE::FormID refId)
     {
         const auto now = std::chrono::steady_clock::now();
 
@@ -320,30 +326,51 @@ namespace
         const bool duplicate =
             g_lastActionBySlot[slot] == action &&
             g_lastItemBySlot[slot] == itemName &&
+            g_lastRefIdBySlot[slot] == refId &&
             now - g_lastEventBySlot[slot] < std::chrono::milliseconds(500);
 
         if (!duplicate) {
             g_lastActionBySlot[slot] = action;
             g_lastItemBySlot[slot] = itemName;
+            g_lastRefIdBySlot[slot] = refId;
             g_lastEventBySlot[slot] = now;
         }
 
         return duplicate;
     }
 
-    void SendHeldItemEvent(const std::string& slot, const std::string& action, std::string itemName)
+    void SetHeldItemState(const std::string& slot, RE::FormID refId, std::string itemName)
+    {
+        std::lock_guard<std::mutex> lock(g_heldItemMutex);
+        g_heldItems.Set(slot, refId, std::move(itemName));
+    }
+
+    ItemIdentifierUtils::HeldItemState GetHeldItemState(const std::string& slot)
+    {
+        std::lock_guard<std::mutex> lock(g_heldItemMutex);
+        return g_heldItems.Get(slot);
+    }
+
+    void ClearHeldItemState(const std::string& slot)
+    {
+        std::lock_guard<std::mutex> lock(g_heldItemMutex);
+        g_heldItems.Clear(slot);
+    }
+
+    void SendHeldItemEvent(const std::string& slot, const std::string& action, std::string itemName,
+                           RE::FormID refId)
     {
         if (itemName.empty()) {
             itemName = "something";
         }
 
         itemName = CleanRawField(itemName);
-        if (ShouldDebounce(slot, action, itemName)) {
+        if (ShouldDebounce(slot, action, itemName, refId)) {
             return;
         }
 
-        const std::string rawData = std::format("{}^{}^{}", itemName, action, slot);
-        logger::info("[VRItemAwareness] {} {} ({})", action, itemName, slot);
+        const std::string rawData = ItemIdentifierUtils::BuildHeldItemEvent(itemName, action, slot, refId);
+        logger::info("[VRItemAwareness] {} {} ({}, RefID=0x{:08X})", action, itemName, slot, refId);
 
         ThreadPool::getInstance().enqueue(
             "VRItemAwareness",
@@ -389,11 +416,11 @@ namespace
         auto [heldFormId, heldItemName] = GetFlatHeldState();
 
         if (heldFormId != 0 && heldFormId != formId) {
-            SendHeldItemEvent("both", "drop", heldItemName);
+            SendHeldItemEvent("both", "drop", heldItemName, heldFormId);
         }
 
         if (heldFormId != formId) {
-            SendHeldItemEvent("both", "pickup", itemName);
+            SendHeldItemEvent("both", "pickup", itemName, formId);
             SetFlatHeldState(formId, itemName);
         }
     }
@@ -405,7 +432,7 @@ namespace
             return;
         }
 
-        SendHeldItemEvent("both", "drop", heldItemName);
+        SendHeldItemEvent("both", "drop", heldItemName, heldFormId);
         ClearFlatHeldState();
     }
 
@@ -415,7 +442,11 @@ namespace
             return;
         }
 
-        SendHeldItemEvent(isLeft ? "left" : "right", "pickup", ResolveItemName(grabbedRef));
+        const std::string slot = isLeft ? "left" : "right";
+        const auto refId = grabbedRef->GetFormID();
+        const auto itemName = ResolveItemName(grabbedRef);
+        SendHeldItemEvent(slot, "pickup", itemName, refId);
+        SetHeldItemState(slot, refId, itemName);
     }
 
     void OnHiggsDropped(bool isLeft, RE::TESObjectREFR* droppedRef)
@@ -424,17 +455,37 @@ namespace
             return;
         }
 
-        SendHeldItemEvent(isLeft ? "left" : "right", "drop", ResolveItemName(droppedRef));
+        const std::string slot = isLeft ? "left" : "right";
+        auto state = GetHeldItemState(slot);
+        const auto refId = droppedRef->GetFormID() != 0 ? droppedRef->GetFormID() : state.refId;
+        auto itemName = ResolveItemName(droppedRef);
+        if (itemName.empty() || itemName == "something") {
+            itemName = state.name;
+        }
+        SendHeldItemEvent(slot, "drop", itemName, refId);
+        ClearHeldItemState(slot);
     }
 
     void OnHiggsStashed(bool isLeft, RE::TESForm* stashedForm)
     {
-        SendHeldItemEvent(isLeft ? "left" : "right", "drop", ResolveFormName(stashedForm));
+        const std::string slot = isLeft ? "left" : "right";
+        auto state = GetHeldItemState(slot);
+        const auto itemName = !state.name.empty() ? state.name : ResolveFormName(stashedForm);
+        // The stash callback only exposes the base form. Never mislabel that BaseID as a world RefID.
+        const auto refId = state.refId;
+        SendHeldItemEvent(slot, "drop", itemName, refId);
+        ClearHeldItemState(slot);
     }
 
     void OnHiggsConsumed(bool isLeft, RE::TESForm* consumedForm)
     {
-        SendHeldItemEvent(isLeft ? "left" : "right", "drop", ResolveFormName(consumedForm));
+        const std::string slot = isLeft ? "left" : "right";
+        auto state = GetHeldItemState(slot);
+        const auto itemName = !state.name.empty() ? state.name : ResolveFormName(consumedForm);
+        // The consume callback only exposes the base form. Reuse the RefID captured by the grab callback.
+        const auto refId = state.refId;
+        SendHeldItemEvent(slot, "drop", itemName, refId);
+        ClearHeldItemState(slot);
     }
 
     void TickBodyImpactAwareness()

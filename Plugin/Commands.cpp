@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "Papyrus.h"
 #include "PrismaUIBridge.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <mutex>
@@ -175,6 +177,7 @@ std::string jusTrim(const std::string& input) {
     auto end = result.find_last_not_of(" \t\n\r\f\v");
     return result.substr(start, end - start + 1);
 }
+
 std::vector<std::string> splitString(const std::string& input) {
     std::stringstream ss(input);
     std::string segment;
@@ -3538,7 +3541,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             RE::ExtraDataList* matchedExtraList = nullptr;
             std::string matchedItemName;
             std::string rejectionReason;
-            const std::string normalizedRequestedItem = normalizeConsumeItemName(requestedItem);
+            const auto requestedIdentifier = ItemIdentifierUtils::ParseInventoryItemIdentifier(requestedItem);
+            const std::string normalizedRequestedItem = normalizeConsumeItemName(requestedIdentifier.name);
 
             struct ConsumeCandidate {
                 RE::TESBoundObject* object = nullptr;
@@ -3602,6 +3606,19 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 candidate.extraList = candidateExtraList;
                 candidate.name = candidateName;
                 candidate.rejectionReason = currentRejectionReason;
+
+                if (ItemIdentifierUtils::MatchesRequestedBaseId(requestedIdentifier, boundObject->GetFormID())) {
+                    matchedObject = candidate.object;
+                    matchedAlchemy = candidate.alchemy;
+                    matchedExtraList = candidate.extraList;
+                    matchedItemName = candidate.name;
+                    rejectionReason = candidate.rejectionReason;
+                    break;
+                }
+
+                if (requestedIdentifier.baseId.has_value()) {
+                    continue;
+                }
 
                 if (exactDisplayMatch) {
                     matchedObject = candidate.object;
@@ -3767,6 +3784,9 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                                  npc);
                 return;
             }
+
+            const std::string requestedItem = itemName;
+            const auto requestedIdentifier = ItemIdentifierUtils::ParseInventoryItemIdentifier(requestedItem);
             
             auto playerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
             auto normalizeActorName = [](std::string value) {
@@ -3822,8 +3842,13 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     currentItemName.assign(entryData.get()->GetDisplayName());
                 }
                 
-                // Check if this is the item we're looking for
-                if (containsCaseInsensitive(currentItemName, itemName)) {
+                const bool idMatch = ItemIdentifierUtils::MatchesRequestedBaseId(
+                    requestedIdentifier, boundObject->GetFormID());
+                const bool nameMatch = !requestedIdentifier.baseId.has_value() &&
+                    containsCaseInsensitive(currentItemName, requestedIdentifier.name);
+
+                // Prefer the exact BaseID when the prompt supplied BaseID:ItemName.
+                if (idMatch || nameMatch) {
                     // Item matches
                     itemFound = true;
                     itemForm = boundObject;
@@ -3837,9 +3862,9 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             }
             
             if (!itemFound || !itemForm || itemName.empty()) {
-                logger::info("[GiveItemTo] Item {} not found in {}'s inventory", itemName, agentPtr->getActorName());
+                logger::info("[GiveItemTo] Item {} not found in {}'s inventory", requestedItem, agentPtr->getActorName());
                 HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                             "command@GiveItemTo@" + targetName + "@Error: item '" + itemName + "' not in inventory"),
+                                             "command@GiveItemTo@" + targetName + "@Error: item '" + requestedItem + "' not in inventory"),
                                  npc);
                 return;
             }
