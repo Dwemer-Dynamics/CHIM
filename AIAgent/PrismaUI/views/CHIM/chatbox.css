@@ -125,7 +125,7 @@ body {
 
 .chatbox-control-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
     gap: 12px;
     align-items: start;
 }
@@ -223,6 +223,30 @@ body {
     background: rgba(168, 85, 247, 0.2);
     color: #c4b5fd;
     border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
+.mode-badge.tight {
+    background: rgba(239, 68, 68, 0.18);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.mode-badge.conversational {
+    background: rgba(14, 165, 233, 0.18);
+    color: #7dd3fc;
+    border: 1px solid rgba(14, 165, 233, 0.4);
+}
+
+.mode-badge.group {
+    background: rgba(34, 197, 94, 0.18);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+}
+
+.mode-badge.random {
+    background: rgba(249, 115, 22, 0.18);
+    color: #fdba74;
+    border: 1px solid rgba(249, 115, 22, 0.4);
 }
 
 .mode-badge.whisper {
@@ -861,6 +885,10 @@ body {
 }
 
 @media (max-width: 920px) {
+    .chatbox-control-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .focus-chatbox-shell {
         flex-direction: column;
         width: min(94vw, 840px);

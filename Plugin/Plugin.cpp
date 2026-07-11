@@ -50,8 +50,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.1.0"
-#define PLUGIN_RELEASE_DATE "2026-06-28"
+#define PLUGIN_VERSION "3.1.1"
+#define PLUGIN_RELEASE_DATE "2026-07-11"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -62,6 +62,7 @@ extern void ProcedureSendShot(const char* a_path);
 
 extern void addAllNPC();
 extern bool promoteCrosshairTargetToAI();
+extern void PollPlayerGaze();  // HerikaEyes.cpp - SHARMAT gaze/staring detection
 extern int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool warn, bool removewhenexisting, bool isManualAdd);
 
 
@@ -2253,6 +2254,7 @@ private:
                     if (!RE::UI::GetSingleton()->IsApplicationMenuOpen()) {
                         // logger::debug("[ManagerMainQueue] Processing cycle starting - Game active and menu closed");
                         VRItemAwareness::Tick();
+                        PollPlayerGaze();
                         
                         if (recordingActive) {
                             // STT capture is latency-sensitive in VR. Do not run overlay refresh,
@@ -2410,6 +2412,9 @@ private:
                     } else {
                         if (!l.subtitle.empty()) logger::info("Audio line with no actor");
                     }
+
+                    processApprovedCommandQueue();
+                    processActionConfirmationQueue();
 
                     newResponse = spgResponse.getFirstItem("command");
                     if (!newResponse.text.empty()) {
@@ -3820,6 +3825,9 @@ namespace ProcessorScreenShot {
     void DXGIPresentHook::thunk(std::uint32_t a_p1) {
         func(a_p1);
 
+        // Pace the per-frame VR camera snapshot for the spatial audio engine (VR-only; no-op in SE/AE).
+        SpatialAwareness::UpdatePlayerCameraSnapshot();
+
         if (MutexIsMakeShotActivated()) {
             MutexSetMakeShotActive(false);
             ProcedureTakeShot();
@@ -3941,6 +3949,26 @@ namespace ProcessorActorDialogue {
         }
 
         return func(actor, response, a_unused);
+    }
+}
+
+namespace ProcessorVrVisemePump {
+    struct PlayerUpdateHook {
+        static void thunk(RE::PlayerCharacter* player, float deltaSeconds);
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    void InstallHooks()
+    {
+        REL::Relocation<std::uintptr_t> playerVtbl{RE::VTABLE_PlayerCharacter[0]};
+        PlayerUpdateHook::func = playerVtbl.write_vfunc(0xAD, PlayerUpdateHook::thunk);
+        logger::info("[SpeakManager] Installed VR player-update viseme pump hook");
+    }
+
+    void PlayerUpdateHook::thunk(RE::PlayerCharacter* player, float deltaSeconds)
+    {
+        func(player, deltaSeconds);
+        ProcessVrVisemePumpOnGameThread(deltaSeconds);
     }
 }
 
@@ -6136,54 +6164,28 @@ static std::string BuildModdedEquipmentHash(const std::unordered_map<std::string
     return hash;
 }
 
-static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
-static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
-
-void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
-    if (!npc) return;
-
-    auto actorHandle = npc->GetHandle();
-    auto* taskInterface = SKSE::GetTaskInterface();
-    if (!taskInterface) {
-        logger::warn("[EQUIPMENT_UPDATE] SKSE task interface unavailable; reading {} equipment directly", agentName);
-        RefreshAIAgentEquipmentImpl(npc, agentName, forceUpdate);
-        return;
-    }
-
-    taskInterface->AddTask([actorHandle, agentName, forceUpdate]() {
-        auto actorRef = actorHandle.get();
-        auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
-        if (!actor) {
-            logger::trace("[EQUIPMENT_SKIP] {} - actor handle no longer valid", agentName);
-            return;
-        }
-
-        RefreshAIAgentEquipmentImpl(actor, agentName, forceUpdate);
-    });
-}
-
 // Helper function to refresh equipment for an AI Agent (with hash-based diffing)
 static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
-    
+
     // Skip player
     if (npc->GetFormID() == RE::PlayerCharacter::GetSingleton()->As<RE::Actor>()->GetFormID()) return;
-    
+
     // Comprehensive safety checks to prevent crashes during cell transitions
     if (npc->IsDeleted() || npc->IsDisabled()) {
         return;
     }
-    
+
     // Check if actor has 3D loaded (critical for equipment access)
     if (!npc->Is3DLoaded()) {
         return;
     }
-    
+
     // Check if actor has a valid parent cell
     if (!npc->GetParentCell()) {
         return;
     }
-    
+
     // Additional check: verify the actor pointer is still valid
     try {
         auto testName = npc->GetName();  // This will crash if the pointer is invalid
@@ -6195,7 +6197,7 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
         logger::error("[EQUIPMENT_ERROR] {} - caught exception during validity check", agentName);
         return;
     }
-    
+
     std::string helmet, helmet_baseid;
     std::string armor, armor_baseid;
     std::string boots, boots_baseid;
@@ -6224,15 +6226,15 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
     std::string equipment;
     std::string equipmentHash;
 
-    // We loop through inventory to build inventory string using extradata lists for custom names     
+    // We loop through inventory to build inventory string using extradata lists for custom names
     std::string inventoryData;
     std::string npcName;
     std::vector<std::string> inventoryItems;  // For sorted hash
-    
+
     // Wrap entire equipment reading in try-catch to handle race conditions during cell transitions
     try {
         auto inventory = npc->GetInventory();
-        
+
         npcName.assign(npc->GetDisplayFullName());
 
         for (const auto& item : inventory) {
@@ -6243,13 +6245,13 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
             if (!boundObject || count == 0) {
                 continue;
             }
-            
+
             // Get item name
             std::string itemName;
             if (auto baseName = boundObject->GetName(); baseName && baseName[0]) {
                 itemName = baseName;
             }
-            
+
             bool flagWorn = false;
             // Check worn equipment slots - these can crash if actor becomes invalid
             if (npc->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing) == boundObject) {
@@ -6381,48 +6383,45 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
         equipment.append(!backpack.empty() ? backpack + "^" + backpack_baseid : "").append("@");
         equipment.append(!leftHand.empty() ? leftHand + "^" + leftHand_baseid : "").append("@");
         equipment.append(!rightHand.empty() ? rightHand + "^" + rightHand_baseid : "").append("@");
-        
+
         equipment.append(!shirt.empty() ? shirt + "^" + shirt_baseid : "");
 
         // Create hash for comparison (including baseids to detect changes)
-        equipmentHash = std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", 
-            !helmet.empty() ? helmet : "",
-            !helmet.empty() ? helmet_baseid : "",
-            !armor.empty() ? armor : "",
-            !armor.empty() ? armor_baseid : "",
-            !boots.empty() ? boots : "",
-            !boots.empty() ? boots_baseid : "",
-            !gloves.empty() ? gloves : "",
-            !gloves.empty() ? gloves_baseid : "",
-            !amulet.empty() ? amulet : "",
-            !amulet.empty() ? amulet_baseid : "",
-            !ring.empty() ? ring : "",
-            !ring.empty() ? ring_baseid : "",
-            !cape.empty() ? cape : "",
-            !cape.empty() ? cape_baseid : "",
-            !backpack.empty() ? backpack : "",
-            !backpack.empty() ? backpack_baseid : "",
-            !leftHand.empty() ? leftHand : "",
-            !leftHand.empty() ? leftHand_baseid : "",
-            !rightHand.empty() ? rightHand : "",
-            !rightHand.empty() ? rightHand_baseid : "", 
-            !shirt.empty() ? shirt : "", 
-            !shirt.empty() ? shirt_baseid : ""
-        );
+        equipmentHash = std::format(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", !helmet.empty() ? helmet : "",
+            !helmet.empty() ? helmet_baseid : "", !armor.empty() ? armor : "", !armor.empty() ? armor_baseid : "",
+            !boots.empty() ? boots : "", !boots.empty() ? boots_baseid : "", !gloves.empty() ? gloves : "",
+            !gloves.empty() ? gloves_baseid : "", !amulet.empty() ? amulet : "", !amulet.empty() ? amulet_baseid : "",
+            !ring.empty() ? ring : "", !ring.empty() ? ring_baseid : "", !cape.empty() ? cape : "",
+            !cape.empty() ? cape_baseid : "", !backpack.empty() ? backpack : "",
+            !backpack.empty() ? backpack_baseid : "", !leftHand.empty() ? leftHand : "",
+            !leftHand.empty() ? leftHand_baseid : "", !rightHand.empty() ? rightHand : "",
+            !rightHand.empty() ? rightHand_baseid : "", !shirt.empty() ? shirt : "",
+            !shirt.empty() ? shirt_baseid : "");
         equipmentHash.append("|keywords=")
-            .append(helmet_keywords.dump()).append("|")
-            .append(armor_keywords.dump()).append("|")
-            .append(boots_keywords.dump()).append("|")
-            .append(gloves_keywords.dump()).append("|")
-            .append(amulet_keywords.dump()).append("|")
-            .append(ring_keywords.dump()).append("|")
-            .append(cape_keywords.dump()).append("|")
-            .append(backpack_keywords.dump()).append("|")
-            .append(leftHand_keywords.dump()).append("|")
-            .append(rightHand_keywords.dump()).append("|")
+            .append(helmet_keywords.dump())
+            .append("|")
+            .append(armor_keywords.dump())
+            .append("|")
+            .append(boots_keywords.dump())
+            .append("|")
+            .append(gloves_keywords.dump())
+            .append("|")
+            .append(amulet_keywords.dump())
+            .append("|")
+            .append(ring_keywords.dump())
+            .append("|")
+            .append(cape_keywords.dump())
+            .append("|")
+            .append(backpack_keywords.dump())
+            .append("|")
+            .append(leftHand_keywords.dump())
+            .append("|")
+            .append(rightHand_keywords.dump())
+            .append("|")
             .append(shirt_keywords.dump());
         equipmentHash.append(BuildModdedEquipmentHash(moddedEquipment));
-        
+
         logger::debug("[EQUIPMENT {}", equipmentHash);
 
     } catch (...) {
@@ -6430,9 +6429,9 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
         logger::trace("[EQUIPMENT_SKIP] {} - caught exception during equipment read (actor invalidated)", agentName);
         return;
     }
-    
+
     auto formID = npc->GetFormID();
-    
+
     // Check if equipment changed (or force update on save load)
     if (!forceUpdate && lastEquipmentHash.find(formID) != lastEquipmentHash.end()) {
         if (lastEquipmentHash[formID] == equipmentHash) {
@@ -6440,10 +6439,10 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
             return;
         }
     }
-    
+
     // Equipment changed or first time tracking - send update
     lastEquipmentHash[formID] = equipmentHash;
-    
+
     // Build JSON data for equipment update
     json equipmentData;
     equipmentData["type"] = "equipment";
@@ -6461,47 +6460,47 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
         {"cape", BuildEquipmentItemJson(cape, cape_baseid, cape_keywords)},
         {"backpack", BuildEquipmentItemJson(backpack, backpack_baseid, backpack_keywords)},
         {"left_hand", BuildEquipmentItemJson(leftHand, leftHand_baseid, leftHand_keywords)},
-        {"right_hand", BuildEquipmentItemJson(rightHand, rightHand_baseid, rightHand_keywords)}
-    };
+        {"right_hand", BuildEquipmentItemJson(rightHand, rightHand_baseid, rightHand_keywords)}};
     AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
-    
+
     HTTPManager::postGameData("gamedata.php", equipmentData);
-    
+
     logger::info("[EQUIPMENT_UPDATE] {} equipment updated", agentName);
 }
 
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
+void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
     if (!npc) return;
 
     auto actorHandle = npc->GetHandle();
     auto* taskInterface = SKSE::GetTaskInterface();
     if (!taskInterface) {
-        logger::warn("[INVENTORY_UPDATE] SKSE task interface unavailable; reading {} inventory directly", agentName);
-        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous);
+        logger::warn("[EQUIPMENT_UPDATE] SKSE task interface unavailable; reading {} equipment directly", agentName);
+        RefreshAIAgentEquipmentImpl(npc, agentName, forceUpdate);
         return;
     }
 
-    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous]() {
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate]() {
         auto actorRef = actorHandle.get();
         auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
         if (!actor) {
-            logger::trace("[INVENTORY_SKIP] {} - actor handle no longer valid", agentName);
+            logger::trace("[EQUIPMENT_SKIP] {} - actor handle no longer valid", agentName);
             return;
         }
 
-        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous);
+        RefreshAIAgentEquipmentImpl(actor, agentName, forceUpdate);
     });
 }
 
+
 // Helper function to refresh inventory for an AI Agent (with hash-based diffing)
-static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
+void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
     if (!npc) return;
     if (npc->IsPlayer()) return;  // Skip player
 
     std::string inventoryData;
-    std::vector<InventoryItemSnapshot> inventoryItems; // For sorted hash
+    std::vector<InventoryItemSnapshot> inventoryItems;  // For sorted hash
     auto inventory = npc->GetInventory();
-    
+
     for (const auto& item : inventory) {
         RE::TESBoundObject* boundObject = item.first;
         auto count = item.second.first;
@@ -6528,7 +6527,6 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
 
         //  Check for custom name in InventoryEntryData and ExtraDataList
         if (entryData) {
-
             if (auto display = entryData->GetDisplayName(); display && display[0]) {
                 itemName = display;
             }
@@ -6538,9 +6536,8 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
                     if (!extraList) {
                         continue;
                     }
-                    
+
                     if (auto textData = extraList->GetByType<RE::ExtraTextDisplayData>(); textData) {
-                    
                         if (!textData->displayName.empty()) {
                             itemName.assign(textData->displayName);
                             logger::info("[INVENTORY_CUSTOM_NAME] Inventory item ref full name: {}", itemName);
@@ -6551,9 +6548,7 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
             }
         }
 
-        //   
-        
-
+        //
 
         // Skip items with missing or invalid names
         if (!itemName.empty() && itemName != "<Missing Name>") {
@@ -6566,20 +6561,20 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
             inventoryData.append(itemEntry);
         }
     }
-    
+
     // Create hash by sorting items (order-independent comparison)
-    std::sort(inventoryItems.begin(), inventoryItems.end(), [](const InventoryItemSnapshot& lhs, const InventoryItemSnapshot& rhs) {
-        return lhs.hashEntry < rhs.hashEntry;
-    });
+    std::sort(inventoryItems.begin(), inventoryItems.end(),
+              [](const InventoryItemSnapshot& lhs, const InventoryItemSnapshot& rhs) {
+                  return lhs.hashEntry < rhs.hashEntry;
+              });
     std::string inventoryHash;
     for (const auto& item : inventoryItems) {
         if (!inventoryHash.empty()) inventoryHash.append("|");
         inventoryHash.append(item.hashEntry);
     }
 
-    
     auto formID = npc->GetFormID();
-    
+
     // Check if inventory changed (or force update on save load)
     if (!forceUpdate && lastInventoryHash.find(formID) != lastInventoryHash.end()) {
         if (lastInventoryHash[formID] == inventoryHash) {
@@ -6587,7 +6582,7 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
             return;
         }
     }
-    
+
     // Inventory changed or first time tracking - send update
     lastInventoryHash[formID] = inventoryHash;
 
@@ -6600,12 +6595,10 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
     inventoryDataJson["items"] = json::array();
 
     for (const auto& item : inventoryItems) {
-        inventoryDataJson["items"].push_back({
-            {"name", item.name},
-            {"baseid", item.baseid},
-            {"count", item.count},
-            {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
-        });
+        inventoryDataJson["items"].push_back({{"name", item.name},
+                                              {"baseid", item.baseid},
+                                              {"count", item.count},
+                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}});
     }
 
     if (synchronous) {
@@ -6614,11 +6607,34 @@ static void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agent
         HTTPManager::postGameData("gamedata.php", inventoryDataJson);
     }
 
-    logger::info("[INVENTORY_UPDATE] {} inventory updated ({} items{})",
-        agentName,
-        inventoryItems.size(),
-        synchronous ? ", sync" : "");
+    logger::info("[INVENTORY_UPDATE] {} inventory updated ({} items{})", agentName, inventoryItems.size(),
+                 synchronous ? ", sync" : "");
 }
+
+
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
+    if (!npc) return;
+
+    auto actorHandle = npc->GetHandle();
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[INVENTORY_UPDATE] SKSE task interface unavailable; reading {} inventory directly", agentName);
+        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous);
+        return;
+    }
+
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous]() {
+        auto actorRef = actorHandle.get();
+        auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::trace("[INVENTORY_SKIP] {} - actor handle no longer valid", agentName);
+            return;
+        }
+
+        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous);
+    });
+}
+
 
 // Helper function to refresh skills for an AI Agent (with hash-based diffing)
 void RefreshAIAgentSkills(RE::Actor* npc, const std::string& agentName, bool forceUpdate) {
@@ -8098,6 +8114,7 @@ OnDataLoaded {
         ProcessorDialogueMenu::InstallHooks();
     } else {
         logger::info("VR runtime detected; skipping flat Skyrim native screenshot/dialogue hooks");
+        ProcessorVrVisemePump::InstallHooks();
     }
 
     const auto papyrus = SKSE::GetPapyrusInterface();
@@ -10584,7 +10601,9 @@ EventHandlers {
         auto actor = actorPtr->As<RE::Actor>();
          if (actor ) {
              if (!aiam.getRenamedNpcNameByFormId(actor->GetFormID()).empty()  ) {
-                 if (!actor->Is3DLoaded()) {
+                 bool is3DLoaded = actor->Is3DLoaded();
+                 bool inHigh = actor->GetActorRuntimeData().currentProcess->InHighProcess();
+                 if (!is3DLoaded || !inHigh) {
                      auto package = RE::TESForm::LookupByID(event->package);
                      auto package2 = static_cast<RE::TESPackage*>(RE::TESForm::LookupByID(event->package));
                      auto location = actor->GetCurrentLocation();

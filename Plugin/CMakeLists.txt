@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AIAgent VERSION 3.1.0)
+project(AIAgent VERSION 3.1.1)
 
 find_package(SkyrimScripting.CMake CONFIG REQUIRED)
 find_package(SkyrimScripting.Plugin CONFIG REQUIRED)
@@ -31,4 +31,12 @@ SKYRIM_FOLDER "${AIAGENT_SKYRIM_FOLDER}"
 SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE SkyrimScriptingPlugin::SkyrimScripting.Plugin)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(AIAgentItemIdentifierTests tests/ItemIdentifierUtilsTests.cpp)
+    target_include_directories(AIAgentItemIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentItemIdentifierTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentItemIdentifierTests COMMAND AIAgentItemIdentifierTests)
+endif()
 

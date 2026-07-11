@@ -89,6 +89,10 @@ namespace PrismaUIBridge {
     static std::string g_chatboxCurrentModelLabel = "Standard";
     static bool g_chatboxModelInitialized = false;
     static std::string g_lastChatboxModelLabel = "";
+    static std::string g_chatboxCurrentRechatMode = "random";
+    static std::atomic<bool> g_chatboxRechatModeLoaded{false};
+    static bool g_chatboxRechatModeSentInitialized = false;
+    static std::string g_lastChatboxRechatMode = "";
     static std::atomic<std::uint64_t> g_dialogueStopGeneration{0};
 
     // Confirmation modal state
@@ -203,6 +207,7 @@ namespace PrismaUIBridge {
     static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
     static void UpdateChatboxFocusUI(bool focused);
+    static void UpdateChatboxRechatModeUI(const std::string& mode);
     static void SyncChatboxStatusFromServerAsync();
     static const char* PrismaConsoleLevelName(PRISMA_UI_API::ConsoleMessageLevel level);
     static void OnBrowserConsoleMessage(PrismaView view, PRISMA_UI_API::ConsoleMessageLevel level, const char* message);
@@ -4563,21 +4568,23 @@ R"CHIM(
         }
 
         if (!focused) {
-            logger::warn("[PrismaUIBridge] Failed to focus confirmation modal");
-            g_prismaUI->Hide(g_confirmationView);
-            g_confirmationVisible.store(false);
-            return false;
+            logger::warn("[PrismaUIBridge] Failed to focus confirmation modal; leaving it visible because focus can fail on some Prisma builds");
         }
 
-        logger::info("[PrismaUIBridge] Confirmation modal shown");
+        logger::info("[PrismaUIBridge] Confirmation modal shown{}", focused ? "" : " without Prisma focus");
         return true;
+    }
+
+    static bool HasPendingConfirmationPayload() {
+        std::lock_guard<std::mutex> lock(g_confirmationMutex);
+        return !g_confirmationPayload.empty();
     }
 
     static void OnConfirmationDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Confirmation modal DOM ready");
         g_confirmationDomReady.store(true);
 
-        if (!g_confirmationPayload.empty() && !g_confirmationVisible.load()) {
+        if (HasPendingConfirmationPayload() && !g_confirmationVisible.load()) {
             PresentConfirmationPayload();
         }
     }
@@ -4618,6 +4625,9 @@ R"CHIM(
             ResolveConfirmation(false);
         } else if (cmd == "dom_ready") {
             g_confirmationDomReady.store(true);
+            if (HasPendingConfirmationPayload() && !g_confirmationVisible.load()) {
+                PresentConfirmationPayload();
+            }
         } else {
             logger::warn("[PrismaUIBridge] Unknown confirmation command: {}", cmd);
         }
@@ -4667,20 +4677,11 @@ R"CHIM(
         }
 
         if (!g_confirmationDomReady.load()) {
-            constexpr auto kDomReadyPollInterval = std::chrono::milliseconds(20);
-            constexpr auto kDomReadyTimeout = std::chrono::milliseconds(3000);
-            const auto waitStart = std::chrono::steady_clock::now();
-            while (!g_confirmationDomReady.load()) {
-                const auto waited = std::chrono::steady_clock::now() - waitStart;
-                if (waited >= kDomReadyTimeout) {
-                    logger::warn("[PrismaUIBridge] Confirmation DOM ready timeout");
-                    std::lock_guard<std::mutex> lock(g_confirmationMutex);
-                    g_confirmationCallback = nullptr;
-                    g_confirmationPayload.clear();
-                    return false;
-                }
-                std::this_thread::sleep_for(kDomReadyPollInterval);
+            if (g_prismaUI->IsValid(g_confirmationView)) {
+                g_prismaUI->Show(g_confirmationView);
             }
+            logger::info("[PrismaUIBridge] Confirmation modal queued while waiting for DOM ready");
+            return true;
         }
 
         if (g_confirmationVisible.load()) {
@@ -4917,6 +4918,16 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateChatboxRechatModeUI(const std::string& mode) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
+            return;
+        }
+
+        const std::string normalizedMode = mode.empty() ? "random" : mode;
+        const std::string jsCall = "window.updateChatboxRechatMode('" + EscapeForJS(normalizedMode) + "')";
+        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+    }
+
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification) {
         std::string profileNum;
         std::string label;
@@ -5056,6 +5067,10 @@ R"CHIM(
                             }
                             g_chatboxFocusChatEnabled.store(enabled);
                             g_chatboxFocusChatInitialized.store(true);
+                        }
+                        if (data.contains("rechat_mode") && data["rechat_mode"].is_string()) {
+                            g_chatboxCurrentRechatMode = data["rechat_mode"].get<std::string>();
+                            g_chatboxRechatModeLoaded.store(true);
                         }
                     }
                 } catch (...) {
@@ -5268,6 +5283,13 @@ R"CHIM(
                 g_lastChatboxFocusChatSent = enabled;
                 g_chatboxFocusChatSentInitialized = true;
             }
+        }
+
+        if (g_chatboxRechatModeLoaded.load() &&
+            (!g_chatboxRechatModeSentInitialized || g_lastChatboxRechatMode != g_chatboxCurrentRechatMode)) {
+            UpdateChatboxRechatModeUI(g_chatboxCurrentRechatMode);
+            g_lastChatboxRechatMode = g_chatboxCurrentRechatMode;
+            g_chatboxRechatModeSentInitialized = true;
         }
     }
 

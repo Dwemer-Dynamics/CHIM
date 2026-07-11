@@ -1,6 +1,7 @@
 #include "SpatialAwareness.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -20,6 +21,82 @@ namespace logger = SKSE::log;
 
 namespace SpatialAwareness
 {
+    namespace
+    {
+        // Per-frame VR camera position snapshot (see UpdatePlayerCameraSnapshot in the header). Mutex-guarded:
+        // one writer per frame (Present hook) + a handful of audio-tick readers per second - contention is nil.
+        std::mutex g_camSnapMutex;
+        RE::NiPoint3 g_camSnapPos{};
+        std::chrono::steady_clock::time_point g_camSnapWhen{};
+        bool g_camSnapValid = false;
+        constexpr auto kCamSnapMaxAge = std::chrono::milliseconds(500);
+    }
+
+    void UpdatePlayerCameraSnapshot()
+    {
+        if (!REL::Module::IsVR()) {
+            return;
+        }
+        // camRoot->world is only current on the GAME thread (reading it at Present time returns a static
+        // transform). The Present hook just paces the capture: at most one queued game-thread task per
+        // frame; the task takes the tear-free read and publishes it for the audio threads.
+        static std::atomic<bool> pending{false};
+        bool expected = false;
+        if (!pending.compare_exchange_strong(expected, true)) {
+            return; // a capture task is already queued
+        }
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            pending.store(false);
+            return;
+        }
+        tasks->AddTask([]() {
+            auto* cam = RE::PlayerCamera::GetSingleton();
+            RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
+            if (camRoot) {
+                const RE::NiPoint3 p = camRoot->world.translate;
+                if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+                    (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) > 0.001f) {
+                    std::lock_guard<std::mutex> lk(g_camSnapMutex);
+                    g_camSnapPos = p;
+                    g_camSnapWhen = std::chrono::steady_clock::now();
+                    g_camSnapValid = true;
+                }
+            }
+            pending.store(false);
+        });
+    }
+
+    RE::NiPoint3 GetEffectiveActorPosition(RE::Actor* actor)
+    {
+        if (!actor) {
+            return RE::NiPoint3();
+        }
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (actor == player && REL::Module::IsVR()) {
+            // Serve the per-frame snapshot. A live off-thread read of camRoot->world.translate races the
+            // renderer and returns torn positions (heard as volume pumping / voices drifting mid-scene).
+            {
+                std::lock_guard<std::mutex> lk(g_camSnapMutex);
+                if (g_camSnapValid && (std::chrono::steady_clock::now() - g_camSnapWhen) < kCamSnapMaxAge) {
+                    return g_camSnapPos;
+                }
+            }
+            // Snapshot stale/absent (menus, loading, hook not yet firing): fall back to a live camera-root
+            // read. (Not UprightHmdNode - its translation is playspace-relative and fails the magnitude guard.)
+            auto* cam = RE::PlayerCamera::GetSingleton();
+            RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
+            if (camRoot) {
+                const RE::NiPoint3 p = camRoot->world.translate;
+                if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+                    (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) > 0.001f) {
+                    return p;
+                }
+            }
+        }
+        return actor->GetPosition();
+    }
+
     namespace
     {
         struct NavNode
@@ -49,6 +126,17 @@ namespace SpatialAwareness
 
         std::mutex g_navCacheMutex;
         std::unordered_map<RE::FormID, std::shared_ptr<NavGraph>> g_navGraphCache;
+
+        // VR-only navmesh build throttle. In VR a location transition can load
+        // several cells at once; without a cap the spatial pass builds every new
+        // cell's nav graph synchronously in one frame (multi-second freeze). We
+        // always allow the player's own cell to build, and rate-limit every other
+        // cell to at most one build per cooldown so the rest amortize across passes.
+        // Flatscreen is left on the original eager path (no gate here changes it).
+        constexpr auto kNavBuildCooldownVR = std::chrono::milliseconds(300);
+        std::mutex g_navBuildThrottleMutex;
+        std::chrono::steady_clock::time_point g_lastNavBuildEnd{};
+
         std::mutex g_settingsMutex;
         Settings g_settings{};
         std::mutex g_spatialEvalLogMutex;
@@ -428,7 +516,31 @@ namespace SpatialAwareness
                 }
             }
 
+            // VR: throttle cache-miss builds so a multi-cell transition can't stack
+            // several full synchronous builds into one frame. The player's current
+            // cell always builds (it's the priority and can't be faked with air
+            // distance); any other cell defers if we built too recently, and the
+            // caller falls back to air-distance audibility (kUnavailable) until a
+            // later pass warms it. Flatscreen keeps the original eager behavior.
+            if (REL::Module::IsVR()) {
+                bool isPlayerCell = false;
+                if (const auto* player = RE::PlayerCharacter::GetSingleton()) {
+                    isPlayerCell = (player->GetParentCell() == cell);
+                }
+                if (!isPlayerCell) {
+                    std::lock_guard<std::mutex> lock(g_navBuildThrottleMutex);
+                    if (std::chrono::steady_clock::now() - g_lastNavBuildEnd < kNavBuildCooldownVR) {
+                        return nullptr;
+                    }
+                }
+            }
+
             std::shared_ptr<NavGraph> graph = BuildGraphForCell(cell);
+
+            if (REL::Module::IsVR()) {
+                std::lock_guard<std::mutex> lock(g_navBuildThrottleMutex);
+                g_lastNavBuildEnd = std::chrono::steady_clock::now();
+            }
 
             {
                 std::lock_guard<std::mutex> lock(g_navCacheMutex);
@@ -664,8 +776,8 @@ namespace SpatialAwareness
             return result;
         }
 
-        const RE::NiPoint3 speakerPosition = speaker->GetPosition();
-        const RE::NiPoint3 listenerPosition = listener->GetPosition();
+        const RE::NiPoint3 speakerPosition = GetEffectiveActorPosition(speaker);
+        const RE::NiPoint3 listenerPosition = GetEffectiveActorPosition(listener);
         const float airDistance = speakerPosition.GetDistance(listenerPosition);
         if (!std::isfinite(airDistance)) {
             return result;
@@ -777,8 +889,8 @@ namespace SpatialAwareness
             return finalize("tier0_cell_boundary");
         }
 
-        const RE::NiPoint3 speakerPosition = speaker->GetPosition();
-        const RE::NiPoint3 listenerPosition = listener->GetPosition();
+        const RE::NiPoint3 speakerPosition = GetEffectiveActorPosition(speaker);
+        const RE::NiPoint3 listenerPosition = GetEffectiveActorPosition(listener);
         const float airDistance = speakerPosition.GetDistance(listenerPosition);
 
         if (!std::isfinite(airDistance)) {

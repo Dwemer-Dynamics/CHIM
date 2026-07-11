@@ -255,7 +255,24 @@ Function ProcessPendingSettingsAction()
 	Debug.Trace("[CHIM] Pending action processed successfully")
 EndFunction
 
+bool Function ShouldSuppressChatboxFocusedHotkey(int keyCode)
+	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
+		; Opening text chat with Enter can echo one extra key event. Consume it
+		; without letting the next real hotkey press get skipped after close.
+		if (keyCode == _currentChatboxFocusKey && _chatboxFocusHotkeySuppressed)
+			_chatboxFocusHotkeySuppressed = false
+		endif
+		Return true
+	endif
+
+	Return false
+EndFunction
+
 Event OnKeyUp(int keyCode, float holdTime)
+	If ShouldSuppressChatboxFocusedHotkey(keyCode)
+		Return
+	EndIf
+
 	If(keyCode == _currentKeyVoice)
 		if (!UI.IsMenuOpen("Book Menu") && SafeProcess())
 			int externalSTTactive=StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT");
@@ -302,6 +319,9 @@ Event OnKeyUp(int keyCode, float holdTime)
 EndEvent
 
 Event OnKeyDown(int keyCode)
+  If ShouldSuppressChatboxFocusedHotkey(keyCode)
+	Return
+  EndIf
    
   If(keyCode == _currentKey)
 	; Text menu entry
@@ -568,6 +588,11 @@ Function TriggerHaltAction()
 EndFunction
 
 Function ToggleChatboxFocusAction(int keyCode = -1)
+	if (UI.IsMenuOpen("Book Menu"))
+		AIAgentFunctions.sendMessage("Please, summarize this book i've just found.","chatnf_book")
+		Return
+	endif
+
 	; Type Message hotkey: opens modal-only quick message mode when panel is hidden.
 	; If already focused, it unfocuses/closes.
 	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
@@ -1343,7 +1368,12 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 		; ---------------------------------------------------------------------------------------------
 		ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
 		if (!destMarker)
-			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+			Debug.Trace("[CHIM] no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName()+" trying with getLocationCenterMarker")
+			destMarker = AIAgentFunctions.getLocationCenterMarker(curr,0); Will search for Location Center Marker.
+		endif
+		
+		if (!destMarker)
+			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor/getLocationCenterMarker: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		elseif (destMarker.isDisabled())
 			Debug.Trace("[CHIM] Bypassing because world location marker is disabled: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		else
@@ -1546,7 +1576,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					isCleared="1";
 				endif;
 				if (factionOwner)
-					Debug.Trace("[CHIM] SendLocation Sending Faction: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
 				else
 					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
@@ -1560,6 +1590,7 @@ EndFunction
 Function sendAllLocations() global
 
 	sendAllfactions();
+	
 	; --- Load all location keywords we care about ---
 	Keyword isCave         = Game.GetForm(0x000130ef) as Keyword
 	Keyword isDungeon      = Game.GetForm(0x000130db) as Keyword
@@ -1612,7 +1643,9 @@ Function sendAllLocations() global
 	
 	while i < lengthA
 		Location curr = allLocations[i] as Location
-
+		
+		Debug.Trace("[CHIM] Location: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+		
 		if curr
 			ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
 			if (!destMarker)
@@ -1747,6 +1780,8 @@ Function sendAllLocations() global
 
 		i += 1
 	endwhile
+
+	sendAllNpcs();
 
 EndFunction
 
@@ -1953,6 +1988,36 @@ Function sendAllfactions() global
 			retFnc=AIAgentFunctions.logMessage(DecToHex(afFaction.GetFormId())+"/"+name+"/"+vendorRef,"util_faction_name")
 		endif
 		i=i+1
+	endwhile
+	return
+EndFunction
+
+;Send all factions names
+Function sendAllNpcs() global
+
+	Actor[] allNpcs=PO3_SKSEFunctions.GetActorsByProcessingLevel(3);Actors not in high process
+	Debug.Trace("[CHIM] [ACTORS] Total "+allNpcs.Length);
+	
+	int lengthA=allNpcs.Length
+	int i=0;
+	while i < lengthA
+		Actor akActor=allNpcs[i] as Actor
+		if (!akActor.isEnabled())
+			Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			
+		elseif (akActor.GetActorBase().isUnique())
+			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
+			; Also, send location where this NPC is located at.
+			Cell currCell = akActor.GetParentCell()
+			Location currLoc = akActor.GetCurrentLocation()
+			
+			AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
+			
+		endif
+		
+		i=i+1
+		
 	endwhile
 	return
 EndFunction

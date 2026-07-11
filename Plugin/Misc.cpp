@@ -1289,13 +1289,21 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
 
 
 std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
-    auto processLists = RE::ProcessLists::GetSingleton();
 
-    if (!processLists) {
+    if (!target) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: target is null");
         return {};
     }
 
-    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start");
+    auto processLists = RE::ProcessLists::GetSingleton();
+
+
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start for: {}",target->GetDisplayFullName());
+    if (!processLists) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: processLists is null");
+        return {};
+    }
+
 
     auto startTime = std::chrono::high_resolution_clock::now();
     std::vector<std::pair<std::string, RE::FormID>> results;
@@ -1333,6 +1341,7 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
         if (!cell || !targetCell || cell != targetCell) {
             // Skip actors that are in a different cell than the target, or cells are null
+            //logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",name.empty() ? "Unknown" : name, id);
             continue;
         }
 
@@ -1361,7 +1370,7 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms", duration);
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms, actors found {}", duration, n);
 
     json actorsNearby = json::array();
     for (const auto& [actorName, formId] : results) {

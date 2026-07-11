@@ -138,6 +138,8 @@ namespace Papyrus {
     int removeAgentByName(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                           std::string name);
 
+    int addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                 RE::Actor* target);
     RE::TESObjectREFR* getLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                             RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
@@ -145,9 +147,12 @@ namespace Papyrus {
                                                  RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
 
     RE::TESObjectREFR* getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc);
+                                                        RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier);
 
     int scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                RE::Actor* target);
+
+    int updateRemoteInventory(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                                 RE::Actor* target);
 
     RE::TESObjectREFR* getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
