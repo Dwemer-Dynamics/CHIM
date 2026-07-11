@@ -19,6 +19,7 @@
     const currentModeElement = document.getElementById('chatbox-current-mode');
     const modeSelectElement = document.getElementById('chatbox-mode-select');
     const currentModelElement = document.getElementById('chatbox-current-model');
+    const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
     const modelSelectElement = document.getElementById('chatbox-model-select');
     const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
@@ -68,6 +69,13 @@
         fast: { label: 'Fast', class: 'fast', action: 'llm_fast' },
         powerful: { label: 'Powerful', class: 'powerful', action: 'llm_powerful' },
         experimental: { label: 'Experimental', class: 'experimental', action: 'llm_experimental' }
+    };
+
+    const rechatModeConfig = {
+        tight: { label: 'Tight', class: 'tight' },
+        conversational: { label: 'Conversational', class: 'conversational' },
+        group: { label: 'Group', class: 'group' },
+        random: { label: 'Random', class: 'random' }
     };
 
     /**
@@ -660,12 +668,22 @@
         updateFocusIndicator(isFocusChatEnabled);
     };
 
-    window.updateChatboxRechatMode = function(mode) {
+    function renderRechatMode(mode) {
         const normalizedMode = ['tight', 'conversational', 'group', 'random'].includes(mode) ? mode : 'random';
+        const config = rechatModeConfig[normalizedMode];
         currentRechatMode = normalizedMode;
-        if (rechatModeSelectElement && !rechatModeSaveInProgress) {
+        if (currentRechatModeElement) {
+            currentRechatModeElement.className = 'mode-badge ' + config.class;
+            currentRechatModeElement.textContent = config.label;
+        }
+        if (rechatModeSelectElement) {
             rechatModeSelectElement.value = normalizedMode;
         }
+    }
+
+    window.updateChatboxRechatMode = function(mode) {
+        if (rechatModeSaveInProgress) return;
+        renderRechatMode(mode);
     };
 
     async function saveRechatMode(mode) {
@@ -688,11 +706,10 @@
                 throw new Error((result && result.message) || 'Failed to update rechat mode.');
             }
 
-            currentRechatMode = result.rechat_mode || mode;
-            rechatModeSelectElement.value = currentRechatMode;
+            renderRechatMode(result.rechat_mode || mode);
             pushChatboxSystemMessage(`Global rechat mode changed to ${currentRechatMode}.`);
         } catch (_err) {
-            rechatModeSelectElement.value = previousMode;
+            renderRechatMode(previousMode);
             pushChatboxSystemMessage('Failed to update global rechat mode.');
             showInGameDebugNotification('Failed to update global rechat mode.');
         } finally {
