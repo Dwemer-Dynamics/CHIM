@@ -64,7 +64,10 @@ namespace
     std::chrono::steady_clock::time_point g_lastFlatPoll{};
 
     constexpr const char* kVrItemEventName = "ext_vr_item_raw";
-    constexpr const char* kNsfwPhysicsEventName = "ext_nsfw_physics_raw";
+    // Plain name per upstream review (tyler.maister 2026-07-09): DLL-emitted events are not ext_*.
+    // Core lists "physics_raw" as a fast command (log-only); the SHARMAT server extension opts in
+    // by renaming it to its internal ext_nsfw_physics_raw in preprocessing.
+    constexpr const char* kNsfwPhysicsEventName = "physics_raw";
     constexpr auto kBodyContactPollInterval = std::chrono::milliseconds(33);
     constexpr auto kButtImpactCooldown = std::chrono::milliseconds(1200);
     constexpr float kButtContactEnterDistance = 18.0f;
