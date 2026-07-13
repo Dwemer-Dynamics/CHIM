@@ -10600,7 +10600,8 @@ EventHandlers {
              if (!aiam.getRenamedNpcNameByFormId(actor->GetFormID()).empty()  ) {
                  bool is3DLoaded = actor->Is3DLoaded();
                  bool inHigh = actor->GetActorRuntimeData().currentProcess->InHighProcess();
-                 if (!is3DLoaded || !inHigh) {
+                 if (!is3DLoaded || !inHigh ||
+                     true) {  // Let server decide if we must attend to this event or not, we will send it anyway
                      auto package = RE::TESForm::LookupByID(event->package);
                      auto package2 = static_cast<RE::TESPackage*>(RE::TESForm::LookupByID(event->package));
                      auto location = actor->GetCurrentLocation();

@@ -2325,7 +2325,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     }
                 }
             }
-            buffer.append(boundObject->GetName()).append(equiped).append(",");
+            buffer.append(std::to_string(count)).append(" ").append(boundObject->GetName()).append(equiped).append(",");
         }
 
         HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
