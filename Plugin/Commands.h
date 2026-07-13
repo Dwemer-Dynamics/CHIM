@@ -12,6 +12,8 @@ public:
 RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* cell, RE::Actor* soourceActor,
                                    float radius, bool allowDead);
 void parseCommand(std::string comamnd, std::string actorname);
+void processActionConfirmationQueue();
+void processApprovedCommandQueue();
 void parseRoleCommand(std::string rawCommand);
 void commandIdleLookFar();
 bool commandAnimation(std::string anim,RE::Actor *npc);

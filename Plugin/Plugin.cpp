@@ -50,8 +50,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.1.0"
-#define PLUGIN_RELEASE_DATE "2026-06-28"
+#define PLUGIN_VERSION "3.1.2"
+#define PLUGIN_RELEASE_DATE "2026-07-12"
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -2412,6 +2412,9 @@ private:
                     } else {
                         if (!l.subtitle.empty()) logger::info("Audio line with no actor");
                     }
+
+                    processApprovedCommandQueue();
+                    processActionConfirmationQueue();
 
                     newResponse = spgResponse.getFirstItem("command");
                     if (!newResponse.text.empty()) {

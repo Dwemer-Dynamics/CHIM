@@ -1732,7 +1732,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             // logger::info("Updated last time talk for actor {}", currentActor->getCurrentAnimation());
         }
         
-
         setPhase("iter_sleep");
 
 
