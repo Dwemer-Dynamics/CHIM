@@ -1640,7 +1640,11 @@ void MonitorAllSubtitlesForChatbox() {
         // Determine speaker type
         std::string speakerType = "npc";
         if (actor->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
-            speakerType = "player";
+            const auto narratorDisplayName = SpeakManager::getInstance().getNarratorDisplayName();
+            const std::string visibleSpeakerName = actor->GetDisplayFullName() ? actor->GetDisplayFullName() : "";
+            speakerType = aiGeneratedSubtitle && visibleSpeakerName == narratorDisplayName
+                ? "narrator"
+                : "player";
         }
         
         logger::debug("[Chatbox] All subtitles monitor: {} says: {}", 
