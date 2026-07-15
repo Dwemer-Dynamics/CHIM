@@ -37,6 +37,7 @@ int			_factionLocationSyncIndex = 0
 int			_factionLocationSyncTotal = 0
 int			_factionLocationSyncSinceProgress = 0
 Form[]		_factionLocationSyncForms
+Actor[]		_factionLocationSyncActors
 bool		_locationSyncKeywordsReady = false
 Keyword		_syncIsCave
 Keyword		_syncIsDungeon
@@ -1027,6 +1028,16 @@ Function StartLocationSyncPhase()
 	Debug.Notification("[CHIM] Factions queued. Syncing " + _factionLocationSyncTotal + " locations.")
 EndFunction
 
+Function StartNpcSyncPhase()
+	_factionLocationSyncPhase = 3
+	_factionLocationSyncIndex = 0
+	_factionLocationSyncSinceProgress = 0
+	_factionLocationSyncActors = PO3_SKSEFunctions.GetActorsByProcessingLevel(3)
+	_factionLocationSyncTotal = _factionLocationSyncActors.Length
+	Debug.Trace("[CHIM] Background NPC sync started. Total: " + _factionLocationSyncTotal)
+	Debug.Notification("[CHIM] Locations queued. Syncing " + _factionLocationSyncTotal + " NPCs.")
+EndFunction
+
 Function ProcessFactionLocationSyncChunk()
 	int processedThisUpdate = 0
 	int chunkSize = 10
@@ -1036,38 +1047,52 @@ Function ProcessFactionLocationSyncChunk()
 			if (_factionLocationSyncPhase == 1)
 				StartLocationSyncPhase()
 				return
+			elseif (_factionLocationSyncPhase == 2)
+				StartNpcSyncPhase()
+				return
 			else
 				FinishFactionLocationSync()
 				return
 			endif
 		endif
 
-		Form currentForm = _factionLocationSyncForms[_factionLocationSyncIndex]
-		if (_factionLocationSyncPhase == 1)
-			Faction currentFaction = currentForm as Faction
-			if (currentFaction)
-				String factionName = currentFaction.GetName()
-				if (!factionName)
-					factionName = PO3_SKSEFunctions.GetFormEditorID(currentFaction)
-				endif
-				if (!factionName)
-					factionName = PO3_SKSEFunctions.GetDescription(currentFaction)
-				endif
-				if (!factionName)
-					factionName = DecToHex(currentFaction.GetFormId())
-				endif
-
-				String vendorRef = ""
-				ObjectReference vendorContainer = PO3_SKSEFunctions.GetVendorFactionContainer(currentFaction)
-				if (vendorContainer)
-					vendorRef = DecToHex(vendorContainer.GetFormId())
-				endif
-				AIAgentFunctions.logBatchMessage(DecToHex(currentFaction.GetFormId()) + "/" + factionName + "/" + vendorRef, "util_faction_name")
+		if (_factionLocationSyncPhase == 3)
+			Actor currentActor = _factionLocationSyncActors[_factionLocationSyncIndex]
+			if (currentActor && currentActor.isEnabled() && currentActor.GetActorBase().isUnique())
+				Debug.Trace("[CHIM] [ACTORS] Adding basic info for " + currentActor.GetDisplayName() + " / " + DecToHex(currentActor.GetFormId()))
+				int npcResult = AIAgentFunctions.addBasicProfile(currentActor)
+				Cell currentCell = currentActor.GetParentCell()
+				Location actorLocation = currentActor.GetCurrentLocation()
+				sendLocation(actorLocation, "", currentCell, true)
 			endif
 		else
-			Location currentLocation = currentForm as Location
-			if (currentLocation)
-				sendLocation(currentLocation, GetLocationSyncTags(currentLocation), None, true)
+			Form currentForm = _factionLocationSyncForms[_factionLocationSyncIndex]
+			if (_factionLocationSyncPhase == 1)
+				Faction currentFaction = currentForm as Faction
+				if (currentFaction)
+					String factionName = currentFaction.GetName()
+					if (!factionName)
+						factionName = PO3_SKSEFunctions.GetFormEditorID(currentFaction)
+					endif
+					if (!factionName)
+						factionName = PO3_SKSEFunctions.GetDescription(currentFaction)
+					endif
+					if (!factionName)
+						factionName = DecToHex(currentFaction.GetFormId())
+					endif
+
+					String vendorRef = ""
+					ObjectReference vendorContainer = PO3_SKSEFunctions.GetVendorFactionContainer(currentFaction)
+					if (vendorContainer)
+						vendorRef = DecToHex(vendorContainer.GetFormId())
+					endif
+					AIAgentFunctions.logBatchMessage(DecToHex(currentFaction.GetFormId()) + "/" + factionName + "/" + vendorRef, "util_faction_name")
+				endif
+			else
+				Location currentLocation = currentForm as Location
+				if (currentLocation)
+					sendLocation(currentLocation, GetLocationSyncTags(currentLocation), None, true)
+				endif
 			endif
 		endif
 
@@ -1079,8 +1104,10 @@ Function ProcessFactionLocationSyncChunk()
 			_factionLocationSyncSinceProgress = 0
 			if (_factionLocationSyncPhase == 1)
 				Debug.Notification("[CHIM] Faction sync: " + _factionLocationSyncIndex + "/" + _factionLocationSyncTotal)
-			else
+			elseif (_factionLocationSyncPhase == 2)
 				Debug.Notification("[CHIM] Location sync: " + _factionLocationSyncIndex + "/" + _factionLocationSyncTotal)
+			else
+				Debug.Notification("[CHIM] NPC sync: " + _factionLocationSyncIndex + "/" + _factionLocationSyncTotal)
 			endif
 		endif
 	endwhile
@@ -1241,13 +1268,14 @@ String Function GetLocationSyncTags(Location curr)
 EndFunction
 
 Function FinishFactionLocationSync()
-	Debug.Trace("[CHIM] Background faction and location sync complete.")
-	Debug.Notification("[CHIM] Faction and location sync complete.")
+	Debug.Trace("[CHIM] Background faction, location, and NPC sync complete.")
+	Debug.Notification("[CHIM] Faction, location, and NPC sync complete.")
 	_factionLocationSyncActive = false
 	_factionLocationSyncPhase = 0
 	_factionLocationSyncIndex = 0
 	_factionLocationSyncTotal = 0
 	_factionLocationSyncSinceProgress = 0
+	_factionLocationSyncActors = None
 EndFunction
 
 int Function RunToolsSendAllVoiceSamples() global
