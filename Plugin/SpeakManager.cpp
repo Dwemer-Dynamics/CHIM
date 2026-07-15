@@ -178,7 +178,8 @@ static void PushForcedActorSubtitle(RE::SubtitleManager* subtitleManager, RE::Ac
     if (!narratorSpeaker) {
         toSay.speaker = subtitleSpeaker->GetHandle();
     } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-        player->SetDisplayName(NARRATOR_NAME, true);
+        const auto narratorDisplayName = SpeakManager::getInstance().getNarratorDisplayName();
+        player->SetDisplayName(narratorDisplayName.c_str(), true);
         toSay.speaker = player->As<RE::Actor>();
     } else {
         toSay.speaker = subtitleSpeaker->GetHandle();
@@ -189,6 +190,33 @@ static void PushForcedActorSubtitle(RE::SubtitleManager* subtitleManager, RE::Ac
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
     subtitleManager->subtitles.push_back(toSay);
+}
+
+void SpeakManager::setNarratorDisplayName(const std::string& displayName) {
+    auto normalizedName = displayName;
+    const auto first = normalizedName.find_first_not_of(" \t\n\r\f\v");
+    if (first == std::string::npos) {
+        normalizedName.clear();
+    } else {
+        const auto last = normalizedName.find_last_not_of(" \t\n\r\f\v");
+        normalizedName = normalizedName.substr(first, last - first + 1);
+    }
+
+    if (normalizedName.empty() || normalizedName.size() > 256) {
+        normalizedName = NARRATOR_NAME;
+    }
+
+    std::lock_guard<std::mutex> lock(mtx);
+    if (narratorDisplayName != normalizedName) {
+        logger::info("[NARRATOR_DISPLAY] Updated narrator display name from '{}' to '{}'", narratorDisplayName,
+                     normalizedName);
+        narratorDisplayName = std::move(normalizedName);
+    }
+}
+
+std::string SpeakManager::getNarratorDisplayName() {
+    std::lock_guard<std::mutex> lock(mtx);
+    return narratorDisplayName;
 }
 
 static int HoldTextOnlyPlayerSubtitle(SpeakManager& speakManager, const ScriptLine& scriptLine)
@@ -2627,18 +2655,22 @@ void SpeakManager::process(AIAgent *agent) {
                 char timeDateString[200];
                 RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
                 const std::string speakerType = agent->isNarrator() ? "narrator" : "npc";
+                const std::string displayName = agent->isNarrator()
+                    ? getNarratorDisplayName()
+                    : agent->getActorName();
                 PrismaUIBridge::PushChatboxMessage(
-                    agent->getActorName(),
+                    displayName,
                     scriptLine.subtitle,
                     std::string(timeDateString),
                     speakerType,
                     "llm");
                 PrismaUIBridge::PushDialogueEntry(
-                    agent->getActorName(),
+                    displayName,
                     scriptLine.subtitle,
                     std::string(timeDateString),
                     "chat",
-                    "llm");
+                    "llm",
+                    speakerType);
             }
 
             hasTalked = true;

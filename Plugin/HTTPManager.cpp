@@ -860,7 +860,22 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             lastEventType = requestEventType;
                             logger::info("[EVENT_TYPE] Using request event type (no header): {}", lastEventType);
                         }
-                        
+
+                        std::string narratorDisplayName = NARRATOR_NAME;
+                        size_t narratorNamePos = headers.find("X-Narrator-Display-Name:");
+                        if (narratorNamePos != std::string::npos) {
+                            size_t headerStart = narratorNamePos + 24; // Length of "X-Narrator-Display-Name:"
+                            size_t headerLineEnd = headers.find("\r\n", headerStart);
+                            if (headerLineEnd == std::string::npos) {
+                                headerLineEnd = headers.size();
+                            }
+                            const auto encodedName = trim(headers.substr(headerStart, headerLineEnd - headerStart));
+                            if (!encodedName.empty()) {
+                                narratorDisplayName = base64_decode(encodedName);
+                            }
+                        }
+                        SpeakManager::getInstance().setNarratorDisplayName(narratorDisplayName);
+
                         // Strip headers from response to get body only
                         response = response.substr(headerEnd + 4);
                         headersProcessed = true;

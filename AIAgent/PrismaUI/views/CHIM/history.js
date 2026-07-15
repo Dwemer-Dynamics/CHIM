@@ -14,6 +14,7 @@
     // State
     let entries = [];
     let lastRowId = 0;
+    let narratorName = 'The Narrator';
     const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext']);
 
     /**
@@ -32,6 +33,10 @@
                 console.error('[CHIM History] Invalid response format');
                 showEmpty();
                 return;
+            }
+
+            if (data.narrator_name) {
+                narratorName = stripHtml(data.narrator_name).trim() || 'The Narrator';
             }
 
             hideLoading();
@@ -89,7 +94,8 @@
                 'Event': eventType,
                 'Events': fullText,
                 'Tamrielic Time': entry.timestamp || '',
-                'Source': entry.source || 'llm'
+                'Source': entry.source || 'llm',
+                'Speaker Type': entry.speakerType || ''
             });
             
             // Prepend new entry at top (newest first)
@@ -233,9 +239,13 @@
         
         // Determine entry class based on speaker/type
         const speakerLower = speaker.toLowerCase();
+        const explicitSpeakerType = stripHtml(entry['Speaker Type'] || entry.speakerType || '').toLowerCase();
         if (speakerLower === 'player' || speakerLower.includes('dovahkiin')) {
             div.classList.add('player');
-        } else if (speakerLower === 'the narrator' || speakerLower === 'narrator') {
+        } else if (explicitSpeakerType === 'narrator'
+            || speakerLower === narratorName.toLowerCase()
+            || speakerLower === 'the narrator'
+            || speakerLower === 'narrator') {
             div.classList.add('narrator');
         } else if (speakerLower === 'action') {
             div.classList.add('action');

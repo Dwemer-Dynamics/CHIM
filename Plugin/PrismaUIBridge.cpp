@@ -1246,7 +1246,7 @@ R"CHIM(
 
     void PushDialogueEntry(const std::string& speaker, const std::string& text,
                            const std::string& timestamp, const std::string& eventType,
-                           const std::string& source) {
+                           const std::string& source, const std::string& speakerType) {
         if (!g_prismaUI || !g_panelCreated.load()) {
             return;
         }
@@ -1270,6 +1270,7 @@ R"CHIM(
             entry["timestamp"] = timestamp;
             entry["eventType"] = eventType;
             entry["source"] = source;
+            entry["speakerType"] = speakerType;
 
             std::string jsonStr = entry.dump();
 
