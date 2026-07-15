@@ -13,7 +13,6 @@ int function setOpenMicMuted(bool muted)  Global Native
 String function getCurrentRecordingDeviceName() Global Native
 int function setNewActionMode(int mode)  Global Native
 int function logMessage(String a_msg,String type) Global Native			; Send message for logging purposes. Doesn't expect response
-int function logBatchMessage(String a_msg,String type) Global Native		; Send bulk metadata without generating nearby actor context
 int function logMessageForActor(String a_msg,String type,String npc) Global Native			; Send message for logging purposes. Doesn't expect response
 int function requestMessage(String a_msg,String type) Global Native		; Send message (no user input). expects an IA response
 int function requestMessageForActor(String a_msg,String type,String npc) Global Native		; Send message (no user input). expects an IA response
