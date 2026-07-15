@@ -2217,6 +2217,13 @@ int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     return 0;
 }
 
+int Papyrus::logBatchMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                             RE::StaticFunctionTag*, std::string msg, std::string type) {
+    ScopedPapyrusLock lock("logBatchMessage");
+    HTTPManager::log(std::format("{}|{}|{}|{}", type, getCurrentTimeMillis(), GetGameTimeStamp(), msg));
+    return 0;
+}
+
 int Papyrus::logMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                 RE::StaticFunctionTag*, std::string msg, std::string type, std::string actor) {
     ScopedPapyrusLock lock("logMessageForActor");
@@ -4816,6 +4823,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("getHerikaFormId", "AIAgentFunctions", getHerikaFormId, false);
     a_vm->RegisterFunction("recordSoundEx", "AIAgentFunctions", recordSoundEx, false);
     a_vm->RegisterFunction("logMessage", "AIAgentFunctions", logMessage, false);
+    a_vm->RegisterFunction("logBatchMessage", "AIAgentFunctions", logBatchMessage, false);
     a_vm->RegisterFunction("setAnimationBusy", "AIAgentFunctions", setAnimationBusy, false);
     a_vm->RegisterFunction("setLocked", "AIAgentFunctions", setLocked, false);
     a_vm->RegisterFunction("isActorTalking", "AIAgentFunctions", isActorTalking, false);

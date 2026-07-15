@@ -31,6 +31,49 @@ bool		_diaryKeyPressed= false ; Track if diary key is currently pressed
 bool		_chatboxFocusHotkeySuppressed = false
 bool		_playerMenuTTSPending = false
 bool		_vrikVoiceRecordingActive = false
+bool		_factionLocationSyncActive = false
+int			_factionLocationSyncPhase = 0
+int			_factionLocationSyncIndex = 0
+int			_factionLocationSyncTotal = 0
+int			_factionLocationSyncSinceProgress = 0
+Form[]		_factionLocationSyncForms
+bool		_locationSyncKeywordsReady = false
+Keyword		_syncIsCave
+Keyword		_syncIsDungeon
+Keyword		_syncIsInn
+Keyword		_syncIsTown
+Keyword		_syncIsCity
+Keyword		_syncIsHold
+Keyword		_syncIsFarm
+Keyword		_syncIsMine
+Keyword		_syncIsJail
+Keyword		_syncIsShip
+Keyword		_syncIsHouse
+Keyword		_syncIsStore
+Keyword		_syncIsGuild
+Keyword		_syncIsTemple
+Keyword		_syncIsCastle
+Keyword		_syncIsNordicRuin
+Keyword		_syncIsDwelling
+Keyword		_syncIsBanditCamp
+Keyword		_syncIsDragonLair
+Keyword		_syncIsFalmerHive
+Keyword		_syncIsDwarvenRuin
+Keyword		_syncIsSettlement
+Keyword		_syncIsLumberMill
+Keyword		_syncIsHabitation
+Keyword		_syncIsDraugrCrypt
+Keyword		_syncIsVampireLair
+Keyword		_syncIsWarlockLair
+Keyword		_syncIsMilitaryFort
+Keyword		_syncIsMilitaryCamp
+Keyword		_syncIsWerewolfLair
+Keyword		_syncIsForswornCamp
+Keyword		_syncIsGiantCamp
+Keyword		_syncIsAnimalDen
+Keyword		_syncIsCemetery
+Keyword		_syncIsShipwreck
+Keyword		_syncIsPlayerHouse
 
 ; VRIK gesture actions mirror the Main page CHIM hotkeys.
 String		_vrikActionTextChat = "CHIM_VRIK_TextChat"
@@ -96,10 +139,14 @@ Event OnPlayerLoadGame()
 EndEvent
 
 ; Process pending settings menu action (shared by hotkey and mod event)
-Function ProcessPendingSettingsAction()
-	String pendingAction = AIAgentFunctions.getSettingsMenuPendingAction()
+Function ProcessPendingSettingsAction(String pendingAction = "")
+	; Older saved OnUpdate frames call this without an argument. New frames pass the
+	; value they already observed so command dispatch cannot race a second lookup.
+	if (pendingAction == "")
+		pendingAction = AIAgentFunctions.getSettingsMenuPendingAction()
+	endif
 	
-	Debug.Trace("[CHIM] ProcessPendingSettingsAction processing")
+	Debug.Trace("[CHIM] ProcessPendingSettingsAction processing: <" + pendingAction + ">")
 
 	if (pendingAction == "")
 		return
@@ -114,6 +161,7 @@ Function ProcessPendingSettingsAction()
 		actionId = StringUtil.Substring(pendingAction, 0, pipeIndex)
 		npcName = StringUtil.Substring(pendingAction, pipeIndex + 1)
 	endif
+	Debug.Trace("[CHIM] Pending settings action ID: <" + actionId + ">")
 	
 	; Get target actor - prefer NPC name from action, fallback to crosshair
 	Actor targetActor = None
@@ -223,10 +271,10 @@ Function ProcessPendingSettingsAction()
 			AIAgentFunctions.logMessage("chim_renamenpc@" + originalname + "@" + messageText + "@" + targetActor.GetFormId(), "setconf")
 			StorageUtil.SetStringValue(targetActor, "forcedName", messageText)
 		endif
-	elseif (actionId == "tools_sync_factions_locations")
-		Debug.Notification("[CHIM] Sync started. Please wait 3-5 minutes. This is only needed once per playthrough.")
-		RunToolsSendFactionLocationInfo()
-		Debug.Notification("[CHIM] Factions and locations synced.")
+	elseif (StringUtil.Find(actionId, "tools_sync_factions_locations") == 0)
+		Debug.Trace("[CHIM] Starting background faction and location sync")
+		Debug.Notification("[CHIM] Faction and location sync started in the background.")
+		StartFactionLocationSync()
 	elseif (actionId == "tools_send_all_voice_samples")
 		Debug.Notification("[CHIM] Uploading voice samples. This may take 20-30 seconds.")
 		int voiceUploadResult = RunToolsSendAllVoiceSamples()
@@ -501,11 +549,15 @@ Event OnKeyDown(int keyCode)
 EndEvent
 
 Event OnUpdate()
+	if (_factionLocationSyncActive)
+		ProcessFactionLocationSyncChunk()
+	endif
+
 	; Check for pending settings menu actions
 	String pendingAction = AIAgentFunctions.getSettingsMenuPendingAction()
 	
 	if (pendingAction != "")
-		ProcessPendingSettingsAction()
+		ProcessPendingSettingsAction(pendingAction)
 	endif
 	
 	; Continue polling
@@ -937,7 +989,265 @@ Bool Function SafeProcess(bool allowMenuMode = false)
 EndFunction
 
 Function RunToolsSendFactionLocationInfo() global
-	sendAllLocations()
+	Quest mainQuest = Game.GetFormFromFile(0x000093FC, "AIAgent.esp") as Quest
+	AIAgentPapyrusFunctions controlScript = mainQuest as AIAgentPapyrusFunctions
+	if (controlScript)
+		controlScript.StartFactionLocationSync()
+	else
+		Debug.Notification("[CHIM] Could not start faction and location sync.")
+	endif
+EndFunction
+
+Function StartFactionLocationSync()
+	if (_factionLocationSyncActive)
+		Debug.Notification("[CHIM] Faction and location sync is already running.")
+		return
+	endif
+
+	_factionLocationSyncActive = true
+	_factionLocationSyncPhase = 1
+	_factionLocationSyncIndex = 0
+	_factionLocationSyncSinceProgress = 0
+	_factionLocationSyncForms = PO3_SKSEFunctions.GetAllForms(11)
+	_factionLocationSyncTotal = _factionLocationSyncForms.Length
+	AIAgentFunctions.logBatchMessage("__CLEAR_ALL__/", "util_faction_name")
+	Debug.Trace("[CHIM] Background faction sync started. Total: " + _factionLocationSyncTotal)
+	Debug.Notification("[CHIM] Syncing " + _factionLocationSyncTotal + " factions.")
+EndFunction
+
+Function StartLocationSyncPhase()
+	InitializeLocationSyncKeywords()
+	_factionLocationSyncPhase = 2
+	_factionLocationSyncIndex = 0
+	_factionLocationSyncSinceProgress = 0
+	_factionLocationSyncForms = PO3_SKSEFunctions.GetAllForms(104)
+	_factionLocationSyncTotal = _factionLocationSyncForms.Length
+	AIAgentFunctions.logBatchMessage("__CLEAR_ALL__////", "util_location_name")
+	Debug.Trace("[CHIM] Background location sync started. Total: " + _factionLocationSyncTotal)
+	Debug.Notification("[CHIM] Factions queued. Syncing " + _factionLocationSyncTotal + " locations.")
+EndFunction
+
+Function ProcessFactionLocationSyncChunk()
+	int processedThisUpdate = 0
+	int chunkSize = 10
+
+	while (_factionLocationSyncActive && processedThisUpdate < chunkSize)
+		if (_factionLocationSyncIndex >= _factionLocationSyncTotal)
+			if (_factionLocationSyncPhase == 1)
+				StartLocationSyncPhase()
+				return
+			else
+				FinishFactionLocationSync()
+				return
+			endif
+		endif
+
+		Form currentForm = _factionLocationSyncForms[_factionLocationSyncIndex]
+		if (_factionLocationSyncPhase == 1)
+			Faction currentFaction = currentForm as Faction
+			if (currentFaction)
+				String factionName = currentFaction.GetName()
+				if (!factionName)
+					factionName = PO3_SKSEFunctions.GetFormEditorID(currentFaction)
+				endif
+				if (!factionName)
+					factionName = PO3_SKSEFunctions.GetDescription(currentFaction)
+				endif
+				if (!factionName)
+					factionName = DecToHex(currentFaction.GetFormId())
+				endif
+
+				String vendorRef = ""
+				ObjectReference vendorContainer = PO3_SKSEFunctions.GetVendorFactionContainer(currentFaction)
+				if (vendorContainer)
+					vendorRef = DecToHex(vendorContainer.GetFormId())
+				endif
+				AIAgentFunctions.logBatchMessage(DecToHex(currentFaction.GetFormId()) + "/" + factionName + "/" + vendorRef, "util_faction_name")
+			endif
+		else
+			Location currentLocation = currentForm as Location
+			if (currentLocation)
+				sendLocation(currentLocation, GetLocationSyncTags(currentLocation), None, true)
+			endif
+		endif
+
+		_factionLocationSyncIndex += 1
+		_factionLocationSyncSinceProgress += 1
+		processedThisUpdate += 1
+
+		if (_factionLocationSyncSinceProgress >= 50)
+			_factionLocationSyncSinceProgress = 0
+			if (_factionLocationSyncPhase == 1)
+				Debug.Notification("[CHIM] Faction sync: " + _factionLocationSyncIndex + "/" + _factionLocationSyncTotal)
+			else
+				Debug.Notification("[CHIM] Location sync: " + _factionLocationSyncIndex + "/" + _factionLocationSyncTotal)
+			endif
+		endif
+	endwhile
+EndFunction
+
+Function InitializeLocationSyncKeywords()
+	if (_locationSyncKeywordsReady)
+		return
+	endif
+
+	_syncIsCave = Game.GetForm(0x000130ef) as Keyword
+	_syncIsDungeon = Game.GetForm(0x000130db) as Keyword
+	_syncIsInn = Game.GetForm(0x0001cb87) as Keyword
+	_syncIsTown = Game.GetForm(0x00013166) as Keyword
+	_syncIsCity = Game.GetForm(0x00013168) as Keyword
+	_syncIsHold = Game.GetForm(0x00016771) as Keyword
+	_syncIsFarm = Game.GetForm(0x00018ef0) as Keyword
+	_syncIsMine = Game.GetForm(0x00018ef1) as Keyword
+	_syncIsJail = Game.GetForm(0x0001cd59) as Keyword
+	_syncIsShip = Game.GetForm(0x0001cd5b) as Keyword
+	_syncIsHouse = Game.GetForm(0x0001cb85) as Keyword
+	_syncIsStore = Game.GetForm(0x0001cb86) as Keyword
+	_syncIsGuild = Game.GetForm(0x0001cd5a) as Keyword
+	_syncIsTemple = Game.GetForm(0x0001cd56) as Keyword
+	_syncIsCastle = Game.GetForm(0x0001cd57) as Keyword
+	_syncIsNordicRuin = Game.GetForm(0x000130f2) as Keyword
+	_syncIsDwelling = Game.GetForm(0x000130dc) as Keyword
+	_syncIsBanditCamp = Game.GetForm(0x000130df) as Keyword
+	_syncIsDragonLair = Game.GetForm(0x000130e0) as Keyword
+	_syncIsFalmerHive = Game.GetForm(0x000130e4) as Keyword
+	_syncIsDwarvenRuin = Game.GetForm(0x000130f0) as Keyword
+	_syncIsSettlement = Game.GetForm(0x00013167) as Keyword
+	_syncIsLumberMill = Game.GetForm(0x00018ef2) as Keyword
+	_syncIsHabitation = Game.GetForm(0x00039793) as Keyword
+	_syncIsDraugrCrypt = Game.GetForm(0x000130e2) as Keyword
+	_syncIsVampireLair = Game.GetForm(0x000130eb) as Keyword
+	_syncIsWarlockLair = Game.GetForm(0x000130ec) as Keyword
+	_syncIsMilitaryFort = Game.GetForm(0x000130e7) as Keyword
+	_syncIsMilitaryCamp = Game.GetForm(0x000130e8) as Keyword
+	_syncIsWerewolfLair = Game.GetForm(0x000130ed) as Keyword
+	_syncIsForswornCamp = Game.GetForm(0x000130ee) as Keyword
+	_syncIsGiantCamp = Game.GetForm(0x000130e5) as Keyword
+	_syncIsAnimalDen = Game.GetForm(0x000130de) as Keyword
+	_syncIsCemetery = Game.GetForm(0x0001cd58) as Keyword
+	_syncIsShipwreck = Game.GetForm(0x0001929f) as Keyword
+	_syncIsPlayerHouse = Game.GetForm(0x000fc1a3) as Keyword
+	_locationSyncKeywordsReady = true
+EndFunction
+
+String Function GetLocationSyncTags(Location curr)
+	String types = ""
+	if (curr.HasKeyword(_syncIsCity))
+		types += "City,"
+	endif
+	if (curr.HasKeyword(_syncIsTown))
+		types += "Town,"
+	endif
+	if (curr.HasKeyword(_syncIsHold))
+		types += "Hold,"
+	endif
+	if (curr.HasKeyword(_syncIsInn))
+		types += "Inn,"
+	endif
+	if (curr.HasKeyword(_syncIsStore))
+		types += "Store,"
+	endif
+	if (curr.HasKeyword(_syncIsHouse))
+		types += "House,"
+	endif
+	if (curr.HasKeyword(_syncIsPlayerHouse))
+		types += "Player House,"
+	endif
+	if (curr.HasKeyword(_syncIsFarm))
+		types += "Farm,"
+	endif
+	if (curr.HasKeyword(_syncIsMine))
+		types += "Mine,"
+	endif
+	if (curr.HasKeyword(_syncIsJail))
+		types += "Jail,"
+	endif
+	if (curr.HasKeyword(_syncIsTemple))
+		types += "Temple,"
+	endif
+	if (curr.HasKeyword(_syncIsCastle))
+		types += "Castle,"
+	endif
+	if (curr.HasKeyword(_syncIsGuild))
+		types += "Guild,"
+	endif
+	if (curr.HasKeyword(_syncIsSettlement))
+		types += "Settlement,"
+	endif
+	if (curr.HasKeyword(_syncIsHabitation))
+		types += "Habitation,"
+	endif
+	if (curr.HasKeyword(_syncIsLumberMill))
+		types += "Lumber Mill,"
+	endif
+	if (curr.HasKeyword(_syncIsDungeon))
+		types += "Dungeon,"
+	endif
+	if (curr.HasKeyword(_syncIsCave))
+		types += "Cave,"
+	endif
+	if (curr.HasKeyword(_syncIsNordicRuin))
+		types += "Nordic Ruin,"
+	endif
+	if (curr.HasKeyword(_syncIsDwarvenRuin))
+		types += "Dwarven Ruin,"
+	endif
+	if (curr.HasKeyword(_syncIsDraugrCrypt))
+		types += "Draugr Crypt,"
+	endif
+	if (curr.HasKeyword(_syncIsFalmerHive))
+		types += "Falmer Hive,"
+	endif
+	if (curr.HasKeyword(_syncIsDragonLair))
+		types += "Dragon Lair,"
+	endif
+	if (curr.HasKeyword(_syncIsVampireLair))
+		types += "Vampire Lair,"
+	endif
+	if (curr.HasKeyword(_syncIsWarlockLair))
+		types += "Warlock Lair,"
+	endif
+	if (curr.HasKeyword(_syncIsWerewolfLair))
+		types += "Werewolf Lair,"
+	endif
+	if (curr.HasKeyword(_syncIsBanditCamp))
+		types += "Bandit Camp,"
+	endif
+	if (curr.HasKeyword(_syncIsForswornCamp))
+		types += "Forsworn Camp,"
+	endif
+	if (curr.HasKeyword(_syncIsGiantCamp))
+		types += "Giant Camp,"
+	endif
+	if (curr.HasKeyword(_syncIsAnimalDen))
+		types += "Animal Den,"
+	endif
+	if (curr.HasKeyword(_syncIsMilitaryFort))
+		types += "Military Fort,"
+	endif
+	if (curr.HasKeyword(_syncIsMilitaryCamp))
+		types += "Military Camp,"
+	endif
+	if (curr.HasKeyword(_syncIsShip))
+		types += "Ship,"
+	endif
+	if (curr.HasKeyword(_syncIsShipwreck))
+		types += "Shipwreck,"
+	endif
+	if (curr.HasKeyword(_syncIsCemetery))
+		types += "Cemetery,"
+	endif
+	return types
+EndFunction
+
+Function FinishFactionLocationSync()
+	Debug.Trace("[CHIM] Background faction and location sync complete.")
+	Debug.Notification("[CHIM] Faction and location sync complete.")
+	_factionLocationSyncActive = false
+	_factionLocationSyncPhase = 0
+	_factionLocationSyncIndex = 0
+	_factionLocationSyncTotal = 0
+	_factionLocationSyncSinceProgress = 0
 EndFunction
 
 int Function RunToolsSendAllVoiceSamples() global
@@ -1362,24 +1672,30 @@ Function OpenSNQEWheel()
 EndFunction
 
 
-Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
+Function sendLocation(Location curr,string tags,Cell referenceCell=None,bool batchSync=false) global
 
 	if curr
 		; ---------------------------------------------------------------------------------------------
 		ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
 		if (!destMarker)
-			Debug.Trace("[CHIM] no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName()+" trying with getLocationCenterMarker")
+			if (!batchSync)
+				Debug.Trace("[CHIM] no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName()+" trying with getLocationCenterMarker")
+			endif
 			destMarker = AIAgentFunctions.getLocationCenterMarker(curr,0); Will search for Location Center Marker.
 		endif
 		
 		if (!destMarker)
-			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor/getLocationCenterMarker: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+			if (!batchSync)
+				Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor/getLocationCenterMarker: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+			endif
 		elseif (destMarker.isDisabled())
-			Debug.Trace("[CHIM] Bypassing because world location marker is disabled: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+			if (!batchSync)
+				Debug.Trace("[CHIM] Bypassing because world location marker is disabled: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+			endif
 		else
 			if destMarker
 				String types = ""
-				if (tags == "")
+				if (tags == "" && !batchSync)
 					Debug.Trace("[CHIM] Loading tags from caller: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					; -------------------------------
 					;  CLASSIFY THIS LOCATION, no tags provided
@@ -1532,7 +1848,9 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 						types += "Cemetery,"
 					endif
 				else
-					Debug.Trace("[CHIM] Using tags from caller: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					if (!batchSync)
+						Debug.Trace("[CHIM] Using tags from caller: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					endif
 					types=tags
 				endif
 				; --------------------------
@@ -1567,7 +1885,9 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					parName2= currParent2.GetName()
 				endif
 				
-				Debug.Trace("[CHIM] SendLocation Sending location: "+DecToHex(curr.GetFormID())+","+curr.GetName()+"  Pos:"+destMarker.GetPositionX()+","+destMarker.GetPositionY()+","+destMarker.GetPositionZ())
+				if (!batchSync)
+					Debug.Trace("[CHIM] SendLocation Sending location: "+DecToHex(curr.GetFormID())+","+curr.GetName()+"  Pos:"+destMarker.GetPositionX()+","+destMarker.GetPositionY()+","+destMarker.GetPositionZ())
+				endif
 				
 				; InterestingReferences
 				string specialRefs=AIAgentFunctions.GetLocationSpecialRefsString(curr.GetFormId());
@@ -1576,10 +1896,20 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					isCleared="1";
 				endif;
 				if (factionOwner)
-					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
-					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					if (!batchSync)
+						Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					endif
+					if (batchSync)
+						AIAgentFunctions.logBatchMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					else
+						AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					endif
 				else
-					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					if (batchSync)
+						AIAgentFunctions.logBatchMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					else
+						AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					endif
 				endif
 				
 			endif
@@ -1780,8 +2110,6 @@ Function sendAllLocations() global
 
 		i += 1
 	endwhile
-
-	sendAllNpcs();
 
 EndFunction
 
