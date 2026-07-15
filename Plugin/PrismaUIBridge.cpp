@@ -94,6 +94,60 @@ namespace PrismaUIBridge {
     static bool g_chatboxRechatModeSentInitialized = false;
     static std::string g_lastChatboxRechatMode = "";
     static std::atomic<std::uint64_t> g_dialogueStopGeneration{0};
+    static std::atomic<bool> g_chatboxGameplayInputSuppressed{false};
+
+    static void SetChatboxGameplayInputSuppressed(bool suppressed) {
+        const bool previous = g_chatboxGameplayInputSuppressed.exchange(suppressed);
+        if (previous != suppressed) {
+            logger::info(
+                "[PrismaUIBridge] Chatbox gameplay input suppression {}",
+                suppressed ? "enabled" : "disabled");
+        }
+    }
+
+    class ChatboxInputSink final : public RE::BSTEventSink<RE::InputEvent*> {
+    public:
+        static ChatboxInputSink& GetSingleton() {
+            static ChatboxInputSink singleton;
+            return singleton;
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(
+            RE::InputEvent* const*, RE::BSTEventSource<RE::InputEvent*>*) override {
+            return g_chatboxGameplayInputSuppressed.load() ?
+                RE::BSEventNotifyControl::kStop : RE::BSEventNotifyControl::kContinue;
+        }
+
+        static bool Install() {
+            auto* inputManager = RE::BSInputDeviceManager::GetSingleton();
+            if (!inputManager) {
+                logger::warn("[PrismaUIBridge] Cannot install chatbox input sink - input manager unavailable");
+                return false;
+            }
+
+            auto* eventSource = static_cast<RE::BSTEventSource<RE::InputEvent*>*>(inputManager);
+            auto* sink = std::addressof(GetSingleton());
+            eventSource->AddEventSink(sink);
+
+            // Input sinks run in registration order. Put CHIM first so kStop prevents
+            // gameplay, SKSE, and Papyrus hotkeys before any downstream sink sees them.
+            RE::BSSpinLockGuard locker(eventSource->lock);
+            if (eventSource->notifying) {
+                logger::warn("[PrismaUIBridge] Chatbox input sink registration deferred during input dispatch");
+                return false;
+            }
+
+            const auto sinkIt = std::find(eventSource->sinks.begin(), eventSource->sinks.end(), sink);
+            if (sinkIt == eventSource->sinks.end()) {
+                logger::warn("[PrismaUIBridge] Chatbox input sink was not registered");
+                return false;
+            }
+
+            std::rotate(eventSource->sinks.begin(), sinkIt, sinkIt + 1);
+            logger::info("[PrismaUIBridge] Chatbox input sink installed at highest priority");
+            return true;
+        }
+    };
 
     // Confirmation modal state
     static PrismaView g_confirmationView = 0;
@@ -227,6 +281,8 @@ namespace PrismaUIBridge {
 
         g_prismaUI = static_cast<PRISMA_UI_API::IVPrismaUI1*>(api);
         logger::info("[PrismaUIBridge] Prisma UI API initialized successfully");
+
+        ChatboxInputSink::Install();
 
         g_prismaUI2 = static_cast<PRISMA_UI_API::IVPrismaUI2*>(PRISMA_UI_API::RequestPluginAPI(PRISMA_UI_API::InterfaceVersion::V2));
         if (g_prismaUI2) {
@@ -4080,6 +4136,7 @@ R"CHIM(
 
     void Shutdown() {
         logger::info("[PrismaUIBridge] Shutting down...");
+        SetChatboxGameplayInputSuppressed(false);
 
         if (g_prismaUI) {
             if (g_panelCreated.load()) {
@@ -5558,6 +5615,8 @@ R"CHIM(
     }
 
     void HideChatboxPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+
         if (!g_prismaUI || !g_chatboxCreated.load()) {
             return;
         }
@@ -5584,6 +5643,7 @@ R"CHIM(
 
     bool FocusChatboxPanel() {
         if (!g_prismaUI) {
+            SetChatboxGameplayInputSuppressed(false);
             logger::warn("[PrismaUIBridge] Cannot focus chatbox - Prisma UI not initialized");
             return false;
         }
@@ -5600,6 +5660,7 @@ R"CHIM(
             logger::info("[PrismaUIBridge] Panel not created yet, creating for focus...");
             CreateChatboxPanel();
             if (!g_chatboxCreated.load()) {
+                SetChatboxGameplayInputSuppressed(false);
                 logger::error("[PrismaUIBridge] Failed to create chatbox panel");
                 return false;
             }
@@ -5616,6 +5677,7 @@ R"CHIM(
                 const auto waited = std::chrono::steady_clock::now() - waitStart;
                 if (waited >= kDomReadyTimeout) {
                     const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
+                    SetChatboxGameplayInputSuppressed(false);
                     logger::warn("[PrismaUIBridge] DOM ready timeout after {} ms - cannot focus chatbox", waitedMs);
                     if (!wasVisibleAtStart && g_prismaUI->IsValid(g_chatboxView) && !g_prismaUI->IsHidden(g_chatboxView)) {
                         HideChatboxPanel();
@@ -5631,6 +5693,7 @@ R"CHIM(
 
         // Already focused - skip (check using HasFocus instead of keyboard active flag)
         if (g_prismaUI->HasFocus(g_chatboxView)) {
+            SetChatboxGameplayInputSuppressed(true);
             logger::debug("[PrismaUIBridge] Chatbox already focused, skipping");
             return true;
         }
@@ -5671,6 +5734,7 @@ R"CHIM(
         }
         
         if (success) {
+            SetChatboxGameplayInputSuppressed(true);
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
             CheckAndUpdateChatboxControls(true);
@@ -5680,6 +5744,7 @@ R"CHIM(
                 nullptr);
             // JS opens the centered focus chat modal and focuses its textarea.
         } else {
+            SetChatboxGameplayInputSuppressed(false);
             g_chatboxQuickFocusActive.store(false);
             logger::warn("[PrismaUIBridge] Failed to focus chatbox panel");
             // Restore original hidden state so a failed quick-focus does not leave the tabbed chatbox visible.
@@ -5692,6 +5757,8 @@ R"CHIM(
     }
 
     void UnfocusChatboxPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+
         if (!g_prismaUI || !g_chatboxCreated.load()) {
             return;
         }
