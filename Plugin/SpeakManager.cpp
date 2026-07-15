@@ -2669,7 +2669,8 @@ void SpeakManager::process(AIAgent *agent) {
                     scriptLine.subtitle,
                     std::string(timeDateString),
                     "chat",
-                    "llm");
+                    "llm",
+                    speakerType);
             }
 
             hasTalked = true;
