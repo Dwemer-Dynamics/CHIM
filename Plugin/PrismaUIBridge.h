@@ -61,7 +61,8 @@ namespace PrismaUIBridge {
     // Push a single new dialogue entry to the UI (for real-time updates)
     void PushDialogueEntry(const std::string& speaker, const std::string& text, 
                            const std::string& timestamp, const std::string& eventType,
-                           const std::string& source = "llm");
+                           const std::string& source = "llm",
+                           const std::string& speakerType = "");
 
     // ===== CHIM Overlay Functions =====
 
