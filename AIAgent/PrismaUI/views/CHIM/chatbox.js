@@ -37,11 +37,18 @@
     let isFocusChatEnabled = false;
     let currentModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
+    let currentGlobalModelLabel = 'Standard';
+    let currentProfileLlmMode = 'fixed';
+    let currentProfileLlmInfo = null;
+    let profileLlmTargetKey = '';
+    let profileLlmRequestSequence = 0;
+    let profileLlmSaveInProgress = false;
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
     let currentFocusPosition = 'center';
     let currentTargetName = '';
     let currentTargetFormId = 0;
+    let currentTargetIsNarrator = false;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
     let pendingDeleteCount = 0;
@@ -68,7 +75,8 @@
         standard: { label: 'Standard', class: 'standard', action: 'llm_standard' },
         fast: { label: 'Fast', class: 'fast', action: 'llm_fast' },
         powerful: { label: 'Powerful', class: 'powerful', action: 'llm_powerful' },
-        experimental: { label: 'Experimental', class: 'experimental', action: 'llm_experimental' }
+        experimental: { label: 'Experimental', class: 'experimental', action: 'llm_experimental' },
+        random: { label: 'Random', class: 'random', action: 'llm_random' }
     };
 
     const rechatModeConfig = {
@@ -531,6 +539,7 @@
     window.onChatboxFocused = function(quickChat) {
         isChatFocused = true;
         quickChatMode = !!quickChat;
+        refreshProfileLlmMode(true);
         setChatboxViewerVisible(!quickChatMode);
         window.openFocusChatbox();
     };
@@ -634,7 +643,9 @@
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
+        currentTargetIsNarrator = !!(activeTarget && activeTarget.narrator);
         window.updateChatboxTarget(currentTargetName, Number(activeTarget ? activeTarget.distance || 0 : 0));
+        refreshProfileLlmMode();
     };
 
     window.updateChatboxMode = function(mode) {
@@ -648,11 +659,19 @@
         if (modeSelectElement) {
             modeSelectElement.value = config.action;
         }
+        refreshProfileLlmMode();
     };
 
     window.updateChatboxModel = function(modelLabel) {
         const labelLower = modelLabel ? modelLabel.toLowerCase().trim() : 'standard';
         const config = modelConfig[labelLower] || modelConfig.standard;
+        currentGlobalModelLabel = config.label;
+        renderProfileLlmMode();
+    };
+
+    function renderProfileLlmMode() {
+        const globalConfig = modelConfig[currentGlobalModelLabel.toLowerCase()] || modelConfig.standard;
+        const config = currentProfileLlmMode === 'random' ? modelConfig.random : globalConfig;
         currentModelAction = config.action;
         if (currentModelElement) {
             currentModelElement.className = 'mode-badge ' + config.class;
@@ -661,7 +680,138 @@
         if (modelSelectElement) {
             modelSelectElement.value = config.action;
         }
-    };
+    }
+
+    function getProfileLlmTarget() {
+        if (currentModeAction === 'mode_director' ||
+            currentModeAction === 'mode_spawn' ||
+            currentTargetOverrideMode === 'everyone') {
+            return null;
+        }
+        if (currentModeAction === 'mode_narrator' || currentTargetIsNarrator) {
+            return { type: 'narrator', name: '', key: 'narrator' };
+        }
+        if (!currentTargetName) return null;
+        return {
+            type: 'npc',
+            name: currentTargetName,
+            key: `npc:${currentTargetFormId || 0}:${currentTargetName}`
+        };
+    }
+
+    function setRandomOptionEnabled(enabled, reason) {
+        if (!modelSelectElement) return;
+        const randomOption = modelSelectElement.querySelector('option[value="llm_random"]');
+        if (randomOption) {
+            randomOption.disabled = !enabled;
+            randomOption.title = enabled ? '' : (reason || 'Select a single NPC target first.');
+        }
+        modelSelectElement.title = enabled ? 'Switch model' : (reason || 'Random requires a single NPC profile.');
+    }
+
+    async function refreshProfileLlmMode(force) {
+        const target = getProfileLlmTarget();
+        if (!target) {
+            profileLlmTargetKey = '';
+            currentProfileLlmInfo = null;
+            currentProfileLlmMode = 'fixed';
+            setRandomOptionEnabled(false, 'Random requires a single NPC or Narrator target.');
+            renderProfileLlmMode();
+            return;
+        }
+        if (!force && target.key === profileLlmTargetKey) {
+            return;
+        }
+
+        profileLlmTargetKey = target.key;
+        currentProfileLlmInfo = null;
+        currentProfileLlmMode = 'fixed';
+        setRandomOptionEnabled(false, 'Loading target profile...');
+        renderProfileLlmMode();
+        const requestSequence = ++profileLlmRequestSequence;
+
+        try {
+            const params = new URLSearchParams({
+                target_type: target.type,
+                target_name: target.name
+            });
+            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php?${params.toString()}`, {
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Profile mode unavailable.');
+            }
+            if (requestSequence !== profileLlmRequestSequence || target.key !== profileLlmTargetKey) {
+                return;
+            }
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            setRandomOptionEnabled(
+                Number(result.profile.configured_slot_count || 0) > 0,
+                'This profile has no configured LLM connectors.'
+            );
+            renderProfileLlmMode();
+        } catch (_err) {
+            if (requestSequence !== profileLlmRequestSequence) return;
+            currentProfileLlmInfo = null;
+            currentProfileLlmMode = 'fixed';
+            setRandomOptionEnabled(false, 'Profile Random mode requires a compatible CHIM server.');
+            renderProfileLlmMode();
+        }
+    }
+
+    async function saveProfileLlmMode(mode) {
+        const target = getProfileLlmTarget();
+        if (!target || profileLlmSaveInProgress) {
+            return false;
+        }
+
+        const previousMode = currentProfileLlmMode;
+        profileLlmSaveInProgress = true;
+        if (modelSelectElement) modelSelectElement.disabled = true;
+
+        try {
+            const formData = new FormData();
+            formData.append('target_type', target.type);
+            formData.append('target_name', target.name);
+            formData.append('mode', mode);
+            if (currentProfileLlmInfo && currentProfileLlmInfo.profile_id) {
+                formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
+            }
+
+            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Failed to update profile LLM mode.');
+            }
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            const count = Number(result.profile.shared_count || 0);
+            const usage = count === 1 ? 'used by 1 character' : `used by ${count} characters`;
+            pushChatboxSystemMessage(
+                `${currentProfileLlmMode === 'random' ? 'Random' : 'Fixed'} LLM selection enabled for ` +
+                `${result.profile.profile_name} (${usage}).`
+            );
+            return true;
+        } catch (_err) {
+            currentProfileLlmMode = previousMode;
+            renderProfileLlmMode();
+            pushChatboxSystemMessage('Failed to update the target profile LLM mode.');
+            showInGameDebugNotification('Failed to update target profile LLM mode.');
+            return false;
+        } finally {
+            profileLlmSaveInProgress = false;
+            if (modelSelectElement) modelSelectElement.disabled = false;
+        }
+    }
 
     window.updateChatboxFocus = function(enabled) {
         isFocusChatEnabled = !!enabled;
@@ -745,9 +895,26 @@
     }
 
     if (modelSelectElement) {
-        modelSelectElement.addEventListener('change', function() {
+        modelSelectElement.addEventListener('change', async function() {
             const action = modelSelectElement.value;
             if (!action || action === currentModelAction) return;
+            if (action === 'llm_random') {
+                await saveProfileLlmMode('random');
+                return;
+            }
+
+            if (currentProfileLlmMode === 'random') {
+                const fixedSaved = await saveProfileLlmMode('fixed');
+                if (!fixedSaved) return;
+            }
+
+            const config = Object.values(modelConfig).find(function(item) {
+                return item.action === action;
+            });
+            if (config && action !== 'llm_random') {
+                currentGlobalModelLabel = config.label;
+                renderProfileLlmMode();
+            }
             sendControlCommand(action);
         });
     }
@@ -828,6 +995,7 @@
     updateFocusIndicator(isFocusChatEnabled);
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
+    setRandomOptionEnabled(false, 'Select a single NPC target first.');
     applyFocusPosition(loadFocusPosition());
 
     // Apply corner placement via shared layout manager
