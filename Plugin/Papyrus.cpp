@@ -1747,6 +1747,7 @@ int sendMessageReal(std::string msg, std::string type) {
             ThreadPool::getInstance().cancelTasksByType("HTTPStream");
             ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
             SPGResponse::getInstance().clearAllQueues();
+            SpeakManager::getInstance().startRechatChainForPlayerInput();
         }
 
         SpeakManager::getInstance().deleteQueue();

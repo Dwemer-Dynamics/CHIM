@@ -1882,11 +1882,14 @@ void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
     logger::debug("[SpeakManager] Queueing new line - Actor: {}, Text: '{}', Expression: '{}', Action: '{}', Animation: '{}', Phonetic: '{}'", 
                   trimmedLine.actor, trimmedLine.subtitle, trimmedLine.expression, trimmedLine.action, trimmedLine.animation, trimmedLine.phonetic);
     if (IsPlayerActorAlias(trimmedLine.actor, aiam)) {
-        currentRechatChainId.clear();
-        rechatInFlight = false;
-        rechatInFlightSpeaker.clear();
-        pendingRechatRetry = PendingRechatRetry{};
-        lastRechatter.clear();
+        if (!rechatChainHardCancelled) {
+            currentRechatChainId.clear();
+            rechatChainClosed = false;
+            rechatInFlight = false;
+            rechatInFlightSpeaker.clear();
+            pendingRechatRetry = PendingRechatRetry{};
+            lastRechatter.clear();
+        }
     }
     scriptQueue.push(trimmedLine);
     logger::info("[SpeakManager] Queue size after insertion: {}", scriptQueue.size());
@@ -2255,10 +2258,46 @@ void SpeakManager::resetRechatChainState()
 {
     std::lock_guard<std::mutex> lock(mtx);
     currentRechatChainId.clear();
-    rechatChainClosed = false;
     rechatInFlight = false;
     rechatInFlightSpeaker.clear();
     pendingRechatRetry = PendingRechatRetry{};
+    if (rechatChainHardCancelled) {
+        rechatChainClosed = true;
+        return;
+    }
+    rechatChainClosed = false;
+}
+
+void SpeakManager::cancelRechatChain()
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    currentRechatChainId.clear();
+    rechatChainClosed = true;
+    rechatChainHardCancelled = true;
+    rechatInFlight = false;
+    rechatInFlightSpeaker.clear();
+    pendingRechatRetry = PendingRechatRetry{};
+    lastRechatter.clear();
+    audienceSnapshotKey.clear();
+    audienceSnapshotCompanions.clear();
+    audienceSnapshotReady = false;
+    logger::info("[RECHAT_CHAIN] Hard-cancelled current rechat chain");
+}
+
+void SpeakManager::startRechatChainForPlayerInput()
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    currentRechatChainId.clear();
+    rechatChainClosed = false;
+    rechatChainHardCancelled = false;
+    rechatInFlight = false;
+    rechatInFlightSpeaker.clear();
+    pendingRechatRetry = PendingRechatRetry{};
+    lastRechatter.clear();
+    audienceSnapshotKey.clear();
+    audienceSnapshotCompanions.clear();
+    audienceSnapshotReady = false;
+    logger::info("[RECHAT_CHAIN] Opened a fresh chain from player input");
 }
 
 bool SpeakManager::isRechatChainClosed()
@@ -2314,6 +2353,9 @@ bool SpeakManager::beginRechatAttempt(const std::string& speaker)
     }
 
     std::lock_guard<std::mutex> lock(mtx);
+    if (rechatChainClosed || rechatChainHardCancelled) {
+        return false;
+    }
     rechatInFlight = true;
     rechatInFlightSpeaker = speaker;
     return true;
@@ -2399,6 +2441,10 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     logger::info("[RECHAT] spoke: {} , listener: {}, explicit target: {}, depth  {},taskid {} ", speaker, targetedNpc,
                  explicitRechatTarget, rechatDepth, tid);
     logger::debug("[RECHAT] origin line: {} ", debugLauncherLine);
+    if (isRechatChainClosed()) {
+        logger::info("[RECHAT] Rechat avoided because the current chain is closed: {}", speaker);
+        return 0;
+    }
     if (PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER") {
         logger::info("[RECHAT] Rechat avoided because WHISPER mode is private: {}", speaker);
         return 0;
@@ -2426,6 +2472,9 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 
     auto speakerActor = agentLastSpeaker->getActor();
     if (!speakerActor) {
+        speakerActor = agentLastSpeaker->getActorByFormId();
+    }
+    if (!speakerActor) {
         logger::debug("[RECHAT] Speaker actor is null for agent: {}", speaker);
         return 0;
     }
@@ -2441,6 +2490,29 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
                 logger::info("[RECHAT] Rechat avoided as {} spoke {}", NARRATOR_NAME, speaker);
                 return 0;
             }
+        }
+    }
+
+    if (!agentLastSpeaker->isNarrator()) {
+        if (speakerActor->IsDead() || !speakerActor->GetActorRuntimeData().currentProcess ||
+            !speakerActor->Is3DLoaded()) {
+            logger::info("[RECHAT] Rechat avoided because speaker is no longer loaded: {}", speaker);
+            return 0;
+        }
+
+        auto* speakerCell = speakerActor->GetParentCell();
+        auto* playerCell = player ? player->GetParentCell() : nullptr;
+        if (!speakerCell || !speakerCell->IsAttached() || !playerCell || !playerCell->IsAttached()) {
+            logger::info("[RECHAT] Rechat avoided because speaker or player cell is unavailable: {}", speaker);
+            return 0;
+        }
+
+        const auto spatialResult = SpatialAwareness::Evaluate(speakerActor, player);
+        if (!spatialResult.canCommunicate) {
+            logger::info(
+                "[RECHAT] Rechat avoided because speaker is no longer spatially valid: {} reason={} distance={:.1f}",
+                speaker, spatialResult.reason, spatialResult.airDistance);
+            return 0;
         }
     }
 
@@ -2465,6 +2537,11 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     if (!commandInQueue) {
         if (RE::MenuTopicManager::GetSingleton()->unkB1) {
             logger::debug("[RECHAT] Avoiding rechat event because player is in dialogue");
+            return 0;
+        }
+
+        if (isRechatChainClosed()) {
+            logger::info("[RECHAT] Rechat cancelled before dispatch because the chain closed: {}", speaker);
             return 0;
         }
 

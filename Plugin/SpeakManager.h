@@ -124,6 +124,7 @@ private:
     std::string rechatInFlightSpeaker = "";
     std::string currentRechatChainId = "";
     bool rechatChainClosed = false;
+    bool rechatChainHardCancelled = false;
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
@@ -189,6 +190,8 @@ public:
     }
 
     void resetRechatChainState();
+    void cancelRechatChain();
+    void startRechatChainForPlayerInput();
     bool isRechatChainClosed();
     std::string ensureRechatChainId(const std::string& speaker, const std::string& listenerHint,
                                     const std::string& explicitTarget);

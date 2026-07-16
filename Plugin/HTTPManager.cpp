@@ -656,6 +656,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             return 0;
         }
 
+        if (rechatDepth > 0 && SpeakManager::getInstance().isRechatChainClosed()) {
+            logger::info("[sendMsgStream] Rechat chain closed before network request for speaker: {}", speaker);
+            return 0;
+        }
+
         WSADATA wsaData;
         int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
         if (iResult != 0) {
