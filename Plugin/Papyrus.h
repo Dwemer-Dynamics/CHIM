@@ -63,9 +63,6 @@ namespace Papyrus {
     int logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                    std::string msg, std::string type);
 
-    int logBatchMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
-                        RE::StaticFunctionTag*, std::string msg, std::string type);
-
     int logMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                            RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc);
 
