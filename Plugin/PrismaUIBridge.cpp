@@ -113,9 +113,20 @@ namespace PrismaUIBridge {
         }
 
         RE::BSEventNotifyControl ProcessEvent(
-            RE::InputEvent* const*, RE::BSTEventSource<RE::InputEvent*>*) override {
-            return g_chatboxGameplayInputSuppressed.load() ?
-                RE::BSEventNotifyControl::kStop : RE::BSEventNotifyControl::kContinue;
+            RE::InputEvent* const* events, RE::BSTEventSource<RE::InputEvent*>*) override {
+            if (!g_chatboxGameplayInputSuppressed.load() || !events) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            for (auto* event = *events; event; event = event->next) {
+                const auto device = event->GetDevice();
+                if (device == RE::INPUT_DEVICE::kKeyboard ||
+                    device == RE::INPUT_DEVICE::kVirtualKeyboard) {
+                    return RE::BSEventNotifyControl::kStop;
+                }
+            }
+
+            return RE::BSEventNotifyControl::kContinue;
         }
 
         static bool Install() {
