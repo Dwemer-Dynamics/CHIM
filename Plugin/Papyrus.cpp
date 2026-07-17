@@ -4277,6 +4277,16 @@ int Papyrus::isChatboxPanelFocused(RE::BSScript::Internal::VirtualMachine* a_vm,
     return PrismaUIBridge::IsChatboxPanelFocused() ? 1 : 0;
 }
 
+int Papyrus::isAnyPrismaHotkeyPanelFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("isAnyPrismaHotkeyPanelFocused");
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        return 0;
+    }
+
+    return PrismaUIBridge::IsAnyHotkeyPanelFocused() ? 1 : 0;
+}
+
 int Papyrus::toggleSettingsMenu(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("toggleSettingsMenu");
     
@@ -4917,6 +4927,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("unfocusChatboxPanel", "AIAgentFunctions", unfocusChatboxPanel, false);
     a_vm->RegisterFunction("isChatboxPanelVisible", "AIAgentFunctions", isChatboxPanelVisible, false);
     a_vm->RegisterFunction("isChatboxPanelFocused", "AIAgentFunctions", isChatboxPanelFocused, false);
+    a_vm->RegisterFunction("isAnyPrismaHotkeyPanelFocused", "AIAgentFunctions", isAnyPrismaHotkeyPanelFocused, false);
     
     a_vm->RegisterFunction("toggleSettingsMenu", "AIAgentFunctions", toggleSettingsMenu, false);
     a_vm->RegisterFunction("getSettingsMenuPendingAction", "AIAgentFunctions", getSettingsMenuPendingAction, false);
