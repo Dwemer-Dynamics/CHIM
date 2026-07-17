@@ -13,7 +13,7 @@
 #include <thread>
 #include <vector>
 #include "Globals.h"
-#include "NarratorVolumeUtils.h"
+#include "HeadVoiceVolumeUtils.h"
 
 // Track last event type for narration detection
 extern std::string lastEventType;
@@ -118,7 +118,7 @@ private:
 
     int resolution = 500 * 1;  // 10 def value
     float animIntensity = 1.0f;
-    std::atomic<float> narratorVolumeMultiplier{1.0f};
+    std::atomic<float> headVoiceVolumeMultiplier{1.0f};
 
     bool interrupt = false;
     bool forceInterruptCurrentPlayback = false;
@@ -159,12 +159,12 @@ public:
     void setNarratorDisplayName(const std::string& displayName);
     std::string getNarratorDisplayName();
 
-    void setNarratorVolumePercent(float percent) {
-        narratorVolumeMultiplier.store(NarratorVolumeUtils::PercentToMultiplier(percent), std::memory_order_relaxed);
+    void setHeadVoiceVolumePercent(float percent) {
+        headVoiceVolumeMultiplier.store(HeadVoiceVolumeUtils::PercentToMultiplier(percent), std::memory_order_relaxed);
     }
 
-    float getNarratorVolumeMultiplier() const {
-        return narratorVolumeMultiplier.load(std::memory_order_relaxed);
+    float getHeadVoiceVolumeMultiplier() const {
+        return headVoiceVolumeMultiplier.load(std::memory_order_relaxed);
     }
 
     int getResolution() {

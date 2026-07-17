@@ -1191,15 +1191,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             speakerActorPointer = currentActor.get()->getActor();
     }
 
-    const float narratorVolumeMultiplier =
-        isNarrator ? SpeakManager::getInstance().getNarratorVolumeMultiplier() : 1.0f;
+    const bool isHeadVoice = HeadVoiceVolumeUtils::IsHeadVoice(isNarrator, speaker == "Player");
+    const float headVoiceVolumeMultiplier =
+        isHeadVoice ? SpeakManager::getInstance().getHeadVoiceVolumeMultiplier() : 1.0f;
     const float baseLineVolumeMultiplier =
-        NarratorVolumeUtils::ApplyToLine(volumeBoost, isNarrator, narratorVolumeMultiplier);
+        HeadVoiceVolumeUtils::ApplyToLine(volumeBoost, isHeadVoice, headVoiceVolumeMultiplier);
     float runtimeLineVolumeMultiplier = baseLineVolumeMultiplier;
     bool runtimeMuffleFilter = applyMuffleFilter;
 
-    if (isNarrator) {
-        logger::info("[SpeakManager] Applying narrator volume multiplier: {}", narratorVolumeMultiplier);
+    if (isHeadVoice) {
+        logger::info("[SpeakManager] Applying head voice volume multiplier to {}: {}", speaker, headVoiceVolumeMultiplier);
     }
 
     auto* playbackListenerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();

@@ -1926,9 +1926,9 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         AudioManagerController::GetInstance().setVolume(f_Value);
         logger::info("Setting volume to {}/100", f_Value);
 
-    } else if (code == "_narrator_volume") {
-        SpeakManager::getInstance().setNarratorVolumePercent(f_Value);
-        logger::info("Setting narrator volume to {}/100", f_Value);
+    } else if (code == "_head_voice_volume") {
+        SpeakManager::getInstance().setHeadVoiceVolumePercent(f_Value);
+        logger::info("Setting narrator/player TTS volume to {}/100", f_Value);
 
     } else if (code == "_sound_preclip") {
         SpeakManager::getInstance().setPreclip(f_Value);
