@@ -120,6 +120,7 @@ body {
 .chatbox-controls {
     position: relative;
     z-index: 4;
+    overflow: visible;
     padding: 8px 10px;
     border-bottom: 1px solid rgba(242, 124, 17, 0.2);
     background: rgba(16, 16, 24, 0.75);
@@ -127,7 +128,7 @@ body {
 
 .chatbox-control-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) repeat(4, minmax(0, 1fr)) minmax(0, 0.75fr);
+    grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr)) minmax(0, 0.75fr);
     gap: 12px;
     align-items: start;
 }
@@ -184,6 +185,10 @@ body {
     font-size: 0.82em;
     cursor: pointer;
     pointer-events: auto;
+}
+
+.chatbox-profile-inline {
+    margin-top: 10px;
 }
 
 .chatbox-profile-menu-toggle:hover:not(:disabled),
@@ -364,10 +369,11 @@ body {
 .chatbox-profile-menu {
     position: absolute;
     top: calc(100% - 2px);
-    right: 10px;
+    left: 10px;
     width: min(430px, calc(100vw - 40px));
     max-height: min(520px, 62vh);
     overflow-y: auto;
+    z-index: 100;
     padding: 16px;
     border: 1px solid rgba(242, 124, 17, 0.55);
     border-radius: 8px;
@@ -860,7 +866,7 @@ body {
     border: 1px solid rgba(242, 124, 17, 0.45);
     border-radius: 8px;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.75);
-    overflow: hidden;
+    overflow: visible;
 }
 
 .focus-chatbox-header {
