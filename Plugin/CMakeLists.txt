@@ -38,5 +38,10 @@ if(BUILD_TESTING)
     target_include_directories(AIAgentItemIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_features(AIAgentItemIdentifierTests PRIVATE cxx_std_23)
     add_test(NAME AIAgentItemIdentifierTests COMMAND AIAgentItemIdentifierTests)
+
+    add_executable(AIAgentNarratorVolumeTests tests/NarratorVolumeUtilsTests.cpp)
+    target_include_directories(AIAgentNarratorVolumeTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentNarratorVolumeTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentNarratorVolumeTests COMMAND AIAgentNarratorVolumeTests)
 endif()
 

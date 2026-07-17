@@ -37,6 +37,9 @@ int			_myKey7				= -1
 int			_slider_volume
 float		_sound_volume				= 50.0
 
+int			_slider_narrator_volume
+float		_narrator_volume			= 100.0
+
 int			_slider_preclip
 float		_sound_preclip				= 100.0
 
@@ -245,6 +248,7 @@ int			_myKey6Default					= -1
 int			_myKey7Default					= -1
 bool		_toggleState2Default			= false
 float		_sound_volumeDefault			= 75.0
+float		_narrator_volumeDefault		= 100.0
 float		_sound_preclipDefault			= 100.0
 float		_sound_postclipDefault			= 0.0
 float		_sound_dsDefault				= 10.0
@@ -354,6 +358,7 @@ event OnConfigInit()
 	_sound_postclip				= 0.0
 	_sound_preclip				= 100.0
 	_sound_volume				= 75 
+	_narrator_volume			= 100
 	_lip_res				= 500.0
 	_lip_int				= 1.0
 	if (CurrentVersion>1)
@@ -531,12 +536,19 @@ endEvent
 
 int function GetVersion()
 
-	return 68
+	return 69
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 69 && a_version > CurrentVersion)
+		; Version 69: Added independent narrator playback volume
+		_narrator_volume = 100.0
+		controlScript.setConf("_narrator_volume", _narrator_volume)
+		OnConfigInit()
+	endIf
 
 	if (a_version == 68 && a_version > CurrentVersion)
 		; Version 68: Reworked MCM hotkeys and moved behavior settings
@@ -779,6 +791,7 @@ event OnPageReset(string a_page)
 		AddHeaderOption("Basic")
 		AddEmptyOption()
 		_slider_volume		= AddSliderOption("AI Voice Volume", _sound_volume,"{0}")
+		_slider_narrator_volume = AddSliderOption("Narrator Voice Volume (%)", _narrator_volume,"{0}")
 		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}" )
 		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}")
 		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}")
@@ -894,6 +907,13 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogDefaultValue(50)
 		SetSliderDialogRange(0, 500)
 		SetSliderDialogInterval(2)
+	endIf
+
+	if (a_option == _slider_narrator_volume)
+		SetSliderDialogStartValue(_narrator_volume)
+		SetSliderDialogDefaultValue(100)
+		SetSliderDialogRange(0, 200)
+		SetSliderDialogInterval(5)
 	endIf
 	
 	if (a_option == _slider_preclip)
@@ -1030,6 +1050,11 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		controlScript.setConf("_sound_volume",a_value)
 		SetSliderOptionValue(a_option, a_value, "{0}")
 	endIf
+	if (a_option == _slider_narrator_volume)
+		_narrator_volume = a_value
+		controlScript.setConf("_narrator_volume", a_value)
+		SetSliderOptionValue(a_option, a_value, "{0}")
+	endIf
 		if (a_option == _slider_preclip)
 		_sound_preclip = a_value
 		controlScript.setConf("_sound_preclip",a_value)
@@ -1157,6 +1182,7 @@ event OnGameReload()
 	a=controlScript.setConf("_sound_postclip",_sound_postclip)
 	a=controlScript.setConf("_sound_preclip",_sound_preclip)
 	a=controlScript.setConf("_sound_volume",_sound_volume)
+	a=controlScript.setConf("_narrator_volume",_narrator_volume)
 	if (_sound_ds < 0.1)
 		_sound_ds = 0.1
 	elseif (_sound_ds > 20.0)
@@ -1340,6 +1366,11 @@ event OnOptionDefault(int a_option)
 	elseif (a_option == _slider_volume)
 		_sound_volume = _sound_volumeDefault
 		SetSliderOptionValue(a_option, _sound_volume, "{1}")
+
+	elseif (a_option == _slider_narrator_volume)
+		_narrator_volume = _narrator_volumeDefault
+		controlScript.setConf("_narrator_volume", _narrator_volume)
+		SetSliderOptionValue(a_option, _narrator_volume, "{0}")
 
 	elseif (a_option == _slider_ds)
 		_sound_ds = _sound_dsDefault
@@ -2037,6 +2068,9 @@ event OnOptionHighlight(int a_option)
 	endIf
 	if (a_option == _slider_volume)
 		SetInfoText("Set AI NPC speech volume.")
+	endIf
+	if (a_option == _slider_narrator_volume)
+		SetInfoText("Adjust narrator playback relative to AI Voice Volume. 100% keeps the current level; 0% mutes narrator audio only.")
 	endIf
 	if (a_option == _slider_preclip)
 		SetInfoText("Skips specified millisecods at begining of a sentence. Some TTS services add some silence at the begining of audio clips.")

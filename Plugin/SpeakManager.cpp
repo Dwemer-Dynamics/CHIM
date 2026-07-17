@@ -1191,9 +1191,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             speakerActorPointer = currentActor.get()->getActor();
     }
 
-    const float baseLineVolumeMultiplier = std::max(0.0f, volumeBoost);
+    const float narratorVolumeMultiplier =
+        isNarrator ? SpeakManager::getInstance().getNarratorVolumeMultiplier() : 1.0f;
+    const float baseLineVolumeMultiplier =
+        NarratorVolumeUtils::ApplyToLine(volumeBoost, isNarrator, narratorVolumeMultiplier);
     float runtimeLineVolumeMultiplier = baseLineVolumeMultiplier;
     bool runtimeMuffleFilter = applyMuffleFilter;
+
+    if (isNarrator) {
+        logger::info("[SpeakManager] Applying narrator volume multiplier: {}", narratorVolumeMultiplier);
+    }
 
     auto* playbackListenerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
     const bool dynamicSpatialPlayback =
