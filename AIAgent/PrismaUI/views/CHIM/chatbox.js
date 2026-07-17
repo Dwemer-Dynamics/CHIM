@@ -32,8 +32,7 @@
     const profileSelectElement = document.getElementById('chatbox-profile-select');
     const profileAssignmentHintElement = document.getElementById('chatbox-profile-assignment-hint');
     const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
-    const profileDefaultToggleButtons = document.querySelectorAll('.profile-default-toggle');
-    const profileUsageElement = document.getElementById('chatbox-profile-usage');
+    const profileDefaultToggleButtons = document.querySelectorAll('.profile-default-toggle[data-profile-setting]');
     const profileConnectorsElement = document.getElementById('chatbox-profile-connectors');
     const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
@@ -798,21 +797,19 @@
             }
         }
 
-        const sharedCount = hasProfile ? Number(profile.shared_count || 0) : 0;
-        const usage = sharedCount === 1 ? 'Used by 1 character.' : `Used by ${sharedCount} characters.`;
         const connectorCount = hasProfile ? Number(profile.configured_slot_count || 0) : 0;
-        const randomHint = connectorCount < 2
-            ? `${usage} Random has no variation with fewer than 2 configured connectors.`
-            : `${usage} Toggling Random affects every character using this profile.`;
-        setTextIfChanged(profileUsageElement, hasProfile ? randomHint : 'Profile usage unavailable.');
 
         if (profileRandomToggleButton) {
-            profileRandomToggleButton.className = 'chatbox-profile-random-toggle ' + (isRandom ? 'on' : 'off');
-            profileRandomToggleButton.textContent = isRandom ? 'ON' : 'OFF';
+            profileRandomToggleButton.classList.toggle('on', isRandom);
+            profileRandomToggleButton.classList.toggle('off', !isRandom);
             profileRandomToggleButton.setAttribute('aria-pressed', isRandom ? 'true' : 'false');
             profileRandomToggleButton.disabled = !hasProfile || profileLlmSaveInProgress ||
                 profileDefaultSaveInProgress || profileAssignmentInProgress ||
                 (!isRandom && connectorCount === 0);
+            setTextIfChanged(
+                profileRandomToggleButton.querySelector('.profile-default-state'),
+                isRandom ? 'ON' : 'OFF'
+            );
         }
 
         const profileDefaults = hasProfile && profile.profile_defaults
