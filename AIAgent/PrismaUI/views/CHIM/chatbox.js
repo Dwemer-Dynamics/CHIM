@@ -31,6 +31,7 @@
     const profileSelectElement = document.getElementById('chatbox-profile-select');
     const profileAssignmentHintElement = document.getElementById('chatbox-profile-assignment-hint');
     const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
+    const profileDefaultToggleButtons = document.querySelectorAll('.profile-default-toggle');
     const profileUsageElement = document.getElementById('chatbox-profile-usage');
     const profileConnectorsElement = document.getElementById('chatbox-profile-connectors');
     const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
@@ -55,6 +56,7 @@
     let profileLlmTargetKey = '';
     let profileLlmRequestSequence = 0;
     let profileLlmSaveInProgress = false;
+    let profileDefaultSaveInProgress = false;
     let profileAssignmentInProgress = false;
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
@@ -777,7 +779,8 @@
             }
 
             const canAssign = hasProfile && target && target.type === 'npc';
-            profileSelectElement.disabled = !canAssign || profileAssignmentInProgress;
+            profileSelectElement.disabled = !canAssign || profileAssignmentInProgress ||
+                profileLlmSaveInProgress || profileDefaultSaveInProgress;
             if (canAssign) {
                 setTextIfChanged(profileAssignmentHintElement, 'Changing this reassigns only the targeted NPC.');
             } else if (hasProfile && target && target.type === 'narrator') {
@@ -800,8 +803,24 @@
             profileRandomToggleButton.textContent = isRandom ? 'ON' : 'OFF';
             profileRandomToggleButton.setAttribute('aria-pressed', isRandom ? 'true' : 'false');
             profileRandomToggleButton.disabled = !hasProfile || profileLlmSaveInProgress ||
-                profileAssignmentInProgress || (!isRandom && connectorCount === 0);
+                profileDefaultSaveInProgress || profileAssignmentInProgress ||
+                (!isRandom && connectorCount === 0);
         }
+
+        const profileDefaults = hasProfile && profile.profile_defaults
+            ? profile.profile_defaults
+            : {};
+        profileDefaultToggleButtons.forEach(function(button) {
+            const setting = button.dataset.profileSetting || '';
+            const enabled = !!profileDefaults[setting];
+            const state = button.querySelector('.profile-default-state');
+            button.classList.toggle('on', enabled);
+            button.classList.toggle('off', !enabled);
+            button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            button.disabled = !hasProfile || profileDefaultSaveInProgress ||
+                profileLlmSaveInProgress || profileAssignmentInProgress;
+            setTextIfChanged(state, enabled ? 'ON' : 'OFF');
+        });
 
         if (profileConnectorsElement) {
             profileConnectorsElement.replaceChildren();
@@ -931,6 +950,62 @@
             return false;
         } finally {
             profileLlmSaveInProgress = false;
+            renderProfileLlmMode();
+        }
+    }
+
+    async function saveProfileDefault(setting, enabled) {
+        const target = getProfileLlmTarget();
+        if (!target || !currentProfileLlmInfo || profileDefaultSaveInProgress ||
+            profileLlmSaveInProgress || profileAssignmentInProgress) {
+            return false;
+        }
+
+        const targetKey = target.key;
+        const previousProfile = currentProfileLlmInfo;
+        profileDefaultSaveInProgress = true;
+        renderProfileLlmMode();
+
+        try {
+            const formData = new FormData();
+            formData.append('target_type', target.type);
+            formData.append('target_name', target.name);
+            formData.append('setting', setting);
+            formData.append('enabled', enabled ? '1' : '0');
+            formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
+
+            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Failed to update profile default.');
+            }
+
+            const activeTarget = getProfileLlmTarget();
+            if (!activeTarget || activeTarget.key !== targetKey) return true;
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            const button = Array.from(profileDefaultToggleButtons).find(function(item) {
+                return item.dataset.profileSetting === setting;
+            });
+            const label = button ? button.querySelector('.profile-default-label').textContent.trim() : setting;
+            pushChatboxSystemMessage(
+                `${label} ${enabled ? 'enabled' : 'disabled'} for ${result.profile.profile_name}.`
+            );
+            return true;
+        } catch (_err) {
+            currentProfileLlmInfo = previousProfile;
+            renderProfileLlmMode();
+            pushChatboxSystemMessage('Failed to update the target profile setting.');
+            showInGameDebugNotification('Failed to update target profile setting.');
+            return false;
+        } finally {
+            profileDefaultSaveInProgress = false;
             renderProfileLlmMode();
         }
     }
@@ -1117,6 +1192,15 @@
             saveProfileLlmMode(currentProfileLlmMode === 'random' ? 'fixed' : 'random');
         });
     }
+
+    profileDefaultToggleButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            if (!currentProfileLlmInfo || profileDefaultSaveInProgress) return;
+            const setting = button.dataset.profileSetting || '';
+            const enabled = button.getAttribute('aria-pressed') === 'true';
+            saveProfileDefault(setting, !enabled);
+        });
+    });
 
     if (profileSelectElement) {
         profileSelectElement.addEventListener('change', function() {

@@ -539,6 +539,72 @@ body {
     background: rgba(249, 115, 22, 0.2);
 }
 
+.profile-default-list {
+    display: grid;
+    gap: 8px;
+}
+
+.profile-default-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 38px;
+    padding: 8px 10px;
+    border: 1px solid rgba(110, 110, 125, 0.28);
+    border-radius: 5px;
+    background: rgba(30, 30, 40, 0.78);
+    color: #d6d6dc;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.profile-default-toggle:hover:not(:disabled) {
+    border-color: rgba(242, 124, 17, 0.62);
+    background: rgba(242, 124, 17, 0.12);
+}
+
+.profile-default-toggle:disabled {
+    opacity: 0.48;
+    cursor: not-allowed;
+}
+
+.profile-default-label {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.84em;
+    font-weight: 600;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.profile-default-state {
+    flex: 0 0 auto;
+    min-width: 52px;
+    padding: 4px 8px;
+    border: 1px solid rgba(120, 120, 132, 0.4);
+    border-radius: 999px;
+    background: rgba(90, 90, 102, 0.18);
+    color: #aaa;
+    font-size: 0.72em;
+    font-weight: 700;
+    letter-spacing: 0.45px;
+    text-align: center;
+}
+
+.profile-default-toggle.on {
+    border-color: rgba(46, 204, 113, 0.32);
+    background: rgba(46, 204, 113, 0.07);
+}
+
+.profile-default-toggle.on .profile-default-state {
+    border-color: rgba(46, 204, 113, 0.42);
+    background: rgba(46, 204, 113, 0.18);
+    color: #58d68d;
+}
+
 .chatbox-profile-random-toggle:disabled {
     opacity: 0.45;
     cursor: wait;
