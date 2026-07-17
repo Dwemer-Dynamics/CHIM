@@ -28,6 +28,7 @@
     const profileNameElement = document.getElementById('chatbox-profile-name');
     const profileModeElement = document.getElementById('chatbox-profile-mode');
     const profileTargetElement = document.getElementById('chatbox-profile-target');
+    const profileSlotElement = document.getElementById('chatbox-profile-slot');
     const profileSelectElement = document.getElementById('chatbox-profile-select');
     const profileAssignmentHintElement = document.getElementById('chatbox-profile-assignment-hint');
     const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
@@ -746,6 +747,13 @@
         setTextIfChanged(
             profileTargetElement,
             hasProfile ? `${profile.target_name} Profile` : 'No target selected'
+        );
+        const profileSlot = hasProfile ? Number(profile.profile_slot || 0) : 0;
+        setTextIfChanged(
+            profileSlotElement,
+            hasProfile
+                ? `${profile.profile_name} - ${profileSlot > 0 ? `Slot ${profileSlot}` : 'Not assigned to a slot'}`
+                : 'No profile slot'
         );
 
         if (profileSelectElement) {

@@ -443,6 +443,13 @@ body {
     font-weight: 600;
 }
 
+.profile-menu-slot {
+    margin-top: 4px;
+    color: #b9a18c;
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
 .profile-menu-close {
     width: 28px;
     height: 28px;
