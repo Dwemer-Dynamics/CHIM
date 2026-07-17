@@ -253,6 +253,7 @@ namespace Papyrus {
     int unfocusChatboxPanel(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
     int isChatboxPanelVisible(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
     int isChatboxPanelFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
+    int isAnyPrismaHotkeyPanelFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     std::vector<RE::FormID> findAllAgentsFormId(RE::BSScript::Internal::VirtualMachine* a_vm,
                                                          RE::VMStackID a_stackID, RE::StaticFunctionTag*);
