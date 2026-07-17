@@ -19,8 +19,20 @@
     const currentModeElement = document.getElementById('chatbox-current-mode');
     const modeSelectElement = document.getElementById('chatbox-mode-select');
     const currentModelElement = document.getElementById('chatbox-current-model');
+    const globalModelControlElement = document.getElementById('chatbox-global-model-control');
     const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
     const modelSelectElement = document.getElementById('chatbox-model-select');
+    const profileMenuToggleButton = document.getElementById('chatbox-profile-menu-toggle');
+    const profileMenuElement = document.getElementById('chatbox-profile-menu');
+    const profileMenuCloseButton = document.getElementById('chatbox-profile-menu-close');
+    const profileNameElement = document.getElementById('chatbox-profile-name');
+    const profileModeElement = document.getElementById('chatbox-profile-mode');
+    const profileTargetElement = document.getElementById('chatbox-profile-target');
+    const profileSelectElement = document.getElementById('chatbox-profile-select');
+    const profileAssignmentHintElement = document.getElementById('chatbox-profile-assignment-hint');
+    const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
+    const profileUsageElement = document.getElementById('chatbox-profile-usage');
+    const profileConnectorsElement = document.getElementById('chatbox-profile-connectors');
     const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
@@ -43,6 +55,7 @@
     let profileLlmTargetKey = '';
     let profileLlmRequestSequence = 0;
     let profileLlmSaveInProgress = false;
+    let profileAssignmentInProgress = false;
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
     let currentFocusPosition = 'center';
@@ -75,8 +88,7 @@
         standard: { label: 'Standard', class: 'standard', action: 'llm_standard' },
         fast: { label: 'Fast', class: 'fast', action: 'llm_fast' },
         powerful: { label: 'Powerful', class: 'powerful', action: 'llm_powerful' },
-        experimental: { label: 'Experimental', class: 'experimental', action: 'llm_experimental' },
-        random: { label: 'Random', class: 'random', action: 'llm_random' }
+        experimental: { label: 'Experimental', class: 'experimental', action: 'llm_experimental' }
     };
 
     const rechatModeConfig = {
@@ -522,6 +534,10 @@
         focusInput.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 e.preventDefault();
+                if (isProfileMenuOpen()) {
+                    closeProfileMenu();
+                    return;
+                }
                 window.closeFocusChatbox(true);
                 return;
             }
@@ -671,15 +687,27 @@
 
     function renderProfileLlmMode() {
         const globalConfig = modelConfig[currentGlobalModelLabel.toLowerCase()] || modelConfig.standard;
-        const config = currentProfileLlmMode === 'random' ? modelConfig.random : globalConfig;
-        currentModelAction = config.action;
+        currentModelAction = globalConfig.action;
         if (currentModelElement) {
-            currentModelElement.className = 'mode-badge ' + config.class;
-            currentModelElement.textContent = config.label;
+            currentModelElement.className = 'mode-badge ' + globalConfig.class;
+            currentModelElement.textContent = globalConfig.label;
         }
         if (modelSelectElement) {
-            modelSelectElement.value = config.action;
+            modelSelectElement.value = globalConfig.action;
+            modelSelectElement.disabled = profileLlmSaveInProgress ||
+                (currentProfileLlmInfo && currentProfileLlmMode === 'random');
+            modelSelectElement.title = currentProfileLlmMode === 'random'
+                ? 'Disable Random LLM on the target profile to change the global model.'
+                : 'Switch global model';
         }
+        if (globalModelControlElement) {
+            globalModelControlElement.classList.toggle(
+                'profile-random-muted',
+                !!currentProfileLlmInfo && currentProfileLlmMode === 'random'
+            );
+        }
+
+        renderProfileMenu();
     }
 
     function getProfileLlmTarget() {
@@ -699,14 +727,109 @@
         };
     }
 
-    function setRandomOptionEnabled(enabled, reason) {
-        if (!modelSelectElement) return;
-        const randomOption = modelSelectElement.querySelector('option[value="llm_random"]');
-        if (randomOption) {
-            randomOption.disabled = !enabled;
-            randomOption.title = enabled ? '' : (reason || 'Select a single NPC target first.');
+    function renderProfileMenu() {
+        const profile = currentProfileLlmInfo;
+        const hasProfile = !!profile;
+        const isRandom = hasProfile && currentProfileLlmMode === 'random';
+        const target = getProfileLlmTarget();
+
+        if (profileMenuToggleButton) {
+            profileMenuToggleButton.disabled = !hasProfile;
         }
-        modelSelectElement.title = enabled ? 'Switch model' : (reason || 'Random requires a single NPC profile.');
+        setTextIfChanged(profileNameElement, hasProfile ? profile.profile_name : 'No Profile');
+        if (profileModeElement) {
+            profileModeElement.className = 'profile-mode-dot ' + (isRandom ? 'random' : 'fixed');
+            profileModeElement.textContent = isRandom ? 'Random' : 'Fixed';
+        }
+        setTextIfChanged(
+            profileTargetElement,
+            hasProfile ? `${profile.target_name} Profile` : 'No target selected'
+        );
+
+        if (profileSelectElement) {
+            const profiles = hasProfile && Array.isArray(profile.available_profiles)
+                ? profile.available_profiles
+                : [];
+            profileSelectElement.replaceChildren();
+            if (profiles.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = hasProfile ? profile.profile_name : 'No profile available';
+                profileSelectElement.appendChild(option);
+            } else {
+                const currentIsSlotted = profiles.some(function(item) {
+                    return Number(item.profile_id) === Number(profile.profile_id);
+                });
+                if (!currentIsSlotted) {
+                    const currentOption = document.createElement('option');
+                    currentOption.value = '';
+                    currentOption.textContent = `${profile.profile_name} (not assigned to a slot)`;
+                    profileSelectElement.appendChild(currentOption);
+                }
+                profiles.forEach(function(item) {
+                    const option = document.createElement('option');
+                    option.value = String(item.slot);
+                    option.dataset.profileId = String(item.profile_id);
+                    option.textContent = `${item.slot}. ${item.profile_name}`;
+                    option.selected = Number(item.profile_id) === Number(profile.profile_id);
+                    profileSelectElement.appendChild(option);
+                });
+            }
+
+            const canAssign = hasProfile && target && target.type === 'npc';
+            profileSelectElement.disabled = !canAssign || profileAssignmentInProgress;
+            if (canAssign) {
+                setTextIfChanged(profileAssignmentHintElement, 'Changing this reassigns only the targeted NPC.');
+            } else if (hasProfile && target && target.type === 'narrator') {
+                setTextIfChanged(profileAssignmentHintElement, 'Narrator profile assignment is managed in the web UI.');
+            } else {
+                setTextIfChanged(profileAssignmentHintElement, 'Select a single NPC target to assign a profile.');
+            }
+        }
+
+        const sharedCount = hasProfile ? Number(profile.shared_count || 0) : 0;
+        const usage = sharedCount === 1 ? 'Used by 1 character.' : `Used by ${sharedCount} characters.`;
+        const connectorCount = hasProfile ? Number(profile.configured_slot_count || 0) : 0;
+        const randomHint = connectorCount < 2
+            ? `${usage} Random has no variation with fewer than 2 configured connectors.`
+            : `${usage} Toggling Random affects every character using this profile.`;
+        setTextIfChanged(profileUsageElement, hasProfile ? randomHint : 'Profile usage unavailable.');
+
+        if (profileRandomToggleButton) {
+            profileRandomToggleButton.className = 'chatbox-profile-random-toggle ' + (isRandom ? 'on' : 'off');
+            profileRandomToggleButton.textContent = isRandom ? 'ON' : 'OFF';
+            profileRandomToggleButton.setAttribute('aria-pressed', isRandom ? 'true' : 'false');
+            profileRandomToggleButton.disabled = !hasProfile || profileLlmSaveInProgress ||
+                profileAssignmentInProgress || (!isRandom && connectorCount === 0);
+        }
+
+        if (profileConnectorsElement) {
+            profileConnectorsElement.replaceChildren();
+            const connectors = hasProfile && Array.isArray(profile.configured_connectors)
+                ? profile.configured_connectors
+                : [];
+            if (connectors.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'profile-connector-empty';
+                empty.textContent = hasProfile
+                    ? 'No LLM connectors are configured on this profile.'
+                    : 'Select a target profile to view its connectors.';
+                profileConnectorsElement.appendChild(empty);
+            } else {
+                connectors.forEach(function(connector) {
+                    const row = document.createElement('div');
+                    row.className = 'profile-connector-row';
+                    const slot = document.createElement('div');
+                    slot.className = 'profile-connector-slot';
+                    slot.textContent = connector.label || `Slot ${connector.slot}`;
+                    const name = document.createElement('div');
+                    name.className = 'profile-connector-name';
+                    name.textContent = connector.connector_name || `Connector ${connector.connector_id}`;
+                    row.append(slot, name);
+                    profileConnectorsElement.appendChild(row);
+                });
+            }
+        }
     }
 
     async function refreshProfileLlmMode(force) {
@@ -715,18 +838,20 @@
             profileLlmTargetKey = '';
             currentProfileLlmInfo = null;
             currentProfileLlmMode = 'fixed';
-            setRandomOptionEnabled(false, 'Random requires a single NPC or Narrator target.');
+            closeProfileMenu();
             renderProfileLlmMode();
-            return;
+            return null;
         }
         if (!force && target.key === profileLlmTargetKey) {
-            return;
+            return currentProfileLlmInfo;
         }
 
+        if (target.key !== profileLlmTargetKey) {
+            closeProfileMenu();
+        }
         profileLlmTargetKey = target.key;
         currentProfileLlmInfo = null;
         currentProfileLlmMode = 'fixed';
-        setRandomOptionEnabled(false, 'Loading target profile...');
         renderProfileLlmMode();
         const requestSequence = ++profileLlmRequestSequence;
 
@@ -748,17 +873,14 @@
 
             currentProfileLlmInfo = result.profile;
             currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
-            setRandomOptionEnabled(
-                Number(result.profile.configured_slot_count || 0) > 0,
-                'This profile has no configured LLM connectors.'
-            );
             renderProfileLlmMode();
+            return currentProfileLlmInfo;
         } catch (_err) {
             if (requestSequence !== profileLlmRequestSequence) return;
             currentProfileLlmInfo = null;
             currentProfileLlmMode = 'fixed';
-            setRandomOptionEnabled(false, 'Profile Random mode requires a compatible CHIM server.');
             renderProfileLlmMode();
+            return null;
         }
     }
 
@@ -770,7 +892,7 @@
 
         const previousMode = currentProfileLlmMode;
         profileLlmSaveInProgress = true;
-        if (modelSelectElement) modelSelectElement.disabled = true;
+        renderProfileLlmMode();
 
         try {
             const formData = new FormData();
@@ -809,8 +931,64 @@
             return false;
         } finally {
             profileLlmSaveInProgress = false;
-            if (modelSelectElement) modelSelectElement.disabled = false;
+            renderProfileLlmMode();
         }
+    }
+
+    function openProfileMenu() {
+        if (!profileMenuElement || !currentProfileLlmInfo) return;
+        profileMenuElement.classList.remove('hidden');
+        if (profileMenuToggleButton) profileMenuToggleButton.setAttribute('aria-expanded', 'true');
+        refreshProfileLlmMode(true);
+    }
+
+    function closeProfileMenu() {
+        if (profileMenuElement) profileMenuElement.classList.add('hidden');
+        if (profileMenuToggleButton) profileMenuToggleButton.setAttribute('aria-expanded', 'false');
+    }
+
+    function isProfileMenuOpen() {
+        return !!profileMenuElement && !profileMenuElement.classList.contains('hidden');
+    }
+
+    async function assignTargetProfile(slot) {
+        const target = getProfileLlmTarget();
+        if (!target || target.type !== 'npc' || profileAssignmentInProgress || !currentProfileLlmInfo) {
+            return false;
+        }
+
+        const selectedProfile = (currentProfileLlmInfo.available_profiles || []).find(function(profile) {
+            return Number(profile.slot) === Number(slot);
+        });
+        if (!selectedProfile || Number(selectedProfile.profile_id) === Number(currentProfileLlmInfo.profile_id)) {
+            renderProfileMenu();
+            return true;
+        }
+
+        profileAssignmentInProgress = true;
+        renderProfileMenu();
+        sendControlCommand(`profile_${slot}|${target.name}`);
+
+        let assigned = false;
+        for (const delay of [350, 800, 1500]) {
+            await new Promise(function(resolve) { setTimeout(resolve, delay); });
+            const activeTarget = getProfileLlmTarget();
+            if (!activeTarget || activeTarget.key !== target.key) break;
+            const refreshed = await refreshProfileLlmMode(true);
+            if (refreshed && Number(refreshed.profile_id) === Number(selectedProfile.profile_id)) {
+                assigned = true;
+                break;
+            }
+        }
+
+        profileAssignmentInProgress = false;
+        renderProfileLlmMode();
+        if (assigned) {
+            pushChatboxSystemMessage(`Assigned ${selectedProfile.profile_name} to ${target.name}.`);
+        } else {
+            pushChatboxSystemMessage(`Profile assignment sent for ${target.name}. The server may still be processing it.`);
+        }
+        return assigned;
     }
 
     window.updateChatboxFocus = function(enabled) {
@@ -895,29 +1073,61 @@
     }
 
     if (modelSelectElement) {
-        modelSelectElement.addEventListener('change', async function() {
+        modelSelectElement.addEventListener('change', function() {
             const action = modelSelectElement.value;
             if (!action || action === currentModelAction) return;
-            if (action === 'llm_random') {
-                await saveProfileLlmMode('random');
-                return;
-            }
-
-            if (currentProfileLlmMode === 'random') {
-                const fixedSaved = await saveProfileLlmMode('fixed');
-                if (!fixedSaved) return;
-            }
 
             const config = Object.values(modelConfig).find(function(item) {
                 return item.action === action;
             });
-            if (config && action !== 'llm_random') {
+            if (config) {
                 currentGlobalModelLabel = config.label;
                 renderProfileLlmMode();
             }
             sendControlCommand(action);
         });
     }
+
+    if (profileMenuToggleButton) {
+        profileMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            if (isProfileMenuOpen()) {
+                closeProfileMenu();
+            } else {
+                openProfileMenu();
+            }
+        });
+    }
+
+    if (profileMenuCloseButton) {
+        profileMenuCloseButton.addEventListener('click', function() {
+            closeProfileMenu();
+        });
+    }
+
+    if (profileMenuElement) {
+        profileMenuElement.addEventListener('click', function(event) {
+            event.stopPropagation();
+        });
+    }
+
+    if (profileRandomToggleButton) {
+        profileRandomToggleButton.addEventListener('click', function() {
+            if (!currentProfileLlmInfo || profileLlmSaveInProgress) return;
+            saveProfileLlmMode(currentProfileLlmMode === 'random' ? 'fixed' : 'random');
+        });
+    }
+
+    if (profileSelectElement) {
+        profileSelectElement.addEventListener('change', function() {
+            const slot = Number(profileSelectElement.value || 0);
+            if (slot > 0) assignTargetProfile(slot);
+        });
+    }
+
+    document.addEventListener('click', function() {
+        if (isProfileMenuOpen()) closeProfileMenu();
+    });
 
     if (focusToggleButton) {
         focusToggleButton.addEventListener('click', function() {
@@ -995,7 +1205,6 @@
     updateFocusIndicator(isFocusChatEnabled);
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
-    setRandomOptionEnabled(false, 'Select a single NPC target first.');
     applyFocusPosition(loadFocusPosition());
 
     // Apply corner placement via shared layout manager
