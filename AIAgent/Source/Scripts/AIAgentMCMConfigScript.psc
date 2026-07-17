@@ -1946,9 +1946,9 @@ event OnOptionSelect(int a_option)
  	endIf
 	
 	if (a_option == _actionSendLocations)
-		ShowMessage("Please wait 3-5 minutes. You only need to do this once per playthrough.")
+		ShowMessage("Please wait 3-5 minutes, stay at this screen waiting for end confirmation. You can bring up console to check progress ")
  		AIAgentPapyrusFunctions.RunToolsSendFactionLocationInfo()
- 		ShowMessage("factions and locations fully synced and complete!")
+ 		ShowMessage("factions,locations and unique NPCs fully synced and complete!")
  	endIf
 	
   	if (a_option == _actionSendVoices)
@@ -2234,7 +2234,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _actionSendLocations)
-		SetInfoText("Send faction and location info to the server so TravelTo works better. This can take 3-5 minutes and only needs to be done once per playthrough.")
+		SetInfoText("Send faction,location and unique NPCs info to the server. This can take 3-5 minutes and only needs to be done once per playthrough.")
 	endIf
 	
 	if (a_option == _actionSendVoices)
