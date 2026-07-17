@@ -113,9 +113,20 @@ namespace PrismaUIBridge {
         }
 
         RE::BSEventNotifyControl ProcessEvent(
-            RE::InputEvent* const*, RE::BSTEventSource<RE::InputEvent*>*) override {
-            return g_chatboxGameplayInputSuppressed.load() ?
-                RE::BSEventNotifyControl::kStop : RE::BSEventNotifyControl::kContinue;
+            RE::InputEvent* const* events, RE::BSTEventSource<RE::InputEvent*>*) override {
+            if (!g_chatboxGameplayInputSuppressed.load() || !events) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            for (auto* event = *events; event; event = event->next) {
+                const auto device = event->GetDevice();
+                if (device == RE::INPUT_DEVICE::kKeyboard ||
+                    device == RE::INPUT_DEVICE::kVirtualKeyboard) {
+                    return RE::BSEventNotifyControl::kStop;
+                }
+            }
+
+            return RE::BSEventNotifyControl::kContinue;
         }
 
         static bool Install() {
@@ -5782,6 +5793,24 @@ R"CHIM(
             return false;
         }
         return g_prismaUI->HasFocus(g_chatboxView);
+    }
+
+    bool IsAnyHotkeyPanelFocused() {
+        if (!g_prismaUI) {
+            return false;
+        }
+
+        const auto isFocused = [](PrismaView view, bool created) {
+            return created && view != 0 && g_prismaUI->IsValid(view) && g_prismaUI->HasFocus(view);
+        };
+
+        return isFocused(g_historyView, g_panelCreated.load()) ||
+               isFocused(g_diariesView, g_diariesCreated.load()) ||
+               isFocused(g_browserView, g_browserCreated.load()) ||
+               isFocused(g_debuggerView, g_debuggerCreated.load()) ||
+               isFocused(g_chatboxView, g_chatboxCreated.load()) ||
+               isFocused(g_settingsMenuView, g_settingsMenuCreated.load()) ||
+               isFocused(g_masterMenuView, g_masterMenuCreated.load());
     }
 
     std::string GetCurrentChatboxMode() {

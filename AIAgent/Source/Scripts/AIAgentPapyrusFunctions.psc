@@ -273,6 +273,16 @@ bool Function ShouldSuppressChatboxFocusedHotkey(int keyCode)
 	Return false
 EndFunction
 
+bool Function ShouldBlockPrismaMenuHotkey()
+	If SafeProcess()
+		Return false
+	EndIf
+
+	; Prisma focus pauses the game too. Keep hotkeys available so an existing
+	; CHIM panel can be closed, but reject them while a Skyrim menu has focus.
+	Return AIAgentFunctions.isAnyPrismaHotkeyPanelFocused() != 1
+EndFunction
+
 Event OnKeyUp(int keyCode, float holdTime)
 	If ShouldSuppressChatboxFocusedHotkey(keyCode)
 		Return
@@ -470,19 +480,27 @@ Event OnKeyDown(int keyCode)
   EndIf
   
   If(keyCode == _currentBrowserKey)
-	AIAgentFunctions.toggleBrowserPanel()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.toggleBrowserPanel()
+	EndIf
   EndIf
   
   If(keyCode == _currentDebuggerKey)
-	AIAgentFunctions.toggleDebuggerPanel()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.toggleDebuggerPanel()
+	EndIf
   EndIf
   
   If(keyCode == _currentOverlayStatusCycleKey)
-	AIAgentFunctions.cycleOverlayStatusPanels()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.cycleOverlayStatusPanels()
+	EndIf
   EndIf
   
   If(keyCode == _currentHistoryDiariesCycleKey)
-	AIAgentFunctions.cycleHistoryDiariesPanels()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.cycleHistoryDiariesPanels()
+	EndIf
   EndIf
   
   If(keyCode == _currentChatboxFocusKey)
@@ -492,7 +510,9 @@ Event OnKeyDown(int keyCode)
 		ToggleChatboxFocusAction(keyCode)
 	endif
   ElseIf(keyCode == _currentChatboxKey)
-	AIAgentFunctions.toggleChatboxPanel()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.toggleChatboxPanel()
+	EndIf
   EndIf
   
   If(keyCode == _currentSettingsMenuKey)
@@ -598,6 +618,10 @@ Function ToggleChatboxFocusAction(int keyCode = -1)
 		Return
 	endif
 
+	If ShouldBlockPrismaMenuHotkey()
+		Return
+	EndIf
+
 	; Type Message hotkey: opens modal-only quick message mode when panel is hidden.
 	; If already focused, it unfocuses/closes.
 	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
@@ -611,25 +635,21 @@ Function ToggleChatboxFocusAction(int keyCode = -1)
 EndFunction
 
 Function ToggleSettingsMenuAction()
-	; Allow in menu mode since the settings menu itself pauses the game.
-	; This allows the same action to close the menu when it is already open.
-	If (!UI.IsMenuOpen("Console")) \
-	&& (!UI.IsMenuOpen("Crafting Menu")) \
-	&& (!UI.IsMenuOpen("RaceSex Menu"))
-		RegisterForSingleUpdate(0.1)
-		AIAgentFunctions.toggleSettingsMenu()
+	If ShouldBlockPrismaMenuHotkey()
+		Return
 	EndIf
+
+	RegisterForSingleUpdate(0.1)
+	AIAgentFunctions.toggleSettingsMenu()
 EndFunction
 
 Function ToggleMasterMenuAction()
-	; Allow in menu mode since the master menu itself pauses the game.
-	; This allows the same action to close the menu when it is already open.
-	If (!UI.IsMenuOpen("Console")) \
-	&& (!UI.IsMenuOpen("Crafting Menu")) \
-	&& (!UI.IsMenuOpen("RaceSex Menu"))
-		RegisterForSingleUpdate(0.1)
-		AIAgentFunctions.toggleMasterMenu()
+	If ShouldBlockPrismaMenuHotkey()
+		Return
 	EndIf
+
+	RegisterForSingleUpdate(0.1)
+	AIAgentFunctions.toggleMasterMenu()
 EndFunction
 
 Function removeBinding(int keycode) 
