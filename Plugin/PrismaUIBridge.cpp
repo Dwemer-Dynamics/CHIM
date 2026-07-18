@@ -5462,6 +5462,26 @@ R"CHIM(
             }
         } else if (cmd.starts_with("llm_")) {
             ApplyLLMProfileSelection(cmd, "Chatbox", true);
+        } else if (cmd.starts_with("profile_")) {
+            const auto separator = cmd.find('|');
+            const std::string profileNum = separator == std::string::npos
+                ? cmd.substr(8)
+                : cmd.substr(8, separator - 8);
+            const std::string npcName = separator == std::string::npos
+                ? ""
+                : cmd.substr(separator + 1);
+
+            if ((profileNum == "1" || profileNum == "2" || profileNum == "3" || profileNum == "4") &&
+                !npcName.empty()) {
+                HTTPManager::log(std::format(
+                    "core_profile_assign|{}|{}|{}",
+                    getCurrentTimeMillis(),
+                    GetGameTimeStamp(),
+                    profileNum), npcName);
+                logger::info("[Chatbox] Requested Profile {} assignment for {}", profileNum, npcName);
+            } else {
+                logger::warn("[Chatbox] Invalid profile assignment command: {}", cmd);
+            }
         } else if (cmd == "continue_chat") {
             CheckAndUpdateChatboxControls(true);
             if (g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
