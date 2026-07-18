@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CHIM Confirmation</title>
+    <link rel="stylesheet" href="confirmation.css">
+</head>
+<body>
+    <div id="chim-confirmation" class="confirmation-root hidden" role="dialog" aria-modal="true" aria-labelledby="confirmation-title">
+        <div class="confirmation-backdrop"></div>
+        <div class="confirmation-panel">
+            <div class="confirmation-header">
+                <div id="confirmation-title" class="confirmation-title">Confirm Action</div>
+                <button id="confirmation-close" class="confirmation-close" type="button" title="Cancel">&times;</button>
+            </div>
+            <div id="confirmation-message" class="confirmation-message"></div>
+            <div class="confirmation-actions">
+                <button id="confirmation-cancel" class="confirmation-button confirmation-button-cancel" type="button">Cancel</button>
+                <button id="confirmation-accept" class="confirmation-button confirmation-button-accept" type="button">Accept</button>
+            </div>
+        </div>
+    </div>
+    <script src="confirmation.js"></script>
+</body>
+</html>

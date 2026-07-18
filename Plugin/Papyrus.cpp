@@ -44,9 +44,12 @@
 
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
-void SkipNextPlayerMenuTopicLocalPlayback();
-#include "json.hpp"
 
+extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+
+void SkipNextPlayerMenuTopicLocalPlayback();
+
+#include "json.hpp"
 using json = nlohmann::json;
 
 namespace logger = SKSE::log;
@@ -589,6 +592,7 @@ extern int GlobalCombatBarksPeriod;
 bool PreserveQueueDuringAction = false;
 bool PauseDialogueWhenMenuOpen = false;
 bool PlayerTtsTraditionalDialogueEnabled = false;
+bool AIQuestProgressionEnabled = false;
 bool AllowActorsOnScene = true;
 bool GodMode = false;
 bool AutoAddHostile = false;
@@ -1468,8 +1472,8 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                         auto* gloves = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands);
                         auto* amulet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet);
                         auto* ring = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
-                        auto* cape = targetActor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(46));
-                        auto* backpack = targetActor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(47));
+                        auto* cape = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary);
+                        auto* backpack = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModBack);
                         auto* leftHand = targetActor->GetEquippedObject(true);   // Left hand
                         auto* rightHand = targetActor->GetEquippedObject(false); // Right hand
 
@@ -1535,7 +1539,7 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                                         const std::string pluginName(factionFile->GetFilename());
                                         const auto localFormId = static_cast<std::uint32_t>(factionInfo.faction->GetLocalFormID());
                                         if (!pluginName.empty()) {
-                                            stableFactionReference = std::format("{}|{:08X}", pluginName, localFormId);
+                                            stableFactionReference = std::format("{}/{:08X}", pluginName, localFormId);
                                         }
                                     }
                                     // Format: formID:rank:PluginName.esp|LocalFormId
@@ -1769,13 +1773,14 @@ int sendMessageReal(std::string msg, std::string type) {
     HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(beings in range:" + result + ")"));
 
-    // Always scan for nearby items
-    std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
-    
-    if (!itemsResult.empty()) {
-        std::string logMessage = std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(items in range:" + itemsResult + ")");
-        HTTPManager::log(logMessage);
+    if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
+        std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
+
+        if (!itemsResult.empty()) {
+            std::string logMessage = std::format("infoitems|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "(items in range:" + itemsResult + ")");
+            HTTPManager::log(logMessage);
+        }
     }
 
     std::string typeRevised;
@@ -2160,6 +2165,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
     if (code == "_sound_volume") {
         AudioManagerController::GetInstance().setVolume(f_Value);
         logger::info("Setting volume to {}/100", f_Value);
+
+    } else if (code == "_head_voice_volume") {
+        SpeakManager::getInstance().setHeadVoiceVolumePercent(f_Value);
+        logger::info("Setting narrator/player TTS volume to {}/100", f_Value);
 
     } else if (code == "_sound_preclip") {
         SpeakManager::getInstance().setPreclip(f_Value);
@@ -2576,7 +2585,7 @@ int Papyrus::setLocked(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStack
         logger::debug("Papyrus::setLocked - End");
         return 0;
     } else {
-        logger::debug("Papyrus::setLocked - failed");
+        logger::debug("Papyrus::setLocked - failed {}",actor);
         return -1;
     }
 }
@@ -2621,6 +2630,124 @@ int Papyrus::getPlayerBountyForGuard(RE::BSScript::Internal::VirtualMachine* a_v
     logger::info("[getPlayerBountyForGuard] {} crime faction 0x{:08x}, bounty={}", guardName,
                  crimeFaction->GetFormID(), crimeGold);
     return static_cast<int>(crimeGold);
+}
+
+int Papyrus::requestMoveInventoryItemConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm,
+                                                  RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                                                  RE::Actor* source, RE::Actor* target, RE::TESForm* itemForm,
+                                                  int amount, std::string realName) {
+    ScopedPapyrusLock lock("requestMoveInventoryItemConfirmation");
+
+    if (!source || !target || !itemForm || amount <= 0) {
+        logger::warn("[PAPYRUS] requestMoveInventoryItemConfirmation: invalid arguments");
+        return 0;
+    }
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        logger::warn("[PAPYRUS] requestMoveInventoryItemConfirmation: Prisma UI not available");
+        return 0;
+    }
+
+    if (realName.empty()) {
+        realName = "Gold";
+    }
+
+    auto sourceHandle = source->GetHandle();
+    auto targetHandle = target->GetHandle();
+    const RE::FormID itemFormId = itemForm->GetFormID();
+    const std::string itemName = realName;
+    const std::string sourceName = source->GetDisplayFullName();
+    const std::string targetName = target->GetDisplayFullName();
+    const std::string message = sourceName + " will transfer " + std::to_string(amount) + " gold to " + targetName + ".";
+
+    bool shown = PrismaUIBridge::ShowConfirmation(
+        "Confirm gold transfer", message, "No", "Confirm",
+        [sourceHandle, targetHandle, itemFormId, amount, itemName](bool accepted) {
+            auto dispatch = [sourceHandle, targetHandle, itemFormId, amount, itemName, accepted]() mutable {
+                auto sourceRef = sourceHandle.get();
+                auto targetRef = targetHandle.get();
+                auto* resolvedSource = sourceRef ? sourceRef->As<RE::Actor>() : nullptr;
+                auto* resolvedTarget = targetRef ? targetRef->As<RE::Actor>() : nullptr;
+                auto* resolvedItem = RE::TESForm::LookupByID(itemFormId);
+
+                if (!resolvedSource || !resolvedTarget || !resolvedItem) {
+                    logger::warn("[PAPYRUS] ConfirmMoveInventoryItem skipped; source/target/item no longer valid");
+                    return;
+                }
+
+                int amountArg = amount;
+                std::string itemNameArg = itemName;
+                bool acceptedArg = accepted;
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(resolvedSource), std::move(resolvedTarget),
+                                                      std::move(resolvedItem), std::move(amountArg),
+                                                      std::move(itemNameArg), std::move(acceptedArg));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "ConfirmMoveInventoryItem", args, callback);
+            };
+
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask(std::move(dispatch));
+            } else {
+                dispatch();
+            }
+        });
+
+    return shown ? 1 : 0;
+}
+
+int Papyrus::requestArrestConfirmation(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                       RE::StaticFunctionTag*, RE::Actor* player, RE::Actor* guard,
+                                       RE::TESFaction* crimeFaction) {
+    ScopedPapyrusLock lock("requestArrestConfirmation");
+
+    if (!player || !guard || !crimeFaction) {
+        logger::warn("[PAPYRUS] requestArrestConfirmation: invalid arguments");
+        return 0;
+    }
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        logger::warn("[PAPYRUS] requestArrestConfirmation: Prisma UI not available");
+        return 0;
+    }
+
+    auto playerHandle = player->GetHandle();
+    auto guardHandle = guard->GetHandle();
+    const RE::FormID crimeFactionId = crimeFaction->GetFormID();
+    const std::string guardName = guard->GetDisplayFullName();
+    const std::string message = guardName + " is placing you under arrest. Submit?";
+
+    bool shown = PrismaUIBridge::ShowConfirmation(
+        "Confirm arrest", message, "Resist", "Submit",
+        [playerHandle, guardHandle, crimeFactionId](bool accepted) {
+            auto dispatch = [playerHandle, guardHandle, crimeFactionId, accepted]() mutable {
+                auto playerRef = playerHandle.get();
+                auto guardRef = guardHandle.get();
+                auto* resolvedPlayer = playerRef ? playerRef->As<RE::Actor>() : nullptr;
+                auto* resolvedGuard = guardRef ? guardRef->As<RE::Actor>() : nullptr;
+                auto* resolvedFaction = RE::TESForm::LookupByID<RE::TESFaction>(crimeFactionId);
+
+                if (!resolvedPlayer || !resolvedGuard || !resolvedFaction) {
+                    logger::warn("[PAPYRUS] ConfirmArrestPlayer skipped; player/guard/faction no longer valid");
+                    return;
+                }
+
+                bool acceptedArg = accepted;
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(resolvedPlayer), std::move(resolvedGuard),
+                                                      std::move(resolvedFaction), std::move(acceptedArg));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "ConfirmArrestPlayer", args, callback);
+            };
+
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask(std::move(dispatch));
+            } else {
+                dispatch();
+            }
+        });
+
+    return shown ? 1 : 0;
 }
 
 int Papyrus::commandEnded(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
@@ -2801,11 +2928,13 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
 
     auto targetObject = RE::CrosshairPickData::GetSingleton()->targetActor;
 
-    if (!targetObject) {
+    if (!targetObject && REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
         logger::info("Checking NPC via grabbed ref");
         auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
         targetObject = targetObjectRef.get();
         if (targetObject) logger::info("Checked NPC via grabbed ref {}", targetObject.get()->GetDisplayFullName());
+    } else if (!targetObject) {
+        logger::debug("Skipping grabbed ref target fallback in VR");
     }
 
     ThreadPool::getInstance().enqueue(
@@ -3231,8 +3360,9 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
         auto worldMarker = marker.get();
         if (worldMarker->GetParentCell()) {
             if (!worldMarker->GetParentCell()->IsExteriorCell() ) {
-                if (worldMarker->GetCurrentLocation()->parentLoc) {
-                    auto parentLoc = worldMarker->GetCurrentLocation()->parentLoc;
+                auto currentLocation = worldMarker->GetCurrentLocation();
+                if (currentLocation && currentLocation->parentLoc) {
+                    auto parentLoc = currentLocation->parentLoc;
                     auto parentMarker = parentLoc->worldLocMarker.get();
                     if (parentMarker) {
                         logger::info("getWorldLocationMarkerFor: returning parent location world marker");
@@ -3266,31 +3396,58 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
         // Iterate over specialRefs using begin()/end()
         for (auto it = refs->begin(); it != refs->end(); ++it) {
             const auto& refData = *it;
-            if (refData.type->formType == RE::FormType::LocationRefType) {
-                if (refData.type->GetFormID() == 0x10f63c) {  // MapMarkerRefType
-                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+            if (!refData.type || refData.type->formType != RE::FormType::LocationRefType) {
+                continue;
+            }
 
-                    logger::info("getWorldLocationMarkerFor: Found special ref MapMarkerRefType {:08X}",
+            auto typeFormID = refData.type->GetFormID();
+            if (typeFormID == 0x10f63c) {  // MapMarkerRefType
+                RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                logger::info("getWorldLocationMarkerFor: Found special ref MapMarkerRefType {:08X}",
+                             refData.refData.refID);
+
+                if (!t) {
+                    logger::warn("getWorldLocationMarkerFor: MapMarkerRefType {:08X} could not be resolved",
                                  refData.refData.refID);
-
-                    auto localresult = t->AsReference();
-                    if (localresult) {
-                        result = t->AsReference();
-                        break;
-                    }
-                } else if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
-                    RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
-
-                    logger::info("getWorldLocationMarkerFor: Found special ref LocationCenterMarker {:08X}",
-                                 refData.refData.refID);
-
-                    auto localresult= t->AsReference();
-                    if (localresult->GetParentCell()) {
-                        if (localresult && !localresult->GetParentCell()->IsInteriorCell()) {
-                            result = t->AsReference();
-                        }
-                    }
+                    continue;
                 }
+
+                auto localresult = t->AsReference();
+                if (localresult) {
+                    result = localresult;
+                    break;
+                }
+
+                logger::warn("getWorldLocationMarkerFor: MapMarkerRefType {:08X} is not a reference",
+                             refData.refData.refID);
+            } else if (typeFormID == 0x1bdf1) {  // LocationCenterMarker
+                RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                logger::info("getWorldLocationMarkerFor: Found special ref LocationCenterMarker {:08X}",
+                             refData.refData.refID);
+
+                if (!t) {
+                    logger::warn("getWorldLocationMarkerFor: LocationCenterMarker {:08X} could not be resolved",
+                                 refData.refData.refID);
+                    continue;
+                }
+
+                auto localresult = t->AsReference();
+                if (!localresult) {
+                    logger::warn("getWorldLocationMarkerFor: LocationCenterMarker {:08X} is not a reference",
+                                 refData.refData.refID);
+                    continue;
+                }
+
+                auto parentCell = localresult->GetParentCell();
+                if (parentCell && !parentCell->IsInteriorCell()) {
+                    result = localresult;
+                    break;
+                }
+                // If no parent cell, maybe is an interior 
+                // Watch this for issues it can generate
+                // result = localresult; // Thhis breaks GPS coords
             }
         }
     }
@@ -3304,6 +3461,75 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
 }
 
 
+RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier) {
+    ScopedPapyrusLock lock("getLocationCenterMarker");
+    if (!a_loc) {
+        a_vm->TraceStack("Location is None", a_stackID);
+        logger::error("getLocationCenterMarker: Location is None");
+        return nullptr;
+    }
+    logger::info("getLocationCenterMarker: Location is {},{:08X}", a_loc->GetName(), a_loc->GetFormID());
+    
+    RE::TESObjectREFR* result = nullptr;
+
+    logger::info("getLocationCenterMarker: Location has no world marker");
+    RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
+
+    
+    auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
+    auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
+    auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
+
+    // Iterate over specialRefs using begin()/end()
+    for (auto it = refs->begin(); it != refs->end(); ++it) {
+        const auto& refData = *it;
+        if (refData.type) {
+            if (refData.type->formType == RE::FormType::LocationRefType) {
+                if (modifier == 0) {
+                    if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+
+                        logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 1) {
+                    if (refData.type->GetFormID() == 0x000130fc) {  // insideMarkerRefType
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref insideMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 2) {
+                    if (refData.type->GetFormID() == 0x000130f9) {  // bossTreasureMarkerRefType
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref bossTreasureMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+
+    if (!result)
+        logger::debug("getLocationCenterMarker: returning EMPTY world marker");
+    else
+        logger::debug("getLocationCenterMarker: marker {:08X}", result->GetFormID());
+
+    return result;
+}
 
 RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                            RE::StaticFunctionTag*) {
@@ -4335,6 +4561,16 @@ int Papyrus::isChatboxPanelFocused(RE::BSScript::Internal::VirtualMachine* a_vm,
     return PrismaUIBridge::IsChatboxPanelFocused() ? 1 : 0;
 }
 
+int Papyrus::isAnyPrismaHotkeyPanelFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("isAnyPrismaHotkeyPanelFocused");
+
+    if (!PrismaUIBridge::IsAvailable()) {
+        return 0;
+    }
+
+    return PrismaUIBridge::IsAnyHotkeyPanelFocused() ? 1 : 0;
+}
+
 int Papyrus::toggleSettingsMenu(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("toggleSettingsMenu");
     
@@ -4557,6 +4793,316 @@ void Papyrus::releasePlayerMenuTopicTimer(std::string reason) {
     QueuePlayerMenuTopicTimerOff(std::move(reason));
 }
 
+int Papyrus::scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                     RE::StaticFunctionTag*, RE::Actor* target) {
+    
+    ScopedPapyrusLock lock("scanActorsAroundOffline");
+        // Run GetLowProcessActorNamesFromRef in a separate thread - no need to wait for result
+    ThreadPool::getInstance().enqueue(
+        "ScanActorsAroundOffline",
+        [target]() {
+            GetLowProcessActorNamesFromRef(target);
+            // Result is handled internally by GetLowProcessActorNamesFromRef
+        },
+        target ? target->GetDisplayFullName() : "unknown");
+
+    return 0;
+}
+
+int addBasicProfileReal(RE::ObjectRefHandle targetObject) {
+    if (targetObject) {
+        auto rawTarget = targetObject.get();
+        // logger::info("Checking {}", rawTarget->GetFormType());
+
+        if (targetObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
+            auto targetActor = targetObject.get()->As<RE::Actor>();
+
+            if (!targetActor->IsPlayerTeammate() && false) {
+                logger::info("{} is not a PlayerTeammate", targetObject.get()->GetName());
+
+            } else if (targetActor->IsPlayer()) {
+                logger::info("{} is  the player, refusing", targetObject.get()->GetName());
+
+            } else if (!targetActor->GetRace()->GetPlayable()) {
+                logger::info("{} is not playable, refusing", targetObject.get()->GetName());
+
+            } else {
+                std::string category;
+
+                auto baseActor = targetActor->GetActorBase();
+
+                if (baseActor) {
+                    category.assign(baseActor->GetName());
+                    std::string metainfo;
+                    if (baseActor->GetSex() == RE::SEX::kMale) {
+                        metainfo.append("@male");
+                    } else if (baseActor->GetSex() == RE::SEX::kFemale) {
+                        metainfo.append("@female");
+                    } else {
+                        metainfo.append("@nogender");
+                    }
+
+                    std::string race;
+                    if (baseActor->GetRace()->GetName()) {
+                        metainfo.append("@").append(baseActor->GetRace()->GetName());
+                    }
+
+                    metainfo.append("@").append(std::format("{:08X}", targetActor->GetFormID()));
+
+                    /* Stats gathering */
+                    auto stats = targetActor->AsActorValueOwner();
+
+                    float archery = stats->GetActorValue(RE::ActorValue::kArchery);
+                    float block = stats->GetActorValue(RE::ActorValue::kBlock);
+                    float onehanded = stats->GetActorValue(RE::ActorValue::kOneHanded);
+                    float twohanded = stats->GetActorValue(RE::ActorValue::kTwoHanded);
+
+                    float conjuration = stats->GetActorValue(RE::ActorValue::kConjuration);
+                    float destruction = stats->GetActorValue(RE::ActorValue::kDestruction);
+                    float restoration = stats->GetActorValue(RE::ActorValue::kRestoration);
+                    float alteration = stats->GetActorValue(RE::ActorValue::kAlteration);
+                    float illusion = stats->GetActorValue(RE::ActorValue::kIllusion);  // Use your illusion, great album
+
+                    float heavyarmor = stats->GetActorValue(RE::ActorValue::kHeavyArmor);
+                    float lightarmor = stats->GetActorValue(RE::ActorValue::kLightArmor);
+
+                    float lockpicking = stats->GetActorValue(RE::ActorValue::kLockpicking);
+                    float pickpocket = stats->GetActorValue(RE::ActorValue::kPickpocket);
+                    float sneak = stats->GetActorValue(RE::ActorValue::kSneak);
+
+                    float speech = stats->GetActorValue(RE::ActorValue::kSpeech);
+                    float smithing = stats->GetActorValue(RE::ActorValue::kSmithing);
+                    float alchemy = stats->GetActorValue(RE::ActorValue::kAlchemy);
+                    float enchanting = stats->GetActorValue(RE::ActorValue::kEnchanting);  // enchanting? enchaaantiing
+
+                    metainfo.append("@").append(std::format("{}", archery));
+                    metainfo.append("@").append(std::format("{}", block));
+                    metainfo.append("@").append(std::format("{}", onehanded));
+                    metainfo.append("@").append(std::format("{}", twohanded));
+                    metainfo.append("@").append(std::format("{}", conjuration));
+                    metainfo.append("@").append(std::format("{}", destruction));
+                    metainfo.append("@").append(std::format("{}", restoration));
+                    metainfo.append("@").append(std::format("{}", alteration));
+                    metainfo.append("@").append(std::format("{}", illusion));
+                    metainfo.append("@").append(std::format("{}", heavyarmor));
+                    metainfo.append("@").append(std::format("{}", lightarmor));
+                    metainfo.append("@").append(std::format("{}", lockpicking));
+                    metainfo.append("@").append(std::format("{}", pickpocket));
+                    metainfo.append("@").append(std::format("{}", sneak));
+                    metainfo.append("@").append(std::format("{}", speech));
+                    metainfo.append("@").append(std::format("{}", smithing));
+                    metainfo.append("@").append(std::format("{}", alchemy));
+                    metainfo.append("@").append(std::format("{}", enchanting));
+
+                    /* Equipment gathering (10 slots: helmet, armor, boots, gloves, amulet, ring, cape, backpack,
+                     * left hand, right hand) */
+                    auto* helmet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHead);
+                    auto* armor = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kBody);
+                    auto* boots = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kFeet);
+                    auto* gloves = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands);
+                    auto* amulet = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kAmulet);
+                    auto* ring = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
+                    auto* cape = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModChestPrimary);
+                    auto* backpack = targetActor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kModBack);
+                    auto* leftHand = targetActor->GetEquippedObject(true);    // Left hand
+                    auto* rightHand = targetActor->GetEquippedObject(false);  // Right hand
+
+                    metainfo.append("@").append(helmet ? helmet->GetName() : "");
+                    metainfo.append("@").append(armor ? armor->GetName() : "");
+                    metainfo.append("@").append(boots ? boots->GetName() : "");
+                    metainfo.append("@").append(gloves ? gloves->GetName() : "");
+                    metainfo.append("@").append(amulet ? amulet->GetName() : "");
+                    metainfo.append("@").append(ring ? ring->GetName() : "");
+                    metainfo.append("@").append(cape ? cape->GetName() : "");
+                    metainfo.append("@").append(backpack ? backpack->GetName() : "");
+                    metainfo.append("@").append(leftHand ? leftHand->GetName() : "");
+                    metainfo.append("@").append(rightHand ? rightHand->GetName() : "");
+
+                    /* Stats gathering (core attributes) */
+                    auto level = targetActor->GetLevel();
+                    float health = stats->GetActorValue(RE::ActorValue::kHealth);
+                    float healthMax = stats->GetBaseActorValue(RE::ActorValue::kHealth);
+                    float magicka = stats->GetActorValue(RE::ActorValue::kMagicka);
+                    float magickaMax = stats->GetBaseActorValue(RE::ActorValue::kMagicka);
+                    float stamina = stats->GetActorValue(RE::ActorValue::kStamina);
+                    float staminaMax = stats->GetBaseActorValue(RE::ActorValue::kStamina);
+                    float scale = targetActor->GetScale();
+
+                    metainfo.append("@").append(std::format("{}", level));
+                    metainfo.append("@").append(std::format("{}", health));
+                    metainfo.append("@").append(std::format("{}", healthMax));
+                    metainfo.append("@").append(std::format("{}", magicka));
+                    metainfo.append("@").append(std::format("{}", magickaMax));
+                    metainfo.append("@").append(std::format("{}", stamina));
+                    metainfo.append("@").append(std::format("{}", staminaMax));
+                    metainfo.append("@").append(std::format("{:.2f}", scale));
+
+                    auto* modFiles = targetActor->sourceFiles.array;
+                    if (!modFiles) {
+                        if (targetActor->GetActorBase()) modFiles = targetActor->GetActorBase()->sourceFiles.array;
+                    }
+
+                    if (modFiles && modFiles->size() > 0) {
+                        metainfo.append("@");
+                        for (std::uint32_t i = 0; i < modFiles->size(); ++i) {
+                            RE::TESFile* file = (*modFiles)[i];
+                            if (file) {
+                                if (i > 0) metainfo.append("#");
+                                metainfo.append(file->fileName);
+                            }
+                        }
+                    } else {
+                        metainfo.append("@");
+                    }
+
+                    /* Faction gathering */
+                    std::string factionData;
+                    if (baseActor && baseActor->factions.size() > 0) {
+                        for (std::uint32_t i = 0; i < baseActor->factions.size(); ++i) {
+                            auto factionInfo = baseActor->factions[i];
+                            if (factionInfo.faction) {
+                                if (!factionData.empty()) factionData.append("#");
+                                std::string stableFactionReference;
+                                if (auto* factionFile = factionInfo.faction->GetFile(0)) {
+                                    const std::string pluginName(factionFile->GetFilename());
+                                    const auto localFormId =
+                                        static_cast<std::uint32_t>(factionInfo.faction->GetLocalFormID());
+                                    if (!pluginName.empty()) {
+                                        stableFactionReference = std::format("{}/{:08X}", pluginName, localFormId);
+                                    }
+                                }
+                                // Format: formID:rank:PluginName.esp|LocalFormId
+                                factionData.append(std::format("{:08X}:{:d}:{}", factionInfo.faction->GetFormID(),
+                                                               static_cast<int>(factionInfo.rank),
+                                                               stableFactionReference));
+                            }
+                        }
+                    }
+                    metainfo.append("@").append(factionData);
+
+                    /* Class gathering */
+                    std::string classData;
+                    if (baseActor && baseActor->npcClass) {
+                        auto npcClass = baseActor->npcClass;
+                        std::string className = npcClass->GetName() ? npcClass->GetName() : "";
+
+                        // Get training data from class data
+                        std::string trainSkill = "";
+                        int trainLevel = 0;
+
+                        // TESClass data structure contains training info
+                        // Check if maximumTrainingLevel is greater than 0 to determine if this class trains
+                        if (npcClass->data.maximumTrainingLevel > 0) {
+                            // Convert CLASS_DATA::Skill to skill name string
+                            auto skillValue = npcClass->data.teaches;
+                            switch (skillValue.underlying()) {
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kOneHanded):
+                                    trainSkill = "OneHanded";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kTwoHanded):
+                                    trainSkill = "TwoHanded";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kArchery):
+                                    trainSkill = "Archery";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kBlock):
+                                    trainSkill = "Block";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kSmithing):
+                                    trainSkill = "Smithing";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kHeavyArmor):
+                                    trainSkill = "HeavyArmor";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kLightArmor):
+                                    trainSkill = "LightArmor";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kPickpocket):
+                                    trainSkill = "Pickpocket";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kLockpicking):
+                                    trainSkill = "Lockpicking";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kSneak):
+                                    trainSkill = "Sneak";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kAlchemy):
+                                    trainSkill = "Alchemy";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kSpeech):
+                                    trainSkill = "Speech";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kAlteration):
+                                    trainSkill = "Alteration";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kConjuration):
+                                    trainSkill = "Conjuration";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kDestruction):
+                                    trainSkill = "Destruction";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kIllusion):
+                                    trainSkill = "Illusion";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kRestoration):
+                                    trainSkill = "Restoration";
+                                    break;
+                                case static_cast<uint8_t>(RE::CLASS_DATA::Skill::kEnchanting):
+                                    trainSkill = "Enchanting";
+                                    break;
+                                default:
+                                    trainSkill = "";
+                                    break;
+                            }
+                            trainLevel = static_cast<int>(npcClass->data.maximumTrainingLevel);
+                        }
+
+                        classData =
+                            std::format("{}:{:08X}:{}:{}", className, npcClass->GetFormID(), trainSkill, trainLevel);
+                    }
+                    metainfo.append("@").append(classData);
+
+                    category.append(metainfo);
+
+                    HTTPManager::log(std::format("addbgnpc|{}|{}|{}@{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                 targetActor->GetDisplayFullName(), category));
+                }
+            }
+
+        } else {
+            logger::info("{} is not an NPC", targetObject.get()->GetName());
+        }
+    }
+    return 0;
+}
+
+
+int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                     RE::StaticFunctionTag*, RE::Actor* target) {
+    ScopedPapyrusLock lock("addBasicProfile");
+    
+    if (target->GetHandle()) {
+        addBasicProfileReal(target->GetHandle());
+        RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, true);
+    } else {
+        logger::warn("[addBasicProfile] Target actor has no valid handle.");
+    }
+    return 0;
+}
+
+ int Papyrus::updateRemoteInventory(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                    RE::StaticFunctionTag*,RE::Actor* target) {
+
+     ScopedPapyrusLock lock("updateRemoteInventory");
+
+     if (target->GetHandle()) {
+         RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, false);
+     } else {
+         logger::warn("[addBasicProfile] Target actor has no valid handle.");
+     }
+     return 0;
+}
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
@@ -4568,6 +5114,9 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("setLocked", "AIAgentFunctions", setLocked, false);
     a_vm->RegisterFunction("isActorTalking", "AIAgentFunctions", isActorTalking, false);
     a_vm->RegisterFunction("getPlayerBountyForGuard", "AIAgentFunctions", getPlayerBountyForGuard, false);
+    a_vm->RegisterFunction("requestMoveInventoryItemConfirmation", "AIAgentFunctions",
+                           requestMoveInventoryItemConfirmation, false);
+    a_vm->RegisterFunction("requestArrestConfirmation", "AIAgentFunctions", requestArrestConfirmation, false);
     a_vm->RegisterFunction("sendRequest", "AIAgentFunctions", sendRequest, false);
     a_vm->RegisterFunction("stopRecording", "AIAgentFunctions", stopRecording, false);
     a_vm->RegisterFunction("startOpenMicMonitoring", "AIAgentFunctions", startOpenMicMonitoring, false);
@@ -4586,11 +5135,13 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);
     a_vm->RegisterFunction("setDrivenByAI", "AIAgentFunctions", setDrivenByAI, false);
     a_vm->RegisterFunction("setDrivenByAIA", "AIAgentFunctions", setDrivenByAIA, false);
+    a_vm->RegisterFunction("addBasicProfile", "AIAgentFunctions", addBasicProfile, false);
     a_vm->RegisterFunction("setNewActionMode", "AIAgentFunctions", setNewActionMode, false);
     a_vm->RegisterFunction("getClosestAgent", "AIAgentFunctions", getClosestAgent, false);
     a_vm->RegisterFunction("getAgentByName", "AIAgentFunctions", getAgentByName, false);
     a_vm->RegisterFunction("getLocationMarkerFor", "AIAgentFunctions", getLocationMarkerFor, false);
     a_vm->RegisterFunction("getWorldLocationMarkerFor", "AIAgentFunctions", getWorldLocationMarkerFor, false);
+    a_vm->RegisterFunction("getLocationCenterMarker", "AIAgentFunctions", getLocationCenterMarker, false);
     a_vm->RegisterFunction("sendAllVoices", "AIAgentFunctions", sendAllVoices, false);
     a_vm->RegisterFunction("findAllNearbyAgents", "AIAgentFunctions", findAllNearbyAgents, false);
     a_vm->RegisterFunction("findAllAgents", "AIAgentFunctions", findAllAgents, false);
@@ -4662,6 +5213,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("unfocusChatboxPanel", "AIAgentFunctions", unfocusChatboxPanel, false);
     a_vm->RegisterFunction("isChatboxPanelVisible", "AIAgentFunctions", isChatboxPanelVisible, false);
     a_vm->RegisterFunction("isChatboxPanelFocused", "AIAgentFunctions", isChatboxPanelFocused, false);
+    a_vm->RegisterFunction("isAnyPrismaHotkeyPanelFocused", "AIAgentFunctions", isAnyPrismaHotkeyPanelFocused, false);
     
     a_vm->RegisterFunction("toggleSettingsMenu", "AIAgentFunctions", toggleSettingsMenu, false);
     a_vm->RegisterFunction("getSettingsMenuPendingAction", "AIAgentFunctions", getSettingsMenuPendingAction, false);
@@ -4672,6 +5224,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
 
     a_vm->RegisterFunction("startMusicScene", "AIAgentFunctions", startMusicScene, false);
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
-    
+
+    a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
+    a_vm->RegisterFunction("updateRemoteInventory", "AIAgentFunctions", updateRemoteInventory, false);
     return true;
 }

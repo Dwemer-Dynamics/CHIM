@@ -37,6 +37,9 @@ int			_myKey7				= -1
 int			_slider_volume
 float		_sound_volume				= 50.0
 
+int			_slider_head_voice_volume
+float		_head_voice_volume			= 100.0
+
 int			_slider_preclip
 float		_sound_preclip				= 100.0
 
@@ -245,6 +248,7 @@ int			_myKey6Default					= -1
 int			_myKey7Default					= -1
 bool		_toggleState2Default			= false
 float		_sound_volumeDefault			= 75.0
+float		_head_voice_volumeDefault		= 100.0
 float		_sound_preclipDefault			= 100.0
 float		_sound_postclipDefault			= 0.0
 float		_sound_dsDefault				= 10.0
@@ -341,20 +345,20 @@ endEvent
 event OnConfigInit()
 
 	ModName="CHIM"
-	Pages = new string[7]
-	Pages[0] = "Main"
+	Pages = new string[6]
+	Pages[0] = "Hotkeys"
 	Pages[1] = "Auto Activate"
 	Pages[2] = "Behavior"
 	Pages[3] = "Sound"
-	Pages[4] = "Prisma UI"
-	Pages[5] = "AI Agents"
-	Pages[6] = "Tools"
+	Pages[4] = "AI Agents"
+	Pages[5] = "Tools"
 	
 	Debug.Trace("[AIAGENT] OnConfigInit");
 	
 	_sound_postclip				= 0.0
 	_sound_preclip				= 100.0
 	_sound_volume				= 75 
+	_head_voice_volume			= 100
 	_lip_res				= 500.0
 	_lip_int				= 1.0
 	if (CurrentVersion>1)
@@ -532,12 +536,24 @@ endEvent
 
 int function GetVersion()
 
-	return 67
+	return 69
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 69 && a_version > CurrentVersion)
+		; Version 69: Added independent narrator and player TTS playback volume
+		_head_voice_volume = 100.0
+		controlScript.setConf("_head_voice_volume", _head_voice_volume)
+		OnConfigInit()
+	endIf
+
+	if (a_version == 68 && a_version > CurrentVersion)
+		; Version 68: Reworked MCM hotkeys and moved behavior settings
+		OnConfigInit()
+	endIf
 
 	if (a_version == 67 && a_version > CurrentVersion)
 		; Version 67: Added auto hearing radius slider
@@ -685,30 +701,34 @@ event OnPageReset(string a_page)
 	SetCursorFillMode(LEFT_TO_Right)
 	
 	
-	if (a_page=="Main" || a_page=="")
-		; === Communication Hotkeys ===
-		_keymapOID_K = AddKeyMapOption("CHIM Chat", _myKey)
+	if (a_page=="Hotkeys" || a_page=="Main" || a_page=="")
+		AddHeaderOption("Primary Hotkeys")
+		AddEmptyOption()
+		_keymap_chatbox_focus = AddKeyMapOption("Text Chat", _chatbox_focus_key)
 		_keymapOID_K2 = AddKeyMapOption("Voice Chat", _myKey2)
-		
-		; === Master Wheel ===
-		_keymap_masterwheel		= AddKeyMapOption("Master Wheel", _masterwheel_key)
-		
-		; === Wheel Hotkeys ===
-		_keymapOID_K4		= AddKeyMapOption("Roleplay Wheel", _myKey4)
-		_keymapOID_K3		= AddKeyMapOption("Settings Wheel", _myKey3)
-		_keymap_godmode		= AddKeyMapOption("Mode Wheel", _godmode_key)
-		_keymapOID_K6		= AddKeyMapOption("Soulgaze Wheel", _myKey6)
-		
-		; === Action Hotkeys ===
-		_keymapOID_K7		= AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_halt		= AddKeyMapOption("Halt AI Actions", _halt_key)
-		
-		; === Settings ===
-		_toggle1OID_C		= AddToggleOption("Enable AI Actions", _toggleState2)
-		_toggleAnimation		= AddToggleOption("Enable Animations", _animationstate)
-		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
-		_toggle1OID_E		= AddToggleOption("Soulgaze HD Mode", _toggleState7)
-		_slider_timeout	= AddSliderOption("Connection Timeout (seconds)",_timeout_int,"{1}" )
+		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
+		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
+		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
+		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
+
+		AddEmptyOption()
+		AddHeaderOption("Prisma Hotkeys")
+		AddEmptyOption()
+		_keymap_chatbox = AddKeyMapOption("Chatbox View", _chatbox_key)
+		_keymap_settingsmenu = AddKeyMapOption("Actions Menu", _settingsmenu_key)
+		_keymap_overlaystatus_cycle = AddKeyMapOption("Status, Minihud, Terminator Views", _overlaystatus_cycle_key)
+		_keymap_historydiaries_cycle = AddKeyMapOption("History/Diaries", _historydiaries_cycle_key)
+		_keymap_browser = AddKeyMapOption("Browser Beta", _browser_key)
+		_keymap_debugger = AddKeyMapOption("Logs View (Beta)", _debugger_key)
+
+		AddEmptyOption()
+		AddHeaderOption("Wheel Menus (Deprecated)")
+		AddEmptyOption()
+		_keymap_masterwheel = AddKeyMapOption("Master Wheel", _masterwheel_key)
+		_keymapOID_K4 = AddKeyMapOption("Roleplay Wheel", _myKey4)
+		_keymapOID_K3 = AddKeyMapOption("Settings Wheel", _myKey3)
+		_keymap_godmode = AddKeyMapOption("Mode Wheel", _godmode_key)
+		_keymapOID_K6 = AddKeyMapOption("Soulgaze Wheel", _myKey6)
 	endif
 	
 
@@ -734,6 +754,16 @@ event OnPageReset(string a_page)
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
 		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
+		AddEmptyOption()
+		AddHeaderOption("General Behavior")
+		AddEmptyOption()
+
+		_toggle1OID_C = AddToggleOption("Enable AI Actions", _toggleState2)
+		_toggleAnimation = AddToggleOption("Enable Animations", _animationstate)
+		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
+		_toggle1OID_E = AddToggleOption("Soulgaze HD Mode", _toggleState7)
+		_slider_timeout = AddSliderOption("Connection Timeout (seconds)", _timeout_int, "{1}")
+
 		AddEmptyOption()
 		AddHeaderOption("NPC Behavior")
 		AddEmptyOption()
@@ -761,6 +791,7 @@ event OnPageReset(string a_page)
 		AddHeaderOption("Basic")
 		AddEmptyOption()
 		_slider_volume		= AddSliderOption("AI Voice Volume", _sound_volume,"{0}")
+		_slider_head_voice_volume = AddSliderOption("Narrator / Player TTS Volume (%)", _head_voice_volume,"{0}")
 		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}" )
 		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}")
 		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}")
@@ -793,18 +824,6 @@ event OnPageReset(string a_page)
 		_text_current_recording_device = AddTextOption("Current Device", AIAgentFunctions.getCurrentRecordingDeviceName())
 
 	
-	endif
-	
-	if (a_page=="Prisma UI")
-		AddHeaderOption("Hotkeys")
-		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
-		_keymap_chatbox_focus = AddKeyMapOption("CHIM Chat", _chatbox_focus_key)
-		_keymap_chatbox = AddKeyMapOption("Chatbox View", _chatbox_key)
-		_keymap_settingsmenu = AddKeyMapOption("Actions Menu", _settingsmenu_key)
-		_keymap_overlaystatus_cycle = AddKeyMapOption("Status, Minihud, Terminator Views", _overlaystatus_cycle_key)
-		_keymap_historydiaries_cycle = AddKeyMapOption("History/Diaries", _historydiaries_cycle_key)
-		_keymap_browser = AddKeyMapOption("Browser (Beta)", _browser_key)
-		_keymap_debugger = AddKeyMapOption("Logs View (Beta)", _debugger_key)
 	endif
 	
 	if (a_page=="AI Agents")
@@ -888,6 +907,13 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogDefaultValue(50)
 		SetSliderDialogRange(0, 500)
 		SetSliderDialogInterval(2)
+	endIf
+
+	if (a_option == _slider_head_voice_volume)
+		SetSliderDialogStartValue(_head_voice_volume)
+		SetSliderDialogDefaultValue(100)
+		SetSliderDialogRange(0, 200)
+		SetSliderDialogInterval(5)
 	endIf
 	
 	if (a_option == _slider_preclip)
@@ -1024,6 +1050,11 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		controlScript.setConf("_sound_volume",a_value)
 		SetSliderOptionValue(a_option, a_value, "{0}")
 	endIf
+	if (a_option == _slider_head_voice_volume)
+		_head_voice_volume = a_value
+		controlScript.setConf("_head_voice_volume", a_value)
+		SetSliderOptionValue(a_option, a_value, "{0}")
+	endIf
 		if (a_option == _slider_preclip)
 		_sound_preclip = a_value
 		controlScript.setConf("_sound_preclip",a_value)
@@ -1151,6 +1182,7 @@ event OnGameReload()
 	a=controlScript.setConf("_sound_postclip",_sound_postclip)
 	a=controlScript.setConf("_sound_preclip",_sound_preclip)
 	a=controlScript.setConf("_sound_volume",_sound_volume)
+	a=controlScript.setConf("_head_voice_volume",_head_voice_volume)
 	if (_sound_ds < 0.1)
 		_sound_ds = 0.1
 	elseif (_sound_ds > 20.0)
@@ -1335,6 +1367,11 @@ event OnOptionDefault(int a_option)
 		_sound_volume = _sound_volumeDefault
 		SetSliderOptionValue(a_option, _sound_volume, "{1}")
 
+	elseif (a_option == _slider_head_voice_volume)
+		_head_voice_volume = _head_voice_volumeDefault
+		controlScript.setConf("_head_voice_volume", _head_voice_volume)
+		SetSliderOptionValue(a_option, _head_voice_volume, "{0}")
+
 	elseif (a_option == _slider_ds)
 		_sound_ds = _sound_dsDefault
 		controlScript.setConf("_sound_ds", _sound_ds)
@@ -1461,7 +1498,7 @@ event OnOptionKeyMapChange(int a_option, int a_keyCode, string a_conflictControl
 
 	bool prismaChatHotkeyConflict = a_keyCode != -1 && ((a_option == _keymap_chatbox && a_keyCode == _chatbox_focus_key) || (a_option == _keymap_chatbox_focus && a_keyCode == _chatbox_key))
 	if (prismaChatHotkeyConflict)
-		ShowMessage("CHIM Chat and Chatbox View must use different hotkeys.")
+		ShowMessage("Text Chat and Chatbox View must use different hotkeys.")
 		return
 	endIf
 
@@ -1909,9 +1946,9 @@ event OnOptionSelect(int a_option)
  	endIf
 	
 	if (a_option == _actionSendLocations)
-		ShowMessage("Please wait 3-5 minutes. You only need to do this once per playthrough.")
+		ShowMessage("Please wait 3-5 minutes, stay at this screen waiting for end confirmation. You can bring up console to check progress ")
  		AIAgentPapyrusFunctions.RunToolsSendFactionLocationInfo()
- 		ShowMessage("factions and locations fully synced and complete!")
+ 		ShowMessage("factions,locations and unique NPCs fully synced and complete!")
  	endIf
 	
   	if (a_option == _actionSendVoices)
@@ -2000,7 +2037,7 @@ event OnOptionHighlight(int a_option)
 	{Called when the user highlights an option}
 	
 	if (a_option == _keymapOID_K)
-		SetInfoText("Open a text box to communicate with AI NPCs via typed messages.")
+		SetInfoText("Deprecated text chat input. Use Text Chat for the Prisma UI chat input when available.")
 	endIf
 	if (a_option == _toggle1OID_B)
 		SetInfoText("Enables Text-to-Speech for AI NPCs.")
@@ -2031,6 +2068,9 @@ event OnOptionHighlight(int a_option)
 	endIf
 	if (a_option == _slider_volume)
 		SetInfoText("Set AI NPC speech volume.")
+	endIf
+	if (a_option == _slider_head_voice_volume)
+		SetInfoText("Adjust narrator and player TTS playback relative to AI Voice Volume. 100% keeps the current level; 0% mutes both in-head voices only.")
 	endIf
 	if (a_option == _slider_preclip)
 		SetInfoText("Skips specified millisecods at begining of a sentence. Some TTS services add some silence at the begining of audio clips.")
@@ -2174,7 +2214,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _keymap_chatbox_focus)
-		SetInfoText("Open CHIM Chat input for Prisma UI so you can type and send a message, then return control to the game.")
+		SetInfoText("Open Text Chat in Prisma UI so you can type and send a message, or summarize an open book, then return control to the game.")
 	endIf
 	
 	if (a_option == _keymap_settingsmenu)
@@ -2194,7 +2234,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _actionSendLocations)
-		SetInfoText("Send faction and location info to the server so TravelTo works better. This can take 3-5 minutes and only needs to be done once per playthrough.")
+		SetInfoText("Send faction,location and unique NPCs info to the server. This can take 3-5 minutes and only needs to be done once per playthrough.")
 	endIf
 	
 	if (a_option == _actionSendVoices)

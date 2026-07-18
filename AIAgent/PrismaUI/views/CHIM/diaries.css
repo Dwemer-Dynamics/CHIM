@@ -198,7 +198,10 @@ body {
 
 /* Diary Parchment View - Full height when in fullscreen */
 .diary-parchment {
-    background: url('http://192.168.169.218:8081/HerikaServer/ui/images/paper.jpg') center/cover;
+    background-color: #d9c08c;
+    background-image: url('images/paper.jpg');
+    background-position: center;
+    background-size: cover;
     padding: 50px 80px;
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);

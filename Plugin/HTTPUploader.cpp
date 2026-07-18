@@ -470,7 +470,7 @@ std::string HTTPUploader::UploadCSVFile(std::string data, std::string filename, 
     
     // Validate import type
     static const std::vector<std::string> validTypes = {
-        "biography_import", "oghma_import", "dynamic_oghma_import", "description_import", "custom_action_import"
+        "biography_import", "oghma_import", "dynamic_oghma_import", "description_import", "custom_action_import", "traditional_quest_import"
     };
     if (std::find(validTypes.begin(), validTypes.end(), fileType) == validTypes.end()) {
         logger::error("CSV upload failed: Invalid import type '{}'", fileType);

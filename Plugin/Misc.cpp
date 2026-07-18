@@ -618,7 +618,8 @@ bool IsValidImportType(const std::string& fileType) {
         "oghma_import", 
         "dynamic_oghma_import",
         "description_import",
-        "custom_action_import"
+        "custom_action_import",
+        "traditional_quest_import"
     };
     
     return std::find(validTypes.begin(), validTypes.end(), fileType) != validTypes.end();
@@ -635,19 +636,21 @@ void DetectAndUploadImportDataFiles() {
         std::vector<std::string> oghmaFiles = FindOghmaImportFiles(chimPath);
         std::vector<std::string> dynamicOghmaFiles = FindDynamicOghmaImportFiles(chimPath);
         std::vector<std::string> itemFiles = FindItemImportFiles(chimPath);
+        std::vector<std::string> traditionalQuestFiles = FindTraditionalQuestImportFiles(chimPath);
         
-        if (importDataFiles.empty() && customActionFiles.empty() && oghmaFiles.empty() && dynamicOghmaFiles.empty() && itemFiles.empty()) {
+        if (importDataFiles.empty() && customActionFiles.empty() && oghmaFiles.empty() && dynamicOghmaFiles.empty() && itemFiles.empty() && traditionalQuestFiles.empty()) {
             logger::info("No import data CSV files found in CHIM directory");
             return;
         }
         
         logger::info(
-            "Found {} biography files, {} custom action files, {} oghma files, {} dynamic oghma files, and {} item files",
+            "Found {} biography files, {} custom action files, {} oghma files, {} dynamic oghma files, {} item files, and {} traditional quest files",
             importDataFiles.size(),
             customActionFiles.size(),
             oghmaFiles.size(),
             dynamicOghmaFiles.size(),
-            itemFiles.size()
+            itemFiles.size(),
+            traditionalQuestFiles.size()
         );
         
         // Process biography files
@@ -684,6 +687,9 @@ void DetectAndUploadImportDataFiles() {
         
         // Process item files
         ProcessItemImportFiles(itemFiles);
+
+        // Process traditional quest files
+        ProcessTraditionalQuestImportFiles(traditionalQuestFiles);
         
     } catch (const std::exception& e) {
         logger::error("Error during import data detection: {}", e.what());
@@ -986,6 +992,58 @@ void ProcessItemImportFiles(const std::vector<std::string>& itemFiles) {
     }
 }
 
+// Traditional Quest Import Detection Functions
+std::vector<std::string> FindTraditionalQuestImportFiles(const std::string& directoryPath) {
+    std::vector<std::string> traditionalQuestFiles;
+
+    try {
+        if (!std::filesystem::exists(directoryPath)) {
+            logger::warn("CHIM directory does not exist: {}", directoryPath);
+            return traditionalQuestFiles;
+        }
+
+        for (const auto& entry : std::filesystem::directory_iterator(directoryPath)) {
+            if (entry.is_regular_file()) {
+                std::string filename = entry.path().filename().string();
+                if (filename.ends_with("_tradquest.csv")) {
+                    traditionalQuestFiles.push_back(entry.path().string());
+                    logger::debug("Found traditional quest import file: {}", filename);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        logger::error("Error scanning for traditional quest import files: {}", e.what());
+    }
+
+    return traditionalQuestFiles;
+}
+
+void ProcessTraditionalQuestImportFiles(const std::vector<std::string>& traditionalQuestFiles) {
+    for (const auto& filePath : traditionalQuestFiles) {
+        try {
+            const std::string fileType = "traditional_quest_import";
+            if (!IsValidImportType(fileType)) {
+                logger::error("Invalid import type: {}", fileType);
+                continue;
+            }
+
+            std::string csvContent = ParseImportDataCSV(filePath);
+            if (!csvContent.empty()) {
+                std::string filename = std::filesystem::path(filePath).filename().string();
+                std::string response = HTTPUploader::UploadCSVFile(csvContent, filename, fileType);
+
+                if (!response.empty() && response != "...") {
+                    logger::info("Successfully uploaded traditional quest import file: {} (Response: {})", filename, response);
+                } else {
+                    logger::error("Failed to upload traditional quest import file: {}", filename);
+                }
+            }
+        } catch (const std::exception& e) {
+            logger::error("Error processing traditional quest file {}: {}", filePath, e.what());
+        }
+    }
+}
+
 // Voice CSV Detection and Management Functions
 static std::unordered_map<std::string, std::string> csvVoiceCache;
 static bool csvVoiceCacheLoaded = false;
@@ -1227,4 +1285,106 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
     float pitch = std::atan2(sinr_cosp, cosr_cosp) * -1;  // negated like in reference
 
     return pitch;  // Returns radians
+}
+
+
+std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
+
+    if (!target) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: target is null");
+        return {};
+    }
+
+    auto processLists = RE::ProcessLists::GetSingleton();
+
+
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef start for: {}",target->GetDisplayFullName());
+    if (!processLists) {
+        logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: processLists is null");
+        return {};
+    }
+
+
+    auto startTime = std::chrono::high_resolution_clock::now();
+    std::vector<std::pair<std::string, RE::FormID>> results;
+    int n = 0;
+
+    RE::TESObjectCELL* targetCell = target->GetParentCell();
+    RE::TESWorldSpace* targetWorldspace = target->GetWorldspace();
+
+    // lowActorHandles contains weak handles to Actor processes
+    for (auto& handle : processLists->lowActorHandles) {
+        // Convert handle -> ActorPtr safely
+        RE::Actor* actor = handle.get().get();
+        if (!actor) {
+            continue;
+        }
+
+        if (actor->GetFormID() == target->GetFormID()) {
+            // Skip the target actor itself
+            continue;
+        }
+        // Basic validity checks
+        if (!actor->Is3DLoaded() && !actor->GetParentCell()) {
+            // still may be valid persistent actor, so don't skip blindly
+        }
+
+        // Actor identity
+        auto baseForm = actor->GetBaseObject();
+        if (!baseForm) {
+            continue;
+        }
+
+        std::string name = actor->GetDisplayFullName();
+        RE::FormID id = actor->GetFormID();
+        RE::TESObjectCELL* cell = actor->GetParentCell();
+
+        if (!cell || !targetCell || cell != targetCell) {
+            // Skip actors that are in a different cell than the target, or cells are null
+            //logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",name.empty() ? "Unknown" : name, id);
+            continue;
+        }
+
+        // Distance from target
+
+        float distance = target->GetPosition().GetDistance(actor->GetPosition());
+        if (distance > 4096) {
+            // Skip actors that are too far from the target
+            continue;
+        }
+
+        RE::TESWorldSpace* worldspace = actor->GetWorldspace();
+        if (targetWorldspace != worldspace) {
+            // Skip actors that are in a different worldspace than the target
+            continue;
+        }
+
+        auto pos = actor->GetPosition();
+
+        logger::info("[LOW ACTOR] {} ({:X}) pos=({}, {}, {}), distance {}", name.empty() ? "Unknown" : name, id, pos.x,
+                     pos.y, pos.z, distance);
+
+        results.push_back({name.empty() ? "Unknown" : name, actor->GetFormID()});
+        n++;
+    }
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+    logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms, actors found {}", duration, n);
+
+    json actorsNearby = json::array();
+    for (const auto& [actorName, formId] : results) {
+        actorsNearby.push_back({{"name", actorName}, {"formId", formId}});
+    }
+
+    json finalData;
+    finalData["type"] = "low_process_actors";
+    finalData["actor_name"] = target->GetDisplayFullName();
+    finalData["actor_type"] = "npc";
+    finalData["actors_nearby"] = actorsNearby;
+    finalData["gamets"] = GetGameTimeStamp();
+    finalData["ts"] = getCurrentTimeMillis();
+
+    HTTPManager::postGameData("gamedata.php", finalData);
+    return results;
 }

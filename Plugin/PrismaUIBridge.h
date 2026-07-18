@@ -5,6 +5,7 @@
 #include "json.hpp"
 #include <cstdint>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -60,7 +61,8 @@ namespace PrismaUIBridge {
     // Push a single new dialogue entry to the UI (for real-time updates)
     void PushDialogueEntry(const std::string& speaker, const std::string& text, 
                            const std::string& timestamp, const std::string& eventType,
-                           const std::string& source = "llm");
+                           const std::string& source = "llm",
+                           const std::string& speakerType = "");
 
     // ===== CHIM Overlay Functions =====
 
@@ -240,6 +242,9 @@ namespace PrismaUIBridge {
     // Check if the chatbox panel has focus
     bool IsChatboxPanelFocused();
 
+    // Check whether a Prisma panel opened by a CHIM hotkey currently has focus.
+    bool IsAnyHotkeyPanelFocused();
+
     // Check and update chatbox control strip state (target/mode/focus/nearby).
     // Set force=true to bypass the short refresh throttle after explicit UI actions.
     void CheckAndUpdateChatboxControls(bool force = false);
@@ -267,6 +272,14 @@ namespace PrismaUIBridge {
 
     // Clear any active chatbox target override
     void ClearChatboxTargetOverride();
+
+    // ===== CHIM Confirmation Modal Functions =====
+
+    using ConfirmationCallback = std::function<void(bool accepted)>;
+
+    bool ShowConfirmation(const std::string& title, const std::string& message,
+                          const std::string& cancelLabel, const std::string& acceptLabel,
+                          ConfirmationCallback callback);
 
     // Monotonic token used to invalidate late dialogue responses after a hard stop
     std::uint64_t GetDialogueStopGeneration();

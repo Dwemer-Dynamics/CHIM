@@ -110,7 +110,86 @@ namespace PrismaUIBridge {
     static std::string g_chatboxCurrentModelLabel = "Standard";
     static bool g_chatboxModelInitialized = false;
     static std::string g_lastChatboxModelLabel = "";
+    static std::string g_chatboxCurrentRechatMode = "random";
+    static std::atomic<bool> g_chatboxRechatModeLoaded{false};
+    static bool g_chatboxRechatModeSentInitialized = false;
+    static std::string g_lastChatboxRechatMode = "";
     static std::atomic<std::uint64_t> g_dialogueStopGeneration{0};
+    static std::atomic<bool> g_chatboxGameplayInputSuppressed{false};
+
+    static void SetChatboxGameplayInputSuppressed(bool suppressed) {
+        const bool previous = g_chatboxGameplayInputSuppressed.exchange(suppressed);
+        if (previous != suppressed) {
+            logger::info(
+                "[PrismaUIBridge] Chatbox gameplay input suppression {}",
+                suppressed ? "enabled" : "disabled");
+        }
+    }
+
+    class ChatboxInputSink final : public RE::BSTEventSink<RE::InputEvent*> {
+    public:
+        static ChatboxInputSink& GetSingleton() {
+            static ChatboxInputSink singleton;
+            return singleton;
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(
+            RE::InputEvent* const* events, RE::BSTEventSource<RE::InputEvent*>*) override {
+            if (!g_chatboxGameplayInputSuppressed.load() || !events) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            for (auto* event = *events; event; event = event->next) {
+                const auto device = event->GetDevice();
+                if (device == RE::INPUT_DEVICE::kKeyboard ||
+                    device == RE::INPUT_DEVICE::kVirtualKeyboard) {
+                    return RE::BSEventNotifyControl::kStop;
+                }
+            }
+
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+        static bool Install() {
+            auto* inputManager = RE::BSInputDeviceManager::GetSingleton();
+            if (!inputManager) {
+                logger::warn("[PrismaUIBridge] Cannot install chatbox input sink - input manager unavailable");
+                return false;
+            }
+
+            auto* eventSource = static_cast<RE::BSTEventSource<RE::InputEvent*>*>(inputManager);
+            auto* sink = std::addressof(GetSingleton());
+            eventSource->AddEventSink(sink);
+
+            // Input sinks run in registration order. Put CHIM first so kStop prevents
+            // gameplay, SKSE, and Papyrus hotkeys before any downstream sink sees them.
+            RE::BSSpinLockGuard locker(eventSource->lock);
+            if (eventSource->notifying) {
+                logger::warn("[PrismaUIBridge] Chatbox input sink registration deferred during input dispatch");
+                return false;
+            }
+
+            const auto sinkIt = std::find(eventSource->sinks.begin(), eventSource->sinks.end(), sink);
+            if (sinkIt == eventSource->sinks.end()) {
+                logger::warn("[PrismaUIBridge] Chatbox input sink was not registered");
+                return false;
+            }
+
+            std::rotate(eventSource->sinks.begin(), sinkIt, sinkIt + 1);
+            logger::info("[PrismaUIBridge] Chatbox input sink installed at highest priority");
+            return true;
+        }
+    };
+
+    // Confirmation modal state
+    static PrismaView g_confirmationView = 0;
+    static std::atomic<bool> g_confirmationCreated{false};
+    static std::atomic<bool> g_confirmationDomReady{false};
+    static std::atomic<bool> g_confirmationVisible{false};
+    static std::mutex g_confirmationMutex;
+    static ConfirmationCallback g_confirmationCallback;
+    static std::string g_confirmationPayload;
+    static std::uint64_t g_confirmationRequestId = 0;
     
     // AI View target state
     static std::string g_lastAIViewTarget = "";
@@ -227,6 +306,11 @@ namespace PrismaUIBridge {
     static void RunItemModelImageBatchCapture(std::vector<ItemImageBatchCandidate> candidates);
     static void OnQuestManagerDomReady(PrismaView view);
     static void OnQuestManagerCommand(const char* argument);
+    static void OnConfirmationDomReady(PrismaView view);
+    static void OnConfirmationCommand(const char* argument);
+    static void CreateConfirmationPanel();
+    static bool PresentConfirmationPayload();
+    static void ResolveConfirmation(bool accepted);
     static void OnBrowserCommand(const char* argument);
     void HideSettingsMenu();
     void HideMasterMenu();
@@ -247,6 +331,7 @@ namespace PrismaUIBridge {
     static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
     static void UpdateChatboxFocusUI(bool focused);
+    static void UpdateChatboxRechatModeUI(const std::string& mode);
     static void SyncChatboxStatusFromServerAsync();
     static const char* PrismaConsoleLevelName(PRISMA_UI_API::ConsoleMessageLevel level);
     static void OnBrowserConsoleMessage(PrismaView view, PRISMA_UI_API::ConsoleMessageLevel level, const char* message);
@@ -266,6 +351,8 @@ namespace PrismaUIBridge {
 
         g_prismaUI = static_cast<PRISMA_UI_API::IVPrismaUI1*>(api);
         logger::info("[PrismaUIBridge] Prisma UI API initialized successfully");
+
+        ChatboxInputSink::Install();
 
         g_prismaUI2 = static_cast<PRISMA_UI_API::IVPrismaUI2*>(PRISMA_UI_API::RequestPluginAPI(PRISMA_UI_API::InterfaceVersion::V2));
         if (g_prismaUI2) {
@@ -1285,7 +1372,7 @@ R"CHIM(
 
     void PushDialogueEntry(const std::string& speaker, const std::string& text,
                            const std::string& timestamp, const std::string& eventType,
-                           const std::string& source) {
+                           const std::string& source, const std::string& speakerType) {
         if (!g_prismaUI || !g_panelCreated.load()) {
             return;
         }
@@ -1309,6 +1396,7 @@ R"CHIM(
             entry["timestamp"] = timestamp;
             entry["eventType"] = eventType;
             entry["source"] = source;
+            entry["speakerType"] = speakerType;
 
             std::string jsonStr = entry.dump();
 
@@ -4118,6 +4206,7 @@ R"CHIM(
 
     void Shutdown() {
         logger::info("[PrismaUIBridge] Shutting down...");
+        SetChatboxGameplayInputSuppressed(false);
 
         if (g_prismaUI) {
             if (g_panelCreated.load()) {
@@ -4166,6 +4255,17 @@ R"CHIM(
                 g_prismaUI->Destroy(g_debuggerView);
                 g_debuggerView = 0;
                 g_debuggerCreated.store(false);
+            }
+
+            if (g_confirmationCreated.load()) {
+                g_prismaUI->Destroy(g_confirmationView);
+                g_confirmationView = 0;
+                g_confirmationCreated.store(false);
+                g_confirmationDomReady.store(false);
+                g_confirmationVisible.store(false);
+                std::lock_guard<std::mutex> lock(g_confirmationMutex);
+                g_confirmationCallback = nullptr;
+                g_confirmationPayload.clear();
             }
         }
 
@@ -4509,6 +4609,223 @@ R"CHIM(
     static void OnChatboxDomReady(PrismaView view);
     static void OnChatboxCommand(const char* argument);
 
+    static void CreateConfirmationPanel() {
+        if (!g_prismaUI) {
+            logger::error("[PrismaUIBridge] Cannot create confirmation modal - Prisma UI not initialized");
+            return;
+        }
+
+        if (g_confirmationCreated.load()) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating CHIM confirmation modal from CHIM/confirmation.html...");
+
+        g_confirmationView = g_prismaUI->CreateView("CHIM/confirmation.html", OnConfirmationDomReady);
+        if (g_confirmationView == 0) {
+            g_lastError = "Failed to create confirmation view - check that Data/PrismaUI/views/CHIM/confirmation.html exists";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_confirmationView, 260);
+        g_prismaUI->RegisterJSListener(g_confirmationView, "chimConfirmationCommand", OnConfirmationCommand);
+        g_prismaUI->Hide(g_confirmationView);
+        g_confirmationCreated.store(true);
+
+        logger::info("[PrismaUIBridge] Confirmation modal created successfully");
+    }
+
+    static void UnfocusPrismaViewIfFocused(PrismaView view, bool created) {
+        if (!g_prismaUI || !created || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        if (g_prismaUI->HasFocus(view)) {
+            g_prismaUI->Unfocus(view);
+        }
+    }
+
+    static bool PresentConfirmationPayload() {
+        if (!g_prismaUI || !g_confirmationCreated.load() || !g_confirmationDomReady.load()) {
+            return false;
+        }
+
+        if (!g_prismaUI->IsValid(g_confirmationView)) {
+            logger::warn("[PrismaUIBridge] Confirmation modal view is invalid");
+            return false;
+        }
+
+        std::string payload;
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            payload = g_confirmationPayload;
+        }
+
+        if (payload.empty()) {
+            return false;
+        }
+
+        UnfocusPrismaViewIfFocused(g_historyView, g_panelCreated.load());
+        UnfocusPrismaViewIfFocused(g_overlayView, g_overlayCreated.load());
+        UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
+        UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
+        UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
+        UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
+        UnfocusPrismaViewIfFocused(g_debuggerView, g_debuggerCreated.load());
+        UnfocusPrismaViewIfFocused(g_statusHUDView, g_statusHUDCreated.load());
+        UnfocusPrismaViewIfFocused(g_settingsMenuView, g_settingsMenuCreated.load());
+        UnfocusPrismaViewIfFocused(g_masterMenuView, g_masterMenuCreated.load());
+        if (g_chatboxCreated.load() && g_prismaUI->HasFocus(g_chatboxView)) {
+            UnfocusChatboxPanel();
+        }
+
+        g_prismaUI->Show(g_confirmationView);
+        g_confirmationVisible.store(true);
+
+        std::string jsCall = "window.showChimConfirmation('" + EscapeForJS(payload) + "')";
+        g_prismaUI->Invoke(g_confirmationView, jsCall.c_str(), nullptr);
+
+        bool focused = false;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            focused = g_prismaUI->Focus(g_confirmationView, true, false);
+            if (focused) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        if (!focused) {
+            logger::warn("[PrismaUIBridge] Failed to focus confirmation modal; leaving it visible because focus can fail on some Prisma builds");
+        }
+
+        logger::info("[PrismaUIBridge] Confirmation modal shown{}", focused ? "" : " without Prisma focus");
+        return true;
+    }
+
+    static bool HasPendingConfirmationPayload() {
+        std::lock_guard<std::mutex> lock(g_confirmationMutex);
+        return !g_confirmationPayload.empty();
+    }
+
+    static void OnConfirmationDomReady(PrismaView view) {
+        logger::info("[PrismaUIBridge] Confirmation modal DOM ready");
+        g_confirmationDomReady.store(true);
+
+        if (HasPendingConfirmationPayload() && !g_confirmationVisible.load()) {
+            PresentConfirmationPayload();
+        }
+    }
+
+    static void ResolveConfirmation(bool accepted) {
+        ConfirmationCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            callback = std::move(g_confirmationCallback);
+            g_confirmationCallback = nullptr;
+            g_confirmationPayload.clear();
+        }
+
+        if (g_prismaUI && g_confirmationCreated.load() && g_prismaUI->IsValid(g_confirmationView)) {
+            if (g_prismaUI->HasFocus(g_confirmationView)) {
+                g_prismaUI->Unfocus(g_confirmationView);
+            }
+            g_prismaUI->Hide(g_confirmationView);
+        }
+        g_confirmationVisible.store(false);
+
+        if (callback) {
+            callback(accepted);
+        }
+    }
+
+    static void OnConfirmationCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        std::string cmd(argument);
+        logger::debug("[PrismaUIBridge] Received confirmation command: {}", cmd);
+
+        if (cmd == "accept") {
+            ResolveConfirmation(true);
+        } else if (cmd == "cancel" || cmd == "close" || cmd == "escape") {
+            ResolveConfirmation(false);
+        } else if (cmd == "dom_ready") {
+            g_confirmationDomReady.store(true);
+            if (HasPendingConfirmationPayload() && !g_confirmationVisible.load()) {
+                PresentConfirmationPayload();
+            }
+        } else {
+            logger::warn("[PrismaUIBridge] Unknown confirmation command: {}", cmd);
+        }
+    }
+
+    bool ShowConfirmation(const std::string& title, const std::string& message,
+                          const std::string& cancelLabel, const std::string& acceptLabel,
+                          ConfirmationCallback callback) {
+        if (!g_prismaUI) {
+            logger::warn("[PrismaUIBridge] Cannot show confirmation - Prisma UI not initialized");
+            return false;
+        }
+
+        if (!callback) {
+            logger::warn("[PrismaUIBridge] Cannot show confirmation - callback missing");
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            if (g_confirmationCallback) {
+                logger::warn("[PrismaUIBridge] Replacing active confirmation; dropping previous request");
+                g_confirmationCallback = nullptr;
+                g_confirmationPayload.clear();
+            }
+        }
+
+        if (!g_confirmationCreated.load()) {
+            CreateConfirmationPanel();
+        }
+        if (!g_confirmationCreated.load()) {
+            return false;
+        }
+
+        json payload = {
+            {"id", ++g_confirmationRequestId},
+            {"title", title},
+            {"message", message},
+            {"cancelLabel", cancelLabel},
+            {"acceptLabel", acceptLabel}
+        };
+
+        {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            g_confirmationCallback = std::move(callback);
+            g_confirmationPayload = payload.dump();
+        }
+
+        if (!g_confirmationDomReady.load()) {
+            if (g_prismaUI->IsValid(g_confirmationView)) {
+                g_prismaUI->Show(g_confirmationView);
+            }
+            logger::info("[PrismaUIBridge] Confirmation modal queued while waiting for DOM ready");
+            return true;
+        }
+
+        if (g_confirmationVisible.load()) {
+            return true;
+        }
+
+        if (!PresentConfirmationPayload()) {
+            std::lock_guard<std::mutex> lock(g_confirmationMutex);
+            g_confirmationCallback = nullptr;
+            g_confirmationPayload.clear();
+            return false;
+        }
+
+        return true;
+    }
+
     struct ChatboxNearbyAgent {
         RE::Actor* actor;
         std::string name;
@@ -4729,6 +5046,16 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateChatboxRechatModeUI(const std::string& mode) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
+            return;
+        }
+
+        const std::string normalizedMode = mode.empty() ? "random" : mode;
+        const std::string jsCall = "window.updateChatboxRechatMode('" + EscapeForJS(normalizedMode) + "')";
+        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+    }
+
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification) {
         std::string profileNum;
         std::string label;
@@ -4868,6 +5195,10 @@ R"CHIM(
                             }
                             g_chatboxFocusChatEnabled.store(enabled);
                             g_chatboxFocusChatInitialized.store(true);
+                        }
+                        if (data.contains("rechat_mode") && data["rechat_mode"].is_string()) {
+                            g_chatboxCurrentRechatMode = data["rechat_mode"].get<std::string>();
+                            g_chatboxRechatModeLoaded.store(true);
                         }
                     }
                 } catch (...) {
@@ -5080,6 +5411,13 @@ R"CHIM(
                 g_lastChatboxFocusChatSent = enabled;
                 g_chatboxFocusChatSentInitialized = true;
             }
+        }
+
+        if (g_chatboxRechatModeLoaded.load() &&
+            (!g_chatboxRechatModeSentInitialized || g_lastChatboxRechatMode != g_chatboxCurrentRechatMode)) {
+            UpdateChatboxRechatModeUI(g_chatboxCurrentRechatMode);
+            g_lastChatboxRechatMode = g_chatboxCurrentRechatMode;
+            g_chatboxRechatModeSentInitialized = true;
         }
     }
 
@@ -5347,6 +5685,8 @@ R"CHIM(
     }
 
     void HideChatboxPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+
         if (!g_prismaUI || !g_chatboxCreated.load()) {
             return;
         }
@@ -5373,6 +5713,7 @@ R"CHIM(
 
     bool FocusChatboxPanel() {
         if (!g_prismaUI) {
+            SetChatboxGameplayInputSuppressed(false);
             logger::warn("[PrismaUIBridge] Cannot focus chatbox - Prisma UI not initialized");
             return false;
         }
@@ -5389,6 +5730,7 @@ R"CHIM(
             logger::info("[PrismaUIBridge] Panel not created yet, creating for focus...");
             CreateChatboxPanel();
             if (!g_chatboxCreated.load()) {
+                SetChatboxGameplayInputSuppressed(false);
                 logger::error("[PrismaUIBridge] Failed to create chatbox panel");
                 return false;
             }
@@ -5405,6 +5747,7 @@ R"CHIM(
                 const auto waited = std::chrono::steady_clock::now() - waitStart;
                 if (waited >= kDomReadyTimeout) {
                     const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(waited).count();
+                    SetChatboxGameplayInputSuppressed(false);
                     logger::warn("[PrismaUIBridge] DOM ready timeout after {} ms - cannot focus chatbox", waitedMs);
                     if (!wasVisibleAtStart && g_prismaUI->IsValid(g_chatboxView) && !g_prismaUI->IsHidden(g_chatboxView)) {
                         HideChatboxPanel();
@@ -5420,6 +5763,7 @@ R"CHIM(
 
         // Already focused - skip (check using HasFocus instead of keyboard active flag)
         if (g_prismaUI->HasFocus(g_chatboxView)) {
+            SetChatboxGameplayInputSuppressed(true);
             logger::debug("[PrismaUIBridge] Chatbox already focused, skipping");
             return true;
         }
@@ -5460,6 +5804,7 @@ R"CHIM(
         }
         
         if (success) {
+            SetChatboxGameplayInputSuppressed(true);
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
             CheckAndUpdateChatboxControls(true);
@@ -5469,6 +5814,7 @@ R"CHIM(
                 nullptr);
             // JS opens the centered focus chat modal and focuses its textarea.
         } else {
+            SetChatboxGameplayInputSuppressed(false);
             g_chatboxQuickFocusActive.store(false);
             logger::warn("[PrismaUIBridge] Failed to focus chatbox panel");
             // Restore original hidden state so a failed quick-focus does not leave the tabbed chatbox visible.
@@ -5481,6 +5827,8 @@ R"CHIM(
     }
 
     void UnfocusChatboxPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+
         if (!g_prismaUI || !g_chatboxCreated.load()) {
             return;
         }
@@ -5504,6 +5852,24 @@ R"CHIM(
             return false;
         }
         return g_prismaUI->HasFocus(g_chatboxView);
+    }
+
+    bool IsAnyHotkeyPanelFocused() {
+        if (!g_prismaUI) {
+            return false;
+        }
+
+        const auto isFocused = [](PrismaView view, bool created) {
+            return created && view != 0 && g_prismaUI->IsValid(view) && g_prismaUI->HasFocus(view);
+        };
+
+        return isFocused(g_historyView, g_panelCreated.load()) ||
+               isFocused(g_diariesView, g_diariesCreated.load()) ||
+               isFocused(g_browserView, g_browserCreated.load()) ||
+               isFocused(g_debuggerView, g_debuggerCreated.load()) ||
+               isFocused(g_chatboxView, g_chatboxCreated.load()) ||
+               isFocused(g_settingsMenuView, g_settingsMenuCreated.load()) ||
+               isFocused(g_masterMenuView, g_masterMenuCreated.load());
     }
 
     std::string GetCurrentChatboxMode() {

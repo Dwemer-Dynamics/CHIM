@@ -20,6 +20,8 @@ int function setAnimationBusy(int busy,String npc) Global Native
 int function setLocked(int locked,String npc) Global Native; 1 locks agent for talking, 0 releases.
 int function isActorTalking(String npc) Global Native
 int function getPlayerBountyForGuard(String guardName) Global Native
+int function requestMoveInventoryItemConfirmation(Actor source, Actor target, Form itemForm, int amount, String realName) Global Native
+int function requestArrestConfirmation(Actor player, Actor guard, Faction crimeFaction) Global Native
 int function sendRequest() Global Native
 int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
@@ -36,6 +38,7 @@ int function setAIKeyWord(Actor targetActor) Global Native
 ; Agent functions
 int function setDrivenByAI() Global Native
 int function setDrivenByAIA(Actor forcedActor,bool salutation) Global Native
+int function addBasicProfile(Actor forcedActor) Global Native
 int function removeAgentByName(String name) Global Native
 Actor function getClosestAgent() Global Native
 Actor function getAgentByName(String npcName) Global Native
@@ -48,8 +51,13 @@ int[] function findAllAgentsFormId() Global Native;
 ; Helpers
 ObjectReference function getLocationMarkerFor(Location loc) Global Native
 ObjectReference function getWorldLocationMarkerFor(Location loc) Global Native
+ObjectReference function getLocationCenterMarker(Location loc,int mode) Global Native ; mode. 0 localtioncenter,1 insideMarker,2 bossTreasure
 ObjectReference function getNearestDoor() global Native
 ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restriction=true) global Native;restriction, ref must have a name
+
+int function scanActorsAroundOffline(Actor akActor)  global Native; This will send data to server, should retun 0
+
+int function updateRemoteInventory(Actor akActor)  global Native; This will send data to server, should retun 0
 
 string function GetLocationSpecialRefsString(int locationFormId)  Global Native
 ObjectReference function loadReference(int refFormId) global native
@@ -102,6 +110,7 @@ int function focusChatboxPanel() Global Native
 int function unfocusChatboxPanel() Global Native
 int function isChatboxPanelVisible() Global Native
 int function isChatboxPanelFocused() Global Native
+int function isAnyPrismaHotkeyPanelFocused() Global Native
 
 int function toggleSettingsMenu() Global Native
 String function getSettingsMenuPendingAction() Global Native

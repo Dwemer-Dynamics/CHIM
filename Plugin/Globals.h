@@ -58,10 +58,13 @@ extern bool CombatDialogueEnabled;
 extern bool PreserveQueueDuringAction;
 extern bool PauseDialogueWhenMenuOpen;
 extern bool PlayerTtsTraditionalDialogueEnabled;
+extern bool AIQuestProgressionEnabled;
 extern bool AllowActorsOnScene;
 extern bool GodMode;
 extern bool AutoAddHostile;
 extern bool AutoAddAllRaces;
+extern void ResetQuestProgressionBridgeState();
+extern void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory);
 
 #define _DELAY_SECONDS_RESEND 3
 
