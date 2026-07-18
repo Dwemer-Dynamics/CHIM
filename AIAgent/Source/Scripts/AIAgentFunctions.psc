@@ -110,6 +110,7 @@ int function focusChatboxPanel() Global Native
 int function unfocusChatboxPanel() Global Native
 int function isChatboxPanelVisible() Global Native
 int function isChatboxPanelFocused() Global Native
+int function isAnyPrismaHotkeyPanelFocused() Global Native
 
 int function toggleSettingsMenu() Global Native
 String function getSettingsMenuPendingAction() Global Native

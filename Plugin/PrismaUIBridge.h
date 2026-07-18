@@ -242,6 +242,9 @@ namespace PrismaUIBridge {
     // Check if the chatbox panel has focus
     bool IsChatboxPanelFocused();
 
+    // Check whether a Prisma panel opened by a CHIM hotkey currently has focus.
+    bool IsAnyHotkeyPanelFocused();
+
     // Check and update chatbox control strip state (target/mode/focus/nearby).
     // Set force=true to bypass the short refresh throttle after explicit UI actions.
     void CheckAndUpdateChatboxControls(bool force = false);
