@@ -273,6 +273,16 @@ bool Function ShouldSuppressChatboxFocusedHotkey(int keyCode)
 	Return false
 EndFunction
 
+bool Function ShouldBlockPrismaMenuHotkey()
+	If SafeProcess()
+		Return false
+	EndIf
+
+	; Prisma focus pauses the game too. Keep hotkeys available so an existing
+	; CHIM panel can be closed, but reject them while a Skyrim menu has focus.
+	Return AIAgentFunctions.isAnyPrismaHotkeyPanelFocused() != 1
+EndFunction
+
 Event OnKeyUp(int keyCode, float holdTime)
 	If ShouldSuppressChatboxFocusedHotkey(keyCode)
 		Return
@@ -470,19 +480,27 @@ Event OnKeyDown(int keyCode)
   EndIf
   
   If(keyCode == _currentBrowserKey)
-	AIAgentFunctions.toggleBrowserPanel()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.toggleBrowserPanel()
+	EndIf
   EndIf
   
   If(keyCode == _currentDebuggerKey)
-	AIAgentFunctions.toggleDebuggerPanel()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.toggleDebuggerPanel()
+	EndIf
   EndIf
   
   If(keyCode == _currentOverlayStatusCycleKey)
-	AIAgentFunctions.cycleOverlayStatusPanels()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.cycleOverlayStatusPanels()
+	EndIf
   EndIf
   
   If(keyCode == _currentHistoryDiariesCycleKey)
-	AIAgentFunctions.cycleHistoryDiariesPanels()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.cycleHistoryDiariesPanels()
+	EndIf
   EndIf
   
   If(keyCode == _currentChatboxFocusKey)
@@ -492,7 +510,9 @@ Event OnKeyDown(int keyCode)
 		ToggleChatboxFocusAction(keyCode)
 	endif
   ElseIf(keyCode == _currentChatboxKey)
-	AIAgentFunctions.toggleChatboxPanel()
+	If !ShouldBlockPrismaMenuHotkey()
+		AIAgentFunctions.toggleChatboxPanel()
+	EndIf
   EndIf
   
   If(keyCode == _currentSettingsMenuKey)
@@ -598,6 +618,10 @@ Function ToggleChatboxFocusAction(int keyCode = -1)
 		Return
 	endif
 
+	If ShouldBlockPrismaMenuHotkey()
+		Return
+	EndIf
+
 	; Type Message hotkey: opens modal-only quick message mode when panel is hidden.
 	; If already focused, it unfocuses/closes.
 	if (AIAgentFunctions.isChatboxPanelFocused() == 1)
@@ -611,25 +635,21 @@ Function ToggleChatboxFocusAction(int keyCode = -1)
 EndFunction
 
 Function ToggleSettingsMenuAction()
-	; Allow in menu mode since the settings menu itself pauses the game.
-	; This allows the same action to close the menu when it is already open.
-	If (!UI.IsMenuOpen("Console")) \
-	&& (!UI.IsMenuOpen("Crafting Menu")) \
-	&& (!UI.IsMenuOpen("RaceSex Menu"))
-		RegisterForSingleUpdate(0.1)
-		AIAgentFunctions.toggleSettingsMenu()
+	If ShouldBlockPrismaMenuHotkey()
+		Return
 	EndIf
+
+	RegisterForSingleUpdate(0.1)
+	AIAgentFunctions.toggleSettingsMenu()
 EndFunction
 
 Function ToggleMasterMenuAction()
-	; Allow in menu mode since the master menu itself pauses the game.
-	; This allows the same action to close the menu when it is already open.
-	If (!UI.IsMenuOpen("Console")) \
-	&& (!UI.IsMenuOpen("Crafting Menu")) \
-	&& (!UI.IsMenuOpen("RaceSex Menu"))
-		RegisterForSingleUpdate(0.1)
-		AIAgentFunctions.toggleMasterMenu()
+	If ShouldBlockPrismaMenuHotkey()
+		Return
 	EndIf
+
+	RegisterForSingleUpdate(0.1)
+	AIAgentFunctions.toggleMasterMenu()
 EndFunction
 
 Function removeBinding(int keycode) 
@@ -942,7 +962,9 @@ Bool Function SafeProcess(bool allowMenuMode = false)
 EndFunction
 
 Function RunToolsSendFactionLocationInfo() global
+	Debug.Trace("[CHIM] AUDIT sendAllLocations START");
 	sendAllLocations()
+	Debug.Trace("[CHIM] AUDIT sendAllLocations END");
 EndFunction
 
 int Function RunToolsSendAllVoiceSamples() global
@@ -1385,7 +1407,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 			if destMarker
 				String types = ""
 				if (tags == "")
-					Debug.Trace("[CHIM] Loading tags from caller: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					Debug.Trace("[CHIM] Loading tags: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					; -------------------------------
 					;  CLASSIFY THIS LOCATION, no tags provided
 					; -------------------------------
@@ -1594,6 +1616,8 @@ EndFunction
 
 Function sendAllLocations() global
 
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: START")
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 1/3 sending factions")
 	sendAllfactions();
 	
 	; --- Load all location keywords we care about ---
@@ -1635,7 +1659,7 @@ Function sendAllLocations() global
 	Keyword isPlayerHouse  = Game.GetForm(0x000fc1a3) as Keyword
 	; ---------------------------------------------------------------------------------------------
 
-
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 2/3 sending main locations")
 	; --- Get all locations ---
 	Form[] allLocations = PO3_SKSEFunctions.GetAllForms(104)
 	Debug.Trace("[CHIM] Total locations: " + allLocations.Length)
@@ -1648,7 +1672,9 @@ Function sendAllLocations() global
 	
 	while i < lengthA
 		Location curr = allLocations[i] as Location
-		
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllLocations: "+i+"/"+lengthA+ " sent")
+		endif
 		Debug.Trace("[CHIM] Location: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		
 		if curr
@@ -1785,9 +1811,9 @@ Function sendAllLocations() global
 
 		i += 1
 	endwhile
-
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 3/3 sending unique NPCs and its location")
 	sendAllNpcs();
-
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: END")
 EndFunction
 
 ; Global wrapper function for spell access to Master Wheel
@@ -1974,6 +2000,9 @@ Function sendAllfactions() global
 	int lengthA=allLocations.Length
 	int i=0;
 	while i < lengthA
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllfactions: "+i+"/"+lengthA+ " sent")
+		endif
 		Faction afFaction=allLocations[i] as Faction
 		
 		if afFaction
@@ -1988,7 +2017,11 @@ Function sendAllfactions() global
 				name = DecToHex(afFaction.GetFormId())
 			endif
 			ObjectReference cont=PO3_SKSEFunctions.GetVendorFactionContainer(afFaction)
-			string vendorRef=DecToHex(cont.GetFormId())
+			
+			string vendorRef = "";
+			if (cont)
+				vendorRef=DecToHex(cont.GetFormId())
+			endif
 			Debug.Trace("[CHIM] [FACTION] Adding faction "+name + " / "+DecToHex(afFaction.GetFormId()));
 			retFnc=AIAgentFunctions.logMessage(DecToHex(afFaction.GetFormId())+"/"+name+"/"+vendorRef,"util_faction_name")
 		endif
@@ -2005,24 +2038,38 @@ Function sendAllNpcs() global
 	
 	int lengthA=allNpcs.Length
 	int i=0;
+	int done = 0
 	while i < lengthA
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllNpcs: "+i+"/"+lengthA+ " sent")
+		endif
 		Actor akActor=allNpcs[i] as Actor
-		if (!akActor.isEnabled())
-			Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
-			
-		elseif (akActor.GetActorBase().isUnique())
-			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
-			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
-			; Also, send location where this NPC is located at.
-			Cell currCell = akActor.GetParentCell()
-			Location currLoc = akActor.GetCurrentLocation()
-			
-			AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
-			
+		if (akActor && akActor.GetType() == 62 )
+			;Debug.Trace("[CHIM] [ACTORS] Checking "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			if (!akActor.isEnabled())
+				;Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+				
+			elseif (akActor.GetActorBase())
+				if (akActor.GetActorBase().isUnique())
+					Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+					int retFnc=AIAgentFunctions.addBasicProfile(akActor)
+					done = done + 1
+					; Also, send location where this NPC is located at.
+					Cell currCell = akActor.GetParentCell()
+					Location currLoc = akActor.GetCurrentLocation()
+					
+					AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
+				else
+					;Debug.Trace("[CHIM] [ACTORS] Bypassing (not unique)  "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+				endif
+			else 
+				;Debug.Trace("[CHIM] [ACTORS] Bypassing (not actor base)  "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			endif
 		endif
 		
 		i=i+1
 		
 	endwhile
+	Debug.Trace("[CHIM] [ACTORS] End, sent actors: "+done);
 	return
 EndFunction
