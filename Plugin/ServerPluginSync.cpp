@@ -70,6 +70,15 @@ namespace
         return std::regex_match(value, pattern);
     }
 
+    bool IsSupportedPackageArchive(const std::filesystem::path& path)
+    {
+        std::string extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        return extension == ".dwpkg" || extension == ".zip";
+    }
+
     std::string PackageApiPath(const std::string& action)
     {
         std::string path = Conf::getInstance().getPath();
@@ -179,7 +188,7 @@ namespace
 
             std::vector<std::filesystem::directory_entry> archives;
             for (const auto& file : std::filesystem::directory_iterator(directory.path(), error)) {
-                if (!error && file.is_regular_file() && file.path().extension() == ".dwpkg") archives.push_back(file);
+                if (!error && file.is_regular_file() && IsSupportedPackageArchive(file.path())) archives.push_back(file);
             }
             if (archives.empty()) continue;
             std::sort(archives.begin(), archives.end(), [](const auto& left, const auto& right) {
