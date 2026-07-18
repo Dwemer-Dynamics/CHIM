@@ -9621,7 +9621,9 @@ EventHandlers {
                                                          speakerAgent->getActorName(), finalPath);
 
                                             HTTPUploader& uploader = HTTPUploader::getInstance();
-                                            uploader.UploadVoiceSample(finalData, speakerAgent->getActorName(), finalPath);
+                                            uploader.UploadVoiceSampleWithText(
+                                                finalData, speakerAgent->getActorName(), finalPath,
+                                                std::string(response->text));
 
                                             speakerAgent->setNeedsVoiceSample(false);
                                             speakerAgent->setVoiceSamplePath(finalPath);
