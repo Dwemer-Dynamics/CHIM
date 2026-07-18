@@ -604,12 +604,19 @@ void ProcessDynamicOghmaImportFiles(const std::vector<std::string>& dynamicOghma
 std::vector<std::string> FindItemImportFiles(const std::string& directoryPath);
 void ProcessItemImportFiles(const std::vector<std::string>& itemFiles);
 
+// Traditional Quest Import Detection Functions
+std::vector<std::string> FindTraditionalQuestImportFiles(const std::string& directoryPath);
+void ProcessTraditionalQuestImportFiles(const std::vector<std::string>& traditionalQuestFiles);
+
 // Voice CSV Detection Functions
 std::vector<std::string> FindVoiceCSVFiles(const std::string& directoryPath);
 void LoadVoiceCSVData();
 std::string FindVoiceInCSV(const std::string& voiceType);
 std::unordered_map<std::string, std::string> ParseVoiceCSV(const std::string& filePath);
 void ReloadVoiceCSVData();
+
+// Low process actors;
+std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target);
 
 #endif // SPG_MISC_H
 

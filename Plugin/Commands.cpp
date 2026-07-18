@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "Papyrus.h"
 #include "PrismaUIBridge.h"
@@ -15,9 +16,12 @@
 #include "RE/Skyrim.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <mutex>
+#include <string_view>
 
 
 using json = nlohmann::json;
@@ -35,6 +39,84 @@ int MoveToPlayerRetries = 0;
 using json = nlohmann::json;
 
 extern void ScriptProxyRun(const std::string& jsonStr);
+
+namespace {
+    constexpr std::string_view kApprovedActionPrefix = "__CHIM_APPROVED__";
+    std::atomic_bool g_actionConfirmationActive{false};
+
+    ResponseItem makeQueuedAction(std::string text, std::string actor) {
+        const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        return ResponseItem{std::move(text), timestamp, std::move(actor)};
+    }
+
+    std::string describeActionParameter(const std::string& parameter) {
+        std::string description = trim(parameter);
+        if (description.empty()) {
+            return "";
+        }
+        if (description.size() > 180) {
+            description.resize(177);
+            description += "...";
+        }
+        return "\n\nDetails: " + description;
+    }
+}
+
+void processApprovedCommandQueue() {
+    auto& responses = SPGResponse::getInstance();
+    auto pending = responses.getFirstItem("approvedcommand");
+    if (pending.text.empty()) {
+        return;
+    }
+
+    responses.dequeueFirst("approvedcommand");
+    responses.enqueue("command", makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
+}
+
+void processActionConfirmationQueue() {
+    if (g_actionConfirmationActive.load()) {
+        return;
+    }
+
+    auto& responses = SPGResponse::getInstance();
+    auto pending = responses.getFirstItem("confirmcommand");
+    if (pending.text.empty()) {
+        return;
+    }
+
+    responses.dequeueFirst("confirmcommand");
+
+    const auto delimiterPosition = pending.text.find('@');
+    const std::string action = delimiterPosition == std::string::npos
+        ? trim(pending.text)
+        : trim(pending.text.substr(0, delimiterPosition));
+    const std::string parameter = delimiterPosition == std::string::npos
+        ? ""
+        : pending.text.substr(delimiterPosition + 1);
+    const std::string title = "Allow " + (action.empty() ? std::string("action") : action) + "?";
+    const std::string message = pending.actor + " wants to perform " +
+        (action.empty() ? std::string("this action") : action) + "." + describeActionParameter(parameter);
+
+    g_actionConfirmationActive.store(true);
+    const bool shown = PrismaUIBridge::ShowConfirmation(
+        title, message, "Cancel", "Allow",
+        [pending](bool accepted) mutable {
+            if (accepted) {
+                SPGResponse::getInstance().enqueue(
+                    "command",
+                    makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
+            }
+            // Cancellation intentionally produces no game event or LLM follow-up.
+            g_actionConfirmationActive.store(false);
+        });
+
+    if (!shown) {
+        logger::warn("[ACTION_CONFIRMATION] Prisma confirmation unavailable; discarded {} for {}",
+                     pending.text, pending.actor);
+        g_actionConfirmationActive.store(false);
+    }
+}
 
 
 std::string toLower(const std::string& str) {
@@ -95,6 +177,7 @@ std::string jusTrim(const std::string& input) {
     auto end = result.find_last_not_of(" \t\n\r\f\v");
     return result.substr(start, end - start + 1);
 }
+
 std::vector<std::string> splitString(const std::string& input) {
     std::stringstream ss(input);
     std::string segment;
@@ -1746,6 +1829,12 @@ void parseRoleCommand(std::string rawCommand) {
 }
 
 void parseCommand(std::string rawCommand, std::string actorname) {
+    bool userApproved = false;
+    if (rawCommand.rfind(kApprovedActionPrefix, 0) == 0) {
+        userApproved = true;
+        rawCommand.erase(0, kApprovedActionPrefix.size());
+    }
+
     static std::string delimiter = "@";
     size_t pos = rawCommand.find(delimiter);
     if (pos == std::string::npos) {
@@ -1948,9 +2037,17 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                          npc);
 
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(crimeFaction));
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "ArrestPlayer",
-                                                                                   args, callback);
+        if (userApproved) {
+            bool accepted = true;
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(crimeFaction),
+                                                  std::move(accepted));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "ConfirmArrestPlayer", args, callback);
+        } else {
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(crimeFaction));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "ArrestPlayer", args, callback);
+        }
 
     } else if (command.contains("ForgiveCrime")) {
         responsePop("command");
@@ -2954,11 +3051,18 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto form = RE::TESForm::LookupByID(0x0f);
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         std::string itemname("Gold");
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(form), std::move(amount),
-                                              std::move(itemname));
-
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "MoveInventoryItem",
-                                                                                   args, callback);
+        if (userApproved) {
+            bool accepted = true;
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(form), std::move(amount),
+                                                  std::move(itemname), std::move(accepted));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "ConfirmMoveInventoryItem", args, callback);
+        } else {
+            auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(form), std::move(amount),
+                                                  std::move(itemname));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "MoveInventoryItem", args, callback);
+        }
 
     } else if (command.contains("RentRoom")) {
         responsePop("command");
@@ -3437,7 +3541,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             RE::ExtraDataList* matchedExtraList = nullptr;
             std::string matchedItemName;
             std::string rejectionReason;
-            const std::string normalizedRequestedItem = normalizeConsumeItemName(requestedItem);
+            const auto requestedIdentifier = ItemIdentifierUtils::ParseInventoryItemIdentifier(requestedItem);
+            const std::string normalizedRequestedItem = normalizeConsumeItemName(requestedIdentifier.name);
 
             struct ConsumeCandidate {
                 RE::TESBoundObject* object = nullptr;
@@ -3501,6 +3606,19 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 candidate.extraList = candidateExtraList;
                 candidate.name = candidateName;
                 candidate.rejectionReason = currentRejectionReason;
+
+                if (ItemIdentifierUtils::MatchesRequestedBaseId(requestedIdentifier, boundObject->GetFormID())) {
+                    matchedObject = candidate.object;
+                    matchedAlchemy = candidate.alchemy;
+                    matchedExtraList = candidate.extraList;
+                    matchedItemName = candidate.name;
+                    rejectionReason = candidate.rejectionReason;
+                    break;
+                }
+
+                if (requestedIdentifier.baseId.has_value()) {
+                    continue;
+                }
 
                 if (exactDisplayMatch) {
                     matchedObject = candidate.object;
@@ -3666,6 +3784,9 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                                  npc);
                 return;
             }
+
+            const std::string requestedItem = itemName;
+            const auto requestedIdentifier = ItemIdentifierUtils::ParseInventoryItemIdentifier(requestedItem);
             
             auto playerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
             auto normalizeActorName = [](std::string value) {
@@ -3721,8 +3842,13 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     currentItemName.assign(entryData.get()->GetDisplayName());
                 }
                 
-                // Check if this is the item we're looking for
-                if (containsCaseInsensitive(currentItemName, itemName)) {
+                const bool idMatch = ItemIdentifierUtils::MatchesRequestedBaseId(
+                    requestedIdentifier, boundObject->GetFormID());
+                const bool nameMatch = !requestedIdentifier.baseId.has_value() &&
+                    containsCaseInsensitive(currentItemName, requestedIdentifier.name);
+
+                // Prefer the exact BaseID when the prompt supplied BaseID:ItemName.
+                if (idMatch || nameMatch) {
                     // Item matches
                     itemFound = true;
                     itemForm = boundObject;
@@ -3736,9 +3862,9 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             }
             
             if (!itemFound || !itemForm || itemName.empty()) {
-                logger::info("[GiveItemTo] Item {} not found in {}'s inventory", itemName, agentPtr->getActorName());
+                logger::info("[GiveItemTo] Item {} not found in {}'s inventory", requestedItem, agentPtr->getActorName());
                 HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                             "command@GiveItemTo@" + targetName + "@Error: item '" + itemName + "' not in inventory"),
+                                             "command@GiveItemTo@" + targetName + "@Error: item '" + requestedItem + "' not in inventory"),
                                  npc);
                 return;
             }

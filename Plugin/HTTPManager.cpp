@@ -860,7 +860,22 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             lastEventType = requestEventType;
                             logger::info("[EVENT_TYPE] Using request event type (no header): {}", lastEventType);
                         }
-                        
+
+                        std::string narratorDisplayName = NARRATOR_NAME;
+                        size_t narratorNamePos = headers.find("X-Narrator-Display-Name:");
+                        if (narratorNamePos != std::string::npos) {
+                            size_t headerStart = narratorNamePos + 24; // Length of "X-Narrator-Display-Name:"
+                            size_t headerLineEnd = headers.find("\r\n", headerStart);
+                            if (headerLineEnd == std::string::npos) {
+                                headerLineEnd = headers.size();
+                            }
+                            const auto encodedName = trim(headers.substr(headerStart, headerLineEnd - headerStart));
+                            if (!encodedName.empty()) {
+                                narratorDisplayName = base64_decode(encodedName);
+                            }
+                        }
+                        SpeakManager::getInstance().setNarratorDisplayName(narratorDisplayName);
+
                         // Strip headers from response to get body only
                         response = response.substr(headerEnd + 4);
                         headersProcessed = true;
@@ -1374,6 +1389,172 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         closesocket(rawSocket);
         WSACleanup();
         return success;
+    }
+
+    static int parseHttpStatusCode(const std::string& response)
+    {
+        const std::size_t lineEnd = response.find("\r\n");
+        const std::string statusLine = (lineEnd == std::string::npos) ? response : response.substr(0, lineEnd);
+        if (statusLine.rfind("HTTP/", 0) != 0) {
+            return 0;
+        }
+
+        const std::size_t firstSpace = statusLine.find(' ');
+        if (firstSpace == std::string::npos || firstSpace + 4 > statusLine.size()) {
+            return 0;
+        }
+
+        try {
+            return std::stoi(statusLine.substr(firstSpace + 1, 3));
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static std::string parseHttpBody(const std::string& response)
+    {
+        const std::size_t bodyStart = response.find("\r\n\r\n");
+        if (bodyStart == std::string::npos) {
+            return response;
+        }
+        return response.substr(bodyStart + 4);
+    }
+
+    static std::string postGameDataResponseInternal(const std::string& endpoint, const nlohmann::json& data,
+                                                    int timeoutMs, int* outStatusCode)
+    {
+        if (outStatusCode) {
+            *outStatusCode = 0;
+        }
+
+        WSADATA wsaData;
+        int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        if (iResult != 0) {
+            logger::error("[postGameDataResponse] WSAStartup failed: {}", iResult);
+            return "";
+        }
+
+        SOCKET rawSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (rawSocket == INVALID_SOCKET) {
+            logger::error("[postGameDataResponse] Failed to create socket: {}", WSAGetLastError());
+            WSACleanup();
+            return "";
+        }
+
+        auto server = Conf::getInstance().getServer();
+        auto portStr = Conf::getInstance().getPort();
+        int port = std::stoi(portStr);
+
+        std::string configPath = Conf::getInstance().getPath();
+        std::string basePath;
+        size_t lastSlash = configPath.find_last_of("/");
+        if (lastSlash != std::string::npos) {
+            basePath = configPath.substr(0, lastSlash + 1);
+        }
+        std::string fullEndpoint = basePath + endpoint;
+
+        sockaddr_in serverAddr;
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_port = htons(static_cast<u_short>(port));
+        inet_pton(AF_INET, server.c_str(), &serverAddr.sin_addr);
+
+        DWORD timeout = static_cast<DWORD>(std::max(timeoutMs, 1000));
+        setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+        setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+
+        iResult = connect(rawSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
+        if (iResult == SOCKET_ERROR) {
+            logger::error("[postGameDataResponse] Failed to connect: {}", WSAGetLastError());
+            closesocket(rawSocket);
+            WSACleanup();
+            return "";
+        }
+
+        std::string jsonBody = data.dump();
+        std::string httpRequest = std::format(
+            "POST /{} HTTP/1.1\r\n"
+            "Host: {}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}",
+            fullEndpoint, server, jsonBody.size(), jsonBody);
+
+        std::size_t totalSent = 0;
+        while (totalSent < httpRequest.size()) {
+            const int sent = send(rawSocket, httpRequest.c_str() + totalSent,
+                                  static_cast<int>(httpRequest.size() - totalSent), 0);
+            if (sent == SOCKET_ERROR) {
+                logger::error("[postGameDataResponse] Failed to send: {}", WSAGetLastError());
+                closesocket(rawSocket);
+                WSACleanup();
+                return "";
+            }
+            totalSent += static_cast<std::size_t>(sent);
+        }
+
+        char buffer[4096];
+        std::string fullResponse;
+        while (true) {
+            iResult = recv(rawSocket, buffer, sizeof(buffer) - 1, 0);
+            if (iResult > 0) {
+                buffer[iResult] = '\0';
+                fullResponse.append(buffer, static_cast<std::size_t>(iResult));
+                if (fullResponse.size() > 4 * 1024 * 1024) {
+                    logger::warn("[postGameDataResponse] Response too large for {}", endpoint);
+                    break;
+                }
+                continue;
+            }
+            if (iResult == 0) {
+                break;
+            }
+            logger::error("[postGameDataResponse] recv failed for {}: {}", endpoint, WSAGetLastError());
+            break;
+        }
+
+        closesocket(rawSocket);
+        WSACleanup();
+
+        if (outStatusCode) {
+            *outStatusCode = parseHttpStatusCode(fullResponse);
+        }
+        return parseHttpBody(fullResponse);
+    }
+
+    std::string postGameDataResponse(const std::string& endpoint, const nlohmann::json& data, int timeoutMs)
+    {
+        try {
+            int statusCode = 0;
+            std::string body = postGameDataResponseInternal(endpoint, data, timeoutMs, &statusCode);
+            if (statusCode != 0 && statusCode != 200) {
+                std::string responsePreview = body.substr(0, std::min<std::size_t>(200, body.size()));
+                logger::warn("[postGameDataResponse] Non-200 status {} for {}: {}", statusCode, endpoint,
+                             responsePreview);
+            }
+            return body;
+        } catch (const std::exception& e) {
+            logger::error("[postGameDataResponse] Error for {}: {}", endpoint, e.what());
+            return "";
+        }
+    }
+
+    nlohmann::json postGameDataJson(const std::string& endpoint, const nlohmann::json& data, int timeoutMs)
+    {
+        const std::string body = postGameDataResponse(endpoint, data, timeoutMs);
+        if (body.empty()) {
+            return json::object();
+        }
+
+        json parsed = json::parse(body, nullptr, false);
+        if (parsed.is_discarded()) {
+            logger::warn("[postGameDataJson] Invalid JSON response for {}: {}", endpoint,
+                         body.substr(0, std::min<std::size_t>(200, body.size())));
+            return json::object();
+        }
+
+        return parsed;
     }
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data) {

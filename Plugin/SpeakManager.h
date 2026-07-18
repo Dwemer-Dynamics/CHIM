@@ -142,6 +142,7 @@ private:
     std::string pendingPlayerSubtitleText;
     bool pendingPlayerSubtitleActive = false;
     std::chrono::high_resolution_clock::time_point pendingPlayerSubtitleLastRefresh{};
+    std::string narratorDisplayName = NARRATOR_NAME;
 
     SpeakManager() : isProcessing(false) {}  // Private constructor for Singleton pattern
 
@@ -151,6 +152,9 @@ private:
 public:
     // Get the singleton instance of SpeakManager
     static SpeakManager& getInstance();
+
+    void setNarratorDisplayName(const std::string& displayName);
+    std::string getNarratorDisplayName();
 
     int getResolution() {
         std::lock_guard<std::mutex> lock(mtx);
@@ -279,5 +283,7 @@ public:
     
 
 };
+
+void ProcessVrVisemePumpOnGameThread(float deltaSeconds);
 
 #endif

@@ -341,14 +341,13 @@ endEvent
 event OnConfigInit()
 
 	ModName="CHIM"
-	Pages = new string[7]
-	Pages[0] = "Main"
+	Pages = new string[6]
+	Pages[0] = "Hotkeys"
 	Pages[1] = "Auto Activate"
 	Pages[2] = "Behavior"
 	Pages[3] = "Sound"
-	Pages[4] = "Prisma UI"
-	Pages[5] = "AI Agents"
-	Pages[6] = "Tools"
+	Pages[4] = "AI Agents"
+	Pages[5] = "Tools"
 	
 	Debug.Trace("[AIAGENT] OnConfigInit");
 	
@@ -532,12 +531,17 @@ endEvent
 
 int function GetVersion()
 
-	return 67
+	return 68
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 68 && a_version > CurrentVersion)
+		; Version 68: Reworked MCM hotkeys and moved behavior settings
+		OnConfigInit()
+	endIf
 
 	if (a_version == 67 && a_version > CurrentVersion)
 		; Version 67: Added auto hearing radius slider
@@ -685,30 +689,34 @@ event OnPageReset(string a_page)
 	SetCursorFillMode(LEFT_TO_Right)
 	
 	
-	if (a_page=="Main" || a_page=="")
-		; === Communication Hotkeys ===
-		_keymapOID_K = AddKeyMapOption("CHIM Chat", _myKey)
+	if (a_page=="Hotkeys" || a_page=="Main" || a_page=="")
+		AddHeaderOption("Primary Hotkeys")
+		AddEmptyOption()
+		_keymap_chatbox_focus = AddKeyMapOption("Text Chat", _chatbox_focus_key)
 		_keymapOID_K2 = AddKeyMapOption("Voice Chat", _myKey2)
-		
-		; === Master Wheel ===
-		_keymap_masterwheel		= AddKeyMapOption("Master Wheel", _masterwheel_key)
-		
-		; === Wheel Hotkeys ===
-		_keymapOID_K4		= AddKeyMapOption("Roleplay Wheel", _myKey4)
-		_keymapOID_K3		= AddKeyMapOption("Settings Wheel", _myKey3)
-		_keymap_godmode		= AddKeyMapOption("Mode Wheel", _godmode_key)
-		_keymapOID_K6		= AddKeyMapOption("Soulgaze Wheel", _myKey6)
-		
-		; === Action Hotkeys ===
-		_keymapOID_K7		= AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_halt		= AddKeyMapOption("Halt AI Actions", _halt_key)
-		
-		; === Settings ===
-		_toggle1OID_C		= AddToggleOption("Enable AI Actions", _toggleState2)
-		_toggleAnimation		= AddToggleOption("Enable Animations", _animationstate)
-		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
-		_toggle1OID_E		= AddToggleOption("Soulgaze HD Mode", _toggleState7)
-		_slider_timeout	= AddSliderOption("Connection Timeout (seconds)",_timeout_int,"{1}" )
+		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
+		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
+		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
+		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
+
+		AddEmptyOption()
+		AddHeaderOption("Prisma Hotkeys")
+		AddEmptyOption()
+		_keymap_chatbox = AddKeyMapOption("Chatbox View", _chatbox_key)
+		_keymap_settingsmenu = AddKeyMapOption("Actions Menu", _settingsmenu_key)
+		_keymap_overlaystatus_cycle = AddKeyMapOption("Status, Minihud, Terminator Views", _overlaystatus_cycle_key)
+		_keymap_historydiaries_cycle = AddKeyMapOption("History/Diaries", _historydiaries_cycle_key)
+		_keymap_browser = AddKeyMapOption("Browser Beta", _browser_key)
+		_keymap_debugger = AddKeyMapOption("Logs View (Beta)", _debugger_key)
+
+		AddEmptyOption()
+		AddHeaderOption("Wheel Menus (Deprecated)")
+		AddEmptyOption()
+		_keymap_masterwheel = AddKeyMapOption("Master Wheel", _masterwheel_key)
+		_keymapOID_K4 = AddKeyMapOption("Roleplay Wheel", _myKey4)
+		_keymapOID_K3 = AddKeyMapOption("Settings Wheel", _myKey3)
+		_keymap_godmode = AddKeyMapOption("Mode Wheel", _godmode_key)
+		_keymapOID_K6 = AddKeyMapOption("Soulgaze Wheel", _myKey6)
 	endif
 	
 
@@ -734,6 +742,16 @@ event OnPageReset(string a_page)
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
 		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
+		AddEmptyOption()
+		AddHeaderOption("General Behavior")
+		AddEmptyOption()
+
+		_toggle1OID_C = AddToggleOption("Enable AI Actions", _toggleState2)
+		_toggleAnimation = AddToggleOption("Enable Animations", _animationstate)
+		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
+		_toggle1OID_E = AddToggleOption("Soulgaze HD Mode", _toggleState7)
+		_slider_timeout = AddSliderOption("Connection Timeout (seconds)", _timeout_int, "{1}")
+
 		AddEmptyOption()
 		AddHeaderOption("NPC Behavior")
 		AddEmptyOption()
@@ -793,18 +811,6 @@ event OnPageReset(string a_page)
 		_text_current_recording_device = AddTextOption("Current Device", AIAgentFunctions.getCurrentRecordingDeviceName())
 
 	
-	endif
-	
-	if (a_page=="Prisma UI")
-		AddHeaderOption("Hotkeys")
-		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
-		_keymap_chatbox_focus = AddKeyMapOption("CHIM Chat", _chatbox_focus_key)
-		_keymap_chatbox = AddKeyMapOption("Chatbox View", _chatbox_key)
-		_keymap_settingsmenu = AddKeyMapOption("Actions Menu", _settingsmenu_key)
-		_keymap_overlaystatus_cycle = AddKeyMapOption("Status, Minihud, Terminator Views", _overlaystatus_cycle_key)
-		_keymap_historydiaries_cycle = AddKeyMapOption("History/Diaries", _historydiaries_cycle_key)
-		_keymap_browser = AddKeyMapOption("Browser (Beta)", _browser_key)
-		_keymap_debugger = AddKeyMapOption("Logs View (Beta)", _debugger_key)
 	endif
 	
 	if (a_page=="AI Agents")
@@ -1461,7 +1467,7 @@ event OnOptionKeyMapChange(int a_option, int a_keyCode, string a_conflictControl
 
 	bool prismaChatHotkeyConflict = a_keyCode != -1 && ((a_option == _keymap_chatbox && a_keyCode == _chatbox_focus_key) || (a_option == _keymap_chatbox_focus && a_keyCode == _chatbox_key))
 	if (prismaChatHotkeyConflict)
-		ShowMessage("CHIM Chat and Chatbox View must use different hotkeys.")
+		ShowMessage("Text Chat and Chatbox View must use different hotkeys.")
 		return
 	endIf
 
@@ -2000,7 +2006,7 @@ event OnOptionHighlight(int a_option)
 	{Called when the user highlights an option}
 	
 	if (a_option == _keymapOID_K)
-		SetInfoText("Open a text box to communicate with AI NPCs via typed messages.")
+		SetInfoText("Deprecated text chat input. Use Text Chat for the Prisma UI chat input when available.")
 	endIf
 	if (a_option == _toggle1OID_B)
 		SetInfoText("Enables Text-to-Speech for AI NPCs.")
@@ -2174,7 +2180,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _keymap_chatbox_focus)
-		SetInfoText("Open CHIM Chat input for Prisma UI so you can type and send a message, then return control to the game.")
+		SetInfoText("Open Text Chat in Prisma UI so you can type and send a message, or summarize an open book, then return control to the game.")
 	endIf
 	
 	if (a_option == _keymap_settingsmenu)

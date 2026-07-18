@@ -26,6 +26,8 @@ namespace HTTPManager {
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data);
     bool postGameDataSync(const std::string& endpoint, const nlohmann::json& data);
+    std::string postGameDataResponse(const std::string& endpoint, const nlohmann::json& data, int timeoutMs = 5000);
+    nlohmann::json postGameDataJson(const std::string& endpoint, const nlohmann::json& data, int timeoutMs = 5000);
     std::string getServerVersionRaw();
 
 }

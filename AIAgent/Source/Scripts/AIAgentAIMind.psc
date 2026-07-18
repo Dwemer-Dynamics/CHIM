@@ -31,7 +31,8 @@ function ResetPackages(Actor npc) global
 	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package		; FollowPlayerPackage
 	Package SandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
 	Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-
+	Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+	
 	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
 
 	
@@ -45,6 +46,7 @@ function ResetPackages(Actor npc) global
 	ActorUtil.RemovePackageOverride(npc, FollowPlayerPackage)
 	ActorUtil.RemovePackageOverride(npc, SandboxPackage)
 	ActorUtil.RemovePackageOverride(npc, doNothing)
+	ActorUtil.RemovePackageOverride(npc, SandboxWorkPackage)
 	;ActorUtil.ClearPackageOverride(npc)
 	
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
@@ -702,7 +704,7 @@ function TravelToTargetEnd(Actor npc) global
 
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
 	npc.EvaluatePackage()
-	
+	Debug.Trace("[CHIM] TravelToTargetEnd: Start processing for "+npc.GetDisplayName()+" ")
 	ObjectReference destination=StorageUtil.GetFormValue(npc, "LastTravelToLocation") as ObjectReference;
 	if (destination)
 		String destinationName=StorageUtil.GetStringValue(npc, "LastTravelToLocationName") as String;
@@ -727,19 +729,24 @@ function TravelToTargetEnd(Actor npc) global
 		elseif (dest.GetType()==34) ; Static
 					; TravelToLocation case?
 			if (destinationName)
-				Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType())
+				Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was a static "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType())
 				if (!npc.Is3DLoaded())
 					;Only log as background event id npc is not 3dloaded
 					;AIAgentFunctions.logMessageForActor(npc.GetDisplayName() +" reaches destination "+destinationName,"backgroundaction",npc.GetDisplayName())
 					Debug.Trace("[CHIM] TravelToTargetEnd: not present "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
-					Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
-					ActorUtil.AddPackageOverride(npc, doNothing,100)
+					ResetPackages(npc)					
+					;Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
+					;ActorUtil.AddPackageOverride(npc, doNothing,99)
+					;npc.EvaluatePackage()
+					Sandbox(npc,""); doNothing moves the NPC
+					
 				else
 					; If NPC present, issue a low priority donothing
 					if (!npc.isInfaction(VanillaCurrentFollowerFaction))
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
-						Package doNothing = Game.GetForm(0x654e2) as Package ; 
-						ActorUtil.AddPackageOverride(npc, doNothing,10)
+						;Package doNothing = Game.GetForm(0x654e2) as Package ; 
+						;ActorUtil.AddPackageOverride(npc, doNothing,10)
+						Sandbox(npc,"")
 					else
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc is follower, restore")
 					endif
@@ -806,8 +813,12 @@ function TravelToTargetEnd(Actor npc) global
 		Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+" no destination")
 	endif
 		
-	
+	Debug.Trace("[CHIM] TravelToTargetEnd: End processing for "+npc.GetDisplayName()+" ")
 	AIAgentFunctions.commandEndedForActor("TravelTo",npc.GetDisplayName())
+	
+	Cell currCell = npc.GetParentCell()
+	Location currLoc = npc.GetCurrentLocation()
+	AIAgentPapyrusFunctions.sendLocation( currLoc,"",currCell);
 	;Debug.Notification("[CHIM] End travelling for "+npc.GetDisplayName() )
 
 endFunction
@@ -2004,6 +2015,7 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 		if isPrisonerCaptured
 			finalActor.ForceActorValue("Health",10)
 		endif
+		
 		if isEnemy && ref
 			Debug.Trace("[CHIM] [SPAWN_AGENT] mustPatrol : <"+finalActor.GetDisplayName()+"< at <"+ref.getName()+"> <"+DecToHex(ref.GetFormID())+">")
 			PO3_SKSEFunctions.SetLinkedRef(finalActor,ref)
@@ -2391,13 +2403,32 @@ EndFunction
 
 int Function Sandbox(Actor npc,String taskid) global
 
-	Package sandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
-	Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+	if (npc.Is3DLoaded())
 		
-	npc.SetFactionRank(sandboxFaction,1)
-	ActorUtil.AddPackageOverride(npc, sandboxPackage, 100,0)
-	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
-	npc.EvaluatePackage();
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+		Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+		
+		npc.SetFactionRank(sandboxFaction,1)
+
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
+		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+				
+		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
+		npc.EvaluatePackage();
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
+				
+	else 
+		Package sandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+			
+		npc.SetFactionRank(sandboxFaction,1)
+		ActorUtil.AddPackageOverride(npc, sandboxPackage, 100,0)
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
+		npc.EvaluatePackage();
+	
+	endif
 	;AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" talks to "+(Game.GetPlayer().GetDisplayName())+" about the topic he/she knows","instruction",npc.GetDisplayName())
 endFunction
 
@@ -2761,17 +2792,10 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	
 	Debug.Trace("MoveInventoryItem start");
 	if (akItemToRemove.GetFormID()==0xf)
-	
-		
-		string result = SkyMessage.Show(source.GetDisplayName()+ " will transfer "+amount+" gold to "+target.getDisplayName()+". Accept?", "No, thanks", "Yes, please!")
-
-		if result == "Yes, please!"
-			source.RemoveItem(akItemToRemove, amount)
-			target.AddItem(akItemToRemove,amount)
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())	
-		else
-			AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())	
-		endif	
+		int requestResult = AIAgentFunctions.requestMoveInventoryItemConfirmation(source, target, akItemToRemove, amount, realName)
+		if requestResult == 0
+			AIAgentFunctions.logMessageForActor("Gold transfer confirmation could not be shown. No gold was transferred.","itemfound",target.GetDisplayName())
+		endif
 		
 	else
 		source.RemoveItem(akItemToRemove, amount, false, target)
@@ -2782,6 +2806,23 @@ Function MoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int a
 	
 	
 
+EndFunction
+
+Function ConfirmMoveInventoryItem(Actor source, Actor target, Form akItemToRemove,int amount,string realName,bool accepted) global
+	Debug.Trace("ConfirmMoveInventoryItem start");
+	if (!source || !target || !akItemToRemove || amount <= 0)
+		Debug.Trace("ConfirmMoveInventoryItem invalid args");
+		return
+	endif
+
+	if accepted
+		source.RemoveItem(akItemToRemove, amount)
+		target.AddItem(akItemToRemove,amount)
+		AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" gave "+amount+" gold to "+target.GetDisplayName(),"itemfound",target.GetDisplayName())
+	else
+		AIAgentFunctions.logMessageForActor(source.GetDisplayName()+" rejected the transaction of "+amount+" gold!!!!","itemfound",target.GetDisplayName())
+	endif
+	Debug.Trace("ConfirmMoveInventoryItem end");
 EndFunction
 
 Function RentRoom(Actor player, Actor innkeeper, int cost) global
@@ -3030,8 +3071,18 @@ Function ArrestPlayer(Actor player, Actor guard, Faction crimeFaction) global
 		endif
 	endwhile
 
-	string arrestChoice = SkyMessage.Show(guard.GetDisplayName()+" is placing you under arrest. Submit?", "Resist", "Submit")
-	if (arrestChoice == "Submit")
+	int requestResult = AIAgentFunctions.requestArrestConfirmation(player, guard, crimeFaction)
+	if requestResult == 0
+		AIAgentFunctions.logMessageForActor("Arrest confirmation could not be shown. No arrest action was applied.","itemfound",guard.GetDisplayName())
+	endif
+EndFunction
+
+Function ConfirmArrestPlayer(Actor player, Actor guard, Faction crimeFaction, bool accepted) global
+	if (!player || !guard || !crimeFaction)
+		return
+	endif
+
+	if accepted
 		AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" submitted to arrest and was sent to jail.","itemfound",guard.GetDisplayName())
 		crimeFaction.SendPlayerToJail(true, true)
 	else
@@ -3658,18 +3709,27 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		
 		if (cmd[0] == "TravelTo") 
 			Int locrefId=StringToInt(cmd[1])
+			ResetPackages(akTarget);
 			Location destination = Game.GetFormEx(locrefId) as Location;
 			if (destination)
 				Debug.Trace("[CHIM] BackgroundCmd, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
 				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
-				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
+				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination,0);
 				
-				if (destMarker)
+				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
+				Debug.Trace("[CHIM] BackgroundCmd, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
+				
+				if (destMarkerMain)
+					TravelToLocation(akTarget,destMarkerMain,destination.GetName())
+				elseif (destMarker)
 					TravelToLocation(akTarget,destMarker,destination.GetName())
+				else
+					Debug.Trace("[CHIM] BackgroundCmd, failed to find destMarker")
 				endif
 			else
 				ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
 				if (destinationRef)
+					Debug.Trace("[CHIM] BackgroundCmd, using direct reference")
 					TravelToLocation(akTarget,destinationRef,destinationRef.GetCurrentLocation().GetName())
 				else
 					Debug.Trace("[CHIM] BackgroundCmd, Couldn't find destination for formId: "+DecToHex(locrefId))
@@ -3716,8 +3776,63 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			
 		elseif 	(cmd[0] == "StayAtPlace") 
 			; TO-DO select a better package here
-			Package doNothing = Game.GetForm(0x654e2) as Package ; Package Travelto
-			ActorUtil.AddPackageOverride(akTarget, doNothing,99)
+			; Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
+			
+			ResetPackages(akTarget);
+			
+			Int locrefId=StringToInt(cmd[1])
+			Location destination = Game.GetFormEx(locrefId) as Location;
+			ObjectReference locReference = None
+			if (destination)
+				Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
+				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
+				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination,0);
+				
+				Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, destMarker: "+DecToHex(destMarker.GetFormId()))
+				Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
+				
+				if (destMarkerMain)
+					locReference=destMarkerMain
+					
+				elseif (destMarker)
+					locReference=destMarker
+				else
+					Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, failed to find destMarker")
+				endif
+			else
+				ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
+				if (destinationRef)
+					Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, using direct reference")
+					locReference=destinationRef
+					
+				else
+					Debug.Trace("[CHIM] BackgroundCmd StayAtPlace, Couldn't find destination for formId: "+DecToHex(locrefId))
+				endif
+			endif
+			
+			if (locReference)
+				Faction SandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+				akTarget.RemoveFromFaction(SandboxFaction);
+				Utility.Wait(1);; Give time to package to finish
+				
+				ResetPackages(akTarget)
+				ActorUtil.ClearPackageOverride(akTarget)
+				
+				Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+				Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+				akTarget.SetFactionRank(SandboxFaction,1)
+
+				PO3_SKSEFunctions.SetLinkedRef(akTarget,None,MoveTargetKw)
+				PO3_SKSEFunctions.SetLinkedRef(akTarget,locReference)
+				
+				ActorUtil.AddPackageOverride(akTarget, SandboxWorkPackage, 99)
+				
+				Debug.Trace("[CHIM] StayAtPlace. Sandboxing at current location: npc: "+DecToHex(akTarget.getFormId())+", location reference "+DecToHex(locReference.getFormId()))
+				akTarget.EvaluatePackage();
+			
+			else
+				Debug.Trace("[CHIM] StayAtPlace. NO linked reference found for: "+DecToHex(akTarget.getFormId()))
+			endif
 		
 		elseif 	(cmd[0] == "MoveToPlayer") 
 			; TO-DO select a better package here
@@ -3734,6 +3849,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			else
 				Debug.Trace("[CHIM] BackgroundCmd->MoveTo Couldn't find destination for formId: "+DecToHex(locrefId)+ " "+cmd[1])
 			endif
+		elseif 	(cmd[0] == "UpdateInventory") 
+			AIAgentFunctions.updateRemoteInventory(akTarget)
+			Debug.Trace("[CHIM] BackgroundCmd->UpdateInventory sent")
 			
 		elseif 	(cmd[0] == "Track") 
 			float x = 0;
@@ -3758,7 +3876,6 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			Worldspace cws= akTarget.GetWorldSpace()
 			
 			
-
 			if (cws)
 				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetName())
 				if (cws.GetName() == "Skyrim" || cws.GetName() == "")
@@ -3798,13 +3915,17 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				endif
 			endif
 
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
+			
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID()),"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
-				Debug.Trace("[CHIM] BackgroundCmd, "+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
+				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
 			else
-				Debug.Trace("[CHIM] BackgroundCmd, No randomActor actor around "+x+","+y+","+z);
+				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+", No randomActor actor around "+x+","+y+","+z);
 			endif
+			
+			AIAgentFunctions.scanActorsAroundOffline(akTarget);
+			
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
 			ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
@@ -3868,10 +3989,12 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					endif
 				endif
 
-				if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
+				;if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
 					int retFnc=AIAgentFunctions.logMessage(destinationRef.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
-				endif
+				;endif
 			endif
+		else
+			Debug.Trace("[CHIM] BackgroundCmd unrecogniced "+cmd[0]);
 		endif
 	endif
 	
