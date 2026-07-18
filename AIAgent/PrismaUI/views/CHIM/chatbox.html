@@ -46,6 +46,13 @@
                                 <div class="chatbox-control-value" id="chatbox-current-target">
                                     <span class="target-name no-target">No target</span>
                                 </div>
+                                <div class="chatbox-profile-inline">
+                                    <div class="chatbox-control-label">Profile</div>
+                                    <button id="chatbox-profile-menu-toggle" class="chatbox-profile-menu-toggle" type="button" aria-expanded="false" disabled>
+                                        <span id="chatbox-profile-name">No Profile</span>
+                                        <span id="chatbox-profile-mode" class="profile-mode-dot fixed">Fixed</span>
+                                    </button>
+                                </div>
                             </div>
 
                             <div class="chatbox-control-block select-stack">
@@ -67,11 +74,11 @@
                                 </div>
                             </div>
 
-                            <div class="chatbox-control-block select-stack">
-                                <div class="chatbox-control-label">Current Model</div>
+                            <div id="chatbox-global-model-control" class="chatbox-control-block select-stack">
+                                <div class="chatbox-control-label">Global Model</div>
                                 <div class="chatbox-control-value">
                                     <span id="chatbox-current-model" class="mode-badge standard">Standard</span>
-                                    <select id="chatbox-model-select" class="chatbox-mode-select" title="Switch model">
+                                    <select id="chatbox-model-select" class="chatbox-mode-select" title="Switch global model">
                                         <option value="llm_standard">Standard</option>
                                         <option value="llm_fast">Fast</option>
                                         <option value="llm_powerful">Powerful</option>
@@ -97,6 +104,55 @@
                                 <div class="chatbox-control-label">Focus Chat</div>
                                 <div class="chatbox-control-value">
                                     <button id="chatbox-focus-toggle" class="chatbox-focus-toggle off" type="button" aria-pressed="false">OFF</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="chatbox-profile-menu" class="chatbox-profile-menu hidden" role="dialog" aria-label="Profile and LLM settings">
+                            <div class="profile-menu-header">
+                                <div>
+                                    <div class="profile-menu-eyebrow">Profile &amp; LLM</div>
+                                    <div id="chatbox-profile-target" class="profile-menu-target">No target selected</div>
+                                    <div id="chatbox-profile-slot" class="profile-menu-slot">No profile slot</div>
+                                </div>
+                                <button id="chatbox-profile-menu-close" class="profile-menu-close" type="button" title="Close profile menu">&times;</button>
+                            </div>
+
+                            <div class="profile-menu-section">
+                                <label class="profile-menu-label" for="chatbox-profile-select">Assigned Profile</label>
+                                <select id="chatbox-profile-select" class="profile-menu-select" disabled>
+                                    <option value="">No profile available</option>
+                                </select>
+                                <div id="chatbox-profile-assignment-hint" class="profile-menu-hint">Select a single NPC target to assign a profile.</div>
+                            </div>
+
+                            <div class="profile-menu-section profile-default-list">
+                                <button id="chatbox-profile-random-toggle" class="profile-default-toggle off" type="button" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x1F3B2; Random LLM</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="dynamic_profile" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x267B;&#xFE0F; Dynamic Profile</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="middle_term_memory" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x1F4C3; Middle Term Memory</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="auto_diary" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x1F4D9; Auto Diary</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="auto_diary_wait" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x23F3; Auto Diary Wait</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                            </div>
+
+                            <div class="profile-menu-section">
+                                <div class="profile-menu-label">Configured Connectors</div>
+                                <div id="chatbox-profile-connectors" class="profile-connector-list">
+                                    <div class="profile-connector-empty">Select a target profile to view its connectors.</div>
                                 </div>
                             </div>
                         </div>

@@ -19,8 +19,21 @@
     const currentModeElement = document.getElementById('chatbox-current-mode');
     const modeSelectElement = document.getElementById('chatbox-mode-select');
     const currentModelElement = document.getElementById('chatbox-current-model');
+    const globalModelControlElement = document.getElementById('chatbox-global-model-control');
     const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
     const modelSelectElement = document.getElementById('chatbox-model-select');
+    const profileMenuToggleButton = document.getElementById('chatbox-profile-menu-toggle');
+    const profileMenuElement = document.getElementById('chatbox-profile-menu');
+    const profileMenuCloseButton = document.getElementById('chatbox-profile-menu-close');
+    const profileNameElement = document.getElementById('chatbox-profile-name');
+    const profileModeElement = document.getElementById('chatbox-profile-mode');
+    const profileTargetElement = document.getElementById('chatbox-profile-target');
+    const profileSlotElement = document.getElementById('chatbox-profile-slot');
+    const profileSelectElement = document.getElementById('chatbox-profile-select');
+    const profileAssignmentHintElement = document.getElementById('chatbox-profile-assignment-hint');
+    const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
+    const profileDefaultToggleButtons = document.querySelectorAll('.profile-default-toggle[data-profile-setting]');
+    const profileConnectorsElement = document.getElementById('chatbox-profile-connectors');
     const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
@@ -37,11 +50,20 @@
     let isFocusChatEnabled = false;
     let currentModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
+    let currentGlobalModelLabel = 'Standard';
+    let currentProfileLlmMode = 'fixed';
+    let currentProfileLlmInfo = null;
+    let profileLlmTargetKey = '';
+    let profileLlmRequestSequence = 0;
+    let profileLlmSaveInProgress = false;
+    let profileDefaultSaveInProgress = false;
+    let profileAssignmentInProgress = false;
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
     let currentFocusPosition = 'center';
     let currentTargetName = '';
     let currentTargetFormId = 0;
+    let currentTargetIsNarrator = false;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
     let pendingDeleteCount = 0;
@@ -514,6 +536,10 @@
         focusInput.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 e.preventDefault();
+                if (isProfileMenuOpen()) {
+                    closeProfileMenu();
+                    return;
+                }
                 window.closeFocusChatbox(true);
                 return;
             }
@@ -531,6 +557,7 @@
     window.onChatboxFocused = function(quickChat) {
         isChatFocused = true;
         quickChatMode = !!quickChat;
+        refreshProfileLlmMode(true);
         setChatboxViewerVisible(!quickChatMode);
         window.openFocusChatbox();
     };
@@ -634,7 +661,9 @@
         const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
             return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
         });
+        currentTargetIsNarrator = !!(activeTarget && activeTarget.narrator);
         window.updateChatboxTarget(currentTargetName, Number(activeTarget ? activeTarget.distance || 0 : 0));
+        refreshProfileLlmMode();
     };
 
     window.updateChatboxMode = function(mode) {
@@ -648,20 +677,399 @@
         if (modeSelectElement) {
             modeSelectElement.value = config.action;
         }
+        refreshProfileLlmMode();
     };
 
     window.updateChatboxModel = function(modelLabel) {
         const labelLower = modelLabel ? modelLabel.toLowerCase().trim() : 'standard';
         const config = modelConfig[labelLower] || modelConfig.standard;
-        currentModelAction = config.action;
+        currentGlobalModelLabel = config.label;
+        renderProfileLlmMode();
+    };
+
+    function renderProfileLlmMode() {
+        const globalConfig = modelConfig[currentGlobalModelLabel.toLowerCase()] || modelConfig.standard;
+        currentModelAction = globalConfig.action;
         if (currentModelElement) {
-            currentModelElement.className = 'mode-badge ' + config.class;
-            currentModelElement.textContent = config.label;
+            currentModelElement.className = 'mode-badge ' + globalConfig.class;
+            currentModelElement.textContent = globalConfig.label;
         }
         if (modelSelectElement) {
-            modelSelectElement.value = config.action;
+            modelSelectElement.value = globalConfig.action;
+            modelSelectElement.disabled = profileLlmSaveInProgress ||
+                (currentProfileLlmInfo && currentProfileLlmMode === 'random');
+            modelSelectElement.title = currentProfileLlmMode === 'random'
+                ? 'Disable Random LLM on the target profile to change the global model.'
+                : 'Switch global model';
         }
-    };
+        if (globalModelControlElement) {
+            globalModelControlElement.classList.toggle(
+                'profile-random-muted',
+                !!currentProfileLlmInfo && currentProfileLlmMode === 'random'
+            );
+        }
+
+        renderProfileMenu();
+    }
+
+    function getProfileLlmTarget() {
+        if (currentModeAction === 'mode_director' ||
+            currentModeAction === 'mode_spawn' ||
+            currentTargetOverrideMode === 'everyone') {
+            return null;
+        }
+        if (currentModeAction === 'mode_narrator' || currentTargetIsNarrator) {
+            return { type: 'narrator', name: '', key: 'narrator' };
+        }
+        if (!currentTargetName) return null;
+        return {
+            type: 'npc',
+            name: currentTargetName,
+            key: `npc:${currentTargetFormId || 0}:${currentTargetName}`
+        };
+    }
+
+    function renderProfileMenu() {
+        const profile = currentProfileLlmInfo;
+        const hasProfile = !!profile;
+        const isRandom = hasProfile && currentProfileLlmMode === 'random';
+        const target = getProfileLlmTarget();
+
+        if (profileMenuToggleButton) {
+            profileMenuToggleButton.disabled = !hasProfile;
+        }
+        setTextIfChanged(profileNameElement, hasProfile ? profile.profile_name : 'No Profile');
+        if (profileModeElement) {
+            profileModeElement.className = 'profile-mode-dot ' + (isRandom ? 'random' : 'fixed');
+            profileModeElement.textContent = isRandom ? 'Random' : 'Fixed';
+        }
+        setTextIfChanged(
+            profileTargetElement,
+            hasProfile ? `${profile.target_name} Profile` : 'No target selected'
+        );
+        const profileSlot = hasProfile ? Number(profile.profile_slot || 0) : 0;
+        setTextIfChanged(
+            profileSlotElement,
+            hasProfile
+                ? `${profile.profile_name} - ${profileSlot > 0 ? `Slot ${profileSlot}` : 'Not assigned to a slot'}`
+                : 'No profile slot'
+        );
+
+        if (profileSelectElement) {
+            const profiles = hasProfile && Array.isArray(profile.available_profiles)
+                ? profile.available_profiles
+                : [];
+            profileSelectElement.replaceChildren();
+            if (profiles.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = hasProfile ? profile.profile_name : 'No profile available';
+                profileSelectElement.appendChild(option);
+            } else {
+                const currentIsSlotted = profiles.some(function(item) {
+                    return Number(item.profile_id) === Number(profile.profile_id);
+                });
+                if (!currentIsSlotted) {
+                    const currentOption = document.createElement('option');
+                    currentOption.value = '';
+                    currentOption.textContent = `${profile.profile_name} (not assigned to a slot)`;
+                    profileSelectElement.appendChild(currentOption);
+                }
+                profiles.forEach(function(item) {
+                    const option = document.createElement('option');
+                    option.value = String(item.slot);
+                    option.dataset.profileId = String(item.profile_id);
+                    option.textContent = `${item.slot}. ${item.profile_name}`;
+                    option.selected = Number(item.profile_id) === Number(profile.profile_id);
+                    profileSelectElement.appendChild(option);
+                });
+            }
+
+            const canAssign = hasProfile && target && target.type === 'npc';
+            profileSelectElement.disabled = !canAssign || profileAssignmentInProgress ||
+                profileLlmSaveInProgress || profileDefaultSaveInProgress;
+            if (canAssign) {
+                setTextIfChanged(profileAssignmentHintElement, 'Changing this reassigns only the targeted NPC.');
+            } else if (hasProfile && target && target.type === 'narrator') {
+                setTextIfChanged(profileAssignmentHintElement, 'Narrator profile assignment is managed in the web UI.');
+            } else {
+                setTextIfChanged(profileAssignmentHintElement, 'Select a single NPC target to assign a profile.');
+            }
+        }
+
+        const connectorCount = hasProfile ? Number(profile.configured_slot_count || 0) : 0;
+
+        if (profileRandomToggleButton) {
+            profileRandomToggleButton.classList.toggle('on', isRandom);
+            profileRandomToggleButton.classList.toggle('off', !isRandom);
+            profileRandomToggleButton.setAttribute('aria-pressed', isRandom ? 'true' : 'false');
+            profileRandomToggleButton.disabled = !hasProfile || profileLlmSaveInProgress ||
+                profileDefaultSaveInProgress || profileAssignmentInProgress ||
+                (!isRandom && connectorCount === 0);
+            setTextIfChanged(
+                profileRandomToggleButton.querySelector('.profile-default-state'),
+                isRandom ? 'ON' : 'OFF'
+            );
+        }
+
+        const profileDefaults = hasProfile && profile.profile_defaults
+            ? profile.profile_defaults
+            : {};
+        profileDefaultToggleButtons.forEach(function(button) {
+            const setting = button.dataset.profileSetting || '';
+            const enabled = !!profileDefaults[setting];
+            const state = button.querySelector('.profile-default-state');
+            button.classList.toggle('on', enabled);
+            button.classList.toggle('off', !enabled);
+            button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            button.disabled = !hasProfile || profileDefaultSaveInProgress ||
+                profileLlmSaveInProgress || profileAssignmentInProgress;
+            setTextIfChanged(state, enabled ? 'ON' : 'OFF');
+        });
+
+        if (profileConnectorsElement) {
+            profileConnectorsElement.replaceChildren();
+            const connectors = hasProfile && Array.isArray(profile.configured_connectors)
+                ? profile.configured_connectors
+                : [];
+            if (connectors.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'profile-connector-empty';
+                empty.textContent = hasProfile
+                    ? 'No LLM connectors are configured on this profile.'
+                    : 'Select a target profile to view its connectors.';
+                profileConnectorsElement.appendChild(empty);
+            } else {
+                connectors.forEach(function(connector) {
+                    const row = document.createElement('div');
+                    row.className = 'profile-connector-row';
+                    const slot = document.createElement('div');
+                    slot.className = 'profile-connector-slot';
+                    slot.textContent = connector.label || `Slot ${connector.slot}`;
+                    const name = document.createElement('div');
+                    name.className = 'profile-connector-name';
+                    name.textContent = connector.connector_name || `Connector ${connector.connector_id}`;
+                    row.append(slot, name);
+                    profileConnectorsElement.appendChild(row);
+                });
+            }
+        }
+    }
+
+    async function refreshProfileLlmMode(force) {
+        const target = getProfileLlmTarget();
+        if (!target) {
+            profileLlmTargetKey = '';
+            currentProfileLlmInfo = null;
+            currentProfileLlmMode = 'fixed';
+            closeProfileMenu();
+            renderProfileLlmMode();
+            return null;
+        }
+        if (!force && target.key === profileLlmTargetKey) {
+            return currentProfileLlmInfo;
+        }
+
+        if (target.key !== profileLlmTargetKey) {
+            closeProfileMenu();
+        }
+        profileLlmTargetKey = target.key;
+        currentProfileLlmInfo = null;
+        currentProfileLlmMode = 'fixed';
+        renderProfileLlmMode();
+        const requestSequence = ++profileLlmRequestSequence;
+
+        try {
+            const params = new URLSearchParams({
+                target_type: target.type,
+                target_name: target.name
+            });
+            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php?${params.toString()}`, {
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Profile mode unavailable.');
+            }
+            if (requestSequence !== profileLlmRequestSequence || target.key !== profileLlmTargetKey) {
+                return;
+            }
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            return currentProfileLlmInfo;
+        } catch (_err) {
+            if (requestSequence !== profileLlmRequestSequence) return;
+            currentProfileLlmInfo = null;
+            currentProfileLlmMode = 'fixed';
+            renderProfileLlmMode();
+            return null;
+        }
+    }
+
+    async function saveProfileLlmMode(mode) {
+        const target = getProfileLlmTarget();
+        if (!target || profileLlmSaveInProgress) {
+            return false;
+        }
+
+        const previousMode = currentProfileLlmMode;
+        profileLlmSaveInProgress = true;
+        renderProfileLlmMode();
+
+        try {
+            const formData = new FormData();
+            formData.append('target_type', target.type);
+            formData.append('target_name', target.name);
+            formData.append('mode', mode);
+            if (currentProfileLlmInfo && currentProfileLlmInfo.profile_id) {
+                formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
+            }
+
+            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Failed to update profile LLM mode.');
+            }
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            const count = Number(result.profile.shared_count || 0);
+            const usage = count === 1 ? 'used by 1 character' : `used by ${count} characters`;
+            pushChatboxSystemMessage(
+                `${currentProfileLlmMode === 'random' ? 'Random' : 'Fixed'} LLM selection enabled for ` +
+                `${result.profile.profile_name} (${usage}).`
+            );
+            return true;
+        } catch (_err) {
+            currentProfileLlmMode = previousMode;
+            renderProfileLlmMode();
+            pushChatboxSystemMessage('Failed to update the target profile LLM mode.');
+            showInGameDebugNotification('Failed to update target profile LLM mode.');
+            return false;
+        } finally {
+            profileLlmSaveInProgress = false;
+            renderProfileLlmMode();
+        }
+    }
+
+    async function saveProfileDefault(setting, enabled) {
+        const target = getProfileLlmTarget();
+        if (!target || !currentProfileLlmInfo || profileDefaultSaveInProgress ||
+            profileLlmSaveInProgress || profileAssignmentInProgress) {
+            return false;
+        }
+
+        const targetKey = target.key;
+        const previousProfile = currentProfileLlmInfo;
+        profileDefaultSaveInProgress = true;
+        renderProfileLlmMode();
+
+        try {
+            const formData = new FormData();
+            formData.append('target_type', target.type);
+            formData.append('target_name', target.name);
+            formData.append('setting', setting);
+            formData.append('enabled', enabled ? '1' : '0');
+            formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
+
+            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Failed to update profile default.');
+            }
+
+            const activeTarget = getProfileLlmTarget();
+            if (!activeTarget || activeTarget.key !== targetKey) return true;
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            const button = Array.from(profileDefaultToggleButtons).find(function(item) {
+                return item.dataset.profileSetting === setting;
+            });
+            const label = button ? button.querySelector('.profile-default-label').textContent.trim() : setting;
+            pushChatboxSystemMessage(
+                `${label} ${enabled ? 'enabled' : 'disabled'} for ${result.profile.profile_name}.`
+            );
+            return true;
+        } catch (_err) {
+            currentProfileLlmInfo = previousProfile;
+            renderProfileLlmMode();
+            pushChatboxSystemMessage('Failed to update the target profile setting.');
+            showInGameDebugNotification('Failed to update target profile setting.');
+            return false;
+        } finally {
+            profileDefaultSaveInProgress = false;
+            renderProfileLlmMode();
+        }
+    }
+
+    function openProfileMenu() {
+        if (!profileMenuElement || !currentProfileLlmInfo) return;
+        profileMenuElement.classList.remove('hidden');
+        if (profileMenuToggleButton) profileMenuToggleButton.setAttribute('aria-expanded', 'true');
+        refreshProfileLlmMode(true);
+    }
+
+    function closeProfileMenu() {
+        if (profileMenuElement) profileMenuElement.classList.add('hidden');
+        if (profileMenuToggleButton) profileMenuToggleButton.setAttribute('aria-expanded', 'false');
+    }
+
+    function isProfileMenuOpen() {
+        return !!profileMenuElement && !profileMenuElement.classList.contains('hidden');
+    }
+
+    async function assignTargetProfile(slot) {
+        const target = getProfileLlmTarget();
+        if (!target || target.type !== 'npc' || profileAssignmentInProgress || !currentProfileLlmInfo) {
+            return false;
+        }
+
+        const selectedProfile = (currentProfileLlmInfo.available_profiles || []).find(function(profile) {
+            return Number(profile.slot) === Number(slot);
+        });
+        if (!selectedProfile || Number(selectedProfile.profile_id) === Number(currentProfileLlmInfo.profile_id)) {
+            renderProfileMenu();
+            return true;
+        }
+
+        profileAssignmentInProgress = true;
+        renderProfileMenu();
+        sendControlCommand(`profile_${slot}|${target.name}`);
+
+        let assigned = false;
+        for (const delay of [350, 800, 1500]) {
+            await new Promise(function(resolve) { setTimeout(resolve, delay); });
+            const activeTarget = getProfileLlmTarget();
+            if (!activeTarget || activeTarget.key !== target.key) break;
+            const refreshed = await refreshProfileLlmMode(true);
+            if (refreshed && Number(refreshed.profile_id) === Number(selectedProfile.profile_id)) {
+                assigned = true;
+                break;
+            }
+        }
+
+        profileAssignmentInProgress = false;
+        renderProfileLlmMode();
+        if (assigned) {
+            pushChatboxSystemMessage(`Assigned ${selectedProfile.profile_name} to ${target.name}.`);
+        } else {
+            pushChatboxSystemMessage(`Profile assignment sent for ${target.name}. The server may still be processing it.`);
+        }
+        return assigned;
+    }
 
     window.updateChatboxFocus = function(enabled) {
         isFocusChatEnabled = !!enabled;
@@ -748,9 +1156,67 @@
         modelSelectElement.addEventListener('change', function() {
             const action = modelSelectElement.value;
             if (!action || action === currentModelAction) return;
+
+            const config = Object.values(modelConfig).find(function(item) {
+                return item.action === action;
+            });
+            if (config) {
+                currentGlobalModelLabel = config.label;
+                renderProfileLlmMode();
+            }
             sendControlCommand(action);
         });
     }
+
+    if (profileMenuToggleButton) {
+        profileMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            if (isProfileMenuOpen()) {
+                closeProfileMenu();
+            } else {
+                openProfileMenu();
+            }
+        });
+    }
+
+    if (profileMenuCloseButton) {
+        profileMenuCloseButton.addEventListener('click', function() {
+            closeProfileMenu();
+        });
+    }
+
+    if (profileMenuElement) {
+        profileMenuElement.addEventListener('click', function(event) {
+            event.stopPropagation();
+        });
+    }
+
+    if (profileRandomToggleButton) {
+        profileRandomToggleButton.addEventListener('click', function() {
+            if (!currentProfileLlmInfo || profileLlmSaveInProgress) return;
+            saveProfileLlmMode(currentProfileLlmMode === 'random' ? 'fixed' : 'random');
+        });
+    }
+
+    profileDefaultToggleButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            if (!currentProfileLlmInfo || profileDefaultSaveInProgress) return;
+            const setting = button.dataset.profileSetting || '';
+            const enabled = button.getAttribute('aria-pressed') === 'true';
+            saveProfileDefault(setting, !enabled);
+        });
+    });
+
+    if (profileSelectElement) {
+        profileSelectElement.addEventListener('change', function() {
+            const slot = Number(profileSelectElement.value || 0);
+            if (slot > 0) assignTargetProfile(slot);
+        });
+    }
+
+    document.addEventListener('click', function() {
+        if (isProfileMenuOpen()) closeProfileMenu();
+    });
 
     if (focusToggleButton) {
         focusToggleButton.addEventListener('click', function() {
