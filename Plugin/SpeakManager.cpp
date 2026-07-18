@@ -51,6 +51,7 @@ extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
 extern int GlobalConfiguredTimeout;
 extern int GlobalRechatPolicyAsap;
+extern int GlobalRechatCooldownSeconds;
 
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 
@@ -2375,6 +2376,14 @@ void SpeakManager::completeRechatAttempt(const std::string& speaker, bool succes
         }
         if (!shouldRetry) {
             rechatChainClosed = true;
+            // A declined/empty rechat arms the cooldown; the chain-closed state is reset at the next
+            // sentence-end evaluation (which also clears lastRechatter), so without this the same
+            // speaker relaunches immediately. Set directly - the mutex is held here and
+            // stopRechatForNseconds would deadlock.
+            if (GlobalRechatCooldownSeconds > 0) {
+                rechatCooldown = std::chrono::high_resolution_clock::now() +
+                                 std::chrono::seconds(GlobalRechatCooldownSeconds);
+            }
         }
         pendingRechatRetry = PendingRechatRetry{};
     }
@@ -2488,6 +2497,13 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
 
+        // Pacing floor between rechat launches (_rechat_cooldown_seconds, 0 disables). Smart rechat
+        // evaluates after every spoken sentence and the same-speaker guard does not brake alternating
+        // speakers, so successful rechats can otherwise chain at sentence cadence. No mutex is held
+        // here, so the locking setter is safe.
+        if (GlobalRechatCooldownSeconds > 0) {
+            stopRechatForNseconds(GlobalRechatCooldownSeconds);
+        }
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
             speakerActor,

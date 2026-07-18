@@ -514,6 +514,7 @@ void openMicMonitoringLoop() {
 
 extern int GlobalConfiguredTimeout;
 int GlobalRechatPolicyAsap=0;
+int GlobalRechatCooldownSeconds=25;
 
 int sgmode = 0;
 
@@ -2091,6 +2092,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
     } else if (code == "_rechat_policy_asap") {
         GlobalRechatPolicyAsap = 0;
         logger::info("Ignoring _rechat_policy_asap={} and forcing smart rechat on", f_Value);
+
+    } else if (code == "_rechat_cooldown_seconds") {
+        GlobalRechatCooldownSeconds = (f_Value < 0) ? 0 : (int)f_Value;
+        logger::info("Setting rechat cooldown to {}s (0 = no pacing)", GlobalRechatCooldownSeconds);
 
     } else if (code == "_pause_dialogue_when_menu_open") {
         if (f_Value > 0)
