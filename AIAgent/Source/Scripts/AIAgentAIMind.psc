@@ -2297,7 +2297,11 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 			endif;
 		endif
 		
-		itemToSpawnBase.SetGoldValue(10000)
+		if (itembase == 0x045CE7)
+			itemToSpawnBase.SetGoldValue(5)
+		else
+			itemToSpawnBase.SetGoldValue(10000)
+		endif
 		EffectShader shader=Game.GetForm(0x00092de7)  as EffectShader	
 		Enchantment ench=Game.GetForm(0x0010fb84)  as Enchantment	
 		VisualEffect veff=Game.GetForm(0x0008cc8a)  as VisualEffect	

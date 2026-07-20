@@ -1,6 +1,7 @@
 #include "Commands.h"
 
 #include "Globals.h"
+#include "DynamicDiaryBook.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
 #include "ItemIdentifierUtils.h"
@@ -932,14 +933,31 @@ void parseRoleCommand(std::string rawCommand) {
             int fidType = atoi(splitResult[1].c_str());
             int fidLoc = atoi(splitResult[2].c_str());
 
-            auto oNoteId = RE::TESDataHandler::GetSingleton()->LookupFormID((RE::FormID)0x021d0b, "AIAgent.esp");
-            auto oNote = RE::TESForm::LookupByID(oNoteId);
+            constexpr std::string_view encodedPrefix = "b64:";
+            if (splitResult[4].starts_with(encodedPrefix)) {
+                const auto content = HTTPManager::base64_decode(splitResult[4].substr(encodedPrefix.size()));
+                if (!DynamicDiaryBook::StoreDiaryText(splitResult[0], content)) {
+                    logger::warn("[PHYSICAL_DIARY] No readable text was cached for '{}'", splitResult[0]);
+                }
+            } else {
+                logger::warn("[PHYSICAL_DIARY] Server did not provide encoded text for '{}'", splitResult[0]);
+            }
 
-            SpeakManager::getInstance().downloadFakeNote(splitResult[0]);
+            auto* ownerForm = RE::TESForm::LookupByID(static_cast<RE::FormID>(fidLoc));
+            auto* ownerActor = ownerForm ? ownerForm->As<RE::Actor>() : nullptr;
+            if (DynamicDiaryBook::ActorCarriesDiary(ownerActor, splitResult[0])) {
+                logger::info("[PHYSICAL_DIARY] Refreshed '{}' for {}; physical book already present",
+                             splitResult[0], ownerActor->GetDisplayFullName());
+                responsePop("rolecommand");
+                return;
+            }
+
+            logger::info("[PHYSICAL_DIARY] '{}' is missing from {}; spawning replacement",
+                         splitResult[0], ownerActor ? ownerActor->GetDisplayFullName() : "unresolved NPC");
 
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             auto args = RE::MakeFunctionArguments(std::move(splitResult[0]), std::move(fidType), std::move(fidLoc),
-                                                  std::move(splitResult[3]), std::move(splitResult[4]));
+                                                  std::move(splitResult[3]), std::string{});
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SpawnBook",
                                                                                        args, callback);
         }
