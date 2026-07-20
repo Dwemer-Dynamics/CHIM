@@ -7,6 +7,7 @@
 #include "Misc.h"
 #include "Papyrus.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "Replacements.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
@@ -271,26 +272,22 @@ void refreshNpcVoiceRecovery(const std::shared_ptr<AIAgent>& agentPtr, const std
     }
 
     auto audiofile = AudioFilesBufferManager::findAudioFile(actor);
-    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-    if (finaudioFileDetected.good()) {
-        auto size = finaudioFileDetected.stream->totalSize;
-        if (size > 0) {
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-            std::string finalData(buffer.get(), size);
+    std::string finalData;
+    std::string readFailure;
+    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+        logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
+        HTTPUploader& uploader = HTTPUploader::getInstance();
+        uploader.UploadVoiceSample(finalData, actorName, audiofile);
 
-            if (!finalData.empty()) {
-                logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                uploader.UploadVoiceSample(finalData, actorName, audiofile);
-
-                if (agentPtr) {
-                    agentPtr->setNeedsVoiceSample(false);
-                    agentPtr->setVoiceSamplePath(audiofile);
-                }
-                return;
-            }
+        if (agentPtr) {
+            agentPtr->setNeedsVoiceSample(false);
+            agentPtr->setVoiceSamplePath(audiofile);
         }
+        return;
+    }
+    if (!audiofile.empty()) {
+        logger::warn("[RefreshNPCVoice] Could not read sample for {} from {}: {}", actorName, audiofile,
+                     readFailure);
     }
 
     if (agentPtr) {
