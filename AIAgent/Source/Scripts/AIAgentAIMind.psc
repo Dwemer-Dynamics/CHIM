@@ -2050,8 +2050,8 @@ EndFunction
 int Function SpawnBook(string itemname,int itembase,int locationMarker ,String taskid,String content) global
 
 	Debug.Trace("[CHIM] SpawnBook, SendNote: "+itemname)
-	; Zero selects the plugin-local diary book template inside SpawnItem.
-	SpawnItem(itemname,0,locationMarker ,taskid)
+	; Use the dedicated book-shaped dynamic page template. Letters keep using AIAGenericNote.
+	SpawnItem(itemname,0x045CE7,locationMarker ,taskid)
 	
 EndFunction
 
