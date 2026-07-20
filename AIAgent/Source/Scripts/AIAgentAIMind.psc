@@ -2050,10 +2050,8 @@ EndFunction
 int Function SpawnBook(string itemname,int itembase,int locationMarker ,String taskid,String content) global
 
 	Debug.Trace("[CHIM] SpawnBook, SendNote: "+itemname)
-	Book itemToSpawnBase=Game.GetFormFromFile(0x022d30, "AIAgent.esp") as Book 
-	
-				
-	SpawnItem(itemname,itemToSpawnBase.GetFormId(),locationMarker ,taskid) 
+	; Zero selects the plugin-local diary book template inside SpawnItem.
+	SpawnItem(itemname,0,locationMarker ,taskid)
 	
 EndFunction
 
