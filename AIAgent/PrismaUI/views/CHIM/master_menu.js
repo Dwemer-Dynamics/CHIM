@@ -36,9 +36,34 @@ function initMasterMenu() {
     document.addEventListener('keydown', handleKeyDown);
 
     initLayoutPickers();
+    initMenuScalePicker();
     setHudLayoutExpanded(false);
     setToolsExpanded(false);
 }
+
+function updateMenuScalePicker() {
+    const percent = window.chimUIScale ? window.chimUIScale.getPercent() : 100;
+    document.querySelectorAll('.menu-scale-btn[data-scale]').forEach(function (button) {
+        const isActive = Number.parseInt(button.dataset.scale, 10) === percent;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
+function initMenuScalePicker() {
+    updateMenuScalePicker();
+    window.addEventListener('chim-ui-scale-change', updateMenuScalePicker);
+    window.addEventListener('chim-ui-scale-applied', updateMenuScalePicker);
+}
+
+window.setMenuScale = function (percent) {
+    if (!window.chimUIScale) {
+        return;
+    }
+    const selectedPercent = window.chimUIScale.setPercent(percent);
+    updateMenuScalePicker();
+    window.showDescription('Prisma menu size set to ' + selectedPercent + '%');
+};
 
 // Handle keyboard events
 function handleKeyDown(event) {

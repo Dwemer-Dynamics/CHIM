@@ -345,6 +345,63 @@ body {
     flex-wrap: wrap;
 }
 
+.menu-scale-control {
+    margin-top: 14px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    background: rgba(18, 18, 22, 0.75);
+    border: 1px solid rgba(242, 124, 17, 0.24);
+    border-radius: 6px;
+}
+
+.layout-dropdown > .menu-scale-control {
+    margin-top: 0;
+    margin-bottom: 14px;
+}
+
+.menu-scale-label {
+    color: #ddd;
+    font-size: 0.9em;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.menu-scale-options {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(58px, 1fr));
+    gap: 6px;
+    flex: 1;
+    max-width: 470px;
+}
+
+.menu-scale-btn {
+    padding: 7px 9px;
+    background: rgba(50, 50, 56, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 5px;
+    color: #ccc;
+    font-size: 0.82em;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.menu-scale-btn:hover {
+    background: rgba(242, 124, 17, 0.18);
+    border-color: rgba(242, 124, 17, 0.55);
+    color: #fff;
+}
+
+.menu-scale-btn.active {
+    background: rgba(242, 124, 17, 0.32);
+    border-color: rgb(242, 124, 17);
+    color: #fff;
+    box-shadow: 0 0 7px rgba(242, 124, 17, 0.25);
+}
+
 .gap-control {
     display: flex;
     align-items: center;
@@ -402,6 +459,15 @@ body {
 }
 
 @media (max-width: 640px) {
+    .menu-scale-control {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .menu-scale-options {
+        max-width: none;
+    }
+
     .primary-actions-row,
     .secondary-actions-row {
         width: 100%;
