@@ -461,13 +461,13 @@ void ProcedureSendShot(char const* a_path) {
 // physics_raw pipe as VR body contact (plain name per upstream review: DLL events are not ext_*;
 // core logs it as a fast command, the SHARMAT server extension renames + turns it into an
 // in-character reaction). The DLL only detects "player stared at <region> of <actor>" - the server owns
-// every reaction, prompt, and relationship/scene/child gate. Inert without that extension. Not VR-gated:
-// the crosshair pick works on flatscreen as well.
+// every reaction, prompt, and relationship/scene/child gate. Inert without that extension. VR gaze is
+// always eligible; flatscreen gaze is eligible only while the camera is actually first-person.
 // ---------------------------------------------------------------------------------------------------
 namespace {
     constexpr float       kGazeSeconds        = 6.0f;    // continuous dwell before a gaze fires
     constexpr float       kGazeDistance       = 350.0f;  // max player<->target distance (game units)
-    constexpr float       kGazeCooldown       = 20.0f;   // seconds between gaze events for the same actor
+    constexpr float       kGazeCooldown       = 25.0f;   // matches SHARMAT's default server-side gaze cooldown
     constexpr float       kGazeNodeMaxDist    = 45.0f;   // hit must be within this of a mapped node, else "person"
     constexpr const char* kGazePhysicsEvent   = "physics_raw"; // same pipe as touch/grab/spank (plain name, see header note)
 
@@ -476,6 +476,13 @@ namespace {
     std::chrono::steady_clock::time_point                                 g_gazeDwellStart{};
     bool                                                                  g_gazeFired = false; // fired for current dwell
     std::unordered_map<RE::FormID, std::chrono::steady_clock::time_point> g_lastGazeEmit;
+
+    bool IsGazeCameraEligible() {
+        if (REL::Module::IsVR()) { return true; }
+
+        auto* camera = RE::PlayerCamera::GetSingleton();
+        return camera && camera->IsInFirstPerson();
+    }
 
     std::string CleanGazeField(std::string s) {
         for (auto& c : s) {
@@ -519,6 +526,10 @@ namespace {
     // Runs on the GAME THREAD (scene-graph node reads are unsafe off-thread). Re-verifies the target,
     // gates, and emits the gaze event on a worker thread.
     void FireGazeOnGameThread(RE::FormID expectActor, float seconds) {
+        // PollPlayerGaze runs on CHIM's manager thread. Re-check the camera here so a flatscreen
+        // player who changed to third-person while the task was queued cannot emit a stale gaze.
+        if (!IsGazeCameraEligible()) { return; }
+
         auto* pick = RE::CrosshairPickData::GetSingleton();
         if (!pick) { return; }
         auto       actorPtr = pick->targetActor.get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
@@ -564,6 +575,15 @@ namespace {
 // crosshair has dwelled on the same actor and, past a threshold, marshals a game-thread read to
 // classify the gazed region and emit. Cheap; does its own dwell/cooldown bookkeeping.
 void PollPlayerGaze() {
+    if (!IsGazeCameraEligible()) {
+        // Do not carry a partial first-person dwell through time spent in third-person. Starting a
+        // new first-person view must earn the complete dwell interval before it can emit a gaze.
+        std::lock_guard<std::mutex> lk(g_gazeMutex);
+        g_gazeDwellActor = 0;
+        g_gazeFired      = false;
+        return;
+    }
+
     auto* pick = RE::CrosshairPickData::GetSingleton();
     if (!pick) { return; }
     if (!RE::PlayerCharacter::GetSingleton()) { return; }
