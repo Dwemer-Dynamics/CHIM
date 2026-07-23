@@ -348,12 +348,13 @@ Event OnKeyDown(int keyCode)
     string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 	
 	If messageText != ""
-		if (Input.IsKeyPressed(29))	; Left Shift
-			Debug.Trace("[CHIM] Shift modifier, will cast intimacy bubble");
+		string inputType = ""
+		if (Input.IsKeyPressed(29))	; Left Ctrl
+			Debug.Trace("[CHIM] Ctrl modifier, will cast intimacy bubble");
 			IntimacySpell.cast(Game.GetPlayer())
-			
+			inputType = "inputtext_i"
 		endif;
-		AIAgentFunctions.sendMessage(messageText,"")
+		AIAgentFunctions.sendMessage(messageText,inputType)
 		
 		
     EndIf
@@ -547,11 +548,13 @@ Function TriggerTextChatAction()
 	string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 
 	If messageText != ""
-		if (Input.IsKeyPressed(29)) ; Left Shift
-			Debug.Trace("[CHIM] Shift modifier, will cast intimacy bubble")
+		string inputType = ""
+		if (Input.IsKeyPressed(29)) ; Left Ctrl
+			Debug.Trace("[CHIM] Ctrl modifier, will cast intimacy bubble")
 			IntimacySpell.cast(Game.GetPlayer())
+			inputType = "inputtext_i"
 		endif
-		AIAgentFunctions.sendMessage(messageText,"")
+		AIAgentFunctions.sendMessage(messageText,inputType)
 	EndIf
 EndFunction
 

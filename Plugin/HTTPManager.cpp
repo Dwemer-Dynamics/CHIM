@@ -17,6 +17,7 @@
 #include "Conf.h"
 #include "Globals.h"
 #include "Misc.h"
+#include "PlayerConversationRouter.h"
 #include "PrismaUIBridge.h"
 #include "SpatialSnapshotManager.h"
 #include "SPGResponse.h"
@@ -1587,10 +1588,25 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
     }
 
-    void stream(std::string msg) { stream(msg, 0); }
+    static void streamInternal(
+        std::string msg,
+        int rechatDepth,
+        const PlayerConversationRoutingContext* routingContext);
 
+    void stream(std::string msg) { streamInternal(std::move(msg), 0, nullptr); }
 
     void stream(std::string msg, int rechatDepth) {
+        streamInternal(std::move(msg), rechatDepth, nullptr);
+    }
+
+    void streamPlayer(std::string msg, const PlayerConversationRoutingContext& context) {
+        streamInternal(std::move(msg), 0, &context);
+    }
+
+    static void streamInternal(
+        std::string msg,
+        int rechatDepth,
+        const PlayerConversationRoutingContext* routingContext) {
         // Determine speaker
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -1607,25 +1623,40 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         const bool playerInputMessage =
             msg.starts_with("inputtext_s|") || msg.starts_with("inputtext|") ||
             msg.starts_with("ginputtext_s|") || msg.starts_with("ginputtext|");
-        const auto spatialSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(
-            false, playerInputMessage ? "player_input_listener_resolve" : "listener_resolve");
-        const auto& audibleActors = spatialSnapshot.audibleActors;
-        std::unordered_map<RE::FormID, const AudibleActorDescriptor*> audibleActorsByFormId;
-        audibleActorsByFormId.reserve(audibleActors.size());
-        for (const auto& audibleActor : audibleActors) {
-            audibleActorsByFormId[audibleActor.formId] = &audibleActor;
+        const bool unifiedPlayerRouting = playerInputMessage && routingContext != nullptr;
+        PlayerConversationRoutingResult playerRoute{};
+        std::size_t legacyAudibleActorCount = 0;
+        if (!unifiedPlayerRouting) {
+            const auto spatialSnapshot = SpatialSnapshotManager::GetPlayerSnapshot(
+                false, playerInputMessage ? "player_input_listener_resolve" : "listener_resolve");
+            legacyAudibleActorCount = spatialSnapshot.audibleActors.size();
+        } else {
+            playerRoute = PlayerConversationRouter::Resolve(msg, *routingContext);
         }
         float minDistance = (std::numeric_limits<float>::max)();
         bool directedChat = false;
-        const bool everyoneTargetOverride = PrismaUIBridge::IsChatboxEveryoneTargetOverrideActive();
-        auto rankedTargets = playerInputMessage
-            ? SpatialSnapshotManager::GetValidPlayerSpeechTargets(
-                "player_input_listener_resolve", false, PlayerSpeechTargetMode::Manual)
-            : SpatialSnapshotManager::GetPlayerConversationTargets("listener_resolve", true);
+        const bool everyoneTargetOverride = unifiedPlayerRouting
+            ? routingContext->everyoneMode
+            : PrismaUIBridge::IsChatboxEveryoneTargetOverrideActive();
+        std::vector<PlayerSpatialCandidate> rankedTargets;
+        if (!unifiedPlayerRouting) {
+            rankedTargets = playerInputMessage
+                ? SpatialSnapshotManager::GetValidPlayerSpeechTargets(
+                    "player_input_listener_resolve", false, PlayerSpeechTargetMode::Manual)
+                : SpatialSnapshotManager::GetPlayerConversationTargets("listener_resolve", true);
+        }
 
         std::string currentParty = "";
-        for (const auto& target : rankedTargets) {
-            auto* targetActor = target.actor;
+        std::vector<RE::Actor*> currentPartyActors;
+        if (unifiedPlayerRouting) {
+            currentPartyActors = playerRoute.presentPartyActors;
+        } else {
+            currentPartyActors.reserve(rankedTargets.size());
+            for (const auto& target : rankedTargets) {
+                currentPartyActors.push_back(target.actor);
+            }
+        }
+        for (auto* targetActor : currentPartyActors) {
             if (!targetActor || !targetActor->IsPlayerTeammate()) {
                 continue;
             }
@@ -1648,6 +1679,20 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         std::shared_ptr<AIAgent> agentPointer = nullptr;
         std::string listener;
+        if (unifiedPlayerRouting) {
+            agentPointer = playerRoute.responder;
+            listenerPtr = playerRoute.responderActor;
+            listener = playerRoute.responderName;
+            directedChat = playerRoute.direct || playerRoute.narrator;
+            if (listenerPtr) {
+                minDistance = SpatialAwareness::GetEffectiveActorPosition(player).GetDistance(
+                    SpatialAwareness::GetEffectiveActorPosition(listenerPtr));
+            }
+            if (playerRoute.narrator) {
+                narratorOverrideReason = playerRoute.reason;
+            }
+        }
+
         const auto selectTarget = [&](const PlayerSpatialCandidate& target, const char* source) {
             if (!target.agent || !target.actor) {
                 return false;
@@ -1696,7 +1741,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         std::string chatboxOverrideName;
         const bool chatboxOverrideActive =
             PrismaUIBridge::GetChatboxTargetOverride(chatboxOverrideFormId, chatboxOverrideName);
-        if (chatboxOverrideActive) {
+        if (!unifiedPlayerRouting && chatboxOverrideActive) {
             auto overrideIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
                 [&](const PlayerSpatialCandidate& target) {
                     const bool formMatch = chatboxOverrideFormId != 0 && target.formId == chatboxOverrideFormId;
@@ -1724,7 +1769,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        if (!agentPointer) {
+        if (!unifiedPlayerRouting && !agentPointer) {
             auto lookIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
                 [](const PlayerSpatialCandidate& target) {
                     return target.lookTarget && target.targetable;
@@ -1739,7 +1784,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        if (!agentPointer) {
+        if (!unifiedPlayerRouting && !agentPointer) {
             constexpr int kMaxRankedAutoTargetChecks = 3;
             int rankedAutoTargetsChecked = 0;
             bool rankedAutoTargetRejected = false;
@@ -1769,11 +1814,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        if (!agentPointer) {
+        if (!unifiedPlayerRouting && !agentPointer) {
             auto narrator = aiam.getAgentByName(NARRATOR_NAME);
             if (narrator) {
                 logger::info("[LISTENER-RESOLVE] Routing to Narrator: no targetable NPC in ranked spatial targets (audible={}, ranked={})",
-                             audibleActors.size(), rankedTargets.size());
+                             legacyAudibleActorCount, rankedTargets.size());
                 listenerPtr = narrator->getActor();
                 agentPointer = narrator;
                 listener.assign(NARRATOR_NAME);
@@ -1798,7 +1843,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        if (startsWithHey(msg)) {
+        if (!unifiedPlayerRouting && startsWithHey(msg)) {
             logger::info("Hey override detected in message: {}", msg);
             for (std::string agentname : aiam.getAgentsNamesFollowing()) {
                 if (msg.contains(getFirstWord(agentname))) {
@@ -1818,7 +1863,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             logger::info("[LISTENER-RESOLVE] Using Everyone chatbox target override");
         }
 
-        if (agentPointer->hasConversationCooldown()) {
+        if (!unifiedPlayerRouting && agentPointer->hasConversationCooldown()) {
             logger::info("{} is on conversation cooldown, showing message", agentPointer->getActorName());
             std::string cooldownMsg = std::format("[CHIM] {} does not want to talk right now.", agentPointer->getActorName());
             RE::DebugNotification(cooldownMsg.c_str());
@@ -1844,14 +1889,14 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
 
         // Hey Narrator override
-        if (startsWithHeyNarrator(msg)) {
+        if (!unifiedPlayerRouting && startsWithHeyNarrator(msg)) {
             forceNarratorListener("explicit call of narrator");
         }
 
         // VR: PlayerCamera->currentState->GetRotation returns degenerate quat in action_rework's
         // external camera, force-routing every utterance to Narrator. Read HMD node directly instead.
         auto narrator = aiam.getAgentByName(NARRATOR_NAME);
-        if (narrator) {
+        if (!unifiedPlayerRouting && narrator) {
             float pitchDegrees = 0.0f;
             bool pitchValid = false;
 
@@ -1894,11 +1939,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        if (PrismaUIBridge::IsNarratorChatModeEnabled()) {
+        if (!unifiedPlayerRouting && PrismaUIBridge::IsNarratorChatModeEnabled()) {
             forceNarratorListener("Narrator mode");
         }
 
-        const bool useEveryoneBroadcast = everyoneTargetOverride && listener != NARRATOR_NAME;
+        const bool useEveryoneBroadcast = unifiedPlayerRouting
+            ? playerRoute.broadcast && !playerRoute.narrator
+            : everyoneTargetOverride && listener != NARRATOR_NAME;
 
         if (listener == NARRATOR_NAME) {
             // When talking to narrator, use narrator_inputtext to hide from NPCs
@@ -1960,7 +2007,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 bool hasSpatialContext = false;
                 AudibleActorDescriptor listenerSpatial{};
 
-                std::vector<std::string> audibleCompanions;
+                std::vector<std::string> audibleCompanions =
+                    unifiedPlayerRouting ? playerRoute.audience : std::vector<std::string>{};
                 const auto joinCompanions = [](const std::vector<std::string>& names) {
                     std::string joined;
                     for (const auto& name : names) {
@@ -1971,9 +2019,15 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     }
                     return joined;
                 };
-                std::string audienceSource = listener == NARRATOR_NAME ? "narrator" : "player_spatial";
-                std::string targetMode = useEveryoneBroadcast ? "everyone" :
-                    (listener == NARRATOR_NAME ? "narrator" : "direct");
+                std::string audienceSource = unifiedPlayerRouting
+                    ? "unified_player_routing"
+                    : (listener == NARRATOR_NAME ? "narrator" : "player_spatial");
+                std::string targetMode = unifiedPlayerRouting
+                    ? (playerRoute.narrator ? "narrator" :
+                       (playerRoute.broadcast ? "everyone" :
+                        (playerRoute.direct ? "direct" : "automatic")))
+                    : (useEveryoneBroadcast ? "everyone" :
+                       (listener == NARRATOR_NAME ? "narrator" : "direct"));
                 bool listenerCanCommunicate = false;
                 const auto addCompanion = [&](const std::string& name) {
                     if (name.empty()) {
@@ -1998,7 +2052,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 };
 
                 std::size_t nearbyContextCount = 0;
-                if (listener != NARRATOR_NAME) {
+                if (!unifiedPlayerRouting && listener != NARRATOR_NAME) {
                     const float autoHearingRadiusUnits =
                         SpatialSnapshotManager::GetAutoHearingRadiusUnits();
                     const float autoHearingRadiusMeters =
@@ -2016,7 +2070,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     if (nearbyContextCount > 0) {
                         audienceSource = "player_nearby_context";
                     }
-                } else {
+                } else if (!unifiedPlayerRouting) {
                     logger::info("[rework_debug][nearby_context] player_prescan skipped for narrator listener");
                 }
 
@@ -2035,7 +2089,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 }
 
                 std::size_t spatialAudienceCount = 0;
-                if (listener != NARRATOR_NAME) {
+                if (!unifiedPlayerRouting && listener != NARRATOR_NAME) {
                     spatialAudienceCount = addNearbyTargets("player_input_final_audience");
                     if (spatialAudienceCount > 0) {
                         audienceSource = nearbyContextCount > 0
@@ -2070,13 +2124,21 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
                 if (isSpatialSnapshotEligibleRequest) {
                     json audienceSnapshot;
-                    audienceSnapshot["source"] = "plugin_spatial_input_v1";
+                    audienceSnapshot["source"] = unifiedPlayerRouting
+                        ? "plugin_player_routing_v2"
+                        : "plugin_spatial_input_v1";
                     audienceSnapshot["speaker"] = playerSpeaker;
                     audienceSnapshot["listener"] = listener;
                     audienceSnapshot["companions"] = audibleCompanions;
                     audienceSnapshot["resolved_listener_injected"] = false;
                     audienceSnapshot["target_mode"] = targetMode;
                     audienceSnapshot["audience_source"] = audienceSource;
+                    if (unifiedPlayerRouting) {
+                        audienceSnapshot["routing_reason"] = playerRoute.reason;
+                        audienceSnapshot["speech_mode"] = playerRoute.modeName;
+                        audienceSnapshot["listener_radius_units"] = playerRoute.listenerRadiusUnits;
+                        audienceSnapshot["audience_radius_units"] = playerRoute.audienceRadiusUnits;
+                    }
                     const std::string snapshotDump = audienceSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));

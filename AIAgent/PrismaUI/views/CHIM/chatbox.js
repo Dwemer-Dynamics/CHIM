@@ -159,10 +159,10 @@
     /**
      * Send user message through Prisma bridge
      */
-    function sendMessageToBridge(message) {
+    function sendMessageToBridge(message, intimate) {
         if (!message || !message.trim()) return;
         if (window.chimChatboxCommand) {
-            window.chimChatboxCommand('send|' + message);
+            window.chimChatboxCommand((intimate ? 'send_intimate|' : 'send|') + message);
         }
     }
 
@@ -460,11 +460,11 @@
     /**
      * Send message from focus chat modal
      */
-    window.sendFocusMessage = function() {
+    window.sendFocusMessage = function(intimate) {
         if (!focusInput) return;
         const message = focusInput.value;
         if (!message.trim()) return;
-        sendMessageToBridge(message);
+        sendMessageToBridge(message, !!intimate);
         focusInput.value = '';
         window.closeFocusChatbox(true);
     };
@@ -546,7 +546,7 @@
 
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                window.sendFocusMessage();
+                window.sendFocusMessage(e.ctrlKey);
             }
         });
     }

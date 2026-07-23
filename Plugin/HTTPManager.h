@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 #include "json.hpp"
+#include "PlayerConversationRouter.h"
 
 // Track last event type for narration detection
 extern std::string lastEventType;
@@ -16,6 +17,7 @@ namespace HTTPManager {
     void log(std::string msg);
     void stream(std::string msg);
     void stream(std::string msg, int rechatDepth);
+    void streamPlayer(std::string msg, const PlayerConversationRoutingContext& context);
     
     void log(std::string msg, RE::Actor *actor);
     void log(std::string msg, std::string forcedActor);

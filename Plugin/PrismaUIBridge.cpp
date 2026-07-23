@@ -8,6 +8,7 @@
 #include "SpeakManager.h"
 #include "SPGResponse.h"
 #include "SpatialSnapshotManager.h"
+#include "PlayerConversationRouter.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -5443,6 +5444,11 @@ R"CHIM(
                 g_prismaUI->Unfocus(g_chatboxView);
             }
             HideChatboxPanel();
+        } else if (cmd.starts_with("send_intimate|")) {
+            std::string message = cmd.substr(14);
+            if (!message.empty()) {
+                SendChatboxMessage(message, true);
+            }
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
@@ -5975,7 +5981,7 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message) {
+    void SendChatboxMessage(const std::string& message, bool intimate) {
         if (message.empty()) {
             return;
         }
@@ -5992,7 +5998,21 @@ R"CHIM(
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
-        sendMessageReal(message, "");
+        PlayerConversationRoutingContext routingContext{};
+        routingContext.source = PlayerConversationInputSource::PrismaText;
+        routingContext.everyoneMode = IsChatboxEveryoneTargetOverrideActive();
+        routingContext.narratorMode = IsNarratorChatModeEnabled();
+        GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
+
+        if (intimate) {
+            routingContext.mode = PlayerConversationSpeechMode::Intimate;
+        } else if (g_chatboxCurrentMode == "WHISPER") {
+            routingContext.mode = PlayerConversationSpeechMode::Whisper;
+        } else if (g_chatboxCurrentMode == "SHOUT") {
+            routingContext.mode = PlayerConversationSpeechMode::Shout;
+        }
+
+        sendMessageReal(message, "", routingContext);
     }
 
     static void StopAllDialogueNow(const char* sourceTag) {

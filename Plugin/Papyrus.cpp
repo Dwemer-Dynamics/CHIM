@@ -1456,7 +1456,10 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
     return 0;
 }
 
-int sendMessageReal(std::string msg, std::string type) {
+int sendMessageReal(
+    std::string msg,
+    std::string type,
+    const PlayerConversationRoutingContext& routingContext) {
     logger::info("Call from papyrus: sendMessage");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     PrismaUIBridge::BumpDialogueStopGeneration();
@@ -1513,9 +1516,13 @@ int sendMessageReal(std::string msg, std::string type) {
         }
     }
 
+    PlayerConversationRoutingContext effectiveRoutingContext = routingContext;
     std::string typeRevised;
 
-    if (type.empty())
+    if (type == "inputtext_i") {
+        typeRevised.assign("inputtext_s");
+        effectiveRoutingContext.mode = PlayerConversationSpeechMode::Intimate;
+    } else if (type.empty())
         if (player->IsSneaking())
             typeRevised.assign("inputtext_s");
         else
@@ -1725,8 +1732,10 @@ int sendMessageReal(std::string msg, std::string type) {
 
         SpeakManager::getInstance().stopRechatForNseconds(3);  // To avoid rechat if any rechat is pending
 
-        HTTPManager::stream(std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
-                                        RE::PlayerCharacter::GetSingleton()->GetName(), msg));
+        HTTPManager::streamPlayer(
+            std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
+                        RE::PlayerCharacter::GetSingleton()->GetName(), msg),
+            effectiveRoutingContext);
     }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
