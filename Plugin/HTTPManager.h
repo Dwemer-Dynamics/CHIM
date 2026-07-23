@@ -11,6 +11,8 @@ extern std::string lastEventType;
 
 namespace HTTPManager {
 
+    std::string base64_decode(const std::string& encodedString);
+
     void log(std::string msg);
     void stream(std::string msg);
     void stream(std::string msg, int rechatDepth);

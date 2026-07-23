@@ -2050,10 +2050,13 @@ EndFunction
 int Function SpawnBook(string itemname,int itembase,int locationMarker ,String taskid,String content) global
 
 	Debug.Trace("[CHIM] SpawnBook, SendNote: "+itemname)
-	Book itemToSpawnBase=Game.GetFormFromFile(0x022d30, "AIAgent.esp") as Book 
-	
-				
-	SpawnItem(itemname,itemToSpawnBase.GetFormId(),locationMarker ,taskid) 
+	; Use the dedicated book-shaped dynamic page template. Letters keep using AIAGenericNote.
+	Book diaryBase = Game.GetFormFromFile(0x045CEF, "AIAgent.esp") as Book
+	if (!diaryBase)
+		Debug.Trace("[CHIM] [PHYSICAL_DIARY] AIAGenericDiaryBook is missing or is not a BOOK; spawn aborted")
+		return -1
+	endif
+	SpawnItem(itemname,0x045CEF,locationMarker ,taskid)
 	
 EndFunction
 
@@ -2299,7 +2302,11 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 			endif;
 		endif
 		
-		itemToSpawnBase.SetGoldValue(10000)
+		if (itembase == 0x045CEF)
+			itemToSpawnBase.SetGoldValue(5)
+		else
+			itemToSpawnBase.SetGoldValue(10000)
+		endif
 		EffectShader shader=Game.GetForm(0x00092de7)  as EffectShader	
 		Enchantment ench=Game.GetForm(0x0010fb84)  as Enchantment	
 		VisualEffect veff=Game.GetForm(0x0008cc8a)  as VisualEffect	
