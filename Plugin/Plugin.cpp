@@ -48,6 +48,7 @@
 #include "SpatialAwareness.h"
 #include "SpatialSnapshotManager.h"
 #include "VRItemAwareness.h"
+#include "ServerPluginSync.h"
 
 using json = nlohmann::json;
 
@@ -7834,6 +7835,7 @@ OnLoadedGame {
         // Detect and upload CSV import data files on first load (only once per session)
         if (!importDataDetectionDone) {
             DetectAndUploadImportDataFiles();
+            ScheduleServerPluginSync();
             importDataDetectionDone = true;
         }
 

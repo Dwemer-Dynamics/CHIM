@@ -17,7 +17,7 @@
 
 namespace
 {
-    constexpr RE::FormID kDiaryBookLocalFormID = 0x045CE7;
+    constexpr RE::FormID kDiaryBookLocalFormID = 0x045CEF;
 
     struct PendingDiaryBook
     {

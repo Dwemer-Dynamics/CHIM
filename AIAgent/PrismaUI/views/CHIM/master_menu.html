@@ -5,7 +5,7 @@
     <title>CHIM Master Menu</title>
     <link rel="stylesheet" href="master_menu.css">
 </head>
-<body>
+<body data-chim-menu-scale-target="#master-modal">
     <div id="master-modal" class="modal-container">
         <!-- Header -->
         <div class="modal-header">
@@ -62,13 +62,26 @@
                     <button type="button" class="layout-toggle-btn" id="hud-layout-toggle"
                             aria-expanded="false"
                             onclick="toggleHudLayout()"
-                            onmouseenter="showDescription('Expand HUD Layout controls for panel corner placement')"
+                            onmouseenter="showDescription('Expand Prisma UI menu size and HUD placement controls')"
                             onmouseleave="clearDescription()">
-                        <span>HUD Layout</span>
+                        <span>Prisma UI Settings</span>
                         <span class="layout-toggle-indicator" id="hud-layout-indicator">+</span>
                     </button>
 
                     <div class="layout-dropdown" id="hud-layout-dropdown" hidden>
+                        <div class="menu-scale-control"
+                             onmouseenter="showDescription('Scale interactive Prisma menus. Large sizes are automatically limited to fit your screen')"
+                             onmouseleave="clearDescription()">
+                            <span class="menu-scale-label">Menu Size</span>
+                            <div class="menu-scale-options" role="group" aria-label="Prisma menu size">
+                                <button type="button" class="menu-scale-btn" data-scale="100" onclick="setMenuScale(100)">100%</button>
+                                <button type="button" class="menu-scale-btn" data-scale="125" onclick="setMenuScale(125)">125%</button>
+                                <button type="button" class="menu-scale-btn" data-scale="150" onclick="setMenuScale(150)">150%</button>
+                                <button type="button" class="menu-scale-btn" data-scale="175" onclick="setMenuScale(175)">175%</button>
+                                <button type="button" class="menu-scale-btn" data-scale="200" onclick="setMenuScale(200)">200%</button>
+                            </div>
+                        </div>
+
                         <div class="layout-grid-3x2">
                             <div class="layout-card">
                                 <div class="layout-label" onmouseenter="showDescription('Chatbox View panel corner placement')" onmouseleave="clearDescription()">Chatbox View</div>
@@ -177,6 +190,7 @@
     </div>
     
     <script src="layout.js"></script>
+    <script src="ui_scale.js"></script>
     <script src="master_menu.js"></script>
 </body>
 </html>
