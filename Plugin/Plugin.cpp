@@ -22,6 +22,7 @@
 #include "ThreadPool.h"
 
 #include "Commands.h"
+#include "DynamicDiaryBook.h"
 #include "Globals.h"
 #include "Conf.h"
 #include "Misc.h"
@@ -48,6 +49,7 @@
 #include "SpatialAwareness.h"
 #include "SpatialSnapshotManager.h"
 #include "VRItemAwareness.h"
+#include "ServerPluginSync.h"
 
 using json = nlohmann::json;
 
@@ -3698,7 +3700,8 @@ namespace ProcessorMenu {
             } else if (event->menuName == RE::BookMenu::MENU_NAME) {
                 if (event->opening) {
                     ;
-
+                } else {
+                    DynamicDiaryBook::OnBookMenuClosed();
                 }
             } else if (event->menuName == RE::BarterMenu::MENU_NAME) {
                 if (event->opening) {
@@ -7833,6 +7836,7 @@ OnLoadedGame {
         // Detect and upload CSV import data files on first load (only once per session)
         if (!importDataDetectionDone) {
             DetectAndUploadImportDataFiles();
+            ScheduleServerPluginSync();
             importDataDetectionDone = true;
         }
 
@@ -8611,7 +8615,8 @@ EventHandlers {
                     RE::TESForm* realObject = RE::TESForm::LookupByID(objectPointer->GetFormID());
                     std::string name(activated2->GetName());
                     if (realObject) {
-                        if (name == "Generic Note") {
+                        if (name == "Generic Note" &&
+                            !DynamicDiaryBook::IsPhysicalDiaryBook(activated2->As<RE::TESObjectBOOK>())) {
                             // AIAgent faction. is an ethereal note
                             std::string hashName = md5low(trim(activatedName), false);
                             std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName + ".png";
@@ -9768,7 +9773,8 @@ EventHandlers {
                 RE::TESForm* realObject = RE::TESForm::LookupByID(event->originalRefr);
                 std::string name(object->GetName());
                 if (realObject) {
-                    if (name=="Generic Note") {
+                    if (name == "Generic Note" &&
+                        !DynamicDiaryBook::IsPhysicalDiaryBook(object->As<RE::TESObjectBOOK>())) {
                         // AIAgent faction. is an ethereal note
                         std::string hashName = md5low(trim(realObject->AsReference()->GetDisplayFullName()),false);
                         std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName + ".png";
@@ -9875,7 +9881,10 @@ EventHandlers {
             auto bookDescription = bookRef->As<RE::TESDescription>();
             std::string localName(bookForm->GetName());
 
-            if (localName=="Generic Note") {
+            if (DynamicDiaryBook::QueueReadableBook(
+                    bookRefPtr->AsReference(), bookRef->As<RE::TESObjectBOOK>(), fullName)) {
+                bypass = true;
+            } else if (localName=="Generic Note") {
                 // AIAgent faction. is an ethereal note
                 std::string hashName=md5low(trim(event->book.get()->GetDisplayFullName()),false);
                 std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName+".png";
