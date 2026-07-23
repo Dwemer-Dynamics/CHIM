@@ -2051,7 +2051,12 @@ int Function SpawnBook(string itemname,int itembase,int locationMarker ,String t
 
 	Debug.Trace("[CHIM] SpawnBook, SendNote: "+itemname)
 	; Use the dedicated book-shaped dynamic page template. Letters keep using AIAGenericNote.
-	SpawnItem(itemname,0x045CE7,locationMarker ,taskid)
+	Book diaryBase = Game.GetFormFromFile(0x045CEF, "AIAgent.esp") as Book
+	if (!diaryBase)
+		Debug.Trace("[CHIM] [PHYSICAL_DIARY] AIAGenericDiaryBook is missing or is not a BOOK; spawn aborted")
+		return -1
+	endif
+	SpawnItem(itemname,0x045CEF,locationMarker ,taskid)
 	
 EndFunction
 
@@ -2297,7 +2302,7 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 			endif;
 		endif
 		
-		if (itembase == 0x045CE7)
+		if (itembase == 0x045CEF)
 			itemToSpawnBase.SetGoldValue(5)
 		else
 			itemToSpawnBase.SetGoldValue(10000)
