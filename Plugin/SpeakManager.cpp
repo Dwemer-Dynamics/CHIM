@@ -2630,7 +2630,18 @@ void SpeakManager::process(AIAgent *agent) {
             }
             if (agent->isExternalLocked()) {
                 logger::info("[SPEAKERMANAGER {}] {} is locked, cannot speak ", tid, agent->getActorName());
-                deleteQueue(false);
+                // This lock belongs to the current actor (for example, their mouth is occupied
+                // in an OStim/SexLab scene). Deleting the entire NPC queue here also discarded
+                // valid lines for every other actor and left emitted server rows pending forever.
+                // Abort only this utterance and preserve the rest of the queue.
+                if (!scriptLine.utteranceId.empty()) {
+                    json abortData;
+                    abortData["utterance_ids"] = std::vector<std::string>{scriptLine.utteranceId};
+                    abortData["reason"] = "actor_external_locked";
+                    HTTPManager::log(std::format("_speech_abort|{}|{}|{}", getCurrentTimeMillis(),
+                                                 GetGameTimeStamp(), abortData.dump()));
+                }
+                dropMatchingHeadItem(scriptLine);
                 {
                     std::lock_guard<std::mutex> lock(mtx);
                     currentPlaybackUtteranceId.clear();
