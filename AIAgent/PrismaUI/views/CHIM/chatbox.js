@@ -17,13 +17,15 @@
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
     const currentModeElement = document.getElementById('chatbox-current-mode');
-    const modeSelectElement = document.getElementById('chatbox-mode-select');
-    const currentToolElement = document.getElementById('chatbox-current-tool');
-    const toolSelectElement = document.getElementById('chatbox-tool-select');
+    const modeMenuToggleButton = document.getElementById('chatbox-mode-menu-toggle');
+    const modeOptionsElement = document.getElementById('chatbox-mode-options');
+    const modeOptionButtons = document.querySelectorAll('#chatbox-mode-options .chatbox-option-tile');
     const currentModelElement = document.getElementById('chatbox-current-model');
     const globalModelControlElement = document.getElementById('chatbox-global-model-control');
     const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
-    const modelSelectElement = document.getElementById('chatbox-model-select');
+    const modelMenuToggleButton = document.getElementById('chatbox-model-menu-toggle');
+    const modelOptionsElement = document.getElementById('chatbox-model-options');
+    const modelOptionButtons = document.querySelectorAll('#chatbox-model-options .chatbox-option-tile');
     const profileMenuToggleButton = document.getElementById('chatbox-profile-menu-toggle');
     const profileMenuElement = document.getElementById('chatbox-profile-menu');
     const profileMenuCloseButton = document.getElementById('chatbox-profile-menu-close');
@@ -36,7 +38,9 @@
     const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
     const profileDefaultToggleButtons = document.querySelectorAll('.profile-default-toggle[data-profile-setting]');
     const profileConnectorsElement = document.getElementById('chatbox-profile-connectors');
-    const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
+    const rechatMenuToggleButton = document.getElementById('chatbox-rechat-menu-toggle');
+    const rechatOptionsElement = document.getElementById('chatbox-rechat-options');
+    const rechatOptionButtons = document.querySelectorAll('#chatbox-rechat-options .chatbox-option-tile');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
@@ -51,7 +55,6 @@
     let quickChatMode = false;
     let isFocusChatEnabled = false;
     let currentModeAction = 'mode_standard';
-    let currentToolModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
     let currentGlobalModelLabel = 'Standard';
     let currentProfileLlmMode = 'fixed';
@@ -76,15 +79,12 @@
     // Server URL
     const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
 
-    const conversationModeConfig = {
+    const modeConfig = {
         STANDARD: { label: 'Standard', class: 'standard', action: 'mode_standard' },
         WHISPER: { label: 'Whisper', class: 'whisper', action: 'mode_whisper' },
         INTIMATE: { label: 'Intimate', class: 'intimate', action: 'mode_intimate' },
         SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
-        NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' }
-    };
-
-    const toolModeConfig = {
+        NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' },
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
         SPAWN: { label: 'Spawn', class: 'director', action: 'mode_spawn' },
         CHEATMODE: { label: 'Cheat Mode', class: 'cheatmode', action: 'mode_cheat' },
@@ -106,6 +106,49 @@
         group: { label: 'Group', class: 'group' },
         random: { label: 'Random', class: 'random' }
     };
+
+    function setActiveTile(buttons, attribute, value) {
+        buttons.forEach(function(button) {
+            const active = button.dataset[attribute] === value;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+    }
+
+    function setTileSelectorDisabled(toggleButton, optionButtons, disabled, title) {
+        if (toggleButton) {
+            toggleButton.disabled = disabled;
+            if (title) toggleButton.title = title;
+        }
+        optionButtons.forEach(function(button) {
+            button.disabled = disabled;
+        });
+    }
+
+    function closeTileMenu(toggleButton, optionsElement) {
+        if (toggleButton) toggleButton.setAttribute('aria-expanded', 'false');
+        if (optionsElement) optionsElement.classList.add('hidden');
+    }
+
+    function closeAllTileMenus(exceptOptionsElement) {
+        [
+            [modeMenuToggleButton, modeOptionsElement],
+            [modelMenuToggleButton, modelOptionsElement],
+            [rechatMenuToggleButton, rechatOptionsElement]
+        ].forEach(function(selector) {
+            if (selector[1] !== exceptOptionsElement) {
+                closeTileMenu(selector[0], selector[1]);
+            }
+        });
+    }
+
+    function toggleTileMenu(toggleButton, optionsElement) {
+        if (!toggleButton || !optionsElement || toggleButton.disabled) return;
+        const opening = optionsElement.classList.contains('hidden');
+        closeAllTileMenus(opening ? optionsElement : null);
+        toggleButton.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        optionsElement.classList.toggle('hidden', !opening);
+    }
 
     /**
      * Switch between available chatbox tabs.
@@ -679,51 +722,17 @@
 
     window.updateChatboxMode = function(mode) {
         const modeUpper = mode ? mode.toUpperCase().trim() : 'STANDARD';
-        const conversationConfig = conversationModeConfig[modeUpper];
-        const toolConfig = toolModeConfig[modeUpper];
+        const config = modeConfig[modeUpper] || modeConfig.STANDARD;
 
-        if (conversationConfig) {
-            currentModeAction = conversationConfig.action;
-            currentToolModeAction = 'mode_standard';
-            if (currentModeElement) {
-                currentModeElement.className = 'mode-badge ' + conversationConfig.class;
-                currentModeElement.textContent = conversationConfig.label;
-                currentModeElement.title = conversationConfig.label === 'Intimate'
-                    ? 'Private, close-range conversation'
-                    : '';
-            }
-            if (modeSelectElement) {
-                modeSelectElement.value = conversationConfig.action;
-            }
-            if (currentToolElement) {
-                currentToolElement.className = 'mode-badge off';
-                currentToolElement.textContent = 'Off';
-            }
-            if (toolSelectElement) {
-                toolSelectElement.value = 'mode_standard';
-            }
-        } else if (toolConfig) {
-            currentModeAction = toolConfig.action;
-            currentToolModeAction = toolConfig.action;
-            if (currentModeElement) {
-                currentModeElement.className = 'mode-badge paused';
-                currentModeElement.textContent = 'Paused';
-                currentModeElement.title = 'Select a conversation mode to leave the active tool.';
-            }
-            if (modeSelectElement) {
-                modeSelectElement.value = '';
-            }
-            if (currentToolElement) {
-                currentToolElement.className = 'mode-badge ' + toolConfig.class;
-                currentToolElement.textContent = toolConfig.label;
-            }
-            if (toolSelectElement) {
-                toolSelectElement.value = toolConfig.action;
-            }
-        } else {
-            window.updateChatboxMode('STANDARD');
-            return;
+        currentModeAction = config.action;
+        if (currentModeElement) {
+            currentModeElement.className = 'mode-badge ' + config.class;
+            currentModeElement.textContent = config.label;
+            currentModeElement.title = config.label === 'Intimate'
+                ? 'Private, close-range conversation'
+                : '';
         }
+        setActiveTile(modeOptionButtons, 'action', config.action);
         refreshProfileLlmMode();
     };
 
@@ -741,14 +750,18 @@
             currentModelElement.className = 'mode-badge ' + globalConfig.class;
             currentModelElement.textContent = globalConfig.label;
         }
-        if (modelSelectElement) {
-            modelSelectElement.value = globalConfig.action;
-            modelSelectElement.disabled = profileLlmSaveInProgress ||
-                (currentProfileLlmInfo && currentProfileLlmMode === 'random');
-            modelSelectElement.title = currentProfileLlmMode === 'random'
+        setActiveTile(modelOptionButtons, 'action', globalConfig.action);
+        const modelDisabled = profileLlmSaveInProgress ||
+            !!(currentProfileLlmInfo && currentProfileLlmMode === 'random');
+        setTileSelectorDisabled(
+            modelMenuToggleButton,
+            modelOptionButtons,
+            modelDisabled,
+            currentProfileLlmMode === 'random'
                 ? 'Disable Random LLM on the target profile to change the global model.'
-                : 'Switch global model';
-        }
+                : 'Switch global model'
+        );
+        if (modelDisabled) closeTileMenu(modelMenuToggleButton, modelOptionsElement);
         if (globalModelControlElement) {
             globalModelControlElement.classList.toggle(
                 'profile-random-muted',
@@ -1131,9 +1144,7 @@
             currentRechatModeElement.className = 'mode-badge ' + config.class;
             currentRechatModeElement.textContent = config.label;
         }
-        if (rechatModeSelectElement) {
-            rechatModeSelectElement.value = normalizedMode;
-        }
+        setActiveTile(rechatOptionButtons, 'mode', normalizedMode);
     }
 
     window.updateChatboxRechatMode = function(mode) {
@@ -1142,11 +1153,17 @@
     };
 
     async function saveRechatMode(mode) {
-        if (!rechatModeSelectElement || rechatModeSaveInProgress) return;
+        if (rechatModeSaveInProgress) return;
 
         const previousMode = currentRechatMode;
         rechatModeSaveInProgress = true;
-        rechatModeSelectElement.disabled = true;
+        setTileSelectorDisabled(
+            rechatMenuToggleButton,
+            rechatOptionButtons,
+            true,
+            'Updating global rechat mode'
+        );
+        closeTileMenu(rechatMenuToggleButton, rechatOptionsElement);
 
         try {
             const formData = new FormData();
@@ -1169,7 +1186,12 @@
             showInGameDebugNotification('Failed to update global rechat mode.');
         } finally {
             rechatModeSaveInProgress = false;
-            rechatModeSelectElement.disabled = false;
+            setTileSelectorDisabled(
+                rechatMenuToggleButton,
+                rechatOptionButtons,
+                false,
+                'Switch global rechat mode'
+            );
         }
     }
 
@@ -1190,27 +1212,36 @@
         }
     }
 
-    if (modeSelectElement) {
-        modeSelectElement.addEventListener('change', function() {
-            const action = modeSelectElement.value;
+    if (modeMenuToggleButton) {
+        modeMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(modeMenuToggleButton, modeOptionsElement);
+        });
+    }
+
+    modeOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const action = button.dataset.action;
+            closeTileMenu(modeMenuToggleButton, modeOptionsElement);
             if (!action || action === currentModeAction) return;
             resetTargetSelectionForModeChange();
             sendControlCommand(action);
         });
-    }
+    });
 
-    if (toolSelectElement) {
-        toolSelectElement.addEventListener('change', function() {
-            const action = toolSelectElement.value;
-            if (!action || action === currentToolModeAction) return;
-            resetTargetSelectionForModeChange();
-            sendControlCommand(action);
+    if (modelMenuToggleButton) {
+        modelMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(modelMenuToggleButton, modelOptionsElement);
         });
     }
 
-    if (modelSelectElement) {
-        modelSelectElement.addEventListener('change', function() {
-            const action = modelSelectElement.value;
+    modelOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const action = button.dataset.action;
+            closeTileMenu(modelMenuToggleButton, modelOptionsElement);
             if (!action || action === currentModelAction) return;
 
             const config = Object.values(modelConfig).find(function(item) {
@@ -1222,11 +1253,12 @@
             }
             sendControlCommand(action);
         });
-    }
+    });
 
     if (profileMenuToggleButton) {
         profileMenuToggleButton.addEventListener('click', function(event) {
             event.stopPropagation();
+            closeAllTileMenus();
             if (isProfileMenuOpen()) {
                 closeProfileMenu();
             } else {
@@ -1272,6 +1304,7 @@
 
     document.addEventListener('click', function() {
         if (isProfileMenuOpen()) closeProfileMenu();
+        closeAllTileMenus();
     });
 
     if (focusToggleButton) {
@@ -1301,13 +1334,22 @@
         });
     }
 
-    if (rechatModeSelectElement) {
-        rechatModeSelectElement.addEventListener('change', function() {
-            const mode = rechatModeSelectElement.value;
+    if (rechatMenuToggleButton) {
+        rechatMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(rechatMenuToggleButton, rechatOptionsElement);
+        });
+    }
+
+    rechatOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const mode = button.dataset.mode;
+            closeTileMenu(rechatMenuToggleButton, rechatOptionsElement);
             if (!mode || mode === currentRechatMode) return;
             saveRechatMode(mode);
         });
-    }
+    });
 
     if (deleteEventSelect) {
         deleteEventSelect.addEventListener('change', function() {
@@ -1350,6 +1392,7 @@
     updateFocusIndicator(isFocusChatEnabled);
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
+    renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
 
     // Apply corner placement via shared layout manager

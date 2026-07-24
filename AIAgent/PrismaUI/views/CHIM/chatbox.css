@@ -128,7 +128,7 @@ body {
 
 .chatbox-control-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) repeat(4, minmax(0, 1fr)) minmax(0, 0.75fr);
+    grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr)) minmax(0, 0.75fr);
     gap: 12px;
     align-items: start;
 }
@@ -163,6 +163,129 @@ body {
 .chatbox-control-block.select-stack .chatbox-mode-select {
     width: 100%;
     min-width: 0;
+}
+
+.chatbox-control-block.selector-stack .chatbox-control-value {
+    display: block;
+}
+
+.chatbox-tile-selector {
+    position: relative;
+    width: 100%;
+    pointer-events: auto;
+}
+
+.chatbox-tile-trigger {
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 8px;
+    border: 1px solid rgba(242, 124, 17, 0.38);
+    border-radius: 4px;
+    background: #18151c;
+    color: #fff3e6;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.chatbox-tile-trigger:hover:not(:disabled),
+.chatbox-tile-trigger[aria-expanded="true"] {
+    border-color: rgba(242, 124, 17, 0.88);
+    background: #21171a;
+}
+
+.chatbox-tile-trigger:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
+}
+
+.chatbox-tile-trigger:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.chatbox-tile-trigger-arrow {
+    flex: 0 0 auto;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid rgb(242, 124, 17);
+    transition: transform 0.15s ease;
+}
+
+.chatbox-tile-trigger[aria-expanded="true"] .chatbox-tile-trigger-arrow {
+    transform: rotate(180deg);
+}
+
+.chatbox-tile-options {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 120;
+    width: max(220px, 100%);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid rgba(242, 124, 17, 0.62);
+    border-radius: 6px;
+    background: rgba(16, 14, 20, 0.99);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.72);
+}
+
+#chatbox-rechat-options {
+    right: 0;
+    left: auto;
+}
+
+.chatbox-tile-options.hidden {
+    display: none;
+}
+
+.chatbox-option-tile {
+    min-width: 0;
+    min-height: 30px;
+    padding: 6px 8px;
+    border: 1px solid rgba(120, 120, 132, 0.34);
+    border-radius: 4px;
+    background: #25242a;
+    color: #dedbe2;
+    font-size: 0.78em;
+    font-weight: 600;
+    line-height: 1.15;
+    text-align: left;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.chatbox-option-tile:hover:not(:disabled) {
+    border-color: rgba(242, 124, 17, 0.68);
+    background: #30251f;
+    color: #fff3e6;
+}
+
+.chatbox-option-tile.is-active,
+.chatbox-option-tile[aria-selected="true"] {
+    border-color: rgb(242, 124, 17);
+    background: rgba(242, 124, 17, 0.2);
+    color: #ffd7b0;
+}
+
+.chatbox-option-tile:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.2);
+}
+
+.chatbox-option-tile:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 .chatbox-control-block.focus-stack .chatbox-control-value {
