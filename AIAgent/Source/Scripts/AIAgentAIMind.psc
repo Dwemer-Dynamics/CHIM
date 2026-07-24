@@ -1917,6 +1917,9 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 			finalActor.SetDisplayName(npcName,1)
 			StorageUtil.SetStringValue(finalActor,"forced_name",npcName)
 		endif
+
+		; Protect the generated profile name from external name distributors.
+		addRenamedKeyword(finalActor,npcName)
 		
 		
 		finalActor.EvaluatePackage()
