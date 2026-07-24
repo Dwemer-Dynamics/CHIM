@@ -2106,16 +2106,29 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
                 const std::string playerSpeaker = RE::PlayerCharacter::GetSingleton()->GetName();
                 addCompanion(playerSpeaker);
+                json presentActors = json::array();
+                if (unifiedPlayerRouting) {
+                    for (const auto& present : playerRoute.presentActors) {
+                        presentActors.push_back({
+                            { "form_id", present.formId },
+                            { "name", present.name },
+                            { "distance", present.distance },
+                            { "managed", present.managed },
+                            { "creature", present.creature },
+                        });
+                    }
+                }
                 logger::info(
-                    "[rework_debug][nearby_context] player_audience listener='{}' target_mode='{}' nearby_count={} spatial_count={} source='{}' companions='{}'",
-                    listener, targetMode, nearbyContextCount, spatialAudienceCount, audienceSource,
-                    joinCompanions(audibleCompanions));
+                    "[rework_debug][nearby_context] player_audience listener='{}' target_mode='{}' nearby_count={} spatial_count={} present_count={} source='{}' companions='{}'",
+                    listener, targetMode, nearbyContextCount, spatialAudienceCount,
+                    presentActors.size(), audienceSource, joinCompanions(audibleCompanions));
 
                 speechLogPayload["speaker"] = playerSpeaker;
                 speechLogPayload["location"] = GetPlayerLocation();
                 speechLogPayload["speech"] = msg_decode(outboundMsg);
                 speechLogPayload["listener"] = listener;
                 speechLogPayload["companions"] = audibleCompanions;
+                speechLogPayload["present_actors"] = presentActors;
                 speechLogPayload["distance"] = distance;
                 speechLogPayload["spatial_can_communicate"] = listenerCanCommunicate;
                 speechLogPayload["spatial_volume"] = hasSpatialContext ? listenerSpatial.volume : 0.0f;
@@ -2130,6 +2143,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     audienceSnapshot["speaker"] = playerSpeaker;
                     audienceSnapshot["listener"] = listener;
                     audienceSnapshot["companions"] = audibleCompanions;
+                    audienceSnapshot["present_actors"] = presentActors;
                     audienceSnapshot["resolved_listener_injected"] = false;
                     audienceSnapshot["target_mode"] = targetMode;
                     audienceSnapshot["audience_source"] = audienceSource;

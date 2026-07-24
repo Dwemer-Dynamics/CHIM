@@ -263,6 +263,78 @@ namespace
             audience.push_back(name);
         }
     }
+
+    void CollectPresentActors(PlayerConversationRoutingResult& result, RE::Actor* player,
+                              const std::unordered_set<RE::FormID>& managedFormIds,
+                              PlayerConversationSpeechMode mode)
+    {
+        PlayerConversationRoutingPolicy::PresenceRequest request{};
+        request.radius = result.audienceRadiusUnits;
+        request.includeAllRaces = AutoAddAllRaces;
+        request.includeIncidental =
+            !result.narrator && mode != PlayerConversationSpeechMode::Whisper &&
+            mode != PlayerConversationSpeechMode::Close;
+        if (!request.includeIncidental || !player) {
+            return;
+        }
+
+        auto* processLists = RE::ProcessLists::GetSingleton();
+        auto* playerCell = player->GetParentCell();
+        if (!processLists || !playerCell) {
+            return;
+        }
+
+        const bool playerInterior = playerCell->IsInteriorCell();
+        auto* playerWorldspace = player->GetWorldspace();
+        const auto playerPosition = SpatialAwareness::GetEffectiveActorPosition(player);
+        std::vector<PlayerConversationRoutingPolicy::PresenceCandidate> candidates;
+        candidates.reserve(processLists->highActorHandles.size());
+
+        for (auto& actorHandle : processLists->highActorHandles) {
+            auto actorPointer = actorHandle.get();
+            auto* actor = actorPointer ? actorPointer.get() : nullptr;
+            std::string hardReason;
+            if (!IsHardEligible(actor, player, hardReason)) {
+                continue;
+            }
+            if (!playerInterior && actor->GetWorldspace() != playerWorldspace) {
+                continue;
+            }
+
+            auto* race = actor->GetRace();
+            if (!race) {
+                continue;
+            }
+            const std::string name = actor->GetDisplayFullName();
+            const float distance =
+                playerPosition.GetDistance(SpatialAwareness::GetEffectiveActorPosition(actor));
+            if (!std::isfinite(distance)) {
+                continue;
+            }
+
+            PlayerConversationRoutingPolicy::PresenceCandidate candidate{};
+            candidate.formId = actor->GetFormID();
+            candidate.name = name;
+            candidate.distance = distance;
+            candidate.hardEligible = true;
+            candidate.dialogueRace = race->AllowsPCDialogue();
+            candidate.creature = race->HasKeywordString("ActorTypeCreature");
+            candidates.push_back(std::move(candidate));
+        }
+
+        const auto selected = PlayerConversationRoutingPolicy::SelectPresent(request, candidates);
+        result.presentActors.reserve(selected.size());
+        for (const auto index : selected) {
+            const auto& candidate = candidates[index];
+            PlayerConversationPresentActor present{};
+            present.formId = candidate.formId;
+            present.name = candidate.name;
+            present.distance = candidate.distance;
+            present.managed = managedFormIds.contains(candidate.formId);
+            present.creature = candidate.creature;
+            result.presentActors.push_back(std::move(present));
+        }
+    }
 }
 
 PlayerConversationSpeechMode PlayerConversationRouter::ParseSpeechMode(std::string_view mode)
@@ -338,6 +410,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     const RE::FormID crosshairFormId = GetTrueCrosshairActorFormId();
 
     std::vector<RuntimeCandidate> runtimeCandidates;
+    std::unordered_set<RE::FormID> managedFormIds;
     for (const auto& agentValue : manager.getAgents()) {
         if (!agentValue || agentValue->isNarrator()) {
             continue;
@@ -353,6 +426,9 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         candidate.agent = std::move(agent);
         candidate.actor = actor;
         candidate.policy.formId = actor ? actor->GetFormID() : agentValue->GetFormId();
+        if (candidate.policy.formId != 0) {
+            managedFormIds.insert(candidate.policy.formId);
+        }
         candidate.policy.name =
             !agentValue->getActorName().empty()
                 ? agentValue->getActorName()
@@ -439,6 +515,8 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         result.broadcast = false;
     }
 
+    CollectPresentActors(result, player, managedFormIds, context.mode);
+
     std::vector<std::size_t> audienceOrder;
     audienceOrder.reserve(runtimeCandidates.size());
     for (std::size_t index = 0; index < runtimeCandidates.size(); ++index) {
@@ -489,14 +567,17 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
                                 reason.empty() ? "not_eligible" : reason);
     }
 
+    const auto inactivePresentCount = std::count_if(
+        result.presentActors.begin(), result.presentActors.end(),
+        [](const PlayerConversationPresentActor& actor) { return !actor.managed; });
     logger::info(
         "[PLAYER-ROUTING] source={} mode={} utterance='{}' crosshair={:08X} explicit={:08X} "
         "responder='{}' reason={} direct={} broadcast={} listener_radius={:.1f} audience_radius={:.1f} "
-        "audience_count={} rejected=[{}]",
+        "audience_count={} present_count={} inactive_present_count={} rejected=[{}]",
         SourceName(context.source), result.modeName, policyRequest.utterance, crosshairFormId,
         context.explicitTargetFormId, result.responderName, result.reason, result.direct ? 1 : 0,
         result.broadcast ? 1 : 0, result.listenerRadiusUnits, result.audienceRadiusUnits,
-        result.audience.size(), rejected);
+        result.audience.size(), result.presentActors.size(), inactivePresentCount, rejected);
 
     return result;
 }

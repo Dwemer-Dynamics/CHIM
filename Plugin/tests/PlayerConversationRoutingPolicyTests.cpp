@@ -182,5 +182,33 @@ int main()
     Check(result.kind == SelectionKind::Narrator,
           "Named target outside direct-address radius was incorrectly selected");
 
+    std::vector<PresenceCandidate> presentCandidates{
+        { 0x100, "Alvor", 200.0f, true, true, false },
+        { 0x101, "Chicken", 100.0f, true, false, true },
+        { 0x102, "Chicken", 120.0f, true, false, true },
+        { 0x103, "Disabled NPC", 50.0f, false, true, false },
+        { 0x104, "Distant NPC", 800.0f, true, true, false },
+    };
+    PresenceRequest presenceRequest{};
+    presenceRequest.radius = 560.0f;
+    auto present = SelectPresent(presenceRequest, presentCandidates);
+    Check(present.size() == 1 && present[0] == 0,
+          "Default presence policy did not keep only eligible dialogue actors");
+
+    presenceRequest.includeAllRaces = true;
+    present = SelectPresent(presenceRequest, presentCandidates);
+    Check(present.size() == 2 && present[0] == 1 && present[1] == 0,
+          "All-races presence policy did not include and deduplicate generic creatures");
+
+    presenceRequest.includeIncidental = false;
+    present = SelectPresent(presenceRequest, presentCandidates);
+    Check(present.empty(), "Private presence policy included incidental actors");
+
+    presenceRequest.includeIncidental = true;
+    presenceRequest.limit = 1;
+    present = SelectPresent(presenceRequest, presentCandidates);
+    Check(present.size() == 1 && present[0] == 1,
+          "Presence policy did not apply its deterministic actor limit");
+
     return 0;
 }

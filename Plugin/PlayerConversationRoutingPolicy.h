@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace PlayerConversationRoutingPolicy
@@ -50,6 +51,24 @@ namespace PlayerConversationRoutingPolicy
         std::size_t candidateIndex = (std::numeric_limits<std::size_t>::max)();
         std::string reason;
         bool broadcast = false;
+    };
+
+    struct PresenceCandidate
+    {
+        std::uint32_t formId = 0;
+        std::string name;
+        float distance = 0.0f;
+        bool hardEligible = false;
+        bool dialogueRace = false;
+        bool creature = false;
+    };
+
+    struct PresenceRequest
+    {
+        float radius = 0.0f;
+        std::size_t limit = 32;
+        bool includeAllRaces = false;
+        bool includeIncidental = true;
     };
 
     inline std::string Normalize(std::string_view value)
@@ -108,6 +127,53 @@ namespace PlayerConversationRoutingPolicy
     inline bool WithinRadius(float distance, float radius)
     {
         return radius <= 0.0f || distance <= radius;
+    }
+
+    inline std::vector<std::size_t> SelectPresent(
+        const PresenceRequest& request, const std::vector<PresenceCandidate>& candidates)
+    {
+        if (!request.includeIncidental || request.limit == 0) {
+            return {};
+        }
+
+        std::vector<std::size_t> eligible;
+        eligible.reserve(candidates.size());
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            const auto& candidate = candidates[index];
+            if (!candidate.hardEligible || Normalize(candidate.name).empty() ||
+                !WithinRadius(candidate.distance, request.radius)) {
+                continue;
+            }
+            if (!request.includeAllRaces && (!candidate.dialogueRace || candidate.creature)) {
+                continue;
+            }
+            eligible.push_back(index);
+        }
+
+        std::sort(eligible.begin(), eligible.end(),
+            [&](std::size_t left, std::size_t right) {
+                const auto& lhs = candidates[left];
+                const auto& rhs = candidates[right];
+                if (lhs.distance != rhs.distance) {
+                    return lhs.distance < rhs.distance;
+                }
+                return lhs.formId < rhs.formId;
+            });
+
+        std::vector<std::size_t> selected;
+        selected.reserve(std::min(request.limit, eligible.size()));
+        std::unordered_set<std::string> seenNames;
+        for (const auto index : eligible) {
+            const auto normalizedName = Normalize(candidates[index].name);
+            if (!seenNames.insert(normalizedName).second) {
+                continue;
+            }
+            selected.push_back(index);
+            if (selected.size() >= request.limit) {
+                break;
+            }
+        }
+        return selected;
     }
 
     inline Result Select(const Request& request, const std::vector<Candidate>& candidates)

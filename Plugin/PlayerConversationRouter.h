@@ -33,11 +33,21 @@ struct PlayerConversationRoutingContext
     bool narratorMode = false;
 };
 
+struct PlayerConversationPresentActor
+{
+    RE::FormID formId = 0;
+    std::string name;
+    float distance = 0.0f;
+    bool managed = false;
+    bool creature = false;
+};
+
 struct PlayerConversationRoutingResult
 {
     std::shared_ptr<AIAgent> responder;
     RE::Actor* responderActor = nullptr;
     std::vector<RE::Actor*> presentPartyActors;
+    std::vector<PlayerConversationPresentActor> presentActors;
     std::string responderName;
     std::vector<std::string> audience;
     std::string reason;

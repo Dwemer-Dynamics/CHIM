@@ -18,6 +18,9 @@ It does not implement a separate responder-selection algorithm.
 - **Automatic target**: An NPC selected by field of view or proximity.
 - **Audience**: Nearby NPCs that receive the exchange as context but do not
   automatically respond.
+- **People present**: Loaded actors physically inside the current conversation
+  area. This list may include actors that are not activated in CHIM and cannot
+  respond or receive AI actions.
 - **Hard eligibility**: Safety checks that direct targeting cannot bypass.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
@@ -31,8 +34,8 @@ The native plugin owns player routing:
 
 1. The input surface constructs `PlayerConversationRoutingContext`.
 2. `HTTPManager::streamPlayer` calls `PlayerConversationRouter::Resolve`.
-3. The resolver selects the responder and builds the audience from the same
-   candidate snapshot.
+3. The resolver selects the responder, builds the managed audience, and records
+   physical scene presence for the same request.
 4. `HTTPManager` serializes the result as an audience snapshot whose source is
    `plugin_player_routing_v2`.
 5. HerikaServer consumes that audience as authoritative participant scope.
@@ -41,6 +44,7 @@ The routing result contains:
 
 - responder actor, agent, name, and selection reason;
 - deterministic audience names;
+- deterministic physical-presence entries with form ID and managed state;
 - speech mode;
 - listener and audience radii;
 - direct-target, Narrator, and broadcast flags; and
@@ -184,6 +188,23 @@ by distance and form ID. Duplicate names are removed.
 Audience membership supplies context only. It does not cause every audience
 member to generate a response.
 
+## Physical Presence
+
+Physical presence is separate from the managed audience and never participates
+in responder selection. Standard and Shout requests scan loaded actors in the
+current attached area and effective conversation radius. Dead, disabled,
+unloaded, blank-named, different-cell, and different-worldspace actors are
+excluded.
+
+By default, only dialogue-capable non-creature races are included. Enabling the
+existing **Add All races** MCM option also permits creatures and non-dialogue
+races. Duplicate display names are collapsed case-insensitively, so multiple
+generic actors such as `Chicken` occupy one context entry. Results are ordered
+by distance and form ID and capped at 32 entries.
+
+Whisper, Close, and Narrator requests do not include incidental physical
+presence. This preserves their existing private audience behavior.
+
 ## Server Contract
 
 The plugin sends an audience snapshot containing:
@@ -191,15 +212,19 @@ The plugin sends an audience snapshot containing:
 - `source: plugin_player_routing_v2`;
 - speaker and resolved listener;
 - ordered companion/audience names;
+- ordered `present_actors` containing name, form ID, distance, managed state,
+  and creature state;
 - target mode;
 - routing reason;
 - speech mode;
 - listener radius; and
 - audience radius.
 
-HerikaServer treats this snapshot as the maximum participant boundary for the
-request. It may narrow private delivery but must not widen Close or Whisper
-scope using an independent nearby-NPC scan.
+HerikaServer treats the managed audience as the maximum response and action
+boundary for the request. Physical presence is used only for prompt scene
+context and event-history membership, allowing an actor activated later to
+recover events witnessed while inactive. It may narrow private delivery but
+must not widen Close or Whisper scope using an independent nearby-NPC scan.
 
 Server mode behavior:
 
@@ -219,7 +244,8 @@ Each routed player utterance logs one `[PLAYER-ROUTING]` record with:
 - responder and routing reason;
 - direct and broadcast flags;
 - effective listener and audience radii;
-- audience count; and
+- audience count;
+- physical-presence and inactive-presence counts; and
 - rejected candidates with reasons.
 
 This record is the primary evidence for target, range, cooldown, loading,
@@ -227,8 +253,8 @@ privacy, and spatial-audibility reports.
 
 ## Current Limitations
 
-- Candidate enumeration is based on managed CHIM agents. A valid unmanaged NPC
-  is not promoted automatically by the router.
+- Responder candidate enumeration is based on managed CHIM agents. Unmanaged
+  actors may appear as physical context but are not promoted or selected.
 - Direct address is bounded by the request's direct-address radius and current
   loaded area.
 - Audience identity is serialized by name because that is the current server
@@ -240,26 +266,30 @@ privacy, and spatial-audibility reports.
 
 1. Voice, legacy text, and Prisma with equivalent state resolve through the same
    router.
-2. An explicit sleeping or scene-bound NPC can answer without a gameplay
+2. A loaded inactive dialogue-capable NPC appears in physical scene context and
+   event people but cannot respond or receive an AI action.
+3. Creatures are excluded unless **Add All races** is enabled, and duplicate
+   generic creature names collapse to one entry.
+4. An explicit sleeping or scene-bound NPC can answer without a gameplay
    package interruption.
-3. `Hey Lydia` resolves the closest present exact Lydia.
-4. Bare `Hey` selects a deterministic eligible FOV candidate.
-5. No crosshair and no special phrase selects the nearest eligible audible NPC.
-6. The skyward gesture selects the Narrator before proximity fallback.
-7. Standard speech includes eligible audible nearby NPCs as context.
-8. Whisper and sneaking reduce both responder and audience scope.
-9. Close mode at 200 units includes only player and responder.
-10. Close mode while sneaking uses a 100-unit boundary.
-11. `Everyone` cannot remain active after switching to Close mode.
-12. Ctrl+Enter selects persistent Close mode in Prisma and legacy text.
-13. Tool selection does not masquerade as a conversation-distance mode.
-14. The server receives `plugin_player_routing_v2` with the matching speech
+5. `Hey Lydia` resolves the closest present exact Lydia.
+6. Bare `Hey` selects a deterministic eligible FOV candidate.
+7. No crosshair and no special phrase selects the nearest eligible audible NPC.
+8. The skyward gesture selects the Narrator before proximity fallback.
+9. Standard speech includes eligible audible nearby NPCs as context.
+10. Whisper and sneaking reduce both responder and audience scope.
+11. Close mode at 200 units includes only player and responder.
+12. Close mode while sneaking uses a 100-unit boundary.
+13. `Everyone` cannot remain active after switching to Close mode.
+14. Ctrl+Enter selects persistent Close mode in Prisma and legacy text.
+15. Tool selection does not masquerade as a conversation-distance mode.
+16. The server receives `plugin_player_routing_v2` with the matching speech
     mode, reason, and radius values.
 
 ## Source References
 
 - `Plugin/PlayerConversationRouter.cpp`: unified responder and audience routing.
-- `Plugin/PlayerConversationRoutingPolicy.cpp`: deterministic priority policy.
+- `Plugin/PlayerConversationRoutingPolicy.h`: deterministic priority policy.
 - `Plugin/HTTPManager.cpp`: one resolver call and authoritative snapshot
   serialization.
 - `Plugin/SpatialAwareness.cpp`: request-local physical audibility.
