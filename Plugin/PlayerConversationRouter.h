@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 enum class PlayerConversationInputSource : std::uint8_t
@@ -50,6 +51,10 @@ struct PlayerConversationRoutingResult
 
 namespace PlayerConversationRouter
 {
+    inline constexpr float kIntimateRadiusUnits = 200.0f;
+
+    PlayerConversationSpeechMode ParseSpeechMode(std::string_view mode);
+    float GetIntimateRadiusUnits(bool sneaking);
     PlayerConversationRoutingResult Resolve(const std::string& wireMessage,
                                             const PlayerConversationRoutingContext& context);
 }

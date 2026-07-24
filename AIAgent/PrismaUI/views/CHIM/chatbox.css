@@ -128,7 +128,7 @@ body {
 
 .chatbox-control-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr)) minmax(0, 0.75fr);
+    grid-template-columns: minmax(0, 1.35fr) repeat(4, minmax(0, 1fr)) minmax(0, 0.75fr);
     gap: 12px;
     align-items: start;
 }
@@ -323,6 +323,12 @@ body {
     border: 1px solid rgba(155, 89, 182, 0.4);
 }
 
+.mode-badge.intimate {
+    background: rgba(236, 72, 153, 0.18);
+    color: #f9a8d4;
+    border: 1px solid rgba(236, 72, 153, 0.42);
+}
+
 .mode-badge.narrator {
     background: rgba(241, 196, 15, 0.18);
     color: #f7dc6f;
@@ -345,6 +351,13 @@ body {
     background: rgba(46, 204, 113, 0.2);
     color: #58d68d;
     border: 1px solid rgba(46, 204, 113, 0.4);
+}
+
+.mode-badge.off,
+.mode-badge.paused {
+    background: rgba(148, 163, 184, 0.14);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.32);
 }
 
 .chatbox-mode-select {

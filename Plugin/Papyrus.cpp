@@ -1522,12 +1522,20 @@ int sendMessageReal(
     if (type == "inputtext_i") {
         typeRevised.assign("inputtext_s");
         effectiveRoutingContext.mode = PlayerConversationSpeechMode::Intimate;
-    } else if (type.empty())
+    } else {
+        const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
+        effectiveRoutingContext.mode =
+            PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
+        effectiveRoutingContext.narratorMode =
+            effectiveRoutingContext.narratorMode || currentConversationMode == "NARRATOR";
+    }
+
+    if (type != "inputtext_i" && type.empty())
         if (player->IsSneaking())
             typeRevised.assign("inputtext_s");
         else
             typeRevised.assign("inputtext");
-    else
+    else if (type != "inputtext_i")
         typeRevised.assign(type);
 
     /* If not is animation busy, some plugin said shen can't call functions atm. To be revised*/
@@ -2190,7 +2198,11 @@ int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
 
     if (type == "setconf" || (type == "setConf")) {
-
+        constexpr std::string_view modePrefix = "chim_mode@";
+        if (msg.starts_with(modePrefix)) {
+            PrismaUIBridge::SetCurrentChatboxMode(
+                msg.substr(modePrefix.size()), "Papyrus Mode Selection", false);
+        }
     } else {
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "(beings in range:" + result + ")"));

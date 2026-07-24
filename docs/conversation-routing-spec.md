@@ -2,441 +2,275 @@
 
 ## Purpose
 
-This document defines how CHIM selects one responder and builds the wider
-conversation audience for player speech. The same resolver must be used by:
+CHIM resolves one responder and one authoritative audience snapshot for each
+player utterance. Voice/STT, legacy text entry, and Prisma text chat all pass a
+`PlayerConversationRoutingContext` to `HTTPManager::streamPlayer`, which invokes
+`PlayerConversationRouter::Resolve` once for that request.
 
-- Voice/STT input
-- The legacy text-entry menu
-- Prisma text chat
-
-The UI may provide an explicit target or speech modifier, but it must not
-implement a separate target-selection algorithm.
+The UI may supply an explicit target, conversation mode, or broadcast request.
+It does not implement a separate responder-selection algorithm.
 
 ## Terms
 
-- **Responder**: The single NPC or Narrator asked to answer the player.
-- **Direct target**: An NPC explicitly selected by name, Prisma target, or the
-  true game crosshair.
-- **Automatic target**: An NPC selected because they are in view or nearby.
-- **Audience**: Other nearby NPCs that receive the exchange as conversation
-  context. Audience members do not automatically generate a response.
-- **Hard eligibility**: Safety requirements that cannot be bypassed.
-- **Soft eligibility**: State checks that direct targeting may bypass.
-- **Privacy scope**: The effective listening and audience radius for the
-  utterance, including normal, sneaking, and intimate speech.
+- **Responder**: The single NPC or Narrator asked to answer.
+- **Direct target**: An NPC selected by Prisma, exact name, or the true game
+  crosshair.
+- **Automatic target**: An NPC selected by field of view or proximity.
+- **Audience**: Nearby NPCs that receive the exchange as context but do not
+  automatically respond.
+- **Hard eligibility**: Safety checks that direct targeting cannot bypass.
+- **Soft eligibility**: Automatic-selection checks that direct targeting may
+  bypass.
+- **Conversation mode**: Standard, Whisper, Intimate, or Shout.
+- **Tool mode**: Director, Spawn, Cheat, Auto Chat, or event injection. Tool
+  modes are not conversation-distance modes.
 
-## Current Implementation
+## Current Architecture
 
-Player routing is currently split across several systems:
+The native plugin owns player routing:
 
-1. `SpatialSnapshotManager` builds cached managed-NPC candidates.
-2. `HTTPManager::stream` chooses the responder.
-3. `HTTPManager::stream` separately builds an audience snapshot.
-4. Prisma builds and validates its own visible target list before passing an
-   optional override to `HTTPManager`.
-5. The legacy text menu can cast the intimacy spell, while Prisma does not send
-   the equivalent modifier.
-6. The server treats the plugin-provided audience snapshot as authoritative.
+1. The input surface constructs `PlayerConversationRoutingContext`.
+2. `HTTPManager::streamPlayer` calls `PlayerConversationRouter::Resolve`.
+3. The resolver selects the responder and builds the audience from the same
+   candidate snapshot.
+4. `HTTPManager` serializes the result as an audience snapshot whose source is
+   `plugin_player_routing_v2`.
+5. HerikaServer consumes that audience as authoritative participant scope.
 
-This division allows the displayed target, selected responder, physical
-audibility, and context audience to disagree.
+The routing result contains:
 
-### Current responder order
+- responder actor, agent, name, and selection reason;
+- deterministic audience names;
+- speech mode;
+- listener and audience radii;
+- direct-target, Narrator, and broadcast flags; and
+- eligible nearby party actors for request context.
 
-For ordinary player input, the current resolver broadly uses:
+The older shuffled `InspectSurroundings` output may still provide descriptive
+scene context, but it is not authoritative participant identity.
 
-1. A valid Prisma target override.
-2. The current look target, if targetable.
-3. The first auto-hearing eligible managed NPC.
-4. The Narrator.
-5. A later `"Hey <name>"` pass can replace that result, but it only searches
-   followers and uses a case-sensitive first-word substring match.
-6. Narrator name and camera-pitch overrides run after an NPC cooldown check.
+## Input Surfaces
 
-Consequences:
+### Voice and STT
 
-- A named NPC who is not a follower cannot be selected by the current
-  `"Hey <name>"` logic.
-- Duplicate first names are ambiguous.
-- A rejected named target can cancel the request on cooldown before the later
-  Narrator override is evaluated.
-- A cached look fallback can be shown as the current Prisma target even when
-  final listener validation rejects it.
+Voice input reads the current persistent CHIM conversation mode, builds a
+routing context, and calls `HTTPManager::streamPlayer`.
 
-### Current spatial behavior
+### Legacy text entry
 
-- Default auto-hearing radius is 8 meters, or 560 Skyrim units.
-- Inside that radius, `SpatialAwareness::Evaluate` immediately returns success
-  at full volume. Closed doors, line of sight, and navmesh path checks are
-  skipped.
-- Outside that radius, interior/exterior hearing limits, doors, line of sight,
-  and path length can affect audibility.
-- Player speech multipliers for Prisma mode and sneaking scale the larger
-  hearing limits, but do not scale the 8-meter auto-hearing radius.
-- The nearby-context pass also uses the unscaled 8-meter auto-hearing radius.
-- One audible scan evaluates only the six nearest actors and caches its result.
+Legacy text entry uses the same player stream. Holding left Ctrl when submitting
+selects persistent Intimate mode and sends the utterance as intimate input.
+The eight-slot legacy mode wheel remains unchanged; Intimate is selected through
+Ctrl submission or Prisma. The legacy intimacy spell may still select the mode
+for compatibility, but it does not mutate global hearing distances.
 
-Consequences:
+### Prisma text chat
 
-- Sneaking and Whisper mode do not reliably reduce automatic listener or
-  audience range.
-- Nearby NPCs can receive context through walls and closed doors.
-- Crowded scenes can produce incomplete or frame-dependent candidates.
-- Raw player position and the VR HMD-adjusted player position are not used
-  consistently.
+Prisma exposes two separate controls:
 
-### Current availability behavior
+- **Conversation Mode**: Standard, Whisper, Intimate, Shout, or Narrator.
+- **Tools**: Off, Director, Spawn, Cheat, Auto Chat, Inject Event, or Inject &
+  Chat.
 
-Current candidate systems do not use one availability definition.
+Pressing Ctrl+Enter selects persistent Intimate mode before submitting the
+message. Normal Enter uses the currently selected persistent mode. Prisma sends
+an explicit NPC form ID when the user chooses a target.
 
-- The spatial candidate blocker rejects cooldown, some hostile actors, combat
-  when disabled, and restrained actors.
-- Legacy `isAvailableforDialog` also rejects sleeping actors and actors in a
-  current scene when scene dialogue is disabled.
-- The source comment says current scenes are log-only, but the function still
-  returns `false`.
-- Direct crosshair selection is still subject to final spatial and automatic
-  blockers. It is not guaranteed to respond.
+`Everyone` is unavailable in Intimate mode because an intimate utterance has a
+private two-person audience.
 
-### Current intimacy behavior
+## Mode Contract
 
-The legacy text menu checks key code 29 when text is submitted and casts
-`IntimacySpell`. Its comment calls this Left Shift, but key code 29 is the
-DirectInput left Ctrl key used by the intended Ctrl+Enter behavior.
+| Mode | Native routing radius | Audience | Server delivery |
+| --- | --- | --- | --- |
+| Standard | Configured base auto-hearing radius | Responder plus eligible audible NPCs | Normal speech |
+| Whisper | Base radius multiplied by 0.35 | Plugin snapshot is reduced; server narrows context to player and responder | Quiet/private speech treatment |
+| Intimate | Fixed 200 Skyrim units | Player and resolved responder only | Private close-range speech |
+| Shout | Base radius multiplied by 2.0 | Responder plus eligible audible NPCs inside the expanded radius | Loud speech treatment |
 
-`AIAgentIntimacyBubbleEffect` temporarily changes
-`_max_distance_inside` and `_max_distance_outside` to 200 units. Those settings
-now update only the legacy `DISTANCE_ACTIVATING_NPC_IN/OUT` globals. Current
-player routing uses `_spatial_hearing_inside`, `_spatial_hearing_outside`, and
-the separate auto-hearing radius.
+Sneaking multiplies the effective radius by 0.5 after the mode policy is
+applied. Intimate therefore uses 200 units normally and 100 units while
+sneaking.
 
-Consequences:
+Mode selection is request state, not global distance configuration. Switching
+conversation modes does not rewrite `_max_distance_inside`,
+`_max_distance_outside`, or server spatial settings.
 
-- The intimacy bubble does not restrict the current responder or audience.
-- The unscaled 560-unit auto-hearing path would still override a 200-unit
-  interior/exterior setting.
-- Prisma Enter has no Ctrl modifier path and never casts or transmits the
-  intimacy state.
-
-### Current nearby context behavior
-
-The old `InspectSurroundings` function scans high-process actors by raw
-distance, annotates their state, and shuffles the result. It is still added as
-an `infonpc` event, but it is not the authoritative audience.
-
-The audience sent to the server is a union of:
-
-- Managed NPCs found inside the raw auto-hearing radius.
-- Spatially valid player speech targets.
-- The selected responder as a fallback.
-- The player.
-
-Narrator requests skip the nearby NPC audience. The raw-radius union can include
-NPCs that failed line-of-sight or path checks.
-
-## Required Behavior
-
-### One deterministic resolver
-
-All player input must call one resolver:
-
-```text
-ResolvePlayerUtterance(
-    text,
-    input_source,
-    explicit_target_form_id,
-    speech_mode,
-    camera_state,
-    player_state
-) -> {
-    responder,
-    audience,
-    routing_reason,
-    candidate_diagnostics
-}
-```
-
-The resolver must run once per utterance. The selected responder and audience
-must be serialized together and remain unchanged for that request.
+## Candidate Eligibility
 
 ### Hard eligibility
 
-An NPC cannot be selected when any of these are true:
+An NPC cannot be selected when the actor:
 
-- The actor/form is invalid or deleted.
-- The actor is dead.
-- The actor is disabled.
-- The actor is not loaded enough to safely address.
-- The actor is outside the applicable loaded world/cell boundary.
-- The actor is excluded by the utterance privacy scope.
+- is invalid, deleted, disabled, or dead;
+- is not loaded and safe to address;
+- lacks an attached cell;
+- is in a different interior/exterior loaded area; or
+- is outside the current mode's direct-address boundary.
 
-Hard eligibility is always enforced.
+Hard eligibility always applies.
 
 ### Soft eligibility
 
-Automatic selection should reject:
+Automatic selection rejects an NPC when:
 
-- Conversation cooldown.
-- Hostile actors when hostile auto-add is disabled.
-- Combat actors when combat dialogue is disabled.
-- Restrained actors.
-- Sleeping actors.
-- Actors in a current scripted scene when scene interruption is disabled.
+- conversation cooldown is active;
+- the NPC is hostile and hostile auto-add is disabled;
+- the NPC is in combat and combat dialogue is disabled;
+- the NPC is restrained;
+- the NPC is sleeping; or
+- the NPC is in a scripted scene and scene dialogue is disabled.
 
-Direct targeting may bypass soft eligibility. This permits the requested
-crosshair or explicit-name response from sleeping or scene-bound NPCs, but it
-must not force an animation, package change, or gameplay action that interrupts
-the scene. It only permits an AI dialogue response.
+An explicit Prisma target, exact named target, or true crosshair target may
+bypass soft eligibility. This permits a dialogue response only; it does not
+authorize a package, animation, scene, quest, or gameplay-action interruption.
 
-### Responder priority
+## Responder Priority
 
-Evaluate these rules in order:
+The resolver evaluates these rules in order:
 
-1. Prisma `Everyone` mode produces a broadcast request. The plugin still
-   selects one deterministic transport listener because the current server
-   protocol requires a listener field, but that listener is not treated as an
-   exclusive dialogue target.
-2. Explicit Narrator mode or an explicit `"Hey Narrator"` addresses the
-   Narrator.
-3. An explicit Prisma target form ID or exact `"Hey <full NPC name>"` addresses
-   that direct target.
-4. A true game crosshair actor addresses that direct target.
-5. A deliberate Narrator camera gesture, such as looking above the configured
-   sky threshold, addresses the Narrator.
-6. A bare `"Hey"` selects the best automatically eligible NPC inside both the
-   camera/HMD field of view and the configured interaction radius.
-7. Otherwise, select the nearest automatically eligible and physically audible
-   NPC inside the effective listening radius.
-8. If no eligible NPC is found, address the Narrator.
+1. `Everyone` requests select a deterministic transport listener and preserve a
+   broadcast flag. Intimate mode rejects `Everyone`.
+2. Explicit Narrator mode selects the Narrator.
+3. An utterance beginning with `Hey Narrator` selects the Narrator.
+4. A valid explicit Prisma form ID selects that NPC.
+5. A longest, exact, normalized `Hey <full NPC name>` match selects that NPC.
+6. A valid true game crosshair actor selects that NPC.
+7. The configured skyward camera/HMD gesture selects the Narrator.
+8. A bare `Hey` selects the best eligible field-of-view candidate.
+9. Otherwise, the nearest eligible and physically audible NPC is selected.
+10. If no eligible NPC exists, the Narrator is selected.
 
-The true crosshair must mean the actual game crosshair reference. A forward-cone
-fallback must not be reported or treated as a crosshair target.
+The true crosshair is the game crosshair reference. A forward-cone fallback is
+not represented as a crosshair target.
 
-### Name matching
+Name matching is case-insensitive and punctuation-tolerant. It prefers the
+longest exact normalized full name, then resolves duplicate names by distance
+and form ID.
 
-`"Hey <NPC>"` matching must:
+## Radius and Audibility
 
-- Be anchored to the start of the player's utterance after protocol prefixes.
-- Be case-insensitive and punctuation-tolerant.
-- Prefer the longest exact normalized full-name match.
-- Search present managed NPCs, not followers only.
-- Resolve duplicate names deterministically by closest hard-eligible actor.
-- Obey a configured direct-address maximum radius and loaded-area boundary.
-- Bypass FOV and soft eligibility, but not hard eligibility.
+The effective listener radius also controls incidental audience membership.
+Automatic candidates must be inside the effective radius and pass
+`SpatialAwareness::Evaluate`.
 
-UI selection must use form ID rather than display name.
+For the request-local spatial evaluation:
 
-### Bare "Hey" matching
+- maximum air, interior, and exterior distances are set to the effective
+  audience radius;
+- immediate and auto-hearing shortcuts are disabled; and
+- cached spatial results are invalidated before the routing scan.
 
-A bare `"Hey"` must:
+This prevents a larger global auto-hearing shortcut from defeating Whisper,
+Intimate, or sneaking scope.
 
-- Use the camera forward vector, or HMD forward vector in VR.
-- Restrict candidates to the configured interaction radius.
-- Use a deterministic score and tie-break order.
-- Obey hard and soft eligibility.
-- Fall through to nearest eligible selection when no FOV candidate exists.
+Direct visual/name targeting may bypass soft audibility checks but still obeys
+hard eligibility and the mode's direct-address boundary.
 
-### Narrator gesture
+## Audience Construction
 
-The Narrator camera gesture must be checked before generic nearest-NPC fallback.
-This resolves the otherwise contradictory requirements that no crosshair uses
-the nearest NPC while looking at the sky uses the Narrator.
+Audience construction happens after responder selection and uses the same
+candidate snapshot:
 
-The threshold must be configurable and based on camera/HMD pitch, not player
-body orientation.
+- the player is always included;
+- the resolved NPC responder is included;
+- in Standard, Whisper, and Shout, other hard-eligible and physically audible
+  NPCs inside the effective radius are included;
+- in Intimate mode, no incidental NPC is included; and
+- Narrator requests do not add nearby NPCs.
 
-### Audience and nearby context
+The responder is ordered first, followed by incidental audience members sorted
+by distance and form ID. Duplicate names are removed.
 
-Audience construction is separate from responder selection:
+Audience membership supplies context only. It does not cause every audience
+member to generate a response.
 
-- Always include the player.
-- Include the resolved NPC responder.
-- Include other present managed NPCs only when they are inside the effective
-  audience radius, physically audible, and inside the same privacy scope.
-- Do not make audience members respond merely because they receive context.
-- Use deterministic ordering, preferably responder first and then distance and
-  form ID.
-- Do not use the shuffled `InspectSurroundings` output as authoritative
-  participant data.
-- Do not impose a partial six-candidate evaluation cap on the final audience.
+## Server Contract
 
-The old `InspectSurroundings` concept can remain as descriptive scene context,
-but participant identity must come from the resolved audience snapshot.
+The plugin sends an audience snapshot containing:
 
-Narrator requests should include only the player and Narrator unless a future
-feature explicitly defines a narrated group scene.
+- `source: plugin_player_routing_v2`;
+- speaker and resolved listener;
+- ordered companion/audience names;
+- target mode;
+- routing reason;
+- speech mode;
+- listener radius; and
+- audience radius.
 
-### Listening, sneaking, and intimacy
+HerikaServer treats this snapshot as the maximum participant boundary for the
+request. It may narrow private delivery but must not widen Intimate or Whisper
+scope using an independent nearby-NPC scan.
 
-One effective-radius policy must control:
+Server mode behavior:
 
-- Automatic responder range.
-- Auto-hearing distance.
-- Nearby audience/context range.
-- Physical spatial-audio evaluation limits where applicable.
+- `WHISPER` retains quiet delivery and narrows context to the player and
+  resolved listener.
+- `INTIMATE` uses private close-range wording and participant tags without
+  changing global server distance settings.
+- changing mode never restores hard-coded global distance defaults.
 
-All relevant radii must receive the same request modifier. A modifier must not
-scale only the outer hearing limits while leaving auto-hearing unchanged.
+## Diagnostics
 
-Recommended initial modes:
+Each routed player utterance logs one `[PLAYER-ROUTING]` record with:
 
-| Mode | Effective radius policy |
-| --- | --- |
-| Standard | Configured base listening and audience radius |
-| Sneaking | Base radius multiplied by 0.5 |
-| Intimate / Ctrl+Enter | 200 Skyrim units, then apply sneaking if active |
-| Shout | Configured base radius multiplied by 2.0 |
+- input source and mode;
+- normalized utterance;
+- explicit target and true crosshair form IDs;
+- responder and routing reason;
+- direct and broadcast flags;
+- effective listener and audience radii;
+- audience count; and
+- rejected candidates with reasons.
 
-Ctrl+Enter must be represented in the request passed to the shared resolver.
-Prisma and legacy text entry must send the same mode. The spell may remain as a
-visual/gameplay indicator, but routing must not depend on mutable global
-distance settings or spell timing.
+This record is the primary evidence for target, range, cooldown, loading,
+privacy, and spatial-audibility reports.
 
-An intimacy request should be a per-utterance privacy scope. Only the player,
-resolved responder, and explicitly admitted participants receive its context.
-Nearby outsiders must not be added by the general audience scan.
+## Current Limitations
 
-### Physical audibility
-
-Physical audibility should be used for automatic selection and incidental
-audience membership. Direct visual targeting may bypass audibility because the
-player is intentionally addressing a visible actor.
-
-The automatic path must not return success solely because an actor is inside
-the auto-hearing radius. Closed doors and meaningful physical separation must
-still be able to exclude incidental listeners.
-
-### Prisma parity
-
-Prisma may:
-
-- Supply an explicit target form ID.
-- Supply an explicit speech mode.
-- Display the resolver's current candidate information.
-
-Prisma must not:
-
-- Maintain a different target priority.
-- Treat a forward-cone fallback as a true crosshair.
-- Show a blocked actor as the active responder without explaining that it is
-  unavailable.
-- Lose Ctrl+Enter/intimate behavior.
-
-Voice, legacy text, and Prisma text with the same text, target, player state,
-and camera state must resolve to the same responder and audience.
-
-## Logical Conflicts and Required Decisions
-
-### No crosshair versus sky Narrator
-
-Both states have no crosshair target. The specification resolves this by
-checking the explicit Narrator camera gesture before nearest-NPC fallback.
-
-### "Always responds" versus invalid game state
-
-No actor can respond when dead, deleted, disabled, or not safely loaded. Those
-are hard safety exclusions. Sleeping, cooldown, and scene participation are
-soft exclusions that direct targeting can bypass without forcing gameplay
-actions.
-
-### Direct targeting versus privacy
-
-An outside actor cannot be pulled into an active intimate utterance merely by
-crosshair or proximity. The direct target is used to establish that
-utterance's responder before the privacy audience is finalized. Subsequent
-outsiders remain excluded.
-
-### Nearby context versus quiet speech
-
-"Nearby" must mean inside the effective audience radius for this utterance, not
-inside the global default radius. Sneaking and intimacy therefore reduce both
-listener selection and context distribution.
-
-### Scene actors and quest safety
-
-Allowing a scene actor to produce dialogue is not permission to interrupt the
-actor's scene, package, animation, or quest behavior. Dialogue routing and
-gameplay action eligibility remain separate.
-
-### Managed versus newly encountered actors
-
-Current spatial routing primarily searches managed agents. If the true
-crosshair or exact named target is a valid but unmanaged NPC, the resolver
-needs a bounded promote-on-demand path before it can satisfy direct-target
-semantics. Automatic scans should remain managed-only to avoid promoting every
-nearby actor.
-
-## Implementation Boundaries
-
-A future implementation should:
-
-1. Add a single `PlayerUtteranceRoutingRequest` and
-   `PlayerUtteranceRoutingResult`.
-2. Move name, crosshair, FOV, nearest, and Narrator priority into one resolver.
-3. Separate hard and soft eligibility functions.
-4. Build the audience only after selecting the responder.
-5. Apply one effective radius/privacy policy to target and audience scans.
-6. Carry speech mode and explicit target form ID from every input UI.
-7. Remove the late follower-only `"Hey"` override.
-8. Stop using global intimacy-distance mutation as routing state.
-9. Make VR position and forward-vector handling consistent.
-10. Send one authoritative responder/audience snapshot to the server.
-11. Add structured diagnostics for every routing decision.
-
-## Required Diagnostics
-
-Each player utterance should emit one compact structured log record containing:
-
-- Input source and speech mode.
-- Explicit target form ID, if any.
-- True crosshair form ID, if any.
-- Selected responder form ID/name.
-- Routing reason.
-- Effective listener and audience radii.
-- Audience form IDs/names.
-- Rejected candidate form ID and rejection reason.
-
-This is required to distinguish intended Narrator fallback from stale target,
-cooldown, privacy, range, loading, and spatial-audibility failures.
+- Candidate enumeration is based on managed CHIM agents. A valid unmanaged NPC
+  is not promoted automatically by the router.
+- Direct address is bounded by the request's direct-address radius and current
+  loaded area.
+- Audience identity is serialized by name because that is the current server
+  protocol.
+- The Narrator camera gesture threshold is currently native behavior rather
+  than a dedicated user-facing setting.
 
 ## Acceptance Scenarios
 
-1. Crosshair on a sleeping living NPC: that NPC responds without being forced
-   out of furniture.
-2. Crosshair on a scene-bound living NPC: that NPC responds without a package
-   or action interruption.
-3. `"Hey Lydia"` while looking elsewhere: the closest present exact Lydia
-   responds.
-4. Bare `"Hey"` with two NPCs in view: the deterministic best FOV candidate
-   responds.
-5. No crosshair and no special phrase: nearest eligible audible NPC responds.
-6. Looking at the sky with no crosshair: Narrator responds.
-7. No eligible NPC in range: Narrator responds.
-8. Standard speech near three audible NPCs: one responds and the other two
-   receive context.
-9. Ctrl+Enter at 200 units: the direct responder receives the utterance and an
-   NPC outside 200 units receives no context.
-10. Sneaking: responder and audience scans use the reduced radius.
-11. Closed door: an incidental NPC on the other side is not selected and does
-    not receive context.
-12. The same utterance through voice, legacy text, and Prisma resolves to the
-    same responder and audience.
+1. Voice, legacy text, and Prisma with equivalent state resolve through the same
+   router.
+2. An explicit sleeping or scene-bound NPC can answer without a gameplay
+   package interruption.
+3. `Hey Lydia` resolves the closest present exact Lydia.
+4. Bare `Hey` selects a deterministic eligible FOV candidate.
+5. No crosshair and no special phrase selects the nearest eligible audible NPC.
+6. The skyward gesture selects the Narrator before proximity fallback.
+7. Standard speech includes eligible audible nearby NPCs as context.
+8. Whisper and sneaking reduce both responder and audience scope.
+9. Intimate mode at 200 units includes only player and responder.
+10. Intimate mode while sneaking uses a 100-unit boundary.
+11. `Everyone` cannot remain active after switching to Intimate mode.
+12. Ctrl+Enter selects persistent Intimate mode in Prisma and legacy text.
+13. Tool selection does not masquerade as a conversation-distance mode.
+14. The server receives `plugin_player_routing_v2` with the matching speech
+    mode, reason, and radius values.
 
-## Source Audit References
+## Source References
 
-- `Plugin/HTTPManager.cpp`: player responder and audience resolution.
-- `Plugin/SpatialSnapshotManager.cpp`: crosshair/look fallback, candidate
-  availability, auto-hearing eligibility, and caches.
-- `Plugin/SpatialAwareness.cpp`: physical audibility evaluation.
-- `Plugin/Commands.cpp`: player spatial settings and audible actor scans.
-- `Plugin/PrismaUIBridge.cpp`: Prisma target list and speech-distance mode.
-- `Plugin/Papyrus.cpp`: player text event creation and legacy distance settings.
-- `Plugin/Voicerec.cpp`: voice/STT player input.
-- `Plugin/Globals.h`: legacy dialogue availability.
-- `AIAgent/PrismaUI/views/CHIM/chatbox.js`: Prisma Enter handling.
-- `AIAgent/Source/Scripts/AIAgentPapyrusFunctions.psc`: legacy text entry and
-  Ctrl intimacy trigger.
-- `AIAgent/Source/Scripts/AIAgentIntimacyBubbleEffect.psc`: intimacy distance
-  mutation.
-- HerikaServer `main.php` and `lib/chat_helper_functions.php`: authoritative
-  audience snapshot consumption.
+- `Plugin/PlayerConversationRouter.cpp`: unified responder and audience routing.
+- `Plugin/PlayerConversationRoutingPolicy.cpp`: deterministic priority policy.
+- `Plugin/HTTPManager.cpp`: one resolver call and authoritative snapshot
+  serialization.
+- `Plugin/SpatialAwareness.cpp`: request-local physical audibility.
+- `Plugin/PrismaUIBridge.cpp`: Prisma mode/target transport and target display.
+- `Plugin/Papyrus.cpp`: legacy text routing and mode synchronization.
+- `Plugin/Voicerec.cpp`: voice/STT routing context.
+- `AIAgent/PrismaUI/views/CHIM/chatbox.js`: Prisma controls and Ctrl+Enter.
+- `AIAgent/Source/Scripts/AIAgentPapyrusFunctions.psc`: legacy controls and mode
+  wheel.
+- `AIAgent/Source/Scripts/AIAgentIntimacyBubbleEffect.psc`: compatibility mode
+  selection without global distance mutation.
+- HerikaServer `main.php`, `processor/chim_modes.php`, and
+  `lib/chat_helper_functions.php`: authoritative participant and mode handling.

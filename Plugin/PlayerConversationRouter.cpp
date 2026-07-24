@@ -5,6 +5,7 @@
 #include "SpatialAwareness.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <format>
 #include <limits>
@@ -264,6 +265,29 @@ namespace
     }
 }
 
+PlayerConversationSpeechMode PlayerConversationRouter::ParseSpeechMode(std::string_view mode)
+{
+    std::string normalized(mode);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+        [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
+
+    if (normalized == "WHISPER") {
+        return PlayerConversationSpeechMode::Whisper;
+    }
+    if (normalized == "SHOUT") {
+        return PlayerConversationSpeechMode::Shout;
+    }
+    if (normalized == "INTIMATE") {
+        return PlayerConversationSpeechMode::Intimate;
+    }
+    return PlayerConversationSpeechMode::Standard;
+}
+
+float PlayerConversationRouter::GetIntimateRadiusUnits(bool sneaking)
+{
+    return sneaking ? kIntimateRadiusUnits * 0.5f : kIntimateRadiusUnits;
+}
+
 PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     const std::string& wireMessage, const PlayerConversationRoutingContext& context)
 {
@@ -291,11 +315,9 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
             : SpatialAwareness::kAutoHearingDistance;
     const float baseDirectRadius =
         playerInterior ? baseSettings.interiorMaxDistance : baseSettings.exteriorMaxDistance;
-    result.listenerRadiusUnits =
-        context.mode == PlayerConversationSpeechMode::Intimate ? 200.0f : baseListenerRadius * modifier;
-    if (context.mode == PlayerConversationSpeechMode::Intimate && player->IsSneaking()) {
-        result.listenerRadiusUnits *= 0.5f;
-    }
+    result.listenerRadiusUnits = context.mode == PlayerConversationSpeechMode::Intimate
+        ? GetIntimateRadiusUnits(player->IsSneaking())
+        : baseListenerRadius * modifier;
     result.audienceRadiusUnits = result.listenerRadiusUnits;
     const float directAddressRadius =
         context.mode == PlayerConversationSpeechMode::Intimate
@@ -390,7 +412,8 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.directAddressRadius = directAddressRadius;
     policyRequest.interactionRadius = result.listenerRadiusUnits;
     policyRequest.narratorMode = context.narratorMode;
-    policyRequest.everyoneMode = context.everyoneMode;
+    policyRequest.everyoneMode =
+        context.everyoneMode && context.mode != PlayerConversationSpeechMode::Intimate;
     policyRequest.narratorGesture = IsNarratorGesture(player);
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);

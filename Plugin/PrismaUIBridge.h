@@ -252,6 +252,10 @@ namespace PrismaUIBridge {
     // Read the current CHIM mode tracked by the Prisma bridge
     std::string GetCurrentChatboxMode();
 
+    // Synchronize the native mode state after a Prisma, Papyrus, or server selection.
+    bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag,
+                               bool showNotification = false);
+
     // Multiplier applied to player-spoken spatial reach for the active CHIM mode
     float GetPlayerSpeechDistanceMultiplier();
 
@@ -295,7 +299,7 @@ namespace PrismaUIBridge {
                             const std::string& timestamp);
 
     // Send a message typed in the chatbox
-    void SendChatboxMessage(const std::string& message, bool intimate = false);
+    void SendChatboxMessage(const std::string& message);
 
     // ===== CHIM Settings Menu Functions =====
 

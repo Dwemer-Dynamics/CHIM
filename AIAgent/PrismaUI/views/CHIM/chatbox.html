@@ -56,14 +56,26 @@
                             </div>
 
                             <div class="chatbox-control-block select-stack">
-                                <div class="chatbox-control-label">Current Mode</div>
+                                <div class="chatbox-control-label">Conversation Mode</div>
                                 <div class="chatbox-control-value">
                                     <span id="chatbox-current-mode" class="mode-badge standard">Standard</span>
-                                    <select id="chatbox-mode-select" class="chatbox-mode-select" title="Switch mode">
+                                    <select id="chatbox-mode-select" class="chatbox-mode-select" title="Switch conversation mode">
+                                        <option value="" disabled hidden>Tool active</option>
                                         <option value="mode_standard">Standard</option>
-                                        <option value="mode_shout">Shout</option>
                                         <option value="mode_whisper">Whisper</option>
+                                        <option value="mode_intimate">Intimate</option>
+                                        <option value="mode_shout">Shout</option>
                                         <option value="mode_narrator">Narrator</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="chatbox-control-block select-stack">
+                                <div class="chatbox-control-label">Tools</div>
+                                <div class="chatbox-control-value">
+                                    <span id="chatbox-current-tool" class="mode-badge off">Off</span>
+                                    <select id="chatbox-tool-select" class="chatbox-mode-select" title="Switch special input tool">
+                                        <option value="mode_standard">Off</option>
                                         <option value="mode_director">Director</option>
                                         <option value="mode_spawn">Spawn</option>
                                         <option value="mode_cheat">Cheat Mode</option>
@@ -162,7 +174,7 @@
                         id="focus-chatbox-input"
                         class="focus-chatbox-input"
                         rows="2"
-                        placeholder="Type your message here. Enter sends, Shift+Enter adds a new line."
+                        placeholder="Type your message here. Enter sends, Ctrl+Enter selects Intimate, Shift+Enter adds a new line."
                         spellcheck="false"></textarea>
                     <div class="focus-chatbox-actions">
                         <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">

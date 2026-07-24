@@ -18,6 +18,8 @@
     const targetsListElement = document.getElementById('chatbox-targets-list');
     const currentModeElement = document.getElementById('chatbox-current-mode');
     const modeSelectElement = document.getElementById('chatbox-mode-select');
+    const currentToolElement = document.getElementById('chatbox-current-tool');
+    const toolSelectElement = document.getElementById('chatbox-tool-select');
     const currentModelElement = document.getElementById('chatbox-current-model');
     const globalModelControlElement = document.getElementById('chatbox-global-model-control');
     const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
@@ -49,6 +51,7 @@
     let quickChatMode = false;
     let isFocusChatEnabled = false;
     let currentModeAction = 'mode_standard';
+    let currentToolModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
     let currentGlobalModelLabel = 'Standard';
     let currentProfileLlmMode = 'fixed';
@@ -73,11 +76,15 @@
     // Server URL
     const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
 
-    const modeConfig = {
+    const conversationModeConfig = {
         STANDARD: { label: 'Standard', class: 'standard', action: 'mode_standard' },
-        SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
         WHISPER: { label: 'Whisper', class: 'whisper', action: 'mode_whisper' },
-        NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' },
+        INTIMATE: { label: 'Intimate', class: 'intimate', action: 'mode_intimate' },
+        SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
+        NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' }
+    };
+
+    const toolModeConfig = {
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
         SPAWN: { label: 'Spawn', class: 'director', action: 'mode_spawn' },
         CHEATMODE: { label: 'Cheat Mode', class: 'cheatmode', action: 'mode_cheat' },
@@ -159,10 +166,10 @@
     /**
      * Send user message through Prisma bridge
      */
-    function sendMessageToBridge(message, intimate) {
+    function sendMessageToBridge(message) {
         if (!message || !message.trim()) return;
         if (window.chimChatboxCommand) {
-            window.chimChatboxCommand((intimate ? 'send_intimate|' : 'send|') + message);
+            window.chimChatboxCommand('send|' + message);
         }
     }
 
@@ -460,11 +467,11 @@
     /**
      * Send message from focus chat modal
      */
-    window.sendFocusMessage = function(intimate) {
+    window.sendFocusMessage = function() {
         if (!focusInput) return;
         const message = focusInput.value;
         if (!message.trim()) return;
-        sendMessageToBridge(message, !!intimate);
+        sendMessageToBridge(message);
         focusInput.value = '';
         window.closeFocusChatbox(true);
     };
@@ -546,7 +553,11 @@
 
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                window.sendFocusMessage(e.ctrlKey);
+                if (e.ctrlKey && currentModeAction !== 'mode_intimate') {
+                    resetTargetSelectionForModeChange();
+                    sendControlCommand('mode_intimate');
+                }
+                window.sendFocusMessage();
             }
         });
     }
@@ -668,14 +679,50 @@
 
     window.updateChatboxMode = function(mode) {
         const modeUpper = mode ? mode.toUpperCase().trim() : 'STANDARD';
-        const config = modeConfig[modeUpper] || modeConfig.STANDARD;
-        currentModeAction = config.action;
-        if (currentModeElement) {
-            currentModeElement.className = 'mode-badge ' + config.class;
-            currentModeElement.textContent = config.label;
-        }
-        if (modeSelectElement) {
-            modeSelectElement.value = config.action;
+        const conversationConfig = conversationModeConfig[modeUpper];
+        const toolConfig = toolModeConfig[modeUpper];
+
+        if (conversationConfig) {
+            currentModeAction = conversationConfig.action;
+            currentToolModeAction = 'mode_standard';
+            if (currentModeElement) {
+                currentModeElement.className = 'mode-badge ' + conversationConfig.class;
+                currentModeElement.textContent = conversationConfig.label;
+                currentModeElement.title = conversationConfig.label === 'Intimate'
+                    ? 'Private, close-range conversation'
+                    : '';
+            }
+            if (modeSelectElement) {
+                modeSelectElement.value = conversationConfig.action;
+            }
+            if (currentToolElement) {
+                currentToolElement.className = 'mode-badge off';
+                currentToolElement.textContent = 'Off';
+            }
+            if (toolSelectElement) {
+                toolSelectElement.value = 'mode_standard';
+            }
+        } else if (toolConfig) {
+            currentModeAction = toolConfig.action;
+            currentToolModeAction = toolConfig.action;
+            if (currentModeElement) {
+                currentModeElement.className = 'mode-badge paused';
+                currentModeElement.textContent = 'Paused';
+                currentModeElement.title = 'Select a conversation mode to leave the active tool.';
+            }
+            if (modeSelectElement) {
+                modeSelectElement.value = '';
+            }
+            if (currentToolElement) {
+                currentToolElement.className = 'mode-badge ' + toolConfig.class;
+                currentToolElement.textContent = toolConfig.label;
+            }
+            if (toolSelectElement) {
+                toolSelectElement.value = toolConfig.action;
+            }
+        } else {
+            window.updateChatboxMode('STANDARD');
+            return;
         }
         refreshProfileLlmMode();
     };
@@ -1147,6 +1194,15 @@
         modeSelectElement.addEventListener('change', function() {
             const action = modeSelectElement.value;
             if (!action || action === currentModeAction) return;
+            resetTargetSelectionForModeChange();
+            sendControlCommand(action);
+        });
+    }
+
+    if (toolSelectElement) {
+        toolSelectElement.addEventListener('change', function() {
+            const action = toolSelectElement.value;
+            if (!action || action === currentToolModeAction) return;
             resetTargetSelectionForModeChange();
             sendControlCommand(action);
         });

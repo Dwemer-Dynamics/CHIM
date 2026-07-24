@@ -331,6 +331,9 @@ std::string makeSTT(std::string wavData) {
     
      PlayerConversationRoutingContext routingContext{};
      routingContext.source = PlayerConversationInputSource::Voice;
+     const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
+     routingContext.mode = PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
+     routingContext.narratorMode = currentConversationMode == "NARRATOR";
      HTTPManager::streamPlayer(
          std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
                      RE::PlayerCharacter::GetSingleton()->GetName(), buffer),

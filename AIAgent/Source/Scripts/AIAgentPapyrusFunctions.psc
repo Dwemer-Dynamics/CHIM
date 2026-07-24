@@ -350,8 +350,8 @@ Event OnKeyDown(int keyCode)
 	If messageText != ""
 		string inputType = ""
 		if (Input.IsKeyPressed(29))	; Left Ctrl
-			Debug.Trace("[CHIM] Ctrl modifier, will cast intimacy bubble");
-			IntimacySpell.cast(Game.GetPlayer())
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Intimate conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@INTIMATE","setconf")
 			inputType = "inputtext_i"
 		endif;
 		AIAgentFunctions.sendMessage(messageText,inputType)
@@ -550,8 +550,8 @@ Function TriggerTextChatAction()
 	If messageText != ""
 		string inputType = ""
 		if (Input.IsKeyPressed(29)) ; Left Ctrl
-			Debug.Trace("[CHIM] Ctrl modifier, will cast intimacy bubble")
-			IntimacySpell.cast(Game.GetPlayer())
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Intimate conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@INTIMATE","setconf")
 			inputType = "inputtext_i"
 		endif
 		AIAgentFunctions.sendMessage(messageText,inputType)
@@ -1300,16 +1300,6 @@ Function OpenModeWheel()
 	_currentModeIndex = ret
 	StorageUtil.SetIntValue(None, "AIAgent_CurrentModeIndex", _currentModeIndex)
 	AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
-	
-	if (_currentModeIndex==1)
-		Debug.Trace("[CHIM] Enabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",200,200,200)
-		AIAgentFunctions.setConf("_max_distance_outside",200,200,200)
-	else
-		Debug.Trace("[CHIM] Disabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",mdi,mdi as int,mdi as string)
-		AIAgentFunctions.setConf("_max_distance_outside",mdo,mdo as int,mdo as string)
-	endif
 EndFunction
 
 Function OpenSoulgazeWheel()
@@ -1954,16 +1944,6 @@ Function OpenModeToggleWheel(float holdTime)
 		String currentMode = _modes[_currentModeIndex]
 		Debug.Notification("[CHIM] Chat mode: "+currentMode)
 		AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
-	endif
-	
-	if (_currentModeIndex == 1)
-		Debug.Trace("[CHIM] Enabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",200,200,200)
-		AIAgentFunctions.setConf("_max_distance_outside",200,200,200)
-	else
-		Debug.Trace("[CHIM] Disabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",mdi,mdi as int,mdi as string)
-		AIAgentFunctions.setConf("_max_distance_outside",mdo,mdo as int,mdo as string)
 	endif
 EndFunction
 
