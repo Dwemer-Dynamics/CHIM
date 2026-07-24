@@ -47,8 +47,8 @@ namespace
             return "whisper";
         case PlayerConversationSpeechMode::Shout:
             return "shout";
-        case PlayerConversationSpeechMode::Intimate:
-            return "intimate";
+        case PlayerConversationSpeechMode::Close:
+            return "close";
         case PlayerConversationSpeechMode::Standard:
         default:
             return "standard";
@@ -250,7 +250,7 @@ namespace
         case PlayerConversationSpeechMode::Shout:
             return 2.0f;
         case PlayerConversationSpeechMode::Standard:
-        case PlayerConversationSpeechMode::Intimate:
+        case PlayerConversationSpeechMode::Close:
         default:
             return 1.0f;
         }
@@ -277,15 +277,15 @@ PlayerConversationSpeechMode PlayerConversationRouter::ParseSpeechMode(std::stri
     if (normalized == "SHOUT") {
         return PlayerConversationSpeechMode::Shout;
     }
-    if (normalized == "INTIMATE") {
-        return PlayerConversationSpeechMode::Intimate;
+    if (normalized == "CLOSE") {
+        return PlayerConversationSpeechMode::Close;
     }
     return PlayerConversationSpeechMode::Standard;
 }
 
-float PlayerConversationRouter::GetIntimateRadiusUnits(bool sneaking)
+float PlayerConversationRouter::GetCloseRadiusUnits(bool sneaking)
 {
-    return sneaking ? kIntimateRadiusUnits * 0.5f : kIntimateRadiusUnits;
+    return sneaking ? kCloseRadiusUnits * 0.5f : kCloseRadiusUnits;
 }
 
 PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
@@ -315,12 +315,12 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
             : SpatialAwareness::kAutoHearingDistance;
     const float baseDirectRadius =
         playerInterior ? baseSettings.interiorMaxDistance : baseSettings.exteriorMaxDistance;
-    result.listenerRadiusUnits = context.mode == PlayerConversationSpeechMode::Intimate
-        ? GetIntimateRadiusUnits(player->IsSneaking())
+    result.listenerRadiusUnits = context.mode == PlayerConversationSpeechMode::Close
+        ? GetCloseRadiusUnits(player->IsSneaking())
         : baseListenerRadius * modifier;
     result.audienceRadiusUnits = result.listenerRadiusUnits;
     const float directAddressRadius =
-        context.mode == PlayerConversationSpeechMode::Intimate
+        context.mode == PlayerConversationSpeechMode::Close
             ? result.listenerRadiusUnits
             : std::max(result.listenerRadiusUnits, baseDirectRadius * modifier);
 
@@ -413,7 +413,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.interactionRadius = result.listenerRadiusUnits;
     policyRequest.narratorMode = context.narratorMode;
     policyRequest.everyoneMode =
-        context.everyoneMode && context.mode != PlayerConversationSpeechMode::Intimate;
+        context.everyoneMode && context.mode != PlayerConversationSpeechMode::Close;
     policyRequest.narratorGesture = IsNarratorGesture(player);
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);
@@ -444,7 +444,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     for (std::size_t index = 0; index < runtimeCandidates.size(); ++index) {
         const auto& candidate = runtimeCandidates[index];
         if (index == selectedIndex ||
-            (context.mode != PlayerConversationSpeechMode::Intimate &&
+            (context.mode != PlayerConversationSpeechMode::Close &&
              candidate.policy.hardEligible && candidate.policy.audible &&
              candidate.policy.distance <= result.audienceRadiusUnits)) {
             audienceOrder.push_back(index);

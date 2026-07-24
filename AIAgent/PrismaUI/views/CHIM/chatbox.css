@@ -446,7 +446,7 @@ body {
     border: 1px solid rgba(155, 89, 182, 0.4);
 }
 
-.mode-badge.intimate {
+.mode-badge.close {
     background: rgba(236, 72, 153, 0.18);
     color: #f9a8d4;
     border: 1px solid rgba(236, 72, 153, 0.42);

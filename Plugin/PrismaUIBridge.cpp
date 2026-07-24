@@ -1720,7 +1720,7 @@ R"CHIM(
             [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
 
         static const std::vector<std::string> validModes{
-            "STANDARD", "WHISPER", "INTIMATE", "SHOUT", "NARRATOR",
+            "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
             "DIRECTOR", "SPAWN", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
         };
         if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
@@ -1753,7 +1753,7 @@ R"CHIM(
         if (actionId == "mode_standard") modeStr = "STANDARD";
         else if (actionId == "mode_shout") modeStr = "SHOUT";
         else if (actionId == "mode_whisper") modeStr = "WHISPER";
-        else if (actionId == "mode_intimate") modeStr = "INTIMATE";
+        else if (actionId == "mode_close") modeStr = "CLOSE";
         else if (actionId == "mode_narrator") modeStr = "NARRATOR";
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
         else if (actionId == "mode_spawn") modeStr = "SPAWN";
@@ -4810,9 +4810,9 @@ R"CHIM(
         return g_chatboxCurrentMode == "DIRECTOR";
     }
 
-    static bool IsChatboxIntimateMode()
+    static bool IsChatboxCloseMode()
     {
-        return g_chatboxCurrentMode == "INTIMATE";
+        return g_chatboxCurrentMode == "CLOSE";
     }
 
     static std::shared_ptr<AIAgent> FindChatboxAgentByFormIdOrName(uint32_t formId, const std::string& name)
@@ -4918,9 +4918,9 @@ R"CHIM(
         }
 
         const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
-        const bool intimateTargetCapActive = IsChatboxIntimateMode();
-        const float intimateTargetMaxMeters =
-            PlayerConversationRouter::GetIntimateRadiusUnits(player->IsSneaking()) /
+        const bool closeTargetCapActive = IsChatboxCloseMode();
+        const float closeTargetMaxMeters =
+            PlayerConversationRouter::GetCloseRadiusUnits(player->IsSneaking()) /
             SpatialAwareness::kSkyrimUnitsPerMeter;
         const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
             "chatbox_targets", true, PlayerSpeechTargetMode::Manual);
@@ -4930,9 +4930,9 @@ R"CHIM(
                  candidate.distanceMeters > kChatboxWhisperTargetMaxMeters)) {
                 continue;
             }
-            if (intimateTargetCapActive &&
+            if (closeTargetCapActive &&
                 (!std::isfinite(candidate.distanceMeters) ||
-                 candidate.distanceMeters > intimateTargetMaxMeters)) {
+                 candidate.distanceMeters > closeTargetMaxMeters)) {
                 continue;
             }
 
@@ -5209,7 +5209,7 @@ R"CHIM(
         const bool narratorOnlyMode = IsChatboxNarratorOnlyMode();
         const bool directorMode = IsChatboxDirectorMode();
         const bool overrideSupported = !narratorOnlyMode && !directorMode && !IsChatboxSpawnMode();
-        const bool everyoneSupported = overrideSupported && !IsChatboxIntimateMode();
+        const bool everyoneSupported = overrideSupported && !IsChatboxCloseMode();
         if (!everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
             ClearChatboxTargetOverride();
         }
@@ -5545,7 +5545,7 @@ R"CHIM(
             CheckAndUpdateChatboxControls(true);
         } else if (cmd == "target_override_everyone") {
             if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() ||
-                IsChatboxSpawnMode() || IsChatboxIntimateMode()) {
+                IsChatboxSpawnMode() || IsChatboxCloseMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
                 return;
@@ -6031,7 +6031,7 @@ R"CHIM(
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(g_chatboxCurrentMode);
         routingContext.everyoneMode =
-            routingContext.mode != PlayerConversationSpeechMode::Intimate &&
+            routingContext.mode != PlayerConversationSpeechMode::Close &&
             IsChatboxEveryoneTargetOverrideActive();
         routingContext.narratorMode = IsNarratorChatModeEnabled();
         GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);

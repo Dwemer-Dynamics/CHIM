@@ -21,7 +21,7 @@ It does not implement a separate responder-selection algorithm.
 - **Hard eligibility**: Safety checks that direct targeting cannot bypass.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
-- **Conversation mode**: Standard, Whisper, Intimate, or Shout.
+- **Conversation mode**: Standard, Whisper, Close, or Shout.
 - **Tool mode**: Director, Spawn, Cheat, Auto Chat, or event injection. Tool
   modes are not conversation-distance modes.
 
@@ -59,25 +59,24 @@ routing context, and calls `HTTPManager::streamPlayer`.
 ### Legacy text entry
 
 Legacy text entry uses the same player stream. Holding left Ctrl when submitting
-selects persistent Intimate mode and sends the utterance as intimate input.
-The eight-slot legacy mode wheel remains unchanged; Intimate is selected through
-Ctrl submission or Prisma. The legacy intimacy spell may still select the mode
-for compatibility, but it does not mutate global hearing distances.
+selects persistent Close mode and sends the utterance through the legacy
+compatibility input path.
+The eight-slot legacy mode wheel remains unchanged; Close is selected through
+Ctrl submission or Prisma. The legacy spell compatibility effect may still
+select the mode, but it does not mutate global hearing distances.
 
 ### Prisma text chat
 
-Prisma exposes two separate controls:
+Prisma exposes one **Mode** selector containing the conversation modes
+Standard, Whisper, Close, Shout, and Narrator plus the tool modes Director,
+Spawn, Cheat Mode, Auto Chat, Event Inject, and Inject & Chat.
 
-- **Conversation Mode**: Standard, Whisper, Intimate, Shout, or Narrator.
-- **Tools**: Off, Director, Spawn, Cheat, Auto Chat, Inject Event, or Inject &
-  Chat.
-
-Pressing Ctrl+Enter selects persistent Intimate mode before submitting the
+Pressing Ctrl+Enter selects persistent Close mode before submitting the
 message. Normal Enter uses the currently selected persistent mode. Prisma sends
 an explicit NPC form ID when the user chooses a target.
 
-`Everyone` is unavailable in Intimate mode because an intimate utterance has a
-private two-person audience.
+`Everyone` is unavailable in Close mode because Close speech has a private
+two-person audience.
 
 ## Mode Contract
 
@@ -85,11 +84,11 @@ private two-person audience.
 | --- | --- | --- | --- |
 | Standard | Configured base auto-hearing radius | Responder plus eligible audible NPCs | Normal speech |
 | Whisper | Base radius multiplied by 0.35 | Plugin snapshot is reduced; server narrows context to player and responder | Quiet/private speech treatment |
-| Intimate | Fixed 200 Skyrim units | Player and resolved responder only | Private close-range speech |
+| Close | Fixed 200 Skyrim units | Player and resolved responder only | Private close-range speech |
 | Shout | Base radius multiplied by 2.0 | Responder plus eligible audible NPCs inside the expanded radius | Loud speech treatment |
 
 Sneaking multiplies the effective radius by 0.5 after the mode policy is
-applied. Intimate therefore uses 200 units normally and 100 units while
+applied. Close therefore uses 200 units normally and 100 units while
 sneaking.
 
 Mode selection is request state, not global distance configuration. Switching
@@ -130,7 +129,7 @@ authorize a package, animation, scene, quest, or gameplay-action interruption.
 The resolver evaluates these rules in order:
 
 1. `Everyone` requests select a deterministic transport listener and preserve a
-   broadcast flag. Intimate mode rejects `Everyone`.
+   broadcast flag. Close mode rejects `Everyone`.
 2. Explicit Narrator mode selects the Narrator.
 3. An utterance beginning with `Hey Narrator` selects the Narrator.
 4. A valid explicit Prisma form ID selects that NPC.
@@ -162,7 +161,7 @@ For the request-local spatial evaluation:
 - cached spatial results are invalidated before the routing scan.
 
 This prevents a larger global auto-hearing shortcut from defeating Whisper,
-Intimate, or sneaking scope.
+Close, or sneaking scope.
 
 Direct visual/name targeting may bypass soft audibility checks but still obeys
 hard eligibility and the mode's direct-address boundary.
@@ -176,7 +175,7 @@ candidate snapshot:
 - the resolved NPC responder is included;
 - in Standard, Whisper, and Shout, other hard-eligible and physically audible
   NPCs inside the effective radius are included;
-- in Intimate mode, no incidental NPC is included; and
+- in Close mode, no incidental NPC is included; and
 - Narrator requests do not add nearby NPCs.
 
 The responder is ordered first, followed by incidental audience members sorted
@@ -199,14 +198,14 @@ The plugin sends an audience snapshot containing:
 - audience radius.
 
 HerikaServer treats this snapshot as the maximum participant boundary for the
-request. It may narrow private delivery but must not widen Intimate or Whisper
+request. It may narrow private delivery but must not widen Close or Whisper
 scope using an independent nearby-NPC scan.
 
 Server mode behavior:
 
 - `WHISPER` retains quiet delivery and narrows context to the player and
   resolved listener.
-- `INTIMATE` uses private close-range wording and participant tags without
+- `CLOSE` uses private close-range wording and participant tags without
   changing global server distance settings.
 - changing mode never restores hard-coded global distance defaults.
 
@@ -249,10 +248,10 @@ privacy, and spatial-audibility reports.
 6. The skyward gesture selects the Narrator before proximity fallback.
 7. Standard speech includes eligible audible nearby NPCs as context.
 8. Whisper and sneaking reduce both responder and audience scope.
-9. Intimate mode at 200 units includes only player and responder.
-10. Intimate mode while sneaking uses a 100-unit boundary.
-11. `Everyone` cannot remain active after switching to Intimate mode.
-12. Ctrl+Enter selects persistent Intimate mode in Prisma and legacy text.
+9. Close mode at 200 units includes only player and responder.
+10. Close mode while sneaking uses a 100-unit boundary.
+11. `Everyone` cannot remain active after switching to Close mode.
+12. Ctrl+Enter selects persistent Close mode in Prisma and legacy text.
 13. Tool selection does not masquerade as a conversation-distance mode.
 14. The server receives `plugin_player_routing_v2` with the matching speech
     mode, reason, and radius values.

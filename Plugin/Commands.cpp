@@ -4279,12 +4279,12 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
-        if (PrismaUIBridge::GetCurrentChatboxMode() == "INTIMATE") {
-            const float intimateRadius =
-                PlayerConversationRouter::GetIntimateRadiusUnits(player->IsSneaking());
-            spatialSettings.maxAirDistance = intimateRadius;
-            spatialSettings.interiorMaxDistance = intimateRadius;
-            spatialSettings.exteriorMaxDistance = intimateRadius;
+        if (PrismaUIBridge::GetCurrentChatboxMode() == "CLOSE") {
+            const float closeRadius =
+                PlayerConversationRouter::GetCloseRadiusUnits(player->IsSneaking());
+            spatialSettings.maxAirDistance = closeRadius;
+            spatialSettings.interiorMaxDistance = closeRadius;
+            spatialSettings.exteriorMaxDistance = closeRadius;
             spatialSettings.autoHearingDistance = 0.0f;
             spatialSettings.immediateDistance = 0.0f;
             return spatialSettings;
@@ -4326,7 +4326,7 @@ float GetAudibleActorsDistanceMultiplier(RE::Actor* speaker)
 {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
-        if (PrismaUIBridge::GetCurrentChatboxMode() == "INTIMATE") {
+        if (PrismaUIBridge::GetCurrentChatboxMode() == "CLOSE") {
             return -1.0f;
         }
         return PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();

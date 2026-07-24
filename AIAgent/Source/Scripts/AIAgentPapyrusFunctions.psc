@@ -350,8 +350,8 @@ Event OnKeyDown(int keyCode)
 	If messageText != ""
 		string inputType = ""
 		if (Input.IsKeyPressed(29))	; Left Ctrl
-			Debug.Trace("[CHIM] Ctrl modifier selected persistent Intimate conversation mode")
-			AIAgentFunctions.logMessage("chim_mode@INTIMATE","setconf")
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
 			inputType = "inputtext_i"
 		endif;
 		AIAgentFunctions.sendMessage(messageText,inputType)
@@ -550,8 +550,8 @@ Function TriggerTextChatAction()
 	If messageText != ""
 		string inputType = ""
 		if (Input.IsKeyPressed(29)) ; Left Ctrl
-			Debug.Trace("[CHIM] Ctrl modifier selected persistent Intimate conversation mode")
-			AIAgentFunctions.logMessage("chim_mode@INTIMATE","setconf")
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
 			inputType = "inputtext_i"
 		endif
 		AIAgentFunctions.sendMessage(messageText,inputType)

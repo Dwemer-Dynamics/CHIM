@@ -1521,7 +1521,7 @@ int sendMessageReal(
 
     if (type == "inputtext_i") {
         typeRevised.assign("inputtext_s");
-        effectiveRoutingContext.mode = PlayerConversationSpeechMode::Intimate;
+        effectiveRoutingContext.mode = PlayerConversationSpeechMode::Close;
     } else {
         const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
         effectiveRoutingContext.mode =

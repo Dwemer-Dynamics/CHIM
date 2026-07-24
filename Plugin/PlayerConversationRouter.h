@@ -20,7 +20,7 @@ enum class PlayerConversationSpeechMode : std::uint8_t
     Standard,
     Whisper,
     Shout,
-    Intimate
+    Close
 };
 
 struct PlayerConversationRoutingContext
@@ -51,10 +51,10 @@ struct PlayerConversationRoutingResult
 
 namespace PlayerConversationRouter
 {
-    inline constexpr float kIntimateRadiusUnits = 200.0f;
+    inline constexpr float kCloseRadiusUnits = 200.0f;
 
     PlayerConversationSpeechMode ParseSpeechMode(std::string_view mode);
-    float GetIntimateRadiusUnits(bool sneaking);
+    float GetCloseRadiusUnits(bool sneaking);
     PlayerConversationRoutingResult Resolve(const std::string& wireMessage,
                                             const PlayerConversationRoutingContext& context);
 }

@@ -82,7 +82,7 @@
     const modeConfig = {
         STANDARD: { label: 'Standard', class: 'standard', action: 'mode_standard' },
         WHISPER: { label: 'Whisper', class: 'whisper', action: 'mode_whisper' },
-        INTIMATE: { label: 'Intimate', class: 'intimate', action: 'mode_intimate' },
+        CLOSE: { label: 'Close', class: 'close', action: 'mode_close' },
         SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
         NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' },
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
@@ -596,9 +596,9 @@
 
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                if (e.ctrlKey && currentModeAction !== 'mode_intimate') {
+                if (e.ctrlKey && currentModeAction !== 'mode_close') {
                     resetTargetSelectionForModeChange();
-                    sendControlCommand('mode_intimate');
+                    sendControlCommand('mode_close');
                 }
                 window.sendFocusMessage();
             }
@@ -728,7 +728,7 @@
         if (currentModeElement) {
             currentModeElement.className = 'mode-badge ' + config.class;
             currentModeElement.textContent = config.label;
-            currentModeElement.title = config.label === 'Intimate'
+            currentModeElement.title = config.label === 'Close'
                 ? 'Private, close-range conversation'
                 : '';
         }
