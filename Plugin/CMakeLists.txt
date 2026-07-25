@@ -28,7 +28,7 @@ endif()
 add_skse_plugin(${PROJECT_NAME}
 SKYRIM_FOLDER "${AIAGENT_SKYRIM_FOLDER}"
 
-SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp ResourceFileReader.cpp DynamicDiaryBook.cpp ServerPluginSync.cpp
+SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp PlayerConversationRouter.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp ResourceFileReader.cpp DynamicDiaryBook.cpp ServerPluginSync.cpp
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE SkyrimScriptingPlugin::SkyrimScripting.Plugin)
 
@@ -43,5 +43,15 @@ if(BUILD_TESTING)
     target_include_directories(AIAgentHeadVoiceVolumeTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_features(AIAgentHeadVoiceVolumeTests PRIVATE cxx_std_23)
     add_test(NAME AIAgentHeadVoiceVolumeTests COMMAND AIAgentHeadVoiceVolumeTests)
+
+    add_executable(AIAgentPlayerConversationRoutingPolicyTests tests/PlayerConversationRoutingPolicyTests.cpp)
+    target_include_directories(AIAgentPlayerConversationRoutingPolicyTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentPlayerConversationRoutingPolicyTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentPlayerConversationRoutingPolicyTests COMMAND AIAgentPlayerConversationRoutingPolicyTests)
+
+    add_executable(AIAgentActorTargetIdentifierTests tests/ActorTargetIdentifierUtilsTests.cpp)
+    target_include_directories(AIAgentActorTargetIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentActorTargetIdentifierTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentActorTargetIdentifierTests COMMAND AIAgentActorTargetIdentifierTests)
 endif()
 

@@ -8,6 +8,8 @@
 #include "SpeakManager.h"
 #include "SPGResponse.h"
 #include "SpatialSnapshotManager.h"
+#include "PlayerConversationRouter.h"
+#include "SpatialAwareness.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -1712,11 +1714,54 @@ R"CHIM(
         return escaped;
     }
 
+    bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag, bool showNotification) {
+        std::string normalizedMode = mode;
+        std::transform(normalizedMode.begin(), normalizedMode.end(), normalizedMode.begin(),
+            [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
+
+        static const std::vector<std::string> validModes{
+            "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
+            "DIRECTOR", "SPAWN", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
+        };
+        if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
+            logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
+            return false;
+        }
+
+        const std::string previousMode = g_chatboxCurrentMode;
+        g_chatboxCurrentMode = normalizedMode;
+        if ((normalizedMode == "WHISPER" || normalizedMode == "CLOSE") &&
+            g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            g_chatboxTargetMode = ChatboxTargetMode::Auto;
+            g_chatboxTargetOverrideFormId = 0;
+            g_chatboxTargetOverrideName.clear();
+            logger::info("[{}] Cleared Everyone target for private {} mode",
+                         sourceTag, normalizedMode);
+        }
+        logger::info("[{}] Set mode to: {}", sourceTag, normalizedMode);
+
+        if (showNotification) {
+            RE::DebugNotification(("[CHIM] Chat mode: " + normalizedMode).c_str());
+        }
+
+        if (previousMode != normalizedMode) {
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+            g_lastOverlayAgentsPayload.clear();
+            g_lastChatboxTargetsPayload.clear();
+            g_prismaDisplayStatusCache.clear();
+            logger::info("[{}] Player conversation mode changed from {} to {}",
+                         sourceTag, previousMode, normalizedMode);
+        }
+
+        return true;
+    }
+
     static bool ApplyModeSelection(const std::string& actionId, const char* sourceTag, bool showNotification) {
         std::string modeStr;
         if (actionId == "mode_standard") modeStr = "STANDARD";
         else if (actionId == "mode_shout") modeStr = "SHOUT";
         else if (actionId == "mode_whisper") modeStr = "WHISPER";
+        else if (actionId == "mode_close") modeStr = "CLOSE";
         else if (actionId == "mode_narrator") modeStr = "NARRATOR";
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
         else if (actionId == "mode_spawn") modeStr = "SPAWN";
@@ -1732,28 +1777,7 @@ R"CHIM(
         HTTPManager::log(std::format("setconf|{}|{}|chim_mode@{}",
             getCurrentTimeMillis(), GetGameTimeStamp(), modeStr));
 
-        const std::string previousMode = g_chatboxCurrentMode;
-        g_chatboxCurrentMode = modeStr;
-        logger::info("[{}] Set mode to: {}", sourceTag, modeStr);
-
-        if (showNotification) {
-            RE::DebugNotification(("[CHIM] Chat mode: " + modeStr).c_str());
-        }
-
-        if (previousMode != modeStr) {
-            // Voice mode changes should affect player speech reach without rewriting
-            // the user's MCM auto-activation distances. Clear dynamic spatial state so
-            // listener routing and Prisma UI immediately use the new runtime multiplier
-            // without treating the mode change as a fresh cell-entry settle window.
-            SpatialSnapshotManager::InvalidateDynamicSpatialState();
-            g_lastOverlayAgentsPayload.clear();
-            g_lastChatboxTargetsPayload.clear();
-            g_prismaDisplayStatusCache.clear();
-            logger::info("[{}] Player speech spatial multiplier now {:.2f}", sourceTag,
-                         GetPlayerSpeechDistanceMultiplier());
-        }
-
-        return true;
+        return SetCurrentChatboxMode(modeStr, sourceTag, showNotification);
     }
 
     // ===== CHIM Overlay Functions =====
@@ -4794,6 +4818,16 @@ R"CHIM(
         return g_chatboxCurrentMode == "DIRECTOR";
     }
 
+    static bool IsChatboxCloseMode()
+    {
+        return g_chatboxCurrentMode == "CLOSE";
+    }
+
+    static bool IsChatboxWhisperMode()
+    {
+        return g_chatboxCurrentMode == "WHISPER";
+    }
+
     static std::shared_ptr<AIAgent> FindChatboxAgentByFormIdOrName(uint32_t formId, const std::string& name)
     {
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -4897,12 +4931,21 @@ R"CHIM(
         }
 
         const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
+        const bool closeTargetCapActive = IsChatboxCloseMode();
+        const float closeTargetMaxMeters =
+            PlayerConversationRouter::GetCloseRadiusUnits(player->IsSneaking()) /
+            SpatialAwareness::kSkyrimUnitsPerMeter;
         const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
             "chatbox_targets", true, PlayerSpeechTargetMode::Manual);
         for (const auto& candidate : candidates) {
             if (whisperTargetCapActive &&
                 (!std::isfinite(candidate.distanceMeters) ||
                  candidate.distanceMeters > kChatboxWhisperTargetMaxMeters)) {
+                continue;
+            }
+            if (closeTargetCapActive &&
+                (!std::isfinite(candidate.distanceMeters) ||
+                 candidate.distanceMeters > closeTargetMaxMeters)) {
                 continue;
             }
 
@@ -5106,7 +5149,8 @@ R"CHIM(
                         parsed.contains("data") && parsed["data"].is_object()) {
                         const auto& data = parsed["data"];
                         if (data.contains("mode") && data["mode"].is_string()) {
-                            g_chatboxCurrentMode = data["mode"].get<std::string>();
+                            SetCurrentChatboxMode(
+                                data["mode"].get<std::string>(), "Chatbox Status Sync", false);
                         }
                         if (data.contains("active_model_label") && data["active_model_label"].is_string()) {
                             g_chatboxCurrentModelLabel = data["active_model_label"].get<std::string>();
@@ -5178,7 +5222,11 @@ R"CHIM(
         const bool narratorOnlyMode = IsChatboxNarratorOnlyMode();
         const bool directorMode = IsChatboxDirectorMode();
         const bool overrideSupported = !narratorOnlyMode && !directorMode && !IsChatboxSpawnMode();
-        const bool everyoneSupported = overrideSupported;
+        const bool everyoneSupported =
+            overrideSupported && !IsChatboxWhisperMode() && !IsChatboxCloseMode();
+        if (!everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            ClearChatboxTargetOverride();
+        }
 
         ChatboxNearbyAgent autoTarget{};
         bool hasAutoTarget = false;
@@ -5230,26 +5278,42 @@ R"CHIM(
         }
 
         const ChatboxNearbyAgent* overrideTarget = nullptr;
-        if (overrideSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+        if (everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
             everyoneActive = true;
             selectedName = "Everyone";
             selectedDistance = 0.0f;
         } else if (overrideSupported && g_chatboxTargetMode == ChatboxTargetMode::NPC &&
                    (g_chatboxTargetOverrideFormId != 0 || !g_chatboxTargetOverrideName.empty())) {
-            for (const auto& nearbyAgent : nearbyAgents) {
-                const bool formMatch = g_chatboxTargetOverrideFormId != 0 &&
-                    nearbyAgent.formId == g_chatboxTargetOverrideFormId;
-                const bool nameMatch = !g_chatboxTargetOverrideName.empty() &&
-                    nearbyAgent.name == g_chatboxTargetOverrideName;
-                if (formMatch || nameMatch) {
-                    overrideTarget = &nearbyAgent;
-                    if (g_chatboxTargetOverrideFormId == 0 && nearbyAgent.formId != 0) {
-                        g_chatboxTargetOverrideFormId = nearbyAgent.formId;
-                    }
-                    if (g_chatboxTargetOverrideName.empty()) {
-                        g_chatboxTargetOverrideName = nearbyAgent.name;
-                    }
-                    break;
+            if (g_chatboxTargetOverrideFormId != 0) {
+                const auto formMatch = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.formId == g_chatboxTargetOverrideFormId;
+                    });
+                if (formMatch != nearbyAgents.end()) {
+                    overrideTarget = &*formMatch;
+                }
+            }
+
+            if (!overrideTarget && !g_chatboxTargetOverrideName.empty()) {
+                const auto nameMatch = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.name == g_chatboxTargetOverrideName;
+                    });
+                if (nameMatch != nearbyAgents.end()) {
+                    overrideTarget = &*nameMatch;
+                }
+            }
+
+            if (overrideTarget) {
+                if (g_chatboxTargetOverrideFormId == 0 && overrideTarget->formId != 0) {
+                    g_chatboxTargetOverrideFormId = overrideTarget->formId;
+                }
+                if (g_chatboxTargetOverrideName.empty()) {
+                    g_chatboxTargetOverrideName = overrideTarget->name;
                 }
             }
         } else if (!overrideSupported && (g_chatboxTargetMode != ChatboxTargetMode::Auto ||
@@ -5316,11 +5380,13 @@ R"CHIM(
             target["distance"] = nearbyAgent.distanceMeters;
             target["status"] = nearbyAgent.status;
             target["targetable"] = nearbyAgent.targetable;
-            target["active"] = (selectedFormId != 0 && nearbyAgent.formId == selectedFormId) ||
-                (!selectedName.empty() && nearbyAgent.name == selectedName);
+            target["active"] = selectedFormId != 0
+                ? nearbyAgent.formId == selectedFormId
+                : (!selectedName.empty() && nearbyAgent.name == selectedName);
             target["override"] = overrideTarget &&
-                ((overrideTarget->formId != 0 && nearbyAgent.formId == overrideTarget->formId) ||
-                 (!overrideTarget->name.empty() && nearbyAgent.name == overrideTarget->name));
+                (overrideTarget->formId != 0
+                    ? nearbyAgent.formId == overrideTarget->formId
+                    : (!overrideTarget->name.empty() && nearbyAgent.name == overrideTarget->name));
             target["narrator"] = nearbyAgent.isNarrator;
             targetItems.push_back(target);
         }
@@ -5484,7 +5550,8 @@ R"CHIM(
             }
         } else if (cmd == "continue_chat") {
             CheckAndUpdateChatboxControls(true);
-            if (g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            if (g_chatboxTargetMode == ChatboxTargetMode::Everyone &&
+                !IsChatboxWhisperMode() && !IsChatboxCloseMode()) {
                 TriggerContinueConversationForEveryone("Chatbox", false);
             } else {
                 TriggerContinueConversationForNpc(g_lastChatboxTarget, "Chatbox", true);
@@ -5510,7 +5577,8 @@ R"CHIM(
             ClearChatboxTargetOverride();
             CheckAndUpdateChatboxControls(true);
         } else if (cmd == "target_override_everyone") {
-            if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() || IsChatboxSpawnMode()) {
+            if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() ||
+                IsChatboxSpawnMode() || IsChatboxWhisperMode() || IsChatboxCloseMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
                 return;
@@ -5992,7 +6060,17 @@ R"CHIM(
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
-        sendMessageReal(message, "");
+        PlayerConversationRoutingContext routingContext{};
+        routingContext.source = PlayerConversationInputSource::PrismaText;
+        routingContext.mode = PlayerConversationRouter::ParseSpeechMode(g_chatboxCurrentMode);
+        routingContext.everyoneMode =
+            routingContext.mode != PlayerConversationSpeechMode::Whisper &&
+            routingContext.mode != PlayerConversationSpeechMode::Close &&
+            IsChatboxEveryoneTargetOverrideActive();
+        routingContext.narratorMode = IsNarratorChatModeEnabled();
+        GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
+
+        sendMessageReal(message, "", routingContext);
     }
 
     static void StopAllDialogueNow(const char* sourceTag) {
