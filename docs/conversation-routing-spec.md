@@ -20,7 +20,8 @@ It does not implement a separate responder-selection algorithm.
   automatically respond.
 - **People present**: Loaded actors physically inside the current conversation
   area. This list may include actors that are not activated in CHIM. Inactive
-  actors cannot respond, but gameplay actions may target them.
+  actors cannot respond or independently participate in the managed
+  conversation, but compatible gameplay actions may target them.
 - **Hard eligibility**: Safety checks that direct targeting cannot bypass.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
@@ -53,6 +54,21 @@ The routing result contains:
 The older shuffled `InspectSurroundings` output may still provide descriptive
 scene context, but it is not authoritative participant identity.
 
+### Scope boundary
+
+This resolver owns only the initial player-originated request from voice/STT,
+legacy text entry, or Prisma text chat. It does not replace every dialogue or
+event route in CHIM.
+
+- Rechat selection and generation remain server-side. The plugin owns rechat
+  cancellation, transport, and playback, but it does not select or generate the
+  next rechat speaker.
+- NPC-to-NPC dialogue, Background Life, scripted dialogue, diaries, vision,
+  instructions, and action callbacks retain their existing request paths.
+- The physical-presence and RefID contract applies to compatible gameplay
+  actions invoked from a routed request. It does not convert inactive actors
+  into managed CHIM agents.
+
 ## Input Surfaces
 
 ### Voice and STT
@@ -79,8 +95,9 @@ Pressing Ctrl+Enter selects persistent Close mode before submitting the
 message. Normal Enter uses the currently selected persistent mode. Prisma sends
 an explicit NPC form ID when the user chooses a target.
 
-`Everyone` is unavailable in Whisper and Close modes because both modes resolve
-one private target rather than a broadcast audience.
+`Everyone` is not offered in Whisper or Close mode. Both modes resolve exactly
+one private target. An explicit NPC selection is preferred; Auto may still
+resolve one specific eligible NPC when no explicit selection is active.
 
 ## Mode Contract
 
@@ -257,9 +274,10 @@ Server mode behavior:
   changing global server distance settings.
 - changing mode never restores hard-coded global distance defaults.
 
-Rechat remains a server request and response flow. The plugin owns cancellation,
-transport, and playback lifecycle, but the unified player router does not move
-rechat selection or generation into the client.
+Rechat remains a HerikaServer request and response flow. HerikaServer selects
+and generates the next rechat turn. The plugin owns cancellation, transport,
+and playback lifecycle, but the unified player router does not select or
+generate rechat on the client.
 
 Narrator input is intentionally converted to `narrator_inputtext`. That request
 does not append the standard player spatial snapshot, preventing incidental
@@ -294,6 +312,15 @@ privacy, and spatial-audibility reports.
   audience identity remain name-based for now.
 - The Narrator camera gesture threshold is currently native behavior rather
   than a dedicated user-facing setting.
+- Narrator requests intentionally omit incidental physical presence rather than
+  sending the complete standard player-routing snapshot.
+- NPC-to-NPC, Background Life, scripted, diary, vision, instruction, action
+  callback, and rechat routing are separate systems. This specification does
+  not make the player router authoritative for those paths.
+- Mixed old/new CHIM and HerikaServer combinations are outside this contract;
+  the paired plugin and server changes should be deployed together.
+- Automated policy and transport tests do not replace the full in-game routing
+  matrix across voice, legacy text, Prisma, actions, memory, and rechat.
 
 ## Acceptance Scenarios
 
@@ -319,6 +346,11 @@ privacy, and spatial-audibility reports.
 15. Tool selection does not masquerade as a conversation-distance mode.
 16. The server receives `plugin_player_routing_v2` with the matching speech
     mode, reason, and radius values.
+17. Rechat speaker selection and response generation remain on HerikaServer.
+18. Narrator requests omit incidental physical presence and do not widen into a
+    standard player audience.
+19. NPC-to-NPC, Background Life, scripted dialogue, diaries, vision,
+    instructions, and action callbacks continue through their existing routes.
 
 ## Source References
 
