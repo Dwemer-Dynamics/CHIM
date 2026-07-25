@@ -1732,6 +1732,7 @@ int sendMessageReal(
             ThreadPool::getInstance().cancelTasksByType("HTTPStream");
             ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
             SPGResponse::getInstance().clearAllQueues();
+            SpeakManager::getInstance().startRechatChainForPlayerInput();
         }
 
         SpeakManager::getInstance().deleteQueue();

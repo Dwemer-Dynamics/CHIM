@@ -8184,6 +8184,43 @@ EventHandlers {
             return;
         }
 
+        auto* transitionPlayer = RE::PlayerCharacter::GetSingleton();
+        auto* playerCell = transitionPlayer ? transitionPlayer->GetParentCell() : nullptr;
+        if (!playerCell || !playerCell->IsAttached()) {
+            logger::trace("[TESCellFullyLoadedEvent] Player cell unavailable; skipping transition handling");
+        } else {
+            static RE::FormID staticLastPlayerCellFormId = 0;
+            const RE::FormID currentPlayerCellFormId = playerCell->GetFormID();
+            if (staticLastPlayerCellFormId == 0) {
+                staticLastPlayerCellFormId = currentPlayerCellFormId;
+            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId) {
+                const RE::FormID previousPlayerCellFormId = staticLastPlayerCellFormId;
+                staticLastPlayerCellFormId = currentPlayerCellFormId;
+
+                logger::info("[RECHAT_CELL_CANCEL] Player cell changed {:08X} -> {:08X}; cancelling autonomous dialogue",
+                             previousPlayerCellFormId, currentPlayerCellFormId);
+
+                SpatialAwareness::InvalidateCache();
+                SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(2000));
+                ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
+
+                SpeakManager& speakManager = SpeakManager::getInstance();
+                speakManager.abortPendingUtterances("cell_change");
+                speakManager.cancelRechatChain();
+                speakManager.deleteQueue();
+                if (speakManager.getProcessing()) {
+                    speakManager.abortPlay(true);
+                    AudioManagerController::GetInstance().Stop();
+                }
+                speakManager.stopRechatForNseconds(3);
+
+                SPGResponse::getInstance().clearAllQueues();
+                SPGResponse::getInstance().markUnFinished(false);
+                BackGroundDialogueQueue.clear();
+                AudioFilesBufferManager::clear();
+            }
+        }
+
         // Cell streaming can fire in bursts. Keep broad context scans out of
         // the same window as Papyrus sendCellInfo/equipment detach storms.
         ExtendWorldMaintenanceSuppress(std::chrono::seconds(6));
