@@ -20,8 +20,8 @@ It does not implement a separate responder-selection algorithm.
   automatically respond.
 - **People present**: Loaded actors physically inside the current conversation
   area. This list may include actors that are not activated in CHIM. Inactive
-  actors cannot speak, respond, or initiate managed interaction, but compatible
-  gameplay actions may still target them.
+  actors cannot take AI conversation turns or initiate managed interaction.
+  They remain valid explicit targets for compatible gameplay actions.
 - **Hard eligibility**: Safety checks that direct targeting cannot bypass.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
@@ -95,9 +95,10 @@ Pressing Ctrl+Enter selects persistent Close mode before submitting the
 message. Normal Enter uses the currently selected persistent mode. Prisma sends
 an explicit NPC form ID when the user chooses a target.
 
-`Everyone` is not offered in Whisper or Close mode. Both modes resolve exactly
-one private target. An explicit NPC selection is preferred; Auto may still
-resolve one specific eligible NPC when no explicit selection is active.
+`Everyone` is not offered in Whisper mode. Whisper must resolve exactly one
+private target: an explicit NPC selection is preferred, while Auto may resolve
+one specific eligible NPC when no explicit selection is active. Close mode is
+also private and retains the same single-target restriction.
 
 ## Mode Contract
 
@@ -231,14 +232,15 @@ The server formats present actors as `Name [RefID: XXXXXXXX]`. For gameplay
 actions that accept an actor target, it preserves that identifier instead of
 replacing it with a fuzzy name match.
 
-The native action resolver:
+Target identity uses the live RefID as the canonical identifier whenever one is
+available. The native action resolver:
 
 1. resolves the supplied RefID first;
 2. confirms that the reference is a valid loaded actor in the source actor's
    attached area and inside the action's existing radius;
 3. applies the action's existing dead/disabled checks; and
-4. falls back to the supplied actor name when the RefID is absent or no longer
-   valid.
+4. falls back to the supplied actor name only when the RefID is absent or no
+   longer valid.
 
 Prisma target overrides use the same identity priority: a selected RefID is
 searched across the full candidate set before the display name is considered.
