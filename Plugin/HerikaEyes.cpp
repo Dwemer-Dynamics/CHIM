@@ -3,9 +3,12 @@
 #include <d3d11.h>
 
 #include <chrono>
+#include <cctype>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 
 #include "Globals.h"
@@ -19,6 +22,90 @@
 namespace logger = SKSE::log;
 
 std::string globalHints;
+
+namespace {
+    std::string EncodeVisualQueryValue(const std::string& value) {
+        std::ostringstream encoded;
+        encoded << std::uppercase << std::hex;
+        for (unsigned char character : value) {
+            if (std::isalnum(character) || character == '-' || character == '_' || character == '.' ||
+                character == '~') {
+                encoded << character;
+            } else {
+                encoded << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(character);
+            }
+        }
+        return encoded.str();
+    }
+
+    std::string FormIdText(RE::FormID formId) {
+        return std::format("{:08X}", static_cast<std::uint32_t>(formId));
+    }
+
+    std::string VisualSubjectType(RE::TESObjectREFR* reference) {
+        if (reference->As<RE::Actor>()) {
+            return "actor";
+        }
+
+        auto* baseObject = reference->GetBaseObject();
+        if (baseObject && baseObject->GetFormType() == RE::FormType::Furniture) {
+            return "furniture";
+        }
+
+        return "object";
+    }
+
+    std::string BuildVisualCaptureMetadata() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return "&visual_type=scene&visual_perspective=first_person";
+        }
+
+        const std::string location = GetPlayerLocation();
+        std::string subjectType = "scene";
+        std::string subjectName;
+        std::string subjectKey = "scene:" + location;
+        std::string pluginName;
+        std::string baseId;
+        std::string refId;
+
+        auto* crosshairData = RE::CrosshairPickData::GetSingleton();
+        auto crosshairTarget = crosshairData ? crosshairData->target : RE::ObjectRefHandle{};
+        if (crosshairTarget) {
+            auto reference = crosshairTarget.get();
+            if (reference) {
+                subjectName = reference->GetDisplayFullName();
+                refId = FormIdText(reference->GetFormID());
+                subjectType = VisualSubjectType(reference.get());
+
+                if (auto* baseObject = reference->GetBaseObject()) {
+                    baseId = FormIdText(baseObject->GetLocalFormID());
+                    if (auto* sourceFile = baseObject->GetFile(0)) {
+                        pluginName = sourceFile->GetFilename();
+                    }
+                    subjectKey = subjectType + ":" + pluginName + ":" + baseId;
+                } else {
+                    subjectKey = subjectType + ":" + refId;
+                }
+            }
+        }
+
+        std::string cellId;
+        if (auto* cell = player->GetParentCell()) {
+            cellId = FormIdText(cell->GetFormID());
+        }
+
+        return "&visual_type=" + EncodeVisualQueryValue(subjectType) +
+               "&visual_key=" + EncodeVisualQueryValue(subjectKey) +
+               "&visual_name=" + EncodeVisualQueryValue(subjectName) +
+               "&visual_plugin=" + EncodeVisualQueryValue(pluginName) +
+               "&visual_baseid=" + EncodeVisualQueryValue(baseId) +
+               "&visual_refid=" + EncodeVisualQueryValue(refId) +
+               "&visual_cell=" + EncodeVisualQueryValue(cellId) +
+               "&visual_location=" + EncodeVisualQueryValue(location) +
+               "&visual_perspective=first_person";
+    }
+}
 
 extern int MutexGetScreenShotSendMode();
 extern void MutexSetScreenShotSendMode(int newVal);
@@ -278,6 +365,7 @@ void ProcedureTakeShot() {
             std::string hints;
 
             hints.append("&vc=" + globalHints);
+            hints.append(BuildVisualCaptureMetadata());
 
             // hints.append(ScenarioHints());
 
@@ -341,6 +429,7 @@ void ProcedureSendShot(char const* a_path) {
         std::string hints;
 
         hints.append("&vc=" + globalHints);
+        hints.append(BuildVisualCaptureMetadata());
 
         // hints.append(ScenarioHints());
 

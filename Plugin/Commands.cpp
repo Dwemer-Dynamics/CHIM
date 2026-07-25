@@ -1,12 +1,14 @@
 #include "Commands.h"
 
 #include "Globals.h"
+#include "DynamicDiaryBook.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
 #include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "Papyrus.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "Replacements.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
@@ -271,26 +273,22 @@ void refreshNpcVoiceRecovery(const std::shared_ptr<AIAgent>& agentPtr, const std
     }
 
     auto audiofile = AudioFilesBufferManager::findAudioFile(actor);
-    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-    if (finaudioFileDetected.good()) {
-        auto size = finaudioFileDetected.stream->totalSize;
-        if (size > 0) {
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-            std::string finalData(buffer.get(), size);
+    std::string finalData;
+    std::string readFailure;
+    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+        logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
+        HTTPUploader& uploader = HTTPUploader::getInstance();
+        uploader.UploadVoiceSample(finalData, actorName, audiofile);
 
-            if (!finalData.empty()) {
-                logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                uploader.UploadVoiceSample(finalData, actorName, audiofile);
-
-                if (agentPtr) {
-                    agentPtr->setNeedsVoiceSample(false);
-                    agentPtr->setVoiceSamplePath(audiofile);
-                }
-                return;
-            }
+        if (agentPtr) {
+            agentPtr->setNeedsVoiceSample(false);
+            agentPtr->setVoiceSamplePath(audiofile);
         }
+        return;
+    }
+    if (!audiofile.empty()) {
+        logger::warn("[RefreshNPCVoice] Could not read sample for {} from {}: {}", actorName, audiofile,
+                     readFailure);
     }
 
     if (agentPtr) {
@@ -932,14 +930,31 @@ void parseRoleCommand(std::string rawCommand) {
             int fidType = atoi(splitResult[1].c_str());
             int fidLoc = atoi(splitResult[2].c_str());
 
-            auto oNoteId = RE::TESDataHandler::GetSingleton()->LookupFormID((RE::FormID)0x021d0b, "AIAgent.esp");
-            auto oNote = RE::TESForm::LookupByID(oNoteId);
+            constexpr std::string_view encodedPrefix = "b64:";
+            if (splitResult[4].starts_with(encodedPrefix)) {
+                const auto content = HTTPManager::base64_decode(splitResult[4].substr(encodedPrefix.size()));
+                if (!DynamicDiaryBook::StoreDiaryText(splitResult[0], content)) {
+                    logger::warn("[PHYSICAL_DIARY] No readable text was cached for '{}'", splitResult[0]);
+                }
+            } else {
+                logger::warn("[PHYSICAL_DIARY] Server did not provide encoded text for '{}'", splitResult[0]);
+            }
 
-            SpeakManager::getInstance().downloadFakeNote(splitResult[0]);
+            auto* ownerForm = RE::TESForm::LookupByID(static_cast<RE::FormID>(fidLoc));
+            auto* ownerActor = ownerForm ? ownerForm->As<RE::Actor>() : nullptr;
+            if (DynamicDiaryBook::ActorCarriesDiary(ownerActor, splitResult[0])) {
+                logger::info("[PHYSICAL_DIARY] Refreshed '{}' for {}; physical book already present",
+                             splitResult[0], ownerActor->GetDisplayFullName());
+                responsePop("rolecommand");
+                return;
+            }
+
+            logger::info("[PHYSICAL_DIARY] '{}' is missing from {}; spawning replacement",
+                         splitResult[0], ownerActor ? ownerActor->GetDisplayFullName() : "unresolved NPC");
 
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             auto args = RE::MakeFunctionArguments(std::move(splitResult[0]), std::move(fidType), std::move(fidLoc),
-                                                  std::move(splitResult[3]), std::move(splitResult[4]));
+                                                  std::move(splitResult[3]), std::string{});
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SpawnBook",
                                                                                        args, callback);
         }

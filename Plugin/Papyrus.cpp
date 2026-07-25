@@ -32,6 +32,7 @@
 #include "ThreadPool.h"
 #include "Voicerec.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "MusicManager.h"
 #include "RE/D/DialogueMenu.h"
 #include "RE/G/GFxValue.h"
@@ -697,25 +698,20 @@ static bool sendAllVoice(const std::chrono::steady_clock::time_point& deadline, 
         }
         audioData.assign("Sound\\Voice\\" + filename);
 
-        RE::BSResourceNiBinaryStream finaudioFileDetected(audioData);
-        if (finaudioFileDetected.good()) {
-            auto size = finaudioFileDetected.stream->totalSize;
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-
-            std::string finalData(buffer.get(), size);
-
-            if (size > 0) {
-                if (VoiceUploadBatchTimedOut(deadline)) {
-                    timedOut = true;
-                    break;
-                }
-
-                logger::info("Uploading {} {}", pair.first, audioData);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                std::string uploadResponse = uploader.UploadVoiceSample(finalData, pair.first, audioData);
+        std::string finalData;
+        std::string readFailure;
+        if (ResourceFileReader::Read(audioData, finalData, readFailure)) {
+            if (VoiceUploadBatchTimedOut(deadline)) {
+                timedOut = true;
+                break;
             }
+
+            logger::info("Uploading {} {}", pair.first, audioData);
+            HTTPUploader& uploader = HTTPUploader::getInstance();
+            std::string uploadResponse = uploader.UploadVoiceSample(finalData, pair.first, audioData);
             // At this point. the voice should be cloned
+        } else {
+            logger::warn("[VOICE] Could not read bundled sample {}: {}", audioData, readFailure);
         }
     }
 
@@ -1065,23 +1061,15 @@ static bool sendAllVoiceLongestSamples(const std::chrono::steady_clock::time_poi
             continue;
         }
 
-        RE::BSResourceNiBinaryStream stream(sample.path);
-        if (!stream.good() || !stream.stream) {
-            missedVoiceTypes[voiceTypeKey] = std::format("candidate stream open failed: {}", sample.path);
+        std::string finalData;
+        std::string readFailure;
+        if (!ResourceFileReader::Read(sample.path, finalData, readFailure)) {
+            missedVoiceTypes[voiceTypeKey] = std::format("candidate read failed: {} ({})", sample.path, readFailure);
             continue;
         }
 
-        const auto size = stream.stream->totalSize;
-        if (size <= 0) {
-            missedVoiceTypes[voiceTypeKey] = std::format("candidate stream size is zero: {}", sample.path);
-            continue;
-        }
-
-        auto buffer = std::make_unique<char[]>(size);
-        stream.read(buffer.get(), size);
-
-        std::string finalData(buffer.get(), size);
-        logger::info("[VOICE] Uploading longest sample for {} -> {} ({} bytes)", voiceTypeKey, sample.path, size);
+        logger::info("[VOICE] Uploading longest sample for {} -> {} ({} bytes)", voiceTypeKey, sample.path,
+                     finalData.size());
         uploader.UploadVoiceSample(finalData, voiceTypeKey, sample.path);
         missedVoiceTypes.erase(voiceTypeKey);
         uploadedCount++;
@@ -1361,44 +1349,26 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     /* Try to generate voice*/
 
                     auto audiofile = AudioFilesBufferManager::findAudioFile(agent->getActor());
-                    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-                    if (finaudioFileDetected.good()) {
-                        auto size = finaudioFileDetected.stream->totalSize;
-                        auto buffer = std::make_unique<char[]>(size);
-                        finaudioFileDetected.read(buffer.get(), size);
+                    std::string finalData;
+                    std::string readFailure;
+                    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+                        logger::info("Uploading voice sample {}, size {}", audiofile, finalData.size());
 
-                        std::string finalData(buffer.get(), size);
+                        HTTPUploader& uploader = HTTPUploader::getInstance();
 
-                        if (size > 0) {
-                            logger::info("Uploading voice sample {}, size {}", audiofile, size);
+                        std::string uploadResponse =
+                            uploader.UploadVoiceSample(finalData, agent->getActorName(), audiofile);
+                        logger::info("Sending addnpc signal for {}@{}", targetActor->GetDisplayFullName(), category);
+                        HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
+                                                     GetGameTimeStamp(), targetActor->GetDisplayFullName(), category));
 
-                            HTTPUploader& uploader = HTTPUploader::getInstance();
-
-                            std::string uploadResponse =
-                                uploader.UploadVoiceSample(finalData, agent->getActorName(), audiofile);
-                            logger::info("Sending addnpc signal for {}@{}", targetActor->GetDisplayFullName(),
-                                         category);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(),
-                                                         category));
-                            
-                            // Voice sample uploaded successfully
-                            agent->setNeedsVoiceSample(false);
-                            agent->setVoiceSamplePath(audiofile);
-                        } else {
-                            // File found but empty - mark for deferred upload
-                            logger::warn("[VOICE] Voice file found but empty for {} - will capture from dialogue", 
-                                        targetActor->GetDisplayFullName());
-                            agent->setNeedsVoiceSample(true);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(),
-                                                         category));
-                        }
+                        // Voice sample uploaded successfully
+                        agent->setNeedsVoiceSample(false);
+                        agent->setVoiceSamplePath(audiofile);
                         // At this point. the voice should be cloned
                     } else {
-                        // No audio file found - mark for deferred upload when NPC speaks
-                        logger::warn("[VOICE] No voice sample found for {} - will capture from dialogue events", 
-                                    targetActor->GetDisplayFullName());
+                        logger::warn("[VOICE] Could not read voice sample for {} from {}: {}; will capture from dialogue events",
+                                     targetActor->GetDisplayFullName(), audiofile, readFailure);
                         agent->setNeedsVoiceSample(true);
                         HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), targetActor->GetDisplayFullName(),
