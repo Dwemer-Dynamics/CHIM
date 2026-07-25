@@ -1730,6 +1730,14 @@ R"CHIM(
 
         const std::string previousMode = g_chatboxCurrentMode;
         g_chatboxCurrentMode = normalizedMode;
+        if ((normalizedMode == "WHISPER" || normalizedMode == "CLOSE") &&
+            g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            g_chatboxTargetMode = ChatboxTargetMode::Auto;
+            g_chatboxTargetOverrideFormId = 0;
+            g_chatboxTargetOverrideName.clear();
+            logger::info("[{}] Cleared Everyone target for private {} mode",
+                         sourceTag, normalizedMode);
+        }
         logger::info("[{}] Set mode to: {}", sourceTag, normalizedMode);
 
         if (showNotification) {
@@ -4815,6 +4823,11 @@ R"CHIM(
         return g_chatboxCurrentMode == "CLOSE";
     }
 
+    static bool IsChatboxWhisperMode()
+    {
+        return g_chatboxCurrentMode == "WHISPER";
+    }
+
     static std::shared_ptr<AIAgent> FindChatboxAgentByFormIdOrName(uint32_t formId, const std::string& name)
     {
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -5209,7 +5222,8 @@ R"CHIM(
         const bool narratorOnlyMode = IsChatboxNarratorOnlyMode();
         const bool directorMode = IsChatboxDirectorMode();
         const bool overrideSupported = !narratorOnlyMode && !directorMode && !IsChatboxSpawnMode();
-        const bool everyoneSupported = overrideSupported && !IsChatboxCloseMode();
+        const bool everyoneSupported =
+            overrideSupported && !IsChatboxWhisperMode() && !IsChatboxCloseMode();
         if (!everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
             ClearChatboxTargetOverride();
         }
@@ -5518,7 +5532,8 @@ R"CHIM(
             }
         } else if (cmd == "continue_chat") {
             CheckAndUpdateChatboxControls(true);
-            if (g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            if (g_chatboxTargetMode == ChatboxTargetMode::Everyone &&
+                !IsChatboxWhisperMode() && !IsChatboxCloseMode()) {
                 TriggerContinueConversationForEveryone("Chatbox", false);
             } else {
                 TriggerContinueConversationForNpc(g_lastChatboxTarget, "Chatbox", true);
@@ -5545,7 +5560,7 @@ R"CHIM(
             CheckAndUpdateChatboxControls(true);
         } else if (cmd == "target_override_everyone") {
             if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() ||
-                IsChatboxSpawnMode() || IsChatboxCloseMode()) {
+                IsChatboxSpawnMode() || IsChatboxWhisperMode() || IsChatboxCloseMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
                 return;
@@ -6031,6 +6046,7 @@ R"CHIM(
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(g_chatboxCurrentMode);
         routingContext.everyoneMode =
+            routingContext.mode != PlayerConversationSpeechMode::Whisper &&
             routingContext.mode != PlayerConversationSpeechMode::Close &&
             IsChatboxEveryoneTargetOverrideActive();
         routingContext.narratorMode = IsNarratorChatModeEnabled();

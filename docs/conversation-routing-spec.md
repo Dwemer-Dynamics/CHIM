@@ -19,8 +19,8 @@ It does not implement a separate responder-selection algorithm.
 - **Audience**: Nearby NPCs that receive the exchange as context but do not
   automatically respond.
 - **People present**: Loaded actors physically inside the current conversation
-  area. This list may include actors that are not activated in CHIM and cannot
-  respond or receive AI actions.
+  area. This list may include actors that are not activated in CHIM. Inactive
+  actors cannot respond, but gameplay actions may target them.
 - **Hard eligibility**: Safety checks that direct targeting cannot bypass.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
@@ -79,8 +79,8 @@ Pressing Ctrl+Enter selects persistent Close mode before submitting the
 message. Normal Enter uses the currently selected persistent mode. Prisma sends
 an explicit NPC form ID when the user chooses a target.
 
-`Everyone` is unavailable in Close mode because Close speech has a private
-two-person audience.
+`Everyone` is unavailable in Whisper and Close modes because both modes resolve
+one private target rather than a broadcast audience.
 
 ## Mode Contract
 
@@ -133,7 +133,7 @@ authorize a package, animation, scene, quest, or gameplay-action interruption.
 The resolver evaluates these rules in order:
 
 1. `Everyone` requests select a deterministic transport listener and preserve a
-   broadcast flag. Close mode rejects `Everyone`.
+   broadcast flag. Whisper and Close modes reject `Everyone`.
 2. Explicit Narrator mode selects the Narrator.
 3. An utterance beginning with `Hey Narrator` selects the Narrator.
 4. A valid explicit Prisma form ID selects that NPC.
@@ -196,6 +196,9 @@ current attached area and effective conversation radius. Dead, disabled,
 unloaded, blank-named, different-cell, and different-worldspace actors are
 excluded.
 
+Presence is geometric and does not require line of sight. Each `form_id` is the
+live actor reference FormID (RefID), not the actor base FormID.
+
 By default, only dialogue-capable non-creature races are included. Enabling the
 existing **Add All races** MCM option also permits creatures and non-dialogue
 races. Duplicate display names are collapsed case-insensitively, so multiple
@@ -204,6 +207,25 @@ by distance and form ID and capped at 32 entries.
 
 Whisper, Close, and Narrator requests do not include incidental physical
 presence. This preserves their existing private audience behavior.
+
+## Action Target Resolution
+
+The server formats present actors as `Name [RefID: XXXXXXXX]`. For gameplay
+actions that accept an actor target, it preserves that identifier instead of
+replacing it with a fuzzy name match.
+
+The native action resolver:
+
+1. resolves the supplied RefID first;
+2. confirms that the reference is a valid loaded actor in the source actor's
+   attached area and inside the action's existing radius;
+3. applies the action's existing dead/disabled checks; and
+4. falls back to the supplied actor name when the RefID is absent or no longer
+   valid.
+
+Targeting an inactive present actor does not activate that actor, make it a
+responder, or add it to the managed audience. It only makes the actor available
+to actions whose runtime already accepts actor targets.
 
 ## Server Contract
 
@@ -220,11 +242,12 @@ The plugin sends an audience snapshot containing:
 - listener radius; and
 - audience radius.
 
-HerikaServer treats the managed audience as the maximum response and action
-boundary for the request. Physical presence is used only for prompt scene
-context and event-history membership, allowing an actor activated later to
-recover events witnessed while inactive. It may narrow private delivery but
-must not widen Close or Whisper scope using an independent nearby-NPC scan.
+HerikaServer treats the managed audience as the maximum response boundary for
+the request. Physical presence supplies prompt scene context, event-history
+membership, and actor targets for compatible gameplay actions, allowing an
+actor activated later to recover events witnessed while inactive. It may
+narrow private delivery but must not widen Close or Whisper scope using an
+independent nearby-NPC scan.
 
 Server mode behavior:
 
@@ -233,6 +256,14 @@ Server mode behavior:
 - `CLOSE` uses private close-range wording and participant tags without
   changing global server distance settings.
 - changing mode never restores hard-coded global distance defaults.
+
+Rechat remains a server request and response flow. The plugin owns cancellation,
+transport, and playback lifecycle, but the unified player router does not move
+rechat selection or generation into the client.
+
+Narrator input is intentionally converted to `narrator_inputtext`. That request
+does not append the standard player spatial snapshot, preventing incidental
+actors from leaking into private Narrator context.
 
 ## Diagnostics
 
@@ -259,6 +290,8 @@ privacy, and spatial-audibility reports.
   loaded area.
 - Audience identity is serialized by name because that is the current server
   protocol.
+- Present-actor RefIDs are request-local. Historical event people and persisted
+  audience identity remain name-based for now.
 - The Narrator camera gesture threshold is currently native behavior rather
   than a dedicated user-facing setting.
 
@@ -267,7 +300,8 @@ privacy, and spatial-audibility reports.
 1. Voice, legacy text, and Prisma with equivalent state resolve through the same
    router.
 2. A loaded inactive dialogue-capable NPC appears in physical scene context and
-   event people but cannot respond or receive an AI action.
+   event people, cannot respond, and can be targeted by a compatible gameplay
+   action using RefID with name fallback.
 3. Creatures are excluded unless **Add All races** is enabled, and duplicate
    generic creature names collapse to one entry.
 4. An explicit sleeping or scene-bound NPC can answer without a gameplay
@@ -280,7 +314,7 @@ privacy, and spatial-audibility reports.
 10. Whisper and sneaking reduce both responder and audience scope.
 11. Close mode at 200 units includes only player and responder.
 12. Close mode while sneaking uses a 100-unit boundary.
-13. `Everyone` cannot remain active after switching to Close mode.
+13. `Everyone` cannot remain active after switching to Whisper or Close mode.
 14. Ctrl+Enter selects persistent Close mode in Prisma and legacy text.
 15. Tool selection does not masquerade as a conversation-distance mode.
 16. The server receives `plugin_player_routing_v2` with the matching speech
@@ -292,6 +326,8 @@ privacy, and spatial-audibility reports.
 - `Plugin/PlayerConversationRoutingPolicy.h`: deterministic priority policy.
 - `Plugin/HTTPManager.cpp`: one resolver call and authoritative snapshot
   serialization.
+- `Plugin/Commands.cpp` and `Plugin/ActorTargetIdentifierUtils.h`: RefID-first
+  actor action targeting with name fallback.
 - `Plugin/SpatialAwareness.cpp`: request-local physical audibility.
 - `Plugin/PrismaUIBridge.cpp`: Prisma mode/target transport and target display.
 - `Plugin/Papyrus.cpp`: legacy text routing and mode synchronization.

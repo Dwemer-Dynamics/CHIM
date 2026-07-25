@@ -489,7 +489,9 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.interactionRadius = result.listenerRadiusUnits;
     policyRequest.narratorMode = context.narratorMode;
     policyRequest.everyoneMode =
-        context.everyoneMode && context.mode != PlayerConversationSpeechMode::Close;
+        context.everyoneMode &&
+        context.mode != PlayerConversationSpeechMode::Whisper &&
+        context.mode != PlayerConversationSpeechMode::Close;
     policyRequest.narratorGesture = IsNarratorGesture(player);
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);

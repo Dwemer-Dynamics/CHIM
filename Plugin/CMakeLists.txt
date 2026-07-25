@@ -48,5 +48,10 @@ if(BUILD_TESTING)
     target_include_directories(AIAgentPlayerConversationRoutingPolicyTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_features(AIAgentPlayerConversationRoutingPolicyTests PRIVATE cxx_std_23)
     add_test(NAME AIAgentPlayerConversationRoutingPolicyTests COMMAND AIAgentPlayerConversationRoutingPolicyTests)
+
+    add_executable(AIAgentActorTargetIdentifierTests tests/ActorTargetIdentifierUtilsTests.cpp)
+    target_include_directories(AIAgentActorTargetIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentActorTargetIdentifierTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentActorTargetIdentifierTests COMMAND AIAgentActorTargetIdentifierTests)
 endif()
 
