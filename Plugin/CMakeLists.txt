@@ -53,5 +53,10 @@ if(BUILD_TESTING)
     target_include_directories(AIAgentActorTargetIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_features(AIAgentActorTargetIdentifierTests PRIVATE cxx_std_23)
     add_test(NAME AIAgentActorTargetIdentifierTests COMMAND AIAgentActorTargetIdentifierTests)
+
+    add_executable(AIAgentChatboxModePolicyTests tests/ChatboxModePolicyTests.cpp)
+    target_include_directories(AIAgentChatboxModePolicyTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentChatboxModePolicyTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentChatboxModePolicyTests COMMAND AIAgentChatboxModePolicyTests)
 endif()
 

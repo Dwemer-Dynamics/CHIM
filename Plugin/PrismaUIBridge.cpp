@@ -1,4 +1,5 @@
 #include "PrismaUIBridge.h"
+#include "ChatboxModePolicy.h"
 #include "Conf.h"
 #include "Misc.h"
 #include "ThreadPool.h"
@@ -6049,6 +6050,7 @@ R"CHIM(
         }
 
         logger::info("[PrismaUIBridge] Sending chatbox message: {}", message);
+        const std::string submittedMode = g_chatboxCurrentMode;
 
         // Get player name
         auto player = RE::PlayerCharacter::GetSingleton();
@@ -6071,6 +6073,16 @@ R"CHIM(
         GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
 
         sendMessageReal(message, "", routingContext);
+
+        const std::string_view nextMode = ChatboxModePolicy::ModeAfterSubmission(submittedMode);
+        if (nextMode != submittedMode &&
+            SetCurrentChatboxMode(std::string(nextMode), "Chatbox One-Shot Mode", false)) {
+            UpdateChatboxModeUI(g_chatboxCurrentMode);
+            g_lastChatboxMode = g_chatboxCurrentMode;
+            g_chatboxModeInitialized = true;
+            logger::info("[PrismaUIBridge] Reset one-shot {} mode to STANDARD after submission",
+                         submittedMode);
+        }
     }
 
     static void StopAllDialogueNow(const char* sourceTag) {
