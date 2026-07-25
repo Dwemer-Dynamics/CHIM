@@ -5284,20 +5284,36 @@ R"CHIM(
             selectedDistance = 0.0f;
         } else if (overrideSupported && g_chatboxTargetMode == ChatboxTargetMode::NPC &&
                    (g_chatboxTargetOverrideFormId != 0 || !g_chatboxTargetOverrideName.empty())) {
-            for (const auto& nearbyAgent : nearbyAgents) {
-                const bool formMatch = g_chatboxTargetOverrideFormId != 0 &&
-                    nearbyAgent.formId == g_chatboxTargetOverrideFormId;
-                const bool nameMatch = !g_chatboxTargetOverrideName.empty() &&
-                    nearbyAgent.name == g_chatboxTargetOverrideName;
-                if (formMatch || nameMatch) {
-                    overrideTarget = &nearbyAgent;
-                    if (g_chatboxTargetOverrideFormId == 0 && nearbyAgent.formId != 0) {
-                        g_chatboxTargetOverrideFormId = nearbyAgent.formId;
-                    }
-                    if (g_chatboxTargetOverrideName.empty()) {
-                        g_chatboxTargetOverrideName = nearbyAgent.name;
-                    }
-                    break;
+            if (g_chatboxTargetOverrideFormId != 0) {
+                const auto formMatch = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.formId == g_chatboxTargetOverrideFormId;
+                    });
+                if (formMatch != nearbyAgents.end()) {
+                    overrideTarget = &*formMatch;
+                }
+            }
+
+            if (!overrideTarget && !g_chatboxTargetOverrideName.empty()) {
+                const auto nameMatch = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.name == g_chatboxTargetOverrideName;
+                    });
+                if (nameMatch != nearbyAgents.end()) {
+                    overrideTarget = &*nameMatch;
+                }
+            }
+
+            if (overrideTarget) {
+                if (g_chatboxTargetOverrideFormId == 0 && overrideTarget->formId != 0) {
+                    g_chatboxTargetOverrideFormId = overrideTarget->formId;
+                }
+                if (g_chatboxTargetOverrideName.empty()) {
+                    g_chatboxTargetOverrideName = overrideTarget->name;
                 }
             }
         } else if (!overrideSupported && (g_chatboxTargetMode != ChatboxTargetMode::Auto ||
@@ -5364,11 +5380,13 @@ R"CHIM(
             target["distance"] = nearbyAgent.distanceMeters;
             target["status"] = nearbyAgent.status;
             target["targetable"] = nearbyAgent.targetable;
-            target["active"] = (selectedFormId != 0 && nearbyAgent.formId == selectedFormId) ||
-                (!selectedName.empty() && nearbyAgent.name == selectedName);
+            target["active"] = selectedFormId != 0
+                ? nearbyAgent.formId == selectedFormId
+                : (!selectedName.empty() && nearbyAgent.name == selectedName);
             target["override"] = overrideTarget &&
-                ((overrideTarget->formId != 0 && nearbyAgent.formId == overrideTarget->formId) ||
-                 (!overrideTarget->name.empty() && nearbyAgent.name == overrideTarget->name));
+                (overrideTarget->formId != 0
+                    ? nearbyAgent.formId == overrideTarget->formId
+                    : (!overrideTarget->name.empty() && nearbyAgent.name == overrideTarget->name));
             target["narrator"] = nearbyAgent.isNarrator;
             targetItems.push_back(target);
         }

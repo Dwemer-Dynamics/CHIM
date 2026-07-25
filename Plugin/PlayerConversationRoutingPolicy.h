@@ -193,6 +193,49 @@ namespace PlayerConversationRoutingPolicy
             return result;
         }
 
+        if (request.explicitTargetFormId != 0 || !request.explicitTargetName.empty()) {
+            if (request.explicitTargetFormId != 0) {
+                for (std::size_t index = 0; index < candidates.size(); ++index) {
+                    const auto& candidate = candidates[index];
+                    if (candidate.formId == request.explicitTargetFormId &&
+                        candidate.hardEligible &&
+                        WithinRadius(candidate.distance, request.directAddressRadius)) {
+                        result.kind = SelectionKind::Candidate;
+                        result.candidateIndex = index;
+                        result.reason = "explicit_ui_target";
+                        return result;
+                    }
+                }
+            }
+
+            const std::string normalizedExplicitName = Normalize(request.explicitTargetName);
+            std::size_t fallbackMatch = (std::numeric_limits<std::size_t>::max)();
+            if (!normalizedExplicitName.empty()) {
+                for (std::size_t index = 0; index < candidates.size(); ++index) {
+                    const auto& candidate = candidates[index];
+                    if (!candidate.hardEligible ||
+                        !WithinRadius(candidate.distance, request.directAddressRadius) ||
+                        Normalize(candidate.name) != normalizedExplicitName) {
+                        continue;
+                    }
+
+                    if (fallbackMatch == (std::numeric_limits<std::size_t>::max)() ||
+                        candidate.distance < candidates[fallbackMatch].distance ||
+                        (candidate.distance == candidates[fallbackMatch].distance &&
+                         candidate.formId < candidates[fallbackMatch].formId)) {
+                        fallbackMatch = index;
+                    }
+                }
+            }
+
+            if (fallbackMatch != (std::numeric_limits<std::size_t>::max)()) {
+                result.kind = SelectionKind::Candidate;
+                result.candidateIndex = fallbackMatch;
+                result.reason = "explicit_ui_target";
+                return result;
+            }
+        }
+
         std::size_t namedMatch = (std::numeric_limits<std::size_t>::max)();
         std::size_t namedMatchLength = 0;
         if (beginsWithHey && !addressedText.empty()) {
@@ -223,25 +266,6 @@ namespace PlayerConversationRoutingPolicy
             result.candidateIndex = namedMatch;
             result.reason = "explicit_npc_name";
             return result;
-        }
-
-        if (request.explicitTargetFormId != 0 || !request.explicitTargetName.empty()) {
-            const std::string normalizedExplicitName = Normalize(request.explicitTargetName);
-            for (std::size_t index = 0; index < candidates.size(); ++index) {
-                const auto& candidate = candidates[index];
-                const bool formMatch =
-                    request.explicitTargetFormId != 0 && candidate.formId == request.explicitTargetFormId;
-                const bool nameMatch =
-                    request.explicitTargetFormId == 0 && !normalizedExplicitName.empty() &&
-                    Normalize(candidate.name) == normalizedExplicitName;
-                if ((formMatch || nameMatch) && candidate.hardEligible &&
-                    WithinRadius(candidate.distance, request.directAddressRadius)) {
-                    result.kind = SelectionKind::Candidate;
-                    result.candidateIndex = index;
-                    result.reason = "explicit_ui_target";
-                    return result;
-                }
-            }
         }
 
         for (std::size_t index = 0; index < candidates.size(); ++index) {

@@ -712,9 +712,19 @@
             syncTargetRows(specs);
             targetsListElement.scrollTop = previousScrollTop;
         }
-        const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
-            return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
-        });
+        let activeTarget = null;
+        if (currentTargetOverrideMode !== 'everyone') {
+            if (currentTargetFormId) {
+                activeTarget = targets.find(function(target) {
+                    return Number(target.form_id || 0) === currentTargetFormId;
+                }) || null;
+            }
+            if (!activeTarget && currentTargetName) {
+                activeTarget = targets.find(function(target) {
+                    return (target.name || '') === currentTargetName;
+                }) || null;
+            }
+        }
         currentTargetIsNarrator = !!(activeTarget && activeTarget.narrator);
         window.updateChatboxTarget(currentTargetName, Number(activeTarget ? activeTarget.distance || 0 : 0));
         refreshProfileLlmMode();

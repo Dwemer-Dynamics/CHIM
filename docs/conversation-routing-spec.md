@@ -20,8 +20,8 @@ It does not implement a separate responder-selection algorithm.
   automatically respond.
 - **People present**: Loaded actors physically inside the current conversation
   area. This list may include actors that are not activated in CHIM. Inactive
-  actors cannot respond or independently participate in the managed
-  conversation, but compatible gameplay actions may target them.
+  actors cannot speak, respond, or initiate managed interaction, but compatible
+  gameplay actions may still target them.
 - **Hard eligibility**: Safety checks that direct targeting cannot bypass.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
@@ -239,6 +239,11 @@ The native action resolver:
 3. applies the action's existing dead/disabled checks; and
 4. falls back to the supplied actor name when the RefID is absent or no longer
    valid.
+
+Prisma target overrides use the same identity priority: a selected RefID is
+searched across the full candidate set before the display name is considered.
+This prevents the wrong actor from winning when two present actors share a
+name.
 
 Targeting an inactive present actor does not activate that actor, make it a
 responder, or add it to the managed audience. It only makes the actor available

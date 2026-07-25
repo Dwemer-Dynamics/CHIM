@@ -107,6 +107,23 @@ int main()
               result.reason == "explicit_ui_target",
           "Explicit UI target was not selected");
 
+    explicitRequest.explicitTargetName = "Lucan Valerius";
+    result = PlayerConversationRoutingPolicy::Select(explicitRequest, candidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1,
+          "Explicit RefID did not take priority over its fallback name");
+
+    explicitRequest.explicitTargetFormId = 0x99;
+    result = PlayerConversationRoutingPolicy::Select(explicitRequest, candidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 3,
+          "Missing explicit RefID did not fall back to the target name");
+
+    explicitRequest.explicitTargetFormId = 0x20;
+    explicitRequest.explicitTargetName = "Lydia";
+    explicitRequest.utterance = "Hey Lucan Valerius";
+    result = PlayerConversationRoutingPolicy::Select(explicitRequest, candidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1,
+          "Explicit RefID did not take priority over an utterance name");
+
     result = Select("Hey Narrator, explain this", candidates);
     Check(result.kind == SelectionKind::Narrator && result.reason == "explicit_narrator_name",
           "Explicit Narrator address was not selected");
@@ -174,6 +191,21 @@ int main()
     };
     result = Select("Hey Erik", duplicates);
     Check(result.candidateIndex == 1, "Closest duplicate full name was not selected deterministically");
+
+    Request duplicateExplicitRequest{};
+    duplicateExplicitRequest.utterance = "Normal speech";
+    duplicateExplicitRequest.explicitTargetFormId = 0x50;
+    duplicateExplicitRequest.explicitTargetName = "Erik";
+    duplicateExplicitRequest.directAddressRadius = 1000.0f;
+    duplicateExplicitRequest.interactionRadius = 560.0f;
+    result = PlayerConversationRoutingPolicy::Select(duplicateExplicitRequest, duplicates);
+    Check(result.candidateIndex == 0,
+          "Explicit RefID did not beat a closer actor with the same name");
+
+    duplicateExplicitRequest.explicitTargetFormId = 0x99;
+    result = PlayerConversationRoutingPolicy::Select(duplicateExplicitRequest, duplicates);
+    Check(result.candidateIndex == 1,
+          "Stale explicit RefID did not use deterministic name fallback");
 
     std::vector<Candidate> distantNamedTarget{
         MakeCandidate(0x80, "Lydia", 1500.0f)
