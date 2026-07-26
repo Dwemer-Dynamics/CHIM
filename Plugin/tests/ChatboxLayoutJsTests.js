@@ -7,32 +7,45 @@ const viewRoot = path.resolve(__dirname, '../../AIAgent/PrismaUI/views/CHIM');
 const html = fs.readFileSync(path.join(viewRoot, 'chatbox.html'), 'utf8');
 const css = fs.readFileSync(path.join(viewRoot, 'chatbox.css'), 'utf8');
 const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
+const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
 
-test('keeps recent context outside the independently positioned chat modal', () => {
+test('keeps a standalone recent-context viewer available outside the chat modal', () => {
+    const viewerStart = html.indexOf('<div id="chim-chatbox-viewer">');
     const contextStart = html.indexOf('<section id="chim-chatbox"');
     const contextEnd = html.indexOf('</section>', contextStart);
     const modalStart = html.indexOf('<div id="focus-chatbox-modal"');
 
+    assert.notEqual(viewerStart, -1);
     assert.notEqual(contextStart, -1);
     assert.notEqual(contextEnd, -1);
     assert.notEqual(modalStart, -1);
+    assert.ok(viewerStart < contextStart);
     assert.ok(contextEnd < modalStart);
-    assert.match(html, /data-chim-menu-scale-target="#chim-chatbox, \.focus-chatbox-shell"/);
+    assert.match(html, /data-chim-menu-scale-target="#chim-chatbox-viewer, \.focus-chatbox-shell"/);
+    assert.match(html, /placeholder="Enter message here, press Enter to send"/);
 });
 
-test('anchors recent context at bottom-left without layout-manager overrides', () => {
-    const rootRule = css.match(/#chim-chatbox\s*\{([\s\S]*?)\}/);
+test('moves recent context between the bottom-left viewer and focused chat shell', () => {
+    const viewerRule = css.match(/#chim-chatbox-viewer\s*\{([\s\S]*?)\}/);
 
-    assert.ok(rootRule);
-    assert.match(rootRule[1], /position:\s*fixed/);
-    assert.match(rootRule[1], /bottom:\s*20px/);
-    assert.match(rootRule[1], /left:\s*20px/);
-    assert.doesNotMatch(script, /chimLayout\.apply\(chatboxRoot/);
+    assert.ok(viewerRule);
+    assert.match(viewerRule[1], /position:\s*fixed/);
+    assert.match(viewerRule[1], /bottom:\s*20px/);
+    assert.match(viewerRule[1], /left:\s*20px/);
+    assert.match(css, /\.focus-chatbox-shell > #chim-chatbox\s*\{[\s\S]*?position:\s*absolute/);
+    assert.match(script, /function setContextPlacement\(focused\)/);
+    assert.match(script, /destination\.appendChild\(contextPanelElement\)/);
+    assert.match(script, /window\.closeFocusChatbox[\s\S]*?setContextPlacement\(false\)/);
 });
 
 test('retains independent top, center, and bottom chat modal anchors', () => {
     assert.match(css, /\.focus-chatbox-modal\.focus-position-center\s*\{[\s\S]*?align-items:\s*center/);
     assert.match(css, /\.focus-chatbox-modal\.focus-position-top\s*\{[\s\S]*?align-items:\s*flex-start/);
     assert.match(css, /\.focus-chatbox-modal\.focus-position-bottom\s*\{[\s\S]*?align-items:\s*flex-end/);
-    assert.doesNotMatch(css, /\.focus-chatbox-modal\.focus-position-bottom \.focus-chatbox-shell/);
+    assert.match(css, /\.focus-chatbox-modal\.focus-position-bottom \.focus-chatbox-shell > #chim-chatbox\s*\{[\s\S]*?bottom:\s*calc\(100% \+ 10px\)/);
+});
+
+test('prefetches recent context while the warm-loaded chatbox view is hidden', () => {
+    assert.match(bridge, /static void FetchAndUpdateChatboxStory\(bool replaceExisting\)[\s\S]*?\(!replaceExisting && g_chatboxState\.load\(\) == 0\)/);
+    assert.match(bridge, /static void OnChatboxDomReady[\s\S]*?FetchAndUpdateChatboxStory\(true\);/);
 });

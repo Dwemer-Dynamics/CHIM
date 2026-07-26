@@ -6,18 +6,20 @@
     <title>CHIM Chatbox</title>
     <link rel="stylesheet" href="chatbox.css">
 </head>
-<body data-chim-menu-scale-target="#chim-chatbox, .focus-chatbox-shell">
-    <section id="chim-chatbox" class="focus-chatbox-context" aria-label="Recent context">
-        <div class="focus-chatbox-context-header">
-            <span>Recent Context</span>
-            <button id="focus-chatbox-context-toggle" class="focus-chatbox-context-toggle" type="button" aria-expanded="true" title="Minimize recent context">&minus;</button>
-        </div>
-        <div class="focus-chatbox-context-body">
-            <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
-            <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent context...</div>
-            <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New context</button>
-        </div>
-    </section>
+<body data-chim-menu-scale-target="#chim-chatbox-viewer, .focus-chatbox-shell">
+    <div id="chim-chatbox-viewer">
+        <section id="chim-chatbox" class="focus-chatbox-context" aria-label="Recent context">
+            <div class="focus-chatbox-context-header">
+                <span>Recent Context</span>
+                <button id="focus-chatbox-context-toggle" class="focus-chatbox-context-toggle" type="button" aria-expanded="true" title="Minimize recent context">&minus;</button>
+            </div>
+            <div class="focus-chatbox-context-body">
+                <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
+                <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent context...</div>
+                <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New context</button>
+            </div>
+        </section>
+    </div>
 
     <div id="focus-chatbox-modal" class="focus-chatbox-modal hidden focus-position-center" aria-hidden="true">
         <div class="focus-chatbox-backdrop"></div>
@@ -174,7 +176,7 @@
                             id="focus-chatbox-input"
                             class="focus-chatbox-input"
                             rows="2"
-                            placeholder="Type your message here. Enter sends, Ctrl+Enter selects Close, Shift+Enter adds a new line."
+                            placeholder="Enter message here, press Enter to send"
                             spellcheck="false"></textarea>
                         <div class="focus-chatbox-actions">
                             <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">

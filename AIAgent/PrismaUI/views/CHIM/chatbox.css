@@ -17,7 +17,7 @@ body {
 }
 
 /* Main Container */
-#chim-chatbox {
+#chim-chatbox-viewer {
     position: fixed;
     bottom: 20px;
     left: 20px;
@@ -27,15 +27,13 @@ body {
     animation: slideIn 0.3s ease;
 }
 
-#chim-chatbox.focus-only-hidden {
-    display: flex;
+#chim-chatbox-viewer.context-attached {
+    display: none;
 }
 
-/* Corner placement - driven by layout.js */
-#chim-chatbox.chim-corner-bottom-left  { bottom: 20px !important; left: 20px !important;  top: auto !important;  right: auto !important; }
-#chim-chatbox.chim-corner-bottom-right { bottom: 20px !important; right: 20px !important; top: auto !important;  left: auto !important;  }
-#chim-chatbox.chim-corner-top-left     { top: 20px !important;    left: 20px !important;  bottom: auto !important; right: auto !important; }
-#chim-chatbox.chim-corner-top-right    { top: 20px !important;    right: 20px !important; bottom: auto !important; left: auto !important;  }
+#chim-chatbox-viewer > #chim-chatbox {
+    height: 100%;
+}
 
 @keyframes slideIn {
     from {
@@ -1258,8 +1256,18 @@ body {
     overflow: hidden;
 }
 
-#chim-chatbox.focus-chatbox-context {
-    position: fixed;
+.focus-chatbox-shell > #chim-chatbox {
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 0;
+    width: 100%;
+    height: min(290px, 30vh);
+    z-index: 2;
+}
+
+.focus-chatbox-modal.focus-position-bottom .focus-chatbox-shell > #chim-chatbox {
+    top: auto;
+    bottom: calc(100% + 10px);
 }
 
 #chim-chatbox.focus-chatbox-context.collapsed {
@@ -1571,8 +1579,12 @@ body {
         max-height: 240px;
     }
 
-    #chim-chatbox.focus-chatbox-context {
+    #chim-chatbox-viewer {
         width: min(520px, calc(100vw - 40px));
+        height: min(240px, 28vh);
+    }
+
+    .focus-chatbox-shell > #chim-chatbox {
         height: min(240px, 28vh);
     }
 

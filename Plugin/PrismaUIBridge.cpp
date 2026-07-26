@@ -5202,7 +5202,7 @@ R"CHIM(
 
     static void FetchAndUpdateChatboxStory(bool replaceExisting) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
-            g_chatboxState.load() == 0) {
+            (!replaceExisting && g_chatboxState.load() == 0)) {
             return;
         }
 
@@ -5259,7 +5259,7 @@ R"CHIM(
                         g_chatboxStoryLastRowId.store(maxRowId);
 
                         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
-                            g_chatboxState.load() == 0) {
+                            (!replaceExisting && g_chatboxState.load() == 0)) {
                             break;
                         }
 
@@ -5593,6 +5593,7 @@ R"CHIM(
         PushSystemLogEntry("info", welcomeMsg, std::string(timeDateString));
         UpdateChatboxModeUI(g_chatboxCurrentMode);
         SyncChatboxStatusFromServerAsync();
+        FetchAndUpdateChatboxStory(true);
         logger::info("[PrismaUIBridge] Pushed welcome message to chatbox");
     }
 

@@ -9,9 +9,11 @@
 
     // DOM Elements
     const chatboxRoot = document.getElementById('chim-chatbox');
+    const chatboxViewerElement = document.getElementById('chim-chatbox-viewer');
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabPanes = document.querySelectorAll('.tab-pane');
     const focusModal = document.getElementById('focus-chatbox-modal');
+    const focusShellElement = document.querySelector('.focus-chatbox-shell');
     const focusInput = document.getElementById('focus-chatbox-input');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
@@ -249,6 +251,16 @@
         } catch (_err) {
             // Keep the current session state when storage is unavailable.
         }
+    }
+
+    function setContextPlacement(focused) {
+        if (!contextPanelElement || !chatboxViewerElement || !focusShellElement) return;
+
+        const destination = focused ? focusShellElement : chatboxViewerElement;
+        if (contextPanelElement.parentElement !== destination) {
+            destination.appendChild(contextPanelElement);
+        }
+        chatboxViewerElement.classList.toggle('context-attached', focused);
     }
 
     window.updateStoryLog = function(jsonString, replaceExisting) {
@@ -614,7 +626,7 @@
     window.prepareQuickChatFocus = function() {
         quickChatMode = true;
         currentTab = 'chat';
-        setChatboxViewerVisible(false);
+        setContextPlacement(true);
         if (focusModal) {
             focusModal.classList.add('hidden');
             focusModal.setAttribute('aria-hidden', 'true');
@@ -632,6 +644,7 @@
     window.openFocusChatbox = function() {
         if (!focusModal || !focusInput) return;
         applyFocusPosition(loadFocusPosition());
+        setContextPlacement(true);
         focusModal.classList.remove('hidden');
         focusModal.setAttribute('aria-hidden', 'false');
         if (storyLogElement && storyLogElement.children.length === 0) {
@@ -655,6 +668,7 @@
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
         focusInput.blur();
+        setContextPlacement(false);
         if (shouldNotifyBridge && window.chimChatboxCommand) {
             if (quickChatMode) {
                 window.chimChatboxCommand('close');
@@ -770,7 +784,7 @@
         isChatFocused = true;
         quickChatMode = !!quickChat;
         refreshProfileLlmMode(true);
-        setChatboxViewerVisible(!quickChatMode);
+        setContextPlacement(true);
         window.openFocusChatbox();
     };
 
@@ -781,8 +795,10 @@
         const wasQuickChatMode = quickChatMode;
         isChatFocused = false;
         quickChatMode = false;
-        setChatboxViewerVisible(!wasQuickChatMode);
         window.closeFocusChatbox(false);
+        if (!wasQuickChatMode) {
+            setContextPlacement(false);
+        }
     };
 
     window.updateChatboxTarget = function(name, distance) {
@@ -1363,11 +1379,6 @@
         }
     }
 
-    function setChatboxViewerVisible() {
-        if (!chatboxRoot) return;
-        chatboxRoot.classList.remove('focus-only-hidden');
-    }
-
     function getCurrentTime() {
         return new Date().toLocaleTimeString('en-US', { hour12: false });
     }
@@ -1573,6 +1584,7 @@
     renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
     applyContextCollapsed(loadContextCollapsed());
+    setContextPlacement(false);
 
     console.log('[Chatbox] Initialized - display mode + focus modal input');
 })();
