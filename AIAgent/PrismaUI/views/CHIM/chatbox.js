@@ -271,6 +271,11 @@
             destination.appendChild(contextPanelElement);
         }
         chatboxViewerElement.classList.toggle('context-attached', focused);
+        if (focused) {
+            applyContextCollapsed(loadContextCollapsed());
+        } else {
+            contextPanelElement.classList.remove('collapsed');
+        }
     }
 
     window.updateStoryLog = function(jsonString, replaceExisting) {
@@ -970,8 +975,8 @@
             modelOptionButtons,
             modelDisabled,
             currentProfileLlmMode === 'random'
-                ? 'Disable Random LLM on the target profile to change the global model.'
-                : 'Switch global model'
+                ? 'Disable Random LLM on the target profile to change the LLM model.'
+                : 'Switch LLM model'
         );
         if (modelDisabled) closeTileMenu(modelMenuToggleButton, modelOptionsElement);
         if (globalModelControlElement) {

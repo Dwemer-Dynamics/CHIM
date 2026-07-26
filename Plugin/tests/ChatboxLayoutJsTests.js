@@ -67,9 +67,17 @@ test('labels the standalone panel as Context Window in the Prisma menu', () => {
 test('focuses a master-menu Context Window without entering text chat', () => {
     assert.match(bridge, /static bool FocusContextWindowPanel\(\)/);
     assert.match(bridge, /cmd == "chatbox"[\s\S]*?FocusContextWindowPanel\(\)/);
+    assert.match(bridge, /FocusContextWindowPanel\(\)[\s\S]*?g_prismaUI->Focus\(g_chatboxView, false, true\)/);
     assert.match(bridge, /g_chatboxContextFocusActive/);
     assert.match(bridge, /if \(success\)[\s\S]*?g_chatboxContextFocusActive\.store\(false\)/);
     assert.match(script, /window\.onContextWindowFocused = function\(\)/);
     assert.match(script, /e\.key !== 'Escape' \|\| !isContextWindowFocused[\s\S]*?window\.closeChat\(\)/);
     assert.match(bridge, /void ShowChatboxPanel\(\)[\s\S]*?No auto-focus - player retains control/);
+});
+
+test('keeps standalone context expanded and reserves collapse for focused chat', () => {
+    assert.match(css, /#chim-chatbox-viewer > #chim-chatbox \.focus-chatbox-context-toggle\s*\{[\s\S]*?display:\s*none/);
+    assert.match(script, /function setContextPlacement\(focused\)[\s\S]*?if \(focused\)[\s\S]*?applyContextCollapsed\(loadContextCollapsed\(\)\)[\s\S]*?contextPanelElement\.classList\.remove\('collapsed'\)/);
+    assert.match(html, /<div class="chatbox-control-label">LLM Model<\/div>/);
+    assert.doesNotMatch(html, /<div class="chatbox-control-label">Global Model<\/div>/);
 });

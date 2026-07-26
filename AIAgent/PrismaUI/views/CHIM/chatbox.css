@@ -35,6 +35,10 @@ body {
     height: 100%;
 }
 
+#chim-chatbox-viewer > #chim-chatbox .focus-chatbox-context-toggle {
+    display: none;
+}
+
 @keyframes slideIn {
     from {
         opacity: 0;

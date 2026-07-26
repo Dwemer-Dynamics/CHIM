@@ -5851,7 +5851,9 @@ R"CHIM(
 
         bool success = false;
         for (int attempt = 0; attempt < 4; ++attempt) {
-            success = g_prismaUI->Focus(g_chatboxView, true, false);
+            // Keep gameplay running and avoid the FocusMenu input lock while still
+            // routing wheel/key events to the standalone context view.
+            success = g_prismaUI->Focus(g_chatboxView, false, true);
             if (success) {
                 break;
             }
