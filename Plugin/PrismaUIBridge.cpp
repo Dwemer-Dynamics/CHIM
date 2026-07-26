@@ -21,6 +21,7 @@
 #include <limits>
 #include <list>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 #include <thread>
 #include <unordered_map>
@@ -37,13 +38,16 @@ namespace PrismaUIBridge {
     static PrismaView g_historyView = 0;
     static PrismaView g_overlayView = 0;
     static PrismaView g_diariesView = 0;
+    static PrismaView g_backgroundLifeView = 0;
     static std::atomic<bool> g_enabled{false};
     static std::atomic<bool> g_panelCreated{false};
     static std::atomic<bool> g_overlayCreated{false};
     static std::atomic<bool> g_diariesCreated{false};
+    static std::atomic<bool> g_backgroundLifeCreated{false};
     static std::atomic<bool> g_domReady{false};
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
+    static std::atomic<bool> g_backgroundLifeDomReady{false};
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
     static std::mutex g_mutex;
@@ -248,6 +252,8 @@ namespace PrismaUIBridge {
     static void OnOverlayCommand(const char* argument);
     static void OnDiariesDomReady(PrismaView view);
     static void OnDiariesCommand(const char* argument);
+    static void OnBackgroundLifeDomReady(PrismaView view);
+    static void OnBackgroundLifeCommand(const char* argument);
     static void OnSettingsMenuDomReady(PrismaView view);
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
@@ -266,7 +272,7 @@ namespace PrismaUIBridge {
     void HideDebuggerPanel();
     static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
-    static std::string FetchDiariesFromServer(const std::string& url);
+    static std::string FetchJsonFromServer(const std::string& url);
     static void UpdateCrosshairTargetUI(const std::string& name, float distance, const std::string& status = "",
                                         bool targetable = true);
     static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId);
@@ -1120,6 +1126,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing history panel (view ID: {})", g_historyView);
         g_prismaUI->Show(g_historyView);
         
@@ -2364,6 +2373,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing diaries panel");
         
         // Unfocus other views first to avoid focus conflicts
@@ -2449,7 +2461,7 @@ R"CHIM(
                     logger::info("[PrismaUIBridge] Fetching diaries data: mode={}, url={}", mode, url);
 
                     // Fetch from server using HTTP helper
-                    std::string response = FetchDiariesFromServer(url);
+                    std::string response = FetchJsonFromServer(url);
 
                     if (response.empty()) {
                         logger::warn("[PrismaUIBridge] Empty diaries response from server for mode: {}", mode);
@@ -2530,7 +2542,7 @@ R"CHIM(
         );
     }
 
-    static std::string FetchDiariesFromServer(const std::string& url) {
+    static std::string FetchJsonFromServer(const std::string& url) {
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -2617,6 +2629,216 @@ R"CHIM(
         }
 
         return response;
+    }
+
+    // ===== Background Life Functions =====
+
+    void CreateBackgroundLifePanel() {
+        if (!g_prismaUI) {
+            logger::error("[PrismaUIBridge] Cannot create Background Life panel - Prisma UI not initialized");
+            return;
+        }
+
+        if (g_backgroundLifeCreated.load() &&
+            g_backgroundLifeView != 0 &&
+            g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating Background Life panel from CHIM/background_life.html");
+        g_backgroundLifeView = g_prismaUI->CreateView(
+            "CHIM/background_life.html",
+            OnBackgroundLifeDomReady);
+        if (g_backgroundLifeView == 0) {
+            g_lastError = "Failed to create Background Life view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_backgroundLifeView, 112);
+        g_prismaUI->RegisterJSListener(
+            g_backgroundLifeView,
+            "chimBackgroundLifeCommand",
+            OnBackgroundLifeCommand);
+        g_backgroundLifeCreated.store(true);
+    }
+
+    static void OnBackgroundLifeDomReady(PrismaView) {
+        g_backgroundLifeDomReady.store(true);
+    }
+
+    static bool IsSafeBackgroundLifeQuery(const std::string& query) {
+        if (query.empty() || query.size() > 1024) {
+            return false;
+        }
+
+        return std::all_of(query.begin(), query.end(), [](unsigned char value) {
+            return std::isalnum(value) ||
+                   value == '%' || value == '&' || value == '=' || value == '+' ||
+                   value == '.' || value == '_' || value == '-';
+        });
+    }
+
+    static void OnBackgroundLifeCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        const std::string command(argument);
+        if (command == "close") {
+            HideBackgroundLifePanel();
+            return;
+        }
+        if (command == "dom_ready") {
+            g_backgroundLifeDomReady.store(true);
+            FetchBackgroundLifeData("page=1&limit=50");
+            return;
+        }
+
+        constexpr std::string_view prefix = "fetch|";
+        if (command.starts_with(prefix)) {
+            const std::string query = command.substr(prefix.size());
+            if (!IsSafeBackgroundLifeQuery(query)) {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life query");
+                return;
+            }
+            FetchBackgroundLifeData(query);
+        }
+    }
+
+    void ToggleBackgroundLifePanel() {
+        if (!g_prismaUI) {
+            return;
+        }
+
+        const bool needsCreation =
+            !g_backgroundLifeCreated.load() ||
+            g_backgroundLifeView == 0 ||
+            !g_prismaUI->IsValid(g_backgroundLifeView);
+        if (needsCreation) {
+            CreateBackgroundLifePanel();
+        }
+        if (!g_backgroundLifeCreated.load()) {
+            return;
+        }
+        if (needsCreation) {
+            ShowBackgroundLifePanel();
+            return;
+        }
+
+        if (g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            ShowBackgroundLifePanel();
+        } else {
+            HideBackgroundLifePanel();
+        }
+    }
+
+    void ShowBackgroundLifePanel() {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load()) {
+            CreateBackgroundLifePanel();
+        }
+        if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        if (g_panelCreated.load() && !g_prismaUI->IsHidden(g_historyView)) {
+            HideHistoryPanel();
+        }
+        if (g_overlayCreated.load() && !g_prismaUI->IsHidden(g_overlayView)) {
+            HideOverlayPanel();
+        }
+        if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
+            HideDiariesPanel();
+        }
+        if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
+            HideBrowserPanel();
+        }
+        if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
+            HideQuestManagerPanel();
+        }
+
+        g_prismaUI->Show(g_backgroundLifeView);
+        const bool focused = g_prismaUI->Focus(g_backgroundLifeView, true, false);
+        logger::info(
+            "[PrismaUIBridge] Background Life panel focus: {}",
+            focused ? "SUCCESS" : "FAILED");
+
+        if (g_backgroundLifeDomReady.load()) {
+            FetchBackgroundLifeData("page=1&limit=50");
+        }
+    }
+
+    void HideBackgroundLifePanel() {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        if (g_prismaUI->HasFocus(g_backgroundLifeView)) {
+            g_prismaUI->Unfocus(g_backgroundLifeView);
+        }
+        g_prismaUI->Hide(g_backgroundLifeView);
+    }
+
+    bool IsBackgroundLifePanelVisible() {
+        return g_prismaUI &&
+               g_backgroundLifeCreated.load() &&
+               g_backgroundLifeView != 0 &&
+               g_prismaUI->IsValid(g_backgroundLifeView) &&
+               !g_prismaUI->IsHidden(g_backgroundLifeView);
+    }
+
+    void FetchBackgroundLifeData(const std::string& queryString) {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load()) {
+            return;
+        }
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIBackgroundLifeFetch",
+            [queryString]() {
+                try {
+                    const std::string url =
+                        "/HerikaServer/ui/api/background_life_history.php?" + queryString;
+                    const std::string response = FetchJsonFromServer(url);
+                    if (response.empty()) {
+                        throw std::runtime_error("No data received from server");
+                    }
+
+                    const json payload = json::parse(response, nullptr, false);
+                    if (payload.is_discarded()) {
+                        throw std::runtime_error("Server returned invalid JSON");
+                    }
+                    if (!payload.value("success", false)) {
+                        throw std::runtime_error(payload.value(
+                            "error",
+                            "Unable to load Background Life history"));
+                    }
+
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.updateBackgroundLifeHistory('" +
+                            EscapeForJS(response) +
+                            "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                } catch (const std::exception& error) {
+                    logger::error(
+                        "[PrismaUIBridge] Background Life fetch failed: {}",
+                        error.what());
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.showBackgroundLifeError('" +
+                            EscapeForJS(error.what()) +
+                            "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                }
+            });
     }
 
     // ===== CHIM Browser Functions =====
@@ -2807,6 +3029,14 @@ R"CHIM(
             }
             if (!g_prismaUI->IsHidden(g_diariesView)) {
                 g_prismaUI->Hide(g_diariesView);
+            }
+        }
+        if (g_backgroundLifeCreated.load()) {
+            if (g_prismaUI->HasFocus(g_backgroundLifeView)) {
+                g_prismaUI->Unfocus(g_backgroundLifeView);
+            }
+            if (!g_prismaUI->IsHidden(g_backgroundLifeView)) {
+                g_prismaUI->Hide(g_backgroundLifeView);
             }
         }
         if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
@@ -3009,6 +3239,9 @@ R"CHIM(
         }
         if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
             HideDiariesPanel();
+        }
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
         }
         if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
             HideBrowserPanel();
@@ -3822,6 +4055,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing debugger panel");
         g_prismaUI->Show(g_debuggerView);
         g_prismaUI->Focus(g_debuggerView, false, false);
@@ -4195,6 +4431,13 @@ R"CHIM(
                 g_prismaUI->Destroy(g_diariesView);
                 g_diariesView = 0;
                 g_diariesCreated.store(false);
+            }
+
+            if (g_backgroundLifeCreated.load()) {
+                g_prismaUI->Destroy(g_backgroundLifeView);
+                g_backgroundLifeView = 0;
+                g_backgroundLifeCreated.store(false);
+                g_backgroundLifeDomReady.store(false);
             }
             
             if (g_browserCreated.load()) {
@@ -4638,6 +4881,7 @@ R"CHIM(
         UnfocusPrismaViewIfFocused(g_historyView, g_panelCreated.load());
         UnfocusPrismaViewIfFocused(g_overlayView, g_overlayCreated.load());
         UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
+        UnfocusPrismaViewIfFocused(g_backgroundLifeView, g_backgroundLifeCreated.load());
         UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
         UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
@@ -5807,6 +6051,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing chatbox panel (no auto-focus)");
         g_chatboxQuickFocusActive.store(false);
         g_prismaUI->Show(g_chatboxView);
@@ -6002,6 +6249,7 @@ R"CHIM(
 
         return isFocused(g_historyView, g_panelCreated.load()) ||
                isFocused(g_diariesView, g_diariesCreated.load()) ||
+               isFocused(g_backgroundLifeView, g_backgroundLifeCreated.load()) ||
                isFocused(g_browserView, g_browserCreated.load()) ||
                isFocused(g_debuggerView, g_debuggerCreated.load()) ||
                isFocused(g_chatboxView, g_chatboxCreated.load()) ||
@@ -6412,6 +6660,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing settings menu panel");
         g_prismaUI->Show(g_settingsMenuView);
 
@@ -6612,6 +6863,7 @@ R"CHIM(
         const bool shouldCloseFirst =
             cmd == "history" ||
             cmd == "diaries" ||
+            cmd == "backgroundlife" ||
             cmd == "overlay" ||
             cmd == "statushud" ||
             cmd == "aiview" ||
@@ -6636,6 +6888,8 @@ R"CHIM(
             ToggleHistoryPanel();
         } else if (cmd == "diaries") {
             ToggleDiariesPanel();
+        } else if (cmd == "backgroundlife") {
+            ToggleBackgroundLifePanel();
         } else if (cmd == "overlay") {
             ToggleOverlayPanel();
         } else if (cmd == "statushud") {
@@ -6703,6 +6957,10 @@ R"CHIM(
         if (!g_prismaUI->IsValid(g_masterMenuView)) {
             logger::error("[PrismaUIBridge] Master menu view is not valid!");
             return;
+        }
+
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
         }
 
         // Reassert menu order in case another panel changed stacking.

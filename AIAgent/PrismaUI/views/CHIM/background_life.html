@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Background Life</title>
+    <link rel="stylesheet" href="background_life.css">
+</head>
+<body data-chim-menu-scale-target="#background-life-modal">
+    <div id="background-life-modal" class="modal-container">
+        <header class="modal-header">
+            <div>
+                <h1>Background Life</h1>
+                <p>Recent NPC activity across Skyrim</p>
+            </div>
+            <div class="header-actions">
+                <button class="icon-button" id="refresh-button" type="button" title="Refresh activity">Refresh</button>
+                <button class="close-button" type="button" onclick="closePanel()" aria-label="Close">X</button>
+            </div>
+        </header>
+
+        <section class="toolbar">
+            <label>
+                <span>NPC</span>
+                <select id="npc-filter">
+                    <option value="">All NPCs</option>
+                </select>
+            </label>
+            <label class="search-field">
+                <span>Search</span>
+                <input id="search-input" type="search" placeholder="Search activity">
+            </label>
+            <label>
+                <span>Rows</span>
+                <select id="limit-select">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                </select>
+            </label>
+        </section>
+
+        <main class="activity-container">
+            <div class="panel-status" id="panel-status" aria-live="polite">Loading activity...</div>
+            <div class="activity-list" id="activity-list"></div>
+        </main>
+
+        <footer class="panel-footer">
+            <button class="page-button" id="previous-button" type="button">Previous</button>
+            <span id="page-label">Page 1 of 1</span>
+            <button class="page-button" id="next-button" type="button">Next</button>
+        </footer>
+    </div>
+
+    <script src="ui_scale.js"></script>
+    <script src="background_life.js"></script>
+</body>
+</html>
