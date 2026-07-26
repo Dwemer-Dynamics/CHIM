@@ -52,6 +52,7 @@ namespace PrismaUIBridge {
     static bool g_overlayFetchInFlight = false;
     constexpr auto kOverlayFetchMinInterval = std::chrono::seconds(8);
     constexpr auto kChatboxControlsMinInterval = std::chrono::milliseconds(250);
+    constexpr auto kChatboxStorySyncMinInterval = std::chrono::milliseconds(1500);
     
     // Crosshair target state (for overlay)
     static std::string g_lastCrosshairTarget = "";
@@ -82,7 +83,10 @@ namespace PrismaUIBridge {
     static std::string g_lastChatboxTargetsPayload = "";
     static std::chrono::steady_clock::time_point g_lastChatboxControlsCheck;
     static std::chrono::steady_clock::time_point g_lastChatboxStatusSync;
+    static std::chrono::steady_clock::time_point g_lastChatboxStorySync;
     static std::atomic<bool> g_chatboxStatusFetchInProgress{false};
+    static std::atomic<bool> g_chatboxStoryFetchInProgress{false};
+    static std::atomic<int> g_chatboxStoryLastRowId{0};
     static std::atomic<bool> g_chatboxFocusChatEnabled{false};
     static std::atomic<bool> g_chatboxFocusChatInitialized{false};
     static bool g_chatboxFocusChatSentInitialized = false;
@@ -4322,13 +4326,12 @@ R"CHIM(
         if (sinceRowId > 0) {
             requestPath += "&since_rowid=" + std::to_string(sinceRowId);
         }
-
         // Remove leading slash if present (we add it in the GET line)
         if (!requestPath.empty() && requestPath[0] == '/') {
             requestPath = requestPath.substr(1);
         }
 
-        logger::info("[PrismaUIBridge] Fetching from: http://{}:{}/{}", server, port, requestPath);
+        logger::debug("[PrismaUIBridge] Fetching from: http://{}:{}/{}", server, port, requestPath);
 
         // Build HTTP request
         std::string httpRequest = "GET /" + requestPath + " HTTP/1.1\r\n";
@@ -5197,6 +5200,96 @@ R"CHIM(
         );
     }
 
+    static void FetchAndUpdateChatboxStory(bool replaceExisting) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+            (!replaceExisting && g_chatboxState.load() == 0)) {
+            return;
+        }
+
+        bool expected = false;
+        if (!g_chatboxStoryFetchInProgress.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        const int sinceRowId = replaceExisting ? 0 : g_chatboxStoryLastRowId.load();
+        const int limit = replaceExisting ? 120 : 50;
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIChatboxStoryFetch",
+            [replaceExisting, sinceRowId, limit]() {
+                bool updateUnavailableState = false;
+                try {
+                    do {
+                        std::string response = FetchEventlogFromServer(limit, sinceRowId);
+                        if (response.empty()) {
+                            updateUnavailableState = replaceExisting;
+                            break;
+                        }
+
+                        const size_t jsonStart = response.find('{');
+                        const size_t jsonEnd = response.rfind('}');
+                        if (jsonStart == std::string::npos || jsonEnd == std::string::npos || jsonEnd < jsonStart) {
+                            updateUnavailableState = replaceExisting;
+                            break;
+                        }
+
+                        const std::string jsonBody = response.substr(jsonStart, jsonEnd - jsonStart + 1);
+                        const json parsed = json::parse(jsonBody, nullptr, false);
+                        if (parsed.is_discarded() || !parsed.value("success", false) ||
+                            !parsed.contains("data") || !parsed["data"].is_array()) {
+                            updateUnavailableState = replaceExisting;
+                            break;
+                        }
+
+                        int maxRowId = sinceRowId;
+                        for (const auto& entry : parsed["data"]) {
+                            if (!entry.contains("ROWID")) {
+                                continue;
+                            }
+
+                            try {
+                                if (entry["ROWID"].is_string()) {
+                                    maxRowId = std::max(maxRowId, std::stoi(entry["ROWID"].get<std::string>()));
+                                } else if (entry["ROWID"].is_number_integer()) {
+                                    maxRowId = std::max(maxRowId, entry["ROWID"].get<int>());
+                                }
+                            } catch (...) {
+                                // Ignore malformed row IDs while preserving the rest of the feed.
+                            }
+                        }
+                        g_chatboxStoryLastRowId.store(maxRowId);
+
+                        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+                            (!replaceExisting && g_chatboxState.load() == 0)) {
+                            break;
+                        }
+
+                        const std::string jsCall =
+                            "window.updateStoryLog(" + json(jsonBody).dump() + "," +
+                            (replaceExisting ? "true" : "false") + ")";
+                        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+                    } while (false);
+                } catch (const std::exception& error) {
+                    logger::warn("[PrismaUIBridge] Story log refresh failed: {}", error.what());
+                    updateUnavailableState = replaceExisting;
+                } catch (...) {
+                    logger::warn("[PrismaUIBridge] Story log refresh failed");
+                    updateUnavailableState = replaceExisting;
+                }
+
+                if (updateUnavailableState && g_prismaUI && g_chatboxCreated.load() &&
+                    g_chatboxDomReady.load() && g_chatboxState.load() != 0) {
+                    g_prismaUI->Invoke(
+                        g_chatboxView,
+                        "window.setStoryLogUnavailable && window.setStoryLogUnavailable()",
+                        nullptr);
+                }
+                g_chatboxStoryFetchInProgress.store(false);
+            },
+            "ChatboxStoryFetch",
+            std::chrono::seconds(15)
+        );
+    }
+
     void CheckAndUpdateChatboxControls(bool force) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
             return;
@@ -5213,6 +5306,11 @@ R"CHIM(
             return;
         }
         g_lastChatboxControlsCheck = now;
+
+        if (now - g_lastChatboxStorySync >= kChatboxStorySyncMinInterval) {
+            g_lastChatboxStorySync = now;
+            FetchAndUpdateChatboxStory(false);
+        }
 
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastChatboxStatusSync).count() >= 5000) {
             g_lastChatboxStatusSync = now;
@@ -5495,6 +5593,7 @@ R"CHIM(
         PushSystemLogEntry("info", welcomeMsg, std::string(timeDateString));
         UpdateChatboxModeUI(g_chatboxCurrentMode);
         SyncChatboxStatusFromServerAsync();
+        FetchAndUpdateChatboxStory(true);
         logger::info("[PrismaUIBridge] Pushed welcome message to chatbox");
     }
 
@@ -5510,6 +5609,9 @@ R"CHIM(
                 g_prismaUI->Unfocus(g_chatboxView);
             }
             HideChatboxPanel();
+        } else if (cmd == "story_refresh") {
+            g_lastChatboxStorySync = std::chrono::steady_clock::now();
+            FetchAndUpdateChatboxStory(true);
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
@@ -5709,6 +5811,10 @@ R"CHIM(
         g_chatboxQuickFocusActive.store(false);
         g_prismaUI->Show(g_chatboxView);
         g_chatboxState.store(1);
+        g_prismaUI->Invoke(
+            g_chatboxView,
+            "window.onChatboxShown && window.onChatboxShown()",
+            nullptr);
         CheckAndUpdateChatboxControls(true);
         
         // No auto-focus - player retains control until they press Enter
@@ -5791,7 +5897,6 @@ R"CHIM(
             logger::debug("[PrismaUIBridge] Chatbox DOM ready after {} ms", waitedMs);
         }
 
-        // Already focused - skip (check using HasFocus instead of keyboard active flag)
         if (g_prismaUI->HasFocus(g_chatboxView)) {
             SetChatboxGameplayInputSuppressed(true);
             logger::debug("[PrismaUIBridge] Chatbox already focused, skipping");
@@ -5837,6 +5942,8 @@ R"CHIM(
             SetChatboxGameplayInputSuppressed(true);
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
+            g_lastChatboxStorySync = std::chrono::steady_clock::now();
+            FetchAndUpdateChatboxStory(true);
             CheckAndUpdateChatboxControls(true);
             g_prismaUI->Invoke(
                 g_chatboxView,
@@ -6479,6 +6586,29 @@ R"CHIM(
             return;
         }
 
+        constexpr std::string_view kContextScrollPrefix = "context_scroll|";
+        if (cmd.starts_with(kContextScrollPrefix)) {
+            if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+                !g_prismaUI->IsValid(g_chatboxView) || g_prismaUI->IsHidden(g_chatboxView)) {
+                return;
+            }
+
+            try {
+                double delta = std::stod(cmd.substr(kContextScrollPrefix.size()));
+                if (!std::isfinite(delta)) {
+                    return;
+                }
+                delta = std::clamp(delta, -1200.0, 1200.0);
+                const std::string jsCall = std::format(
+                    "window.scrollStandaloneContext && window.scrollStandaloneContext({})",
+                    delta);
+                g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+            } catch (const std::exception&) {
+                logger::debug("[PrismaUIBridge] Ignoring invalid Context Window scroll command");
+            }
+            return;
+        }
+
         const bool shouldCloseFirst =
             cmd == "history" ||
             cmd == "diaries" ||
@@ -6613,6 +6743,17 @@ R"CHIM(
         
         // Mark as visible
         g_masterMenuVisible.store(true);
+        if (g_masterMenuDomReady.load()) {
+            const bool contextWindowVisible =
+                g_chatboxCreated.load() &&
+                g_prismaUI->IsValid(g_chatboxView) &&
+                !g_prismaUI->IsHidden(g_chatboxView) &&
+                !g_prismaUI->HasFocus(g_chatboxView);
+            const std::string jsCall = std::format(
+                "window.setContextWindowVisible && window.setContextWindowVisible({})",
+                contextWindowVisible ? "true" : "false");
+            g_prismaUI->Invoke(g_masterMenuView, jsCall.c_str(), nullptr);
+        }
     }
 
     void HideMasterMenu() {

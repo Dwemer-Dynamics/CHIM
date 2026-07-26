@@ -26,8 +26,8 @@
                                 onmouseenter="showDescription('Open CHIM Chat so you can type a line and send it immediately')"
                                 onmouseleave="clearDescription()">CHIM Chat</button>
                         <button class="setting-btn primary-panel-btn" onclick="selectPanel('chatbox')"
-                                onmouseenter="showDescription('Open Chatbox View - the MMO-style live chat panel')"
-                                onmouseleave="clearDescription()">Chatbox View</button>
+                                onmouseenter="showDescription('Open the Recent Context window')"
+                                onmouseleave="clearDescription()">Context Window</button>
                         <button class="setting-btn primary-panel-btn" onclick="selectPanel('settings')"
                                 onmouseenter="showDescription('Open CHIM Actions menu - centralized actions interface')"
                                 onmouseleave="clearDescription()">CHIM Actions</button>
@@ -84,7 +84,7 @@
 
                         <div class="layout-grid-3x2">
                             <div class="layout-card">
-                                <div class="layout-label" onmouseenter="showDescription('Chatbox View panel corner placement')" onmouseleave="clearDescription()">Chatbox View</div>
+                                <div class="layout-label" onmouseenter="showDescription('Context Window panel corner placement')" onmouseleave="clearDescription()">Context Window</div>
                                 <div class="corner-picker" data-view="chatbox">
                                     <button type="button" class="corner-btn" data-corner="top-left" onclick="setViewCorner('chatbox','top-left')">&#8598;</button>
                                     <button type="button" class="corner-btn" data-corner="top-right" onclick="setViewCorner('chatbox','top-right')"><span class="corner-arrow corner-arrow-tr">&#8598;</span></button>

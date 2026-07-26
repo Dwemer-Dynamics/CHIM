@@ -8,11 +8,12 @@
     'use strict';
 
     // DOM Elements
-    const chatMessages = document.getElementById('chat-messages');
     const chatboxRoot = document.getElementById('chim-chatbox');
+    const chatboxViewerElement = document.getElementById('chim-chatbox-viewer');
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabPanes = document.querySelectorAll('.tab-pane');
     const focusModal = document.getElementById('focus-chatbox-modal');
+    const focusShellElement = document.querySelector('.focus-chatbox-shell');
     const focusInput = document.getElementById('focus-chatbox-input');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
@@ -45,11 +46,19 @@
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
+    const storyLogElement = document.getElementById('focus-chatbox-story-log');
+    const storyEmptyElement = document.getElementById('focus-chatbox-story-empty');
+    const storyNewEventsButton = document.getElementById('focus-chatbox-story-new');
+    const contextPanelElement = chatboxRoot;
+    const contextToggleButton = document.getElementById('focus-chatbox-context-toggle');
 
     // State
     let currentTab = 'chat';
-    const maxMessages = 100;
+    const maxStoryEntries = 150;
+    const liveStoryDedupeWindowMs = 15000;
+    const recentStoryRetentionMs = 60000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
+    const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
     let quickChatMode = false;
@@ -75,6 +84,9 @@
     let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
     const targetRowsByKey = new Map();
+    const storyEntryKeys = new Set();
+    const recentStoryContent = new Map();
+    let narratorStoryName = 'The Narrator';
     
     // Server URL
     const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
@@ -105,6 +117,206 @@
         conversational: { label: 'Conversational', class: 'conversational' },
         group: { label: 'Group', class: 'group' },
         random: { label: 'Random', class: 'random' }
+    };
+
+    function decodeHtmlEntities(value) {
+        const decoder = document.createElement('textarea');
+        decoder.innerHTML = String(value || '');
+        return decoder.value;
+    }
+
+    function isStoryAtBottom() {
+        if (!storyLogElement) return true;
+        return storyLogElement.scrollHeight - storyLogElement.scrollTop - storyLogElement.clientHeight < 48;
+    }
+
+    function scrollStoryToBottom() {
+        if (!storyLogElement) return;
+        storyLogElement.scrollTop = storyLogElement.scrollHeight;
+        if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    function scrollStoryToBottomAfterLayout() {
+        const defer = typeof window.requestAnimationFrame === 'function'
+            ? window.requestAnimationFrame.bind(window)
+            : function(callback) { window.setTimeout(callback, 0); };
+        defer(function() {
+            defer(scrollStoryToBottom);
+        });
+    }
+
+    window.scrollStandaloneContext = function(deltaY) {
+        if (!storyLogElement || !contextPanelElement || !chatboxViewerElement) return;
+        if (contextPanelElement.parentElement !== chatboxViewerElement) return;
+
+        const delta = Number(deltaY);
+        if (!Number.isFinite(delta)) return;
+        storyLogElement.scrollTop += Math.max(-1200, Math.min(1200, delta));
+    };
+
+    function showStoryEmpty(message) {
+        if (!storyEmptyElement || !storyLogElement) return;
+        storyEmptyElement.textContent = message || 'No recent context.';
+        storyEmptyElement.classList.toggle('hidden', storyLogElement.children.length > 0);
+    }
+
+    function pruneRecentStoryContent(now) {
+        recentStoryContent.forEach(function(recent, key) {
+            if (!recent || now - recent.seenAt > recentStoryRetentionMs) {
+                recentStoryContent.delete(key);
+            }
+        });
+    }
+
+    function createStoryEntryElement(entry) {
+        const row = document.createElement('div');
+        row.className = 'story-entry ' + entry.kind + (entry.source === 'subtitle' ? ' non-llm' : '');
+
+        const time = document.createElement('span');
+        time.className = 'story-entry-time';
+        time.textContent = entry.timestamp || '';
+
+        const line = document.createElement('div');
+        line.className = 'story-entry-line';
+
+        const speaker = document.createElement('span');
+        speaker.className = 'story-entry-speaker';
+        speaker.textContent = entry.speaker || '';
+
+        const text = document.createElement('span');
+        text.className = 'story-entry-text';
+        text.textContent = entry.text || '';
+
+        if (entry.speaker) line.appendChild(speaker);
+        line.appendChild(text);
+        row.appendChild(time);
+        row.appendChild(line);
+        return row;
+    }
+
+    function appendStoryEntry(entry, isLive) {
+        if (!storyLogElement || !entry) return false;
+
+        const rowKey = entry.rowId > 0 ? 'row:' + entry.rowId : '';
+        if (rowKey && storyEntryKeys.has(rowKey)) return false;
+
+        const now = Date.now();
+        pruneRecentStoryContent(now);
+        const recent = recentStoryContent.get(entry.contentKey);
+        if (!isLive && recent) {
+            const matchesLiveEntry = recent.isLive &&
+                now - recent.seenAt <= liveStoryDedupeWindowMs;
+            const matchesPersistedEntry = !recent.isLive &&
+                window.ChimStoryLog.isPersistedDuplicate(recent.entry, entry);
+            if (matchesLiveEntry || matchesPersistedEntry) {
+                if (rowKey) storyEntryKeys.add(rowKey);
+                return false;
+            }
+        }
+        recentStoryContent.set(entry.contentKey, {
+            entry: entry,
+            isLive: Boolean(isLive),
+            seenAt: now
+        });
+
+        const shouldFollow = isStoryAtBottom();
+        const row = createStoryEntryElement(entry);
+        if (rowKey) {
+            row.dataset.entryKey = rowKey;
+            storyEntryKeys.add(rowKey);
+        }
+        storyLogElement.appendChild(row);
+
+        while (storyLogElement.children.length > maxStoryEntries) {
+            const first = storyLogElement.firstElementChild;
+            if (first && first.dataset.entryKey) storyEntryKeys.delete(first.dataset.entryKey);
+            storyLogElement.removeChild(first);
+        }
+
+        showStoryEmpty();
+        if (shouldFollow) {
+            scrollStoryToBottom();
+        } else if (storyNewEventsButton) {
+            storyNewEventsButton.classList.remove('hidden');
+        }
+        return true;
+    }
+
+    function resetStoryLog() {
+        if (!storyLogElement) return;
+        storyLogElement.innerHTML = '';
+        storyEntryKeys.clear();
+        recentStoryContent.clear();
+        if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    function loadContextCollapsed() {
+        try {
+            return localStorage.getItem(contextCollapsedStorageKey) === 'true';
+        } catch (_err) {
+            return false;
+        }
+    }
+
+    function applyContextCollapsed(collapsed) {
+        if (!contextPanelElement || !contextToggleButton) return;
+        contextPanelElement.classList.toggle('collapsed', collapsed);
+        contextToggleButton.textContent = collapsed ? '+' : '\u2212';
+        contextToggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        contextToggleButton.title = collapsed ? 'Expand recent context' : 'Minimize recent context';
+        try {
+            localStorage.setItem(contextCollapsedStorageKey, collapsed ? 'true' : 'false');
+        } catch (_err) {
+            // Keep the current session state when storage is unavailable.
+        }
+    }
+
+    function setContextPlacement(focused) {
+        if (!contextPanelElement || !chatboxViewerElement || !focusShellElement) return;
+
+        const destination = focused ? focusShellElement : chatboxViewerElement;
+        if (contextPanelElement.parentElement !== destination) {
+            destination.appendChild(contextPanelElement);
+        }
+        chatboxViewerElement.classList.toggle('context-attached', focused);
+        if (focused) {
+            applyContextCollapsed(loadContextCollapsed());
+        } else {
+            contextPanelElement.classList.remove('collapsed');
+        }
+    }
+
+    window.updateStoryLog = function(jsonString, replaceExisting) {
+        if (!window.ChimStoryLog || !storyLogElement) return;
+        try {
+            const payload = JSON.parse(jsonString);
+            if (!payload || payload.success !== true || !Array.isArray(payload.data)) {
+                showStoryEmpty('Recent context is unavailable.');
+                return;
+            }
+
+            narratorStoryName = decodeHtmlEntities(payload.narrator_name || narratorStoryName) || 'The Narrator';
+            const normalized = window.ChimStoryLog.normalizeEntries(
+                payload.data,
+                narratorStoryName,
+                decodeHtmlEntities
+            );
+
+            if (replaceExisting) resetStoryLog();
+            normalized.forEach(function(entry) {
+                appendStoryEntry(entry, false);
+            });
+
+            showStoryEmpty('No recent context.');
+            if (replaceExisting) scrollStoryToBottom();
+        } catch (error) {
+            console.error('[Chatbox] Failed to update story log:', error);
+            showStoryEmpty('Recent context is unavailable.');
+        }
+    };
+
+    window.setStoryLogUnavailable = function() {
+        showStoryEmpty('Recent context is unavailable.');
     };
 
     function setActiveTile(buttons, attribute, value) {
@@ -168,35 +380,12 @@
         source = source || 'llm';
         timestamp = timestamp || getCurrentTime();
 
-        var messageDiv = document.createElement('div');
-        messageDiv.className = 'message ' + type + (source === 'subtitle' ? ' non-llm' : '');
-
-        var headerDiv = document.createElement('div');
-        headerDiv.className = 'message-header';
-
-        var speakerSpan = document.createElement('span');
-        speakerSpan.className = 'message-speaker';
-        speakerSpan.textContent = speaker;
-
-        var timestampSpan = document.createElement('span');
-        timestampSpan.className = 'message-timestamp';
-        timestampSpan.textContent = timestamp;
-
-        headerDiv.appendChild(speakerSpan);
-        headerDiv.appendChild(timestampSpan);
-
-        var textDiv = document.createElement('div');
-        textDiv.className = 'message-text';
-        textDiv.textContent = text;
-
-        messageDiv.appendChild(headerDiv);
-        messageDiv.appendChild(textDiv);
-        chatMessages.appendChild(messageDiv);
-
-        while (chatMessages.children.length > maxMessages) {
-            chatMessages.removeChild(chatMessages.firstChild);
+        if (window.ChimStoryLog) {
+            appendStoryEntry(
+                window.ChimStoryLog.normalizeLiveMessage(speaker, text, timestamp, type, source),
+                true
+            );
         }
-        chatMessages.scrollTop = chatMessages.scrollHeight;
     };
 
     /**
@@ -460,7 +649,7 @@
     window.prepareQuickChatFocus = function() {
         quickChatMode = true;
         currentTab = 'chat';
-        setChatboxViewerVisible(false);
+        setContextPlacement(true);
         if (focusModal) {
             focusModal.classList.add('hidden');
             focusModal.setAttribute('aria-hidden', 'true');
@@ -478,8 +667,13 @@
     window.openFocusChatbox = function() {
         if (!focusModal || !focusInput) return;
         applyFocusPosition(loadFocusPosition());
+        setContextPlacement(true);
         focusModal.classList.remove('hidden');
         focusModal.setAttribute('aria-hidden', 'false');
+        scrollStoryToBottomAfterLayout();
+        if (storyLogElement && storyLogElement.children.length === 0) {
+            showStoryEmpty('Loading recent context...');
+        }
         focusInput.value = '';
         setTimeout(function() {
             focusInput.focus();
@@ -498,6 +692,7 @@
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
         focusInput.blur();
+        setContextPlacement(false);
         if (shouldNotifyBridge && window.chimChatboxCommand) {
             if (quickChatMode) {
                 window.chimChatboxCommand('close');
@@ -574,6 +769,7 @@
             const deletedCount = Number(result.deleted_count || 0);
             pushChatboxSystemMessage(`Deleted ${deletedCount} latest visible event${deletedCount === 1 ? '' : 's'}.`);
             showInGameDebugNotification(`Deleted last ${deletedCount} events`);
+            sendControlCommand('story_refresh');
         } catch (_err) {
             pushChatboxSystemMessage(`Failed to delete the last ${deleteCount} events.`);
         } finally {
@@ -605,6 +801,11 @@
         });
     }
 
+    window.onChatboxShown = function() {
+        setContextPlacement(false);
+        scrollStoryToBottomAfterLayout();
+    };
+
     /**
      * Called when chatbox gains focus from C++
      */
@@ -612,7 +813,7 @@
         isChatFocused = true;
         quickChatMode = !!quickChat;
         refreshProfileLlmMode(true);
-        setChatboxViewerVisible(!quickChatMode);
+        setContextPlacement(true);
         window.openFocusChatbox();
     };
 
@@ -623,8 +824,10 @@
         const wasQuickChatMode = quickChatMode;
         isChatFocused = false;
         quickChatMode = false;
-        setChatboxViewerVisible(!wasQuickChatMode);
         window.closeFocusChatbox(false);
+        if (!wasQuickChatMode) {
+            setContextPlacement(false);
+        }
     };
 
     window.updateChatboxTarget = function(name, distance) {
@@ -768,8 +971,8 @@
             modelOptionButtons,
             modelDisabled,
             currentProfileLlmMode === 'random'
-                ? 'Disable Random LLM on the target profile to change the global model.'
-                : 'Switch global model'
+                ? 'Disable Random LLM on the target profile to change the LLM model.'
+                : 'Switch LLM model'
         );
         if (modelDisabled) closeTileMenu(modelMenuToggleButton, modelOptionsElement);
         if (globalModelControlElement) {
@@ -1205,11 +1408,6 @@
         }
     }
 
-    function setChatboxViewerVisible(isVisible) {
-        if (!chatboxRoot) return;
-        chatboxRoot.classList.toggle('focus-only-hidden', !isVisible);
-    }
-
     function getCurrentTime() {
         return new Date().toLocaleTimeString('en-US', { hour12: false });
     }
@@ -1367,6 +1565,16 @@
         });
     }
 
+    if (storyNewEventsButton) {
+        storyNewEventsButton.addEventListener('click', scrollStoryToBottom);
+    }
+
+    if (contextToggleButton && contextPanelElement) {
+        contextToggleButton.addEventListener('click', function() {
+            applyContextCollapsed(!contextPanelElement.classList.contains('collapsed'));
+        });
+    }
+
     if (targetsListElement) {
         targetsListElement.addEventListener('click', function(e) {
             const targetButton = e.target.closest('.chatbox-target-item');
@@ -1404,11 +1612,8 @@
     window.updateChatboxModel('Standard');
     renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
-
-    // Apply corner placement via shared layout manager
-    if (window.chimLayout) {
-        window.chimLayout.apply(chatboxRoot, 'chatbox');
-    }
+    applyContextCollapsed(loadContextCollapsed());
+    setContextPlacement(false);
 
     console.log('[Chatbox] Initialized - display mode + focus modal input');
 })();

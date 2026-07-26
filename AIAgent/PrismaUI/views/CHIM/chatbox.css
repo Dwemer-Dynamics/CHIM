@@ -1,6 +1,6 @@
 /**
- * CHIM Chatbox - MMO Style
- * Bottom-left positioned chatbox with tabs
+ * CHIM Chatbox
+ * Bottom-left recent context with an independently positioned input modal
  */
 
 * {
@@ -17,33 +17,27 @@ body {
 }
 
 /* Main Container */
-#chim-chatbox {
+#chim-chatbox-viewer {
     position: fixed;
     bottom: 20px;
     left: 20px;
-    width: 550px;
-    height: 480px;
-    background: rgba(10, 10, 15, 0.88);
-    border: 1px solid rgba(242, 124, 17, 0.4);
-    border-radius: 6px;
-    box-shadow: 
-        0 4px 20px rgba(0, 0, 0, 0.7),
-        0 0 15px rgba(242, 124, 17, 0.15);
-    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
-    display: flex;
-    flex-direction: column;
+    width: min(720px, 44vw);
+    height: min(300px, 32vh);
+    z-index: 2001;
     animation: slideIn 0.3s ease;
 }
 
-#chim-chatbox.focus-only-hidden {
+#chim-chatbox-viewer.context-attached {
     display: none;
 }
 
-/* Corner placement - driven by layout.js */
-#chim-chatbox.chim-corner-bottom-left  { bottom: 20px !important; left: 20px !important;  top: auto !important;  right: auto !important; }
-#chim-chatbox.chim-corner-bottom-right { bottom: 20px !important; right: 20px !important; top: auto !important;  left: auto !important;  }
-#chim-chatbox.chim-corner-top-left     { top: 20px !important;    left: 20px !important;  bottom: auto !important; right: auto !important; }
-#chim-chatbox.chim-corner-top-right    { top: 20px !important;    right: 20px !important; bottom: auto !important; left: auto !important;  }
+#chim-chatbox-viewer > #chim-chatbox {
+    height: 100%;
+}
+
+#chim-chatbox-viewer > #chim-chatbox .focus-chatbox-context-toggle {
+    display: none;
+}
 
 @keyframes slideIn {
     from {
@@ -1072,10 +1066,20 @@ body {
     position: relative;
     z-index: 1;
     display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    width: min(1384px, 96vw);
+    max-height: calc(100vh - 40px);
+}
+
+.focus-chatbox-primary {
+    display: flex;
     align-items: stretch;
     gap: 14px;
-    max-width: 96vw;
-    max-height: 75vh;
+    width: 100%;
+    min-height: 0;
+    max-height: 58vh;
 }
 
 .chatbox-targets-window {
@@ -1091,8 +1095,9 @@ body {
 }
 
 .focus-chatbox-panel {
-    width: min(840px, 74vw);
-    max-height: 75vh;
+    width: auto;
+    max-height: 58vh;
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     background: rgba(12, 12, 18, 0.95);
@@ -1235,8 +1240,203 @@ body {
 .focus-chatbox-main {
     display: flex;
     flex-direction: column;
+    flex: 1;
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
+}
+
+.focus-chatbox-context {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-height: 190px;
+    max-height: min(290px, 30vh);
+    background: rgba(8, 8, 13, 0.94);
+    border: 1px solid rgba(242, 124, 17, 0.38);
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.58);
+    overflow: hidden;
+}
+
+.focus-chatbox-shell > #chim-chatbox {
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 0;
+    width: 100%;
+    height: min(290px, 30vh);
+    z-index: 2;
+}
+
+.focus-chatbox-modal.focus-position-bottom .focus-chatbox-shell > #chim-chatbox {
+    top: auto;
+    bottom: calc(100% + 10px);
+}
+
+#chim-chatbox.focus-chatbox-context.collapsed {
+    height: auto;
+}
+
+.focus-chatbox-context.collapsed {
+    height: auto;
+    min-height: 0;
+}
+
+.focus-chatbox-context-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    color: #d5d5dc;
+    background: rgba(18, 18, 24, 0.92);
+    font-size: 0.76em;
+    font-weight: 700;
+    letter-spacing: 0.45px;
+    text-transform: uppercase;
+}
+
+.focus-chatbox-context-toggle {
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    color: #cfcfd6;
+    background: rgba(38, 38, 46, 0.96);
+    border: 1px solid rgba(242, 124, 17, 0.24);
+    border-radius: 5px;
+    font-size: 1.1em;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.focus-chatbox-context-toggle:hover {
+    color: #fff;
+    border-color: rgba(242, 124, 17, 0.56);
+    background: rgba(49, 39, 31, 0.96);
+}
+
+.focus-chatbox-context-body {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.focus-chatbox-context.collapsed .focus-chatbox-context-body {
+    display: none;
+}
+
+.focus-chatbox-story-log {
+    flex: 1;
+    min-height: 0;
+    padding: 9px 14px 11px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: auto;
+}
+
+.focus-chatbox-story-log::-webkit-scrollbar {
+    width: 10px;
+}
+
+.focus-chatbox-story-log::-webkit-scrollbar-track {
+    background: rgba(20, 20, 25, 0.5);
+}
+
+.focus-chatbox-story-log::-webkit-scrollbar-thumb {
+    background: rgba(242, 124, 17, 0.34);
+    border-radius: 5px;
+}
+
+.story-entry {
+    display: block;
+    padding: 1px 0;
+    color: #d8d8de;
+    font-size: 0.95em;
+    line-height: 1.42;
+}
+
+.story-entry-time {
+    display: inline;
+    margin-right: 8px;
+    color: #5f5f69;
+    font-size: 0.76em;
+    white-space: nowrap;
+}
+
+.story-entry-line {
+    display: inline;
+    overflow-wrap: anywhere;
+}
+
+.story-entry-speaker {
+    margin-right: 7px;
+    color: #b8b8c0;
+    font-weight: 700;
+}
+
+.story-entry.player .story-entry-speaker {
+    color: #f27c11;
+}
+
+.story-entry.npc .story-entry-speaker {
+    color: #b8b8c0;
+}
+
+.story-entry.narrator .story-entry-speaker {
+    color: #b47cff;
+}
+
+.story-entry.action,
+.story-entry.story,
+.story-entry.death,
+.story-entry.system {
+    color: #a9a9b2;
+    font-style: italic;
+}
+
+.story-entry.action .story-entry-speaker,
+.story-entry.story .story-entry-speaker {
+    color: #c89b62;
+}
+
+.story-entry.death .story-entry-speaker {
+    color: #c56f6f;
+}
+
+.story-entry.non-llm {
+    opacity: 0.76;
+}
+
+.focus-chatbox-story-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #777783;
+    font-size: 0.9em;
+    pointer-events: none;
+}
+
+.focus-chatbox-story-empty.hidden,
+.focus-chatbox-story-new.hidden {
+    display: none;
+}
+
+.focus-chatbox-story-new {
+    position: absolute;
+    right: 18px;
+    bottom: 12px;
+    padding: 6px 11px;
+    color: #f1f1f4;
+    background: rgba(44, 31, 20, 0.96);
+    border: 1px solid rgba(242, 124, 17, 0.5);
+    border-radius: 999px;
+    font-size: 0.78em;
+    cursor: pointer;
 }
 
 .focus-chatbox-input {
@@ -1358,8 +1558,13 @@ body {
     }
 
     .focus-chatbox-shell {
-        flex-direction: column;
         width: min(94vw, 840px);
+        max-height: 94vh;
+    }
+
+    .focus-chatbox-primary {
+        flex-direction: column;
+        max-height: none;
     }
 
     .chatbox-targets-window {
@@ -1370,6 +1575,21 @@ body {
 
     .focus-chatbox-panel {
         width: 100%;
+        max-height: none;
+    }
+
+    .focus-chatbox-context {
+        min-height: 150px;
+        max-height: 240px;
+    }
+
+    #chim-chatbox-viewer {
+        width: min(520px, calc(100vw - 40px));
+        height: min(240px, 28vh);
+    }
+
+    .focus-chatbox-shell > #chim-chatbox {
+        height: min(240px, 28vh);
     }
 
     .focus-chatbox-position-picker {
