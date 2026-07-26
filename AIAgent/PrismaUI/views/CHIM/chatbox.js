@@ -48,6 +48,8 @@
     const storyLogElement = document.getElementById('focus-chatbox-story-log');
     const storyEmptyElement = document.getElementById('focus-chatbox-story-empty');
     const storyNewEventsButton = document.getElementById('focus-chatbox-story-new');
+    const contextPanelElement = document.getElementById('focus-chatbox-context');
+    const contextToggleButton = document.getElementById('focus-chatbox-context-toggle');
 
     // State
     let currentTab = 'chat';
@@ -55,6 +57,7 @@
     const maxStoryEntries = 150;
     const liveStoryDedupeWindowMs = 15000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
+    const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
     let quickChatMode = false;
@@ -82,7 +85,6 @@
     const targetRowsByKey = new Map();
     const storyEntryKeys = new Set();
     const recentStoryContent = new Map();
-    let lastStorySceneKey = '';
     let narratorStoryName = 'The Narrator';
     
     // Server URL
@@ -135,7 +137,7 @@
 
     function showStoryEmpty(message) {
         if (!storyEmptyElement || !storyLogElement) return;
-        storyEmptyElement.textContent = message || 'No recent story events.';
+        storyEmptyElement.textContent = message || 'No recent context.';
         storyEmptyElement.classList.toggle('hidden', storyLogElement.children.length > 0);
     }
 
@@ -187,14 +189,6 @@
         }
         if (isLive) recentStoryContent.set(entry.contentKey, now);
 
-        if (entry.kind === 'scene') {
-            if (entry.sceneKey && entry.sceneKey === lastStorySceneKey) {
-                if (rowKey) storyEntryKeys.add(rowKey);
-                return false;
-            }
-            lastStorySceneKey = entry.sceneKey || '';
-        }
-
         const shouldFollow = isStoryAtBottom();
         const row = createStoryEntryElement(entry);
         if (rowKey) {
@@ -223,8 +217,28 @@
         storyLogElement.innerHTML = '';
         storyEntryKeys.clear();
         recentStoryContent.clear();
-        lastStorySceneKey = '';
         if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    function loadContextCollapsed() {
+        try {
+            return localStorage.getItem(contextCollapsedStorageKey) === 'true';
+        } catch (_err) {
+            return false;
+        }
+    }
+
+    function applyContextCollapsed(collapsed) {
+        if (!contextPanelElement || !contextToggleButton) return;
+        contextPanelElement.classList.toggle('collapsed', collapsed);
+        contextToggleButton.textContent = collapsed ? '+' : '\u2212';
+        contextToggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        contextToggleButton.title = collapsed ? 'Expand recent context' : 'Minimize recent context';
+        try {
+            localStorage.setItem(contextCollapsedStorageKey, collapsed ? 'true' : 'false');
+        } catch (_err) {
+            // Keep the current session state when storage is unavailable.
+        }
     }
 
     window.updateStoryLog = function(jsonString, replaceExisting) {
@@ -232,7 +246,7 @@
         try {
             const payload = JSON.parse(jsonString);
             if (!payload || payload.success !== true || !Array.isArray(payload.data)) {
-                showStoryEmpty('Recent events are unavailable.');
+                showStoryEmpty('Recent context is unavailable.');
                 return;
             }
 
@@ -248,16 +262,16 @@
                 appendStoryEntry(entry, false);
             });
 
-            showStoryEmpty('No recent story events.');
+            showStoryEmpty('No recent context.');
             if (replaceExisting) scrollStoryToBottom();
         } catch (error) {
             console.error('[Chatbox] Failed to update story log:', error);
-            showStoryEmpty('Recent events are unavailable.');
+            showStoryEmpty('Recent context is unavailable.');
         }
     };
 
     window.setStoryLogUnavailable = function() {
-        showStoryEmpty('Recent events are unavailable.');
+        showStoryEmpty('Recent context is unavailable.');
     };
 
     function setActiveTile(buttons, attribute, value) {
@@ -641,7 +655,7 @@
         focusModal.classList.remove('hidden');
         focusModal.setAttribute('aria-hidden', 'false');
         if (storyLogElement && storyLogElement.children.length === 0) {
-            showStoryEmpty('Loading recent events...');
+            showStoryEmpty('Loading recent context...');
         }
         focusInput.value = '';
         setTimeout(function() {
@@ -1535,6 +1549,12 @@
         storyNewEventsButton.addEventListener('click', scrollStoryToBottom);
     }
 
+    if (contextToggleButton && contextPanelElement) {
+        contextToggleButton.addEventListener('click', function() {
+            applyContextCollapsed(!contextPanelElement.classList.contains('collapsed'));
+        });
+    }
+
     if (targetsListElement) {
         targetsListElement.addEventListener('click', function(e) {
             const targetButton = e.target.closest('.chatbox-target-item');
@@ -1572,6 +1592,7 @@
     window.updateChatboxModel('Standard');
     renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
+    applyContextCollapsed(loadContextCollapsed());
 
     // Apply corner placement via shared layout manager
     if (window.chimLayout) {

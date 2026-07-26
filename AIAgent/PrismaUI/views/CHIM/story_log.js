@@ -12,7 +12,6 @@
     const dialogueEvents = new Set(['chat', 'inputtext', 'ginputtext']);
     const actionEvents = new Set(['infoaction', 'book', 'combat', 'itemfound']);
     const storyEvents = new Set(['quest', 'death', 'info_timeforward', 'instruction', 'narration']);
-    const sceneEvents = new Set(['infoloc', 'location']);
 
     function clean(value, decode) {
         const text = String(value || '');
@@ -56,28 +55,7 @@
             .replace(/\b\w/g, function(character) { return character.toUpperCase(); });
     }
 
-    function normalizeScene(rawText, timestamp, rowId) {
-        const locationMatch = rawText.match(/Context (?:new )?location:\s*([^,)\n]+)/i);
-        const holdMatch = rawText.match(/Hold:\s*([^,)\n]+)/i);
-        let location = locationMatch ? locationMatch[1].trim() : '';
-        const hold = holdMatch ? holdMatch[1].trim() : '';
-
-        if (!location) {
-            location = rawText
-                .replace(/^\(+|\)+$/g, '')
-                .replace(/^location\s*:\s*/i, '')
-                .trim();
-        }
-        if (!location) return null;
-
-        const text = hold && !location.toLowerCase().includes(hold.toLowerCase())
-            ? location + ' - ' + hold + ' Hold'
-            : location;
-        const sceneKey = (location + '|' + hold).toLowerCase();
-        return buildEntry(rowId, timestamp, 'scene', 'Scene', text, sceneKey);
-    }
-
-    function buildEntry(rowId, timestamp, kind, speaker, text, sceneKey, source) {
+    function buildEntry(rowId, timestamp, kind, speaker, text, source) {
         const normalizedSpeaker = String(speaker || '').trim();
         const normalizedText = String(text || '').trim();
         if (!normalizedText) return null;
@@ -94,7 +72,6 @@
             kind: kind,
             speaker: normalizedSpeaker,
             text: normalizedText,
-            sceneKey: sceneKey || '',
             source: source || '',
             contentKey: contentKey
         };
@@ -108,10 +85,6 @@
         const source = clean(entry.Source || entry.source || '', decode);
         if (!rawText) return null;
 
-        if (sceneEvents.has(eventType)) {
-            return normalizeScene(rawText, timestamp, rowId);
-        }
-
         if (dialogueEvents.has(eventType)) {
             const parsed = parseSpeaker(sanitizeDialogue(rawText));
             if (!parsed.text) return null;
@@ -122,7 +95,7 @@
             if (speakerLower === narratorLower || speakerLower === 'the narrator' || speakerLower === 'narrator') {
                 kind = 'narrator';
             }
-            return buildEntry(rowId, timestamp, kind, parsed.speaker || 'Unknown', parsed.text, '', source);
+            return buildEntry(rowId, timestamp, kind, parsed.speaker || 'Unknown', parsed.text, source);
         }
 
         if (actionEvents.has(eventType)) {
@@ -143,7 +116,7 @@
         const kind = ['player', 'narrator', 'system'].includes(normalizedType)
             ? normalizedType
             : 'npc';
-        return buildEntry(0, timestamp, kind, speaker, text, '', source);
+        return buildEntry(0, timestamp, kind, speaker, text, source);
     }
 
     function normalizeEntries(entries, narratorName, decode) {

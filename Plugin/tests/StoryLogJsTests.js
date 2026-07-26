@@ -36,15 +36,13 @@ test('uses the configured narrator name', () => {
     assert.equal(entry.speaker, 'The Chronicler');
 });
 
-test('turns location context into a concise scene marker', () => {
+test('omits scene context events from the recent context log', () => {
     const entry = storyLog.normalizeEvent({
         Event: 'infoloc',
         Events: '(Context location: Riverwood outdoors ,Hold: Whiterun, Buildings to go:Sleeping Giant Inn)'
     }, 'The Narrator');
 
-    assert.equal(entry.kind, 'scene');
-    assert.equal(entry.text, 'Riverwood outdoors - Whiterun Hold');
-    assert.equal(entry.sceneKey, 'riverwood outdoors|whiterun');
+    assert.equal(entry, null);
 });
 
 test('keeps story events and rejects maintenance events', () => {

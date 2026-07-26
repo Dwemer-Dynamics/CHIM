@@ -27,20 +27,21 @@
     <div id="focus-chatbox-modal" class="focus-chatbox-modal hidden focus-position-center" aria-hidden="true">
         <div class="focus-chatbox-backdrop"></div>
         <div class="focus-chatbox-shell">
-            <div class="chatbox-targets-window" aria-label="Conversation Targets">
-                <div class="chatbox-targets-panel">
-                    <div class="chatbox-side-header">Targets</div>
-                    <div id="chatbox-targets-list" class="chatbox-targets-list"></div>
+            <div class="focus-chatbox-primary">
+                <div class="chatbox-targets-window" aria-label="Conversation Targets">
+                    <div class="chatbox-targets-panel">
+                        <div class="chatbox-side-header">Targets</div>
+                        <div id="chatbox-targets-list" class="chatbox-targets-list"></div>
+                    </div>
                 </div>
-            </div>
-            <div class="focus-chatbox-panel" role="dialog" aria-modal="true" aria-label="CHIM Chat">
-                <div class="focus-chatbox-header">
-                    <span>CHIM Chat</span>
-                    <button class="focus-btn focus-btn-close" type="button" title="Close" onclick="closeFocusChatbox()">&times;</button>
-                </div>
-                <div class="focus-chatbox-main">
-                    <div class="chatbox-controls">
-                        <div class="chatbox-control-grid">
+                <div class="focus-chatbox-panel" role="dialog" aria-modal="true" aria-label="CHIM Chat">
+                    <div class="focus-chatbox-header">
+                        <span>CHIM Chat</span>
+                        <button class="focus-btn focus-btn-close" type="button" title="Close" onclick="closeFocusChatbox()">&times;</button>
+                    </div>
+                    <div class="focus-chatbox-main">
+                        <div class="chatbox-controls">
+                            <div class="chatbox-control-grid">
                             <div class="chatbox-control-block">
                                 <div class="chatbox-control-label">Current Target</div>
                                 <div class="chatbox-control-value" id="chatbox-current-target">
@@ -122,9 +123,9 @@
                                     <button id="chatbox-focus-toggle" class="chatbox-focus-toggle off" type="button" aria-pressed="false">OFF</button>
                                 </div>
                             </div>
-                        </div>
+                            </div>
 
-                        <div id="chatbox-profile-menu" class="chatbox-profile-menu hidden" role="dialog" aria-label="Profile and LLM settings">
+                            <div id="chatbox-profile-menu" class="chatbox-profile-menu hidden" role="dialog" aria-label="Profile and LLM settings">
                             <div class="profile-menu-header">
                                 <div>
                                     <div class="profile-menu-eyebrow">Profile &amp; LLM</div>
@@ -171,56 +172,59 @@
                                     <div class="profile-connector-empty">Select a target profile to view its connectors.</div>
                                 </div>
                             </div>
-                        </div>
-
-                    </div>
-                    <section class="focus-chatbox-story" aria-label="Recent story">
-                        <div class="focus-chatbox-story-header">
-                            <span>Recent Story</span>
-                            <span class="focus-chatbox-story-status">Live Event Log</span>
-                        </div>
-                        <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
-                        <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent events...</div>
-                        <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New events</button>
-                    </section>
-                    <textarea
-                        id="focus-chatbox-input"
-                        class="focus-chatbox-input"
-                        rows="2"
-                        placeholder="Type your message here. Enter sends, Ctrl+Enter selects Close, Shift+Enter adds a new line."
-                        spellcheck="false"></textarea>
-                    <div class="focus-chatbox-actions">
-                        <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">
-                            <div class="focus-chatbox-position-picker">
-                                <span class="focus-chatbox-position-label">Position</span>
-                                <div class="focus-chatbox-position-buttons" role="group" aria-label="Choose chatbox position">
-                                    <button id="chatbox-position-top" class="focus-chatbox-position-btn" type="button" data-position="top" title="Move chatbox to top" aria-label="Move chatbox to top">&#8593;</button>
-                                    <button id="chatbox-position-center" class="focus-chatbox-position-btn" type="button" data-position="center" title="Center chatbox" aria-label="Center chatbox">&#8722;</button>
-                                    <button id="chatbox-position-bottom" class="focus-chatbox-position-btn" type="button" data-position="bottom" title="Move chatbox to bottom" aria-label="Move chatbox to bottom">&#8595;</button>
-                                </div>
                             </div>
-                            <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
-                            <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
-                            <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
-                            <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
-                            <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
+
                         </div>
-                        <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
-                            <div class="focus-chatbox-event-controls">
-                                <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
-                                <div class="focus-chatbox-delete-controls">
-                                    <select id="chatbox-delete-events-select" class="chatbox-mode-select focus-chatbox-delete-select" title="Choose how many recent events to delete">
-                                        <option value="20">Last 20</option>
-                                        <option value="50">Last 50</option>
-                                        <option value="100">Last 100</option>
-                                    </select>
-                                    <button id="chatbox-delete-events-confirm" class="focus-btn focus-btn-danger" type="button">Delete</button>
+                        <textarea
+                            id="focus-chatbox-input"
+                            class="focus-chatbox-input"
+                            rows="2"
+                            placeholder="Type your message here. Enter sends, Ctrl+Enter selects Close, Shift+Enter adds a new line."
+                            spellcheck="false"></textarea>
+                        <div class="focus-chatbox-actions">
+                            <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">
+                                <div class="focus-chatbox-position-picker">
+                                    <span class="focus-chatbox-position-label">Position</span>
+                                    <div class="focus-chatbox-position-buttons" role="group" aria-label="Choose chatbox position">
+                                        <button id="chatbox-position-top" class="focus-chatbox-position-btn" type="button" data-position="top" title="Move chatbox to top" aria-label="Move chatbox to top">&#8593;</button>
+                                        <button id="chatbox-position-center" class="focus-chatbox-position-btn" type="button" data-position="center" title="Center chatbox" aria-label="Center chatbox">&#8722;</button>
+                                        <button id="chatbox-position-bottom" class="focus-chatbox-position-btn" type="button" data-position="bottom" title="Move chatbox to bottom" aria-label="Move chatbox to bottom">&#8595;</button>
+                                    </div>
+                                </div>
+                                <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
+                                <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
+                                <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
+                                <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
+                                <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
+                            </div>
+                            <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
+                                <div class="focus-chatbox-event-controls">
+                                    <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
+                                    <div class="focus-chatbox-delete-controls">
+                                        <select id="chatbox-delete-events-select" class="chatbox-mode-select focus-chatbox-delete-select" title="Choose how many recent events to delete">
+                                            <option value="20">Last 20</option>
+                                            <option value="50">Last 50</option>
+                                            <option value="100">Last 100</option>
+                                        </select>
+                                        <button id="chatbox-delete-events-confirm" class="focus-btn focus-btn-danger" type="button">Delete</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+            <section id="focus-chatbox-context" class="focus-chatbox-context" aria-label="Recent context">
+                <div class="focus-chatbox-context-header">
+                    <span>Recent Context</span>
+                    <button id="focus-chatbox-context-toggle" class="focus-chatbox-context-toggle" type="button" aria-expanded="true" title="Minimize recent context">&minus;</button>
+                </div>
+                <div class="focus-chatbox-context-body">
+                    <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
+                    <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent context...</div>
+                    <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New context</button>
+                </div>
+            </section>
         </div>
     </div>
     <script src="layout.js"></script>
