@@ -49,3 +49,10 @@ test('prefetches recent context while the warm-loaded chatbox view is hidden', (
     assert.match(bridge, /static void FetchAndUpdateChatboxStory\(bool replaceExisting\)[\s\S]*?\(!replaceExisting && g_chatboxState\.load\(\) == 0\)/);
     assert.match(bridge, /static void OnChatboxDomReady[\s\S]*?FetchAndUpdateChatboxStory\(true\);/);
 });
+
+test('opens standalone and focused recent context at the newest entry', () => {
+    assert.match(script, /function scrollStoryToBottomAfterLayout\(\)[\s\S]*?defer\(scrollStoryToBottom\)/);
+    assert.match(script, /window\.openFocusChatbox[\s\S]*?scrollStoryToBottomAfterLayout\(\)/);
+    assert.match(script, /window\.onChatboxShown = function\(\)[\s\S]*?scrollStoryToBottomAfterLayout\(\)/);
+    assert.match(bridge, /void ShowChatboxPanel\(\)[\s\S]*?window\.onChatboxShown && window\.onChatboxShown\(\)/);
+});

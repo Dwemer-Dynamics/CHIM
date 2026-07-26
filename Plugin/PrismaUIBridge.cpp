@@ -5811,6 +5811,10 @@ R"CHIM(
         g_chatboxQuickFocusActive.store(false);
         g_prismaUI->Show(g_chatboxView);
         g_chatboxState.store(1);
+        g_prismaUI->Invoke(
+            g_chatboxView,
+            "window.onChatboxShown && window.onChatboxShown()",
+            nullptr);
         CheckAndUpdateChatboxControls(true);
         
         // No auto-focus - player retains control until they press Enter

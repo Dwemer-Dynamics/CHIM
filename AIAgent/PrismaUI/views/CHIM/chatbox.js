@@ -136,6 +136,15 @@
         if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
     }
 
+    function scrollStoryToBottomAfterLayout() {
+        const defer = typeof window.requestAnimationFrame === 'function'
+            ? window.requestAnimationFrame.bind(window)
+            : function(callback) { window.setTimeout(callback, 0); };
+        defer(function() {
+            defer(scrollStoryToBottom);
+        });
+    }
+
     function showStoryEmpty(message) {
         if (!storyEmptyElement || !storyLogElement) return;
         storyEmptyElement.textContent = message || 'No recent context.';
@@ -647,6 +656,7 @@
         setContextPlacement(true);
         focusModal.classList.remove('hidden');
         focusModal.setAttribute('aria-hidden', 'false');
+        scrollStoryToBottomAfterLayout();
         if (storyLogElement && storyLogElement.children.length === 0) {
             showStoryEmpty('Loading recent context...');
         }
@@ -776,6 +786,11 @@
             }
         });
     }
+
+    window.onChatboxShown = function() {
+        setContextPlacement(false);
+        scrollStoryToBottomAfterLayout();
+    };
 
     /**
      * Called when chatbox gains focus from C++
