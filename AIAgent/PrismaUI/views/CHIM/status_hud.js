@@ -78,7 +78,7 @@
         // Model slot
         updateModelSlot(status.model_slot_label);
         
-        // Focus chat
+        // Compact Chat
         focusIndicator.classList.toggle('active', !!status.focus_chat);
     }
     

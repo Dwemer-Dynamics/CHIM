@@ -340,7 +340,7 @@
         focusToggleButton.classList.add(enabled ? 'on' : 'off');
         focusToggleButton.textContent = enabled ? 'ON' : 'OFF';
         focusToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-        focusToggleButton.title = enabled ? 'Disable Focus Chat' : 'Enable Focus Chat';
+        focusToggleButton.title = enabled ? 'Disable Compact Chat' : 'Enable Compact Chat';
     }
 
     function updateFocusPositionButtons() {

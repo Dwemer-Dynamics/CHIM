@@ -5645,7 +5645,7 @@ R"CHIM(
             UpdateChatboxFocusUI(newFocusChatState);
             g_lastChatboxFocusChatSent = newFocusChatState;
             g_chatboxFocusChatSentInitialized = true;
-            RE::DebugNotification(newFocusChatState ? "[CHIM] Focus Chat enabled." : "[CHIM] Focus Chat disabled.");
+            RE::DebugNotification(newFocusChatState ? "[CHIM] Compact Chat enabled." : "[CHIM] Compact Chat disabled.");
         }
     }
 
@@ -6191,8 +6191,8 @@ R"CHIM(
                 // Use HTTPManager::log like the original wheel menus
                 HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@1", 
                     getCurrentTimeMillis(), GetGameTimeStamp()));
-                logger::info("[Settings Menu] Enabled Focus Chat");
-                RE::DebugNotification("[CHIM] Focus Chat enabled.");
+                logger::info("[Settings Menu] Enabled Compact Chat");
+                RE::DebugNotification("[CHIM] Compact Chat enabled.");
                 HideSettingsMenu();
                 return;
             }
