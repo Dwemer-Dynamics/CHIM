@@ -30,6 +30,9 @@
 
 namespace logger = SKSE::log;
 
+extern RE::TESFaction* AIAgentRoleMasterFaction;
+extern void ScriptProxyRun(const std::string& jsonStr);
+
 namespace PrismaUIBridge {
 
     // Static state
@@ -254,6 +257,8 @@ namespace PrismaUIBridge {
     static void OnDiariesCommand(const char* argument);
     static void OnBackgroundLifeDomReady(PrismaView view);
     static void OnBackgroundLifeCommand(const char* argument);
+    static void UpdateBackgroundLifeTargetUI();
+    static bool SetBackgroundLifeEnrollment(bool enabled);
     static void OnSettingsMenuDomReady(PrismaView view);
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
@@ -2800,6 +2805,95 @@ R"CHIM(
     static void OnBackgroundLifeDomReady(PrismaView view) {
         g_backgroundLifeDomReady.store(true);
         SetBackgroundLifeServerUrl(view);
+        UpdateBackgroundLifeTargetUI();
+    }
+
+    static void UpdateBackgroundLifeTargetUI() {
+        if (!g_prismaUI ||
+            !g_backgroundLifeCreated.load() ||
+            g_backgroundLifeView == 0 ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        const auto target = GetPrimaryPrismaTarget("prismaui_background_life");
+        json payload;
+        payload["has_target"] = target.hasTarget;
+        payload["name"] = target.hasTarget ? target.name : "";
+        payload["refid"] = target.hasTarget ? std::format("{:08X}", target.formId) : "";
+        payload["game_enrolled"] = false;
+
+        if (target.hasTarget) {
+            auto* form = RE::TESForm::LookupByID(target.formId);
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            payload["game_enrolled"] =
+                actor &&
+                AIAgentRoleMasterFaction &&
+                actor->IsInFaction(AIAgentRoleMasterFaction);
+        }
+
+        const std::string call =
+            "window.updateBackgroundLifeTarget('" +
+            EscapeForJS(payload.dump()) +
+            "')";
+        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+    }
+
+    static bool SetBackgroundLifeEnrollment(bool enabled) {
+        const auto target = GetPrimaryPrismaTarget("prismaui_background_life_enrollment");
+        if (!target.hasTarget || target.formId == 0) {
+            RE::DebugNotification("[CHIM] Look at an NPC before changing Background Life.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+
+        auto* form = RE::TESForm::LookupByID(target.formId);
+        auto* actor = form ? form->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            RE::DebugNotification("[CHIM] The selected target is not an NPC.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+        if (!AIAgentRoleMasterFaction) {
+            logger::error("[PrismaUIBridge] Cannot change Background Life enrollment - rolemaster faction unavailable");
+            RE::DebugNotification("[CHIM] Background Life faction is unavailable.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : target.name;
+        if (enabled) {
+            actor->AddToFaction(AIAgentRoleMasterFaction, 1);
+        } else {
+            const json command = {
+                {"cmdID", 25},
+                {"targetObjectFormId", target.formId},
+                {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+            };
+            ScriptProxyRun(command.dump());
+        }
+
+        HTTPManager::log(std::format(
+            "{}|{}|{}|{}/{:08X}",
+            enabled ? "enable_bg" : "disable_bg",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            target.formId));
+        logger::info(
+            "[PrismaUIBridge] {} Background Life for {} ({:08X})",
+            enabled ? "Enabled" : "Disabled",
+            npcName,
+            target.formId);
+        RE::DebugNotification(std::format(
+            "[CHIM] Background Life {} for {}.",
+            enabled ? "enabled" : "disabled",
+            npcName).c_str());
+        UpdateBackgroundLifeTargetUI();
+        return true;
     }
 
     static bool IsSafeBackgroundLifeQuery(const std::string& query) {
@@ -2826,7 +2920,41 @@ R"CHIM(
         }
         if (command == "dom_ready") {
             g_backgroundLifeDomReady.store(true);
+            SetBackgroundLifeServerUrl(g_backgroundLifeView);
+            UpdateBackgroundLifeTargetUI();
             FetchBackgroundLifeData("page=1&limit=50");
+            return;
+        }
+        if (command == "target_refresh") {
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        constexpr std::string_view enrollmentPrefix = "enrollment|";
+        if (command.starts_with(enrollmentPrefix)) {
+            const std::string operation = command.substr(enrollmentPrefix.size());
+            if (operation == "enable" || operation == "disable") {
+                SetBackgroundLifeEnrollment(operation == "enable");
+            } else {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life enrollment command");
+            }
+            return;
+        }
+
+        constexpr std::string_view modePrefix = "mode|";
+        if (command.starts_with(modePrefix)) {
+            const std::string actionId = command.substr(modePrefix.size());
+            if (actionId == "mode_inject_log" ||
+                actionId == "mode_inject_chat" ||
+                actionId == "mode_director") {
+                if (ApplyModeSelection(actionId, "Background Life", true)) {
+                    UpdateChatboxModeUI(g_chatboxCurrentMode);
+                    CheckAndUpdateChatboxControls(true);
+                    ShowChatboxPanel();
+                }
+            } else {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life mode command");
+            }
             return;
         }
 
@@ -2895,6 +3023,7 @@ R"CHIM(
 
         g_prismaUI->Show(g_backgroundLifeView);
         SetBackgroundLifeServerUrl(g_backgroundLifeView);
+        UpdateBackgroundLifeTargetUI();
         const bool focused = g_prismaUI->Focus(g_backgroundLifeView, true, false);
         logger::info(
             "[PrismaUIBridge] Background Life panel focus: {}",

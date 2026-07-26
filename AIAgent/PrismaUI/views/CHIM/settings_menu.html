@@ -42,9 +42,6 @@
                     <button class="setting-btn" data-option="mode_narrator" onclick="selectOption('mode_narrator')"
                             onmouseenter="showDescription('Private narrator mode - when you speak, only The Narrator hears the conversation and nearby NPCs do not')"
                             onmouseleave="clearDescription()">Narrator Mode</button>
-                    <button class="setting-btn" data-option="mode_director" onclick="selectOption('mode_director')"
-                            onmouseenter="showDescription('Give direct instructions to NPCs as game director')"
-                            onmouseleave="clearDescription()">Director Mode</button>
                     <button class="setting-btn" data-option="mode_spawn" onclick="selectOption('mode_spawn')"
                             onmouseenter="showDescription('Spawn new characters by describing them')"
                             onmouseleave="clearDescription()">Spawn NPC</button>
@@ -54,12 +51,6 @@
                     <button class="setting-btn" data-option="mode_autochat" onclick="selectOption('mode_autochat')"
                             onmouseenter="showDescription('Speaks for you using your Player Bio and Speech Style. Makes 2 LLM calls: first rewrites your input into in-character dialogue (fast model), then the NPC responds.')"
                             onmouseleave="clearDescription()">Auto Chat</button>
-                    <button class="setting-btn" data-option="mode_inject_log" onclick="selectOption('mode_inject_log')"
-                            onmouseenter="showDescription('Add events to NPC memory without triggering responses')"
-                            onmouseleave="clearDescription()">Inject Event</button>
-                    <button class="setting-btn" data-option="mode_inject_chat" onclick="selectOption('mode_inject_chat')"
-                            onmouseenter="showDescription('Add events to NPC memory and get a response')"
-                            onmouseleave="clearDescription()">Inject & Chat</button>
                 </div>
             </div>
 
@@ -156,9 +147,6 @@
                     <button class="setting-btn" onclick="selectOption('rp_follow')"
                             onmouseenter="showDescription('Command this NPC to follow you')"
                             onmouseleave="clearDescription()">Follow Me</button>
-                    <button class="setting-btn" onclick="selectOption('rp_rename')"
-                            onmouseenter="showDescription('Add this NPC to Background Life')"
-                            onmouseleave="clearDescription()">Add to Background Life</button>
                     <button class="setting-btn" onclick="selectOption('continue_chat')"
                             onmouseenter="showDescription('Ask this NPC to continue speaking naturally')"
                             onmouseleave="clearDescription()">Continue Speaking</button>

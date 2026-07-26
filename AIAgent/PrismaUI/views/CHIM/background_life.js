@@ -11,12 +11,34 @@
     const previousButton = document.getElementById('previous-button');
     const nextButton = document.getElementById('next-button');
     const pageLabel = document.getElementById('page-label');
+    const targetName = document.getElementById('target-name');
+    const targetRefid = document.getElementById('target-refid');
+    const targetStateBadge = document.getElementById('target-state-badge');
+    const targetStatus = document.getElementById('target-status');
+    const enrollmentButton = document.getElementById('enrollment-button');
+    const autoActionsToggle = document.getElementById('auto-actions-toggle');
+    const sendLettersToggle = document.getElementById('send-letters-toggle');
+    const hourlyTrackingToggle = document.getElementById('hourly-tracking-toggle');
+    const triggerActionButton = document.getElementById('trigger-action-button');
+    const requestLetterButton = document.getElementById('request-letter-button');
 
     let currentPage = 1;
     let totalPages = 1;
     let searchTimer = null;
     let rumorCreateInFlight = false;
     let serverBaseUrl = 'http://127.0.0.1:8081/HerikaServer';
+    let currentTarget = {
+        has_target: false,
+        name: '',
+        refid: '',
+        game_enrolled: false,
+        exists: false,
+        background_life_enabled: false,
+        auto_actions: false,
+        send_letters: false,
+        hourly_tracking: false
+    };
+    let targetRequestGeneration = 0;
 
     function sendCommand(command) {
         if (window.chimBackgroundLifeCommand) {
@@ -51,6 +73,200 @@
             baseUrl += '/HerikaServer';
         }
         return baseUrl;
+    }
+
+    function setTargetStatus(message, type) {
+        targetStatus.textContent = message || '';
+        targetStatus.classList.remove('error', 'success');
+        if (type === 'error' || type === 'success') {
+            targetStatus.classList.add(type);
+        }
+    }
+
+    function setTargetControlsBusy(busy) {
+        const available = currentTarget.has_target && currentTarget.exists && currentTarget.background_life_enabled;
+        enrollmentButton.disabled = busy || !currentTarget.has_target;
+        autoActionsToggle.disabled = busy || !available;
+        sendLettersToggle.disabled = busy || !available;
+        hourlyTrackingToggle.disabled = busy || !available;
+        triggerActionButton.disabled = busy || !available;
+        requestLetterButton.disabled = busy || !available;
+    }
+
+    function renderTarget() {
+        if (!currentTarget.has_target) {
+            targetName.textContent = 'Look at an NPC to manage Background Life.';
+            targetRefid.textContent = 'RefID unavailable';
+            targetStateBadge.textContent = 'No target';
+            targetStateBadge.classList.remove('enabled');
+            enrollmentButton.textContent = 'Add to Background Life';
+            enrollmentButton.classList.remove('danger');
+            autoActionsToggle.checked = false;
+            sendLettersToggle.checked = false;
+            hourlyTrackingToggle.checked = false;
+            setTargetControlsBusy(false);
+            return;
+        }
+
+        targetName.textContent = currentTarget.name || 'Unknown NPC';
+        targetRefid.textContent = currentTarget.refid ? `RefID ${currentTarget.refid}` : 'RefID unavailable';
+
+        const enabled = !!currentTarget.background_life_enabled;
+        targetStateBadge.textContent = enabled ? 'Enabled' : 'Disabled';
+        targetStateBadge.classList.toggle('enabled', enabled);
+        enrollmentButton.textContent = enabled ? 'Disable Background Life' : 'Add to Background Life';
+        enrollmentButton.classList.toggle('danger', enabled);
+        autoActionsToggle.checked = !!currentTarget.auto_actions;
+        sendLettersToggle.checked = !!currentTarget.send_letters;
+        hourlyTrackingToggle.checked = !!currentTarget.hourly_tracking;
+        setTargetControlsBusy(false);
+    }
+
+    function targetParameters() {
+        return new URLSearchParams({
+            npc_name: currentTarget.name || '',
+            refid: currentTarget.refid || ''
+        });
+    }
+
+    async function parseJsonResponse(response) {
+        let payload;
+        try {
+            payload = await response.json();
+        } catch (error) {
+            throw new Error(`Server returned invalid JSON (HTTP ${response.status})`);
+        }
+
+        if (!response.ok || !payload || !payload.success) {
+            throw new Error(
+                payload && (payload.error || payload.message)
+                    ? payload.error || payload.message
+                    : `HTTP ${response.status}`
+            );
+        }
+        return payload;
+    }
+
+    async function refreshTargetStatus(options) {
+        const generation = ++targetRequestGeneration;
+        const quiet = !!(options && options.quiet);
+
+        if (!currentTarget.has_target) {
+            renderTarget();
+            return;
+        }
+
+        if (!quiet) {
+            setTargetStatus('Loading NPC settings...', '');
+        }
+
+        try {
+            const response = await fetch(
+                `${serverBaseUrl}/ui/api/background_life_npc.php?${targetParameters().toString()}`,
+                { cache: 'no-store' }
+            );
+            const payload = await parseJsonResponse(response);
+            if (generation !== targetRequestGeneration) {
+                return;
+            }
+
+            currentTarget = Object.assign({}, currentTarget, payload.data || {});
+            renderTarget();
+            if (!currentTarget.exists) {
+                setTargetStatus('This NPC has not been discovered by CHIM yet.', 'error');
+            } else if (!quiet) {
+                setTargetStatus('NPC settings loaded.', 'success');
+            }
+        } catch (error) {
+            if (generation !== targetRequestGeneration) {
+                return;
+            }
+            currentTarget.exists = false;
+            currentTarget.background_life_enabled = !!currentTarget.game_enrolled;
+            renderTarget();
+            setTargetStatus(`Could not load NPC settings: ${error.message || error}`, 'error');
+        }
+    }
+
+    function scheduleTargetRefreshes() {
+        [350, 1000, 2200].forEach(function (delay) {
+            window.setTimeout(function () {
+                refreshTargetStatus({ quiet: true });
+            }, delay);
+        });
+    }
+
+    window.updateBackgroundLifeTarget = function (payload) {
+        try {
+            const nextTarget = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            targetRequestGeneration += 1;
+            currentTarget = Object.assign({
+                has_target: false,
+                name: '',
+                refid: '',
+                game_enrolled: false,
+                exists: false,
+                background_life_enabled: false,
+                auto_actions: false,
+                send_letters: false,
+                hourly_tracking: false
+            }, nextTarget || {});
+            renderTarget();
+            setTargetStatus('', '');
+            refreshTargetStatus();
+        } catch (error) {
+            setTargetStatus('Invalid target data received from CHIM.', 'error');
+        }
+    };
+
+    async function updateTargetSetting(setting, value) {
+        setTargetControlsBusy(true);
+        setTargetStatus('Saving NPC setting...', '');
+
+        try {
+            const body = targetParameters();
+            body.set('operation', 'toggle');
+            body.set('setting', setting);
+            body.set('value', value ? '1' : '0');
+
+            const response = await fetch(`${serverBaseUrl}/ui/api/background_life_npc.php`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: body.toString()
+            });
+            const payload = await parseJsonResponse(response);
+            currentTarget = Object.assign({}, currentTarget, payload.data || {});
+            renderTarget();
+            setTargetStatus(payload.message || 'NPC setting saved.', 'success');
+        } catch (error) {
+            renderTarget();
+            setTargetStatus(`Could not save NPC setting: ${error.message || error}`, 'error');
+        }
+    }
+
+    async function queueImmediateRequest(requestType) {
+        setTargetControlsBusy(true);
+        setTargetStatus(requestType === 'letter' ? 'Queueing letter request...' : 'Queueing action request...', '');
+
+        try {
+            const body = targetParameters();
+            body.set('request_type', requestType);
+            const response = await fetch(`${serverBaseUrl}/ui/api/background_life_request.php`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: body.toString()
+            });
+            const payload = await parseJsonResponse(response);
+            setTargetStatus(payload.message || 'Request queued.', 'success');
+        } catch (error) {
+            setTargetStatus(`Could not queue request: ${error.message || error}`, 'error');
+        } finally {
+            setTargetControlsBusy(false);
+        }
     }
 
     function getRumorModalOverlay() {
@@ -90,6 +306,7 @@
 
     window.setBackgroundLifeServerUrl = function (value) {
         serverBaseUrl = normalizeServerBaseUrl(value);
+        refreshTargetStatus({ quiet: true });
     };
 
     window.openRumorModal = function () {
@@ -331,7 +548,47 @@
         currentPage = 1;
         requestHistory();
     });
-    refreshButton.addEventListener('click', requestHistory);
+    refreshButton.addEventListener('click', function () {
+        requestHistory();
+        sendCommand('target_refresh');
+    });
+    enrollmentButton.addEventListener('click', function () {
+        if (!currentTarget.has_target) {
+            return;
+        }
+
+        const enable = !currentTarget.background_life_enabled;
+        currentTarget.game_enrolled = enable;
+        currentTarget.background_life_enabled = enable;
+        renderTarget();
+        setTargetControlsBusy(true);
+        setTargetStatus(enable ? 'Adding NPC to Background Life...' : 'Disabling Background Life...', '');
+        sendCommand(`enrollment|${enable ? 'enable' : 'disable'}`);
+        scheduleTargetRefreshes();
+    });
+    autoActionsToggle.addEventListener('change', function () {
+        updateTargetSetting('auto_actions', autoActionsToggle.checked);
+    });
+    sendLettersToggle.addEventListener('change', function () {
+        updateTargetSetting('send_letters', sendLettersToggle.checked);
+    });
+    hourlyTrackingToggle.addEventListener('change', function () {
+        updateTargetSetting('hourly_tracking', hourlyTrackingToggle.checked);
+    });
+    triggerActionButton.addEventListener('click', function () {
+        queueImmediateRequest('action');
+    });
+    requestLetterButton.addEventListener('click', function () {
+        queueImmediateRequest('letter');
+    });
+    document.querySelectorAll('.context-button').forEach(function (button) {
+        button.addEventListener('click', function () {
+            const mode = button.getAttribute('data-mode');
+            if (mode) {
+                sendCommand(`mode|${mode}`);
+            }
+        });
+    });
     previousButton.addEventListener('click', function () {
         if (currentPage > 1) {
             currentPage -= 1;

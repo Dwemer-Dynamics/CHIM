@@ -20,6 +20,54 @@
             </div>
         </header>
 
+        <section class="management-panel" aria-label="Background Life controls">
+            <div class="management-card target-card">
+                <div class="section-heading">
+                    <span>Current Target</span>
+                    <span id="target-state-badge" class="state-badge">No target</span>
+                </div>
+                <div id="target-name" class="target-name">Look at an NPC to manage Background Life.</div>
+                <div id="target-refid" class="target-refid">RefID unavailable</div>
+                <button id="enrollment-button" class="control-button primary" type="button" disabled>
+                    Add to Background Life
+                </button>
+                <div id="target-status" class="target-status" aria-live="polite"></div>
+            </div>
+
+            <div class="management-card">
+                <div class="section-heading"><span>NPC Settings</span></div>
+                <label class="toggle-row">
+                    <span>Auto Actions</span>
+                    <input id="auto-actions-toggle" type="checkbox" disabled>
+                </label>
+                <label class="toggle-row">
+                    <span>Send Letters</span>
+                    <input id="send-letters-toggle" type="checkbox" disabled>
+                </label>
+                <label class="toggle-row">
+                    <span>Hourly Tracking</span>
+                    <input id="hourly-tracking-toggle" type="checkbox" disabled>
+                </label>
+            </div>
+
+            <div class="management-card">
+                <div class="section-heading"><span>Immediate Actions</span></div>
+                <div class="button-stack">
+                    <button id="trigger-action-button" class="control-button" type="button" disabled>Trigger Action</button>
+                    <button id="request-letter-button" class="control-button" type="button" disabled>Request Letter</button>
+                </div>
+            </div>
+
+            <div class="management-card">
+                <div class="section-heading"><span>Inject Context</span></div>
+                <div class="button-stack">
+                    <button class="control-button context-button" data-mode="mode_inject_log" type="button">Inject Event</button>
+                    <button class="control-button context-button" data-mode="mode_inject_chat" type="button">Inject &amp; Chat</button>
+                    <button class="control-button context-button" data-mode="mode_director" type="button">Direct Instruction</button>
+                </div>
+            </div>
+        </section>
+
         <section class="toolbar">
             <label>
                 <span>NPC</span>
