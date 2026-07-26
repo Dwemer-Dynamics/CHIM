@@ -1,6 +1,6 @@
 /**
- * CHIM Chatbox - MMO Style
- * Bottom-left positioned chatbox with tabs
+ * CHIM Chatbox
+ * Bottom-left recent context with an independently positioned input modal
  */
 
 * {
@@ -21,22 +21,14 @@ body {
     position: fixed;
     bottom: 20px;
     left: 20px;
-    width: 550px;
-    height: 480px;
-    background: rgba(10, 10, 15, 0.88);
-    border: 1px solid rgba(242, 124, 17, 0.4);
-    border-radius: 6px;
-    box-shadow: 
-        0 4px 20px rgba(0, 0, 0, 0.7),
-        0 0 15px rgba(242, 124, 17, 0.15);
-    /* No backdrop-filter: Ultralight blur can stall ASW in VR. */
-    display: flex;
-    flex-direction: column;
+    width: min(720px, 44vw);
+    height: min(300px, 32vh);
+    z-index: 2001;
     animation: slideIn 0.3s ease;
 }
 
 #chim-chatbox.focus-only-hidden {
-    display: none;
+    display: flex;
 }
 
 /* Corner placement - driven by layout.js */
@@ -1079,10 +1071,6 @@ body {
     max-height: calc(100vh - 40px);
 }
 
-.focus-chatbox-modal.focus-position-bottom .focus-chatbox-shell {
-    flex-direction: column-reverse;
-}
-
 .focus-chatbox-primary {
     display: flex;
     align-items: stretch;
@@ -1270,7 +1258,16 @@ body {
     overflow: hidden;
 }
 
+#chim-chatbox.focus-chatbox-context {
+    position: fixed;
+}
+
+#chim-chatbox.focus-chatbox-context.collapsed {
+    height: auto;
+}
+
 .focus-chatbox-context.collapsed {
+    height: auto;
     min-height: 0;
 }
 
@@ -1553,10 +1550,6 @@ body {
         max-height: 94vh;
     }
 
-    .focus-chatbox-modal.focus-position-bottom .focus-chatbox-shell {
-        flex-direction: column-reverse;
-    }
-
     .focus-chatbox-primary {
         flex-direction: column;
         max-height: none;
@@ -1576,6 +1569,11 @@ body {
     .focus-chatbox-context {
         min-height: 150px;
         max-height: 240px;
+    }
+
+    #chim-chatbox.focus-chatbox-context {
+        width: min(520px, calc(100vw - 40px));
+        height: min(240px, 28vh);
     }
 
     .focus-chatbox-position-picker {

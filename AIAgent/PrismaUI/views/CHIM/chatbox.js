@@ -8,7 +8,6 @@
     'use strict';
 
     // DOM Elements
-    const chatMessages = document.getElementById('chat-messages');
     const chatboxRoot = document.getElementById('chim-chatbox');
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabPanes = document.querySelectorAll('.tab-pane');
@@ -48,12 +47,11 @@
     const storyLogElement = document.getElementById('focus-chatbox-story-log');
     const storyEmptyElement = document.getElementById('focus-chatbox-story-empty');
     const storyNewEventsButton = document.getElementById('focus-chatbox-story-new');
-    const contextPanelElement = document.getElementById('focus-chatbox-context');
+    const contextPanelElement = chatboxRoot;
     const contextToggleButton = document.getElementById('focus-chatbox-context-toggle');
 
     // State
     let currentTab = 'chat';
-    const maxMessages = 100;
     const maxStoryEntries = 150;
     const liveStoryDedupeWindowMs = 15000;
     const recentStoryRetentionMs = 60000;
@@ -346,36 +344,6 @@
         type = type || 'npc';
         source = source || 'llm';
         timestamp = timestamp || getCurrentTime();
-
-        var messageDiv = document.createElement('div');
-        messageDiv.className = 'message ' + type + (source === 'subtitle' ? ' non-llm' : '');
-
-        var headerDiv = document.createElement('div');
-        headerDiv.className = 'message-header';
-
-        var speakerSpan = document.createElement('span');
-        speakerSpan.className = 'message-speaker';
-        speakerSpan.textContent = speaker;
-
-        var timestampSpan = document.createElement('span');
-        timestampSpan.className = 'message-timestamp';
-        timestampSpan.textContent = timestamp;
-
-        headerDiv.appendChild(speakerSpan);
-        headerDiv.appendChild(timestampSpan);
-
-        var textDiv = document.createElement('div');
-        textDiv.className = 'message-text';
-        textDiv.textContent = text;
-
-        messageDiv.appendChild(headerDiv);
-        messageDiv.appendChild(textDiv);
-        chatMessages.appendChild(messageDiv);
-
-        while (chatMessages.children.length > maxMessages) {
-            chatMessages.removeChild(chatMessages.firstChild);
-        }
-        chatMessages.scrollTop = chatMessages.scrollHeight;
 
         if (window.ChimStoryLog) {
             appendStoryEntry(
@@ -1395,9 +1363,9 @@
         }
     }
 
-    function setChatboxViewerVisible(isVisible) {
+    function setChatboxViewerVisible() {
         if (!chatboxRoot) return;
-        chatboxRoot.classList.toggle('focus-only-hidden', !isVisible);
+        chatboxRoot.classList.remove('focus-only-hidden');
     }
 
     function getCurrentTime() {
@@ -1605,11 +1573,6 @@
     renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
     applyContextCollapsed(loadContextCollapsed());
-
-    // Apply corner placement via shared layout manager
-    if (window.chimLayout) {
-        window.chimLayout.apply(chatboxRoot, 'chatbox');
-    }
 
     console.log('[Chatbox] Initialized - display mode + focus modal input');
 })();

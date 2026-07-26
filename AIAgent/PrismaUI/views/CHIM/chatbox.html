@@ -6,23 +6,18 @@
     <title>CHIM Chatbox</title>
     <link rel="stylesheet" href="chatbox.css">
 </head>
-<body data-chim-menu-scale-target=".focus-chatbox-shell">
-    <div id="chim-chatbox">
-        <!-- Tab Bar -->
-        <div class="chatbox-tabs">
-            <button class="tab-button active" data-tab="chat" onclick="switchTab('chat')" aria-label="Chat"></button>
-            <button class="btn-close" onclick="closeChat()" title="Close">&times;</button>
+<body data-chim-menu-scale-target="#chim-chatbox, .focus-chatbox-shell">
+    <section id="chim-chatbox" class="focus-chatbox-context" aria-label="Recent context">
+        <div class="focus-chatbox-context-header">
+            <span>Recent Context</span>
+            <button id="focus-chatbox-context-toggle" class="focus-chatbox-context-toggle" type="button" aria-expanded="true" title="Minimize recent context">&minus;</button>
         </div>
-        
-        <!-- Chat Messages Area -->
-        <div class="chatbox-content">
-            <!-- Chat Tab -->
-            <div id="tab-chat" class="tab-pane active">
-                <div class="messages-container" id="chat-messages">
-                </div>
-            </div>
+        <div class="focus-chatbox-context-body">
+            <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
+            <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent context...</div>
+            <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New context</button>
         </div>
-    </div>
+    </section>
 
     <div id="focus-chatbox-modal" class="focus-chatbox-modal hidden focus-position-center" aria-hidden="true">
         <div class="focus-chatbox-backdrop"></div>
@@ -214,17 +209,6 @@
                     </div>
                 </div>
             </div>
-            <section id="focus-chatbox-context" class="focus-chatbox-context" aria-label="Recent context">
-                <div class="focus-chatbox-context-header">
-                    <span>Recent Context</span>
-                    <button id="focus-chatbox-context-toggle" class="focus-chatbox-context-toggle" type="button" aria-expanded="true" title="Minimize recent context">&minus;</button>
-                </div>
-                <div class="focus-chatbox-context-body">
-                    <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
-                    <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent context...</div>
-                    <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New context</button>
-                </div>
-            </section>
         </div>
     </div>
     <script src="layout.js"></script>
