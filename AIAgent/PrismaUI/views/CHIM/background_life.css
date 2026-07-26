@@ -57,7 +57,8 @@ body {
 
 button,
 select,
-input {
+input,
+textarea {
     font: inherit;
 }
 
@@ -274,6 +275,139 @@ input {
     cursor: default;
 }
 
+.rumor-button {
+    background: rgba(242, 124, 17, 0.18);
+    color: #ffd0a1;
+}
+
+.rumor-modal-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(9, 9, 12, 0.78);
+}
+
+.rumor-modal-overlay.hidden {
+    display: none;
+}
+
+.rumor-modal-panel {
+    width: min(640px, 100%);
+    overflow: hidden;
+    border: 1px solid rgba(242, 124, 17, 0.48);
+    border-radius: 8px;
+    background: #1a1a1e;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+}
+
+.rumor-modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 20px 16px;
+    border-bottom: 1px solid rgba(242, 124, 17, 0.28);
+    background: #121216;
+}
+
+.rumor-modal-header h2 {
+    color: rgb(242, 124, 17);
+    font-size: 1.2rem;
+}
+
+.rumor-modal-header p {
+    margin-top: 5px;
+    color: #a2a2a7;
+    font-size: 0.84rem;
+}
+
+.rumor-modal-close {
+    width: 34px;
+    height: 34px;
+    border: 0;
+    background: transparent;
+    color: #ddd;
+    font-size: 1.8rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.rumor-modal-close:hover {
+    color: rgb(242, 124, 17);
+}
+
+.rumor-form {
+    padding: 20px;
+}
+
+.rumor-form-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(140px, 0.8fr);
+    gap: 14px;
+}
+
+.rumor-field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 14px;
+    color: #f2c48f;
+    font-size: 0.84rem;
+    font-weight: 650;
+}
+
+.rumor-field select,
+.rumor-field input,
+.rumor-field textarea {
+    width: 100%;
+    padding: 10px 11px;
+    border: 1px solid #4a4a50;
+    border-radius: 5px;
+    outline: none;
+    background: #17171b;
+    color: #f0f0f0;
+}
+
+.rumor-field textarea {
+    min-height: 118px;
+    resize: vertical;
+}
+
+.rumor-field select:focus,
+.rumor-field input:focus,
+.rumor-field textarea:focus {
+    border-color: rgb(242, 124, 17);
+}
+
+.rumor-form-status {
+    min-height: 22px;
+    margin: 2px 0 10px;
+    color: #aaa;
+    font-size: 0.84rem;
+}
+
+.rumor-form-status.error {
+    color: #ff9292;
+}
+
+.rumor-form-status.success {
+    color: #86d986;
+}
+
+.rumor-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.rumor-cancel-button {
+    border-color: #4a4a50;
+}
+
 .loading {
     opacity: 0.65;
 }
@@ -295,5 +429,9 @@ input {
 
     .activity-details {
         padding-left: 0;
+    }
+
+    .rumor-form-row {
+        grid-template-columns: 1fr;
     }
 }

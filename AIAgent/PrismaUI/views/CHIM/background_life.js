@@ -15,6 +15,8 @@
     let currentPage = 1;
     let totalPages = 1;
     let searchTimer = null;
+    let rumorCreateInFlight = false;
+    let serverBaseUrl = 'http://127.0.0.1:8081/HerikaServer';
 
     function sendCommand(command) {
         if (window.chimBackgroundLifeCommand) {
@@ -42,6 +44,154 @@
         status.textContent = message;
         status.classList.toggle('error', !!isError);
     }
+
+    function normalizeServerBaseUrl(value) {
+        let baseUrl = String(value || '').trim().replace(/\/+$/, '');
+        if (!/\/HerikaServer$/i.test(baseUrl)) {
+            baseUrl += '/HerikaServer';
+        }
+        return baseUrl;
+    }
+
+    function getRumorModalOverlay() {
+        return document.getElementById('rumor-modal-overlay');
+    }
+
+    function getRumorForm() {
+        return document.getElementById('rumor-create-form');
+    }
+
+    function isRumorModalOpen() {
+        const overlay = getRumorModalOverlay();
+        return !!overlay && !overlay.classList.contains('hidden');
+    }
+
+    function setRumorFormStatus(message, type) {
+        const formStatus = document.getElementById('rumor-form-status');
+        if (!formStatus) {
+            return;
+        }
+
+        formStatus.textContent = message || '';
+        formStatus.classList.remove('error', 'success');
+        if (type === 'error' || type === 'success') {
+            formStatus.classList.add(type);
+        }
+    }
+
+    function setRumorSubmitState(busy) {
+        rumorCreateInFlight = !!busy;
+        const submitButton = document.getElementById('rumor-submit-button');
+        if (submitButton) {
+            submitButton.disabled = !!busy;
+            submitButton.textContent = busy ? 'Creating Rumor...' : 'Create Rumor';
+        }
+    }
+
+    window.setBackgroundLifeServerUrl = function (value) {
+        serverBaseUrl = normalizeServerBaseUrl(value);
+    };
+
+    window.openRumorModal = function () {
+        const overlay = getRumorModalOverlay();
+        const form = getRumorForm();
+        if (!overlay || !form) {
+            return;
+        }
+
+        form.reset();
+        setRumorFormStatus('', '');
+        setRumorSubmitState(false);
+        overlay.classList.remove('hidden');
+        overlay.setAttribute('aria-hidden', 'false');
+
+        const holdSelect = document.getElementById('rumor-hold-select');
+        if (holdSelect) {
+            window.setTimeout(function () {
+                holdSelect.focus();
+            }, 0);
+        }
+    };
+
+    window.closeRumorModal = function () {
+        const overlay = getRumorModalOverlay();
+        const form = getRumorForm();
+        if (!overlay) {
+            return;
+        }
+
+        overlay.classList.add('hidden');
+        overlay.setAttribute('aria-hidden', 'true');
+        setRumorFormStatus('', '');
+        setRumorSubmitState(false);
+        if (form) {
+            form.reset();
+        }
+    };
+
+    window.submitRumorForm = async function (event) {
+        if (event) {
+            event.preventDefault();
+        }
+        if (rumorCreateInFlight) {
+            return;
+        }
+
+        const form = getRumorForm();
+        if (!form) {
+            return;
+        }
+
+        const formData = new FormData(form);
+        const hold = String(formData.get('rumor_hold') || '').trim();
+        const type = String(formData.get('rumor_type') || '').trim();
+        const content = String(formData.get('rumor_content') || '').trim();
+        const rumorLengthDays = String(formData.get('rumor_length_days') || '').trim();
+
+        if (!hold) {
+            setRumorFormStatus('Select a hold for this rumor.', 'error');
+            return;
+        }
+        if (!content) {
+            setRumorFormStatus('Rumor content is required.', 'error');
+            return;
+        }
+        if (rumorLengthDays !== '' && (!/^\d+$/.test(rumorLengthDays) || Number(rumorLengthDays) < 1)) {
+            setRumorFormStatus('Rumor length must be a whole number of at least one day.', 'error');
+            return;
+        }
+
+        setRumorSubmitState(true);
+        setRumorFormStatus('Saving rumor...', '');
+
+        try {
+            const response = await fetch(`${serverBaseUrl}/ui/cmd/action_create_rumor.php`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: new URLSearchParams({
+                    rumor_hold: hold,
+                    rumor_type: type,
+                    rumor_content: content,
+                    rumor_length_days: rumorLengthDays || '7'
+                }).toString()
+            });
+
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok) {
+                throw new Error(result && result.message ? result.message : `HTTP ${response.status}`);
+            }
+
+            setRumorFormStatus(result.message || 'Rumor created successfully.', 'success');
+            window.setTimeout(window.closeRumorModal, 300);
+        } catch (error) {
+            console.error('[CHIM Background Life] Create Rumor failed:', error);
+            setRumorFormStatus(`Create Rumor failed: ${error.message || error}`, 'error');
+        } finally {
+            setRumorSubmitState(false);
+        }
+    };
 
     function renderNpcOptions(npcs) {
         const selected = npcFilter.value;
@@ -197,6 +347,10 @@
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape') {
             event.preventDefault();
+            if (isRumorModalOpen()) {
+                window.closeRumorModal();
+                return;
+            }
             window.closePanel();
         }
     });

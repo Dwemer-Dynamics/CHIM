@@ -2785,8 +2785,21 @@ R"CHIM(
         g_backgroundLifeCreated.store(true);
     }
 
-    static void OnBackgroundLifeDomReady(PrismaView) {
+    static void SetBackgroundLifeServerUrl(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setBackgroundLifeServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    static void OnBackgroundLifeDomReady(PrismaView view) {
         g_backgroundLifeDomReady.store(true);
+        SetBackgroundLifeServerUrl(view);
     }
 
     static bool IsSafeBackgroundLifeQuery(const std::string& query) {
@@ -2881,6 +2894,7 @@ R"CHIM(
         }
 
         g_prismaUI->Show(g_backgroundLifeView);
+        SetBackgroundLifeServerUrl(g_backgroundLifeView);
         const bool focused = g_prismaUI->Focus(g_backgroundLifeView, true, false);
         logger::info(
             "[PrismaUIBridge] Background Life panel focus: {}",
