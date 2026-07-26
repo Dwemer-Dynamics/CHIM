@@ -45,10 +45,15 @@
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
+    const storyLogElement = document.getElementById('focus-chatbox-story-log');
+    const storyEmptyElement = document.getElementById('focus-chatbox-story-empty');
+    const storyNewEventsButton = document.getElementById('focus-chatbox-story-new');
 
     // State
     let currentTab = 'chat';
     const maxMessages = 100;
+    const maxStoryEntries = 150;
+    const liveStoryDedupeWindowMs = 15000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
@@ -75,6 +80,10 @@
     let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
     const targetRowsByKey = new Map();
+    const storyEntryKeys = new Set();
+    const recentStoryContent = new Map();
+    let lastStorySceneKey = '';
+    let narratorStoryName = 'The Narrator';
     
     // Server URL
     const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
@@ -105,6 +114,150 @@
         conversational: { label: 'Conversational', class: 'conversational' },
         group: { label: 'Group', class: 'group' },
         random: { label: 'Random', class: 'random' }
+    };
+
+    function decodeHtmlEntities(value) {
+        const decoder = document.createElement('textarea');
+        decoder.innerHTML = String(value || '');
+        return decoder.value;
+    }
+
+    function isStoryAtBottom() {
+        if (!storyLogElement) return true;
+        return storyLogElement.scrollHeight - storyLogElement.scrollTop - storyLogElement.clientHeight < 48;
+    }
+
+    function scrollStoryToBottom() {
+        if (!storyLogElement) return;
+        storyLogElement.scrollTop = storyLogElement.scrollHeight;
+        if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    function showStoryEmpty(message) {
+        if (!storyEmptyElement || !storyLogElement) return;
+        storyEmptyElement.textContent = message || 'No recent story events.';
+        storyEmptyElement.classList.toggle('hidden', storyLogElement.children.length > 0);
+    }
+
+    function pruneRecentStoryContent(now) {
+        recentStoryContent.forEach(function(seenAt, key) {
+            if (now - seenAt > liveStoryDedupeWindowMs) {
+                recentStoryContent.delete(key);
+            }
+        });
+    }
+
+    function createStoryEntryElement(entry) {
+        const row = document.createElement('div');
+        row.className = 'story-entry ' + entry.kind + (entry.source === 'subtitle' ? ' non-llm' : '');
+
+        const time = document.createElement('span');
+        time.className = 'story-entry-time';
+        time.textContent = entry.timestamp || '';
+
+        const line = document.createElement('div');
+        line.className = 'story-entry-line';
+
+        const speaker = document.createElement('span');
+        speaker.className = 'story-entry-speaker';
+        speaker.textContent = entry.speaker || '';
+
+        const text = document.createElement('span');
+        text.className = 'story-entry-text';
+        text.textContent = entry.text || '';
+
+        if (entry.speaker) line.appendChild(speaker);
+        line.appendChild(text);
+        row.appendChild(time);
+        row.appendChild(line);
+        return row;
+    }
+
+    function appendStoryEntry(entry, isLive) {
+        if (!storyLogElement || !entry) return false;
+
+        const rowKey = entry.rowId > 0 ? 'row:' + entry.rowId : '';
+        if (rowKey && storyEntryKeys.has(rowKey)) return false;
+
+        const now = Date.now();
+        pruneRecentStoryContent(now);
+        if (!isLive && recentStoryContent.has(entry.contentKey)) {
+            if (rowKey) storyEntryKeys.add(rowKey);
+            return false;
+        }
+        if (isLive) recentStoryContent.set(entry.contentKey, now);
+
+        if (entry.kind === 'scene') {
+            if (entry.sceneKey && entry.sceneKey === lastStorySceneKey) {
+                if (rowKey) storyEntryKeys.add(rowKey);
+                return false;
+            }
+            lastStorySceneKey = entry.sceneKey || '';
+        }
+
+        const shouldFollow = isStoryAtBottom();
+        const row = createStoryEntryElement(entry);
+        if (rowKey) {
+            row.dataset.entryKey = rowKey;
+            storyEntryKeys.add(rowKey);
+        }
+        storyLogElement.appendChild(row);
+
+        while (storyLogElement.children.length > maxStoryEntries) {
+            const first = storyLogElement.firstElementChild;
+            if (first && first.dataset.entryKey) storyEntryKeys.delete(first.dataset.entryKey);
+            storyLogElement.removeChild(first);
+        }
+
+        showStoryEmpty();
+        if (shouldFollow) {
+            scrollStoryToBottom();
+        } else if (storyNewEventsButton) {
+            storyNewEventsButton.classList.remove('hidden');
+        }
+        return true;
+    }
+
+    function resetStoryLog() {
+        if (!storyLogElement) return;
+        storyLogElement.innerHTML = '';
+        storyEntryKeys.clear();
+        recentStoryContent.clear();
+        lastStorySceneKey = '';
+        if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    window.updateStoryLog = function(jsonString, replaceExisting) {
+        if (!window.ChimStoryLog || !storyLogElement) return;
+        try {
+            const payload = JSON.parse(jsonString);
+            if (!payload || payload.success !== true || !Array.isArray(payload.data)) {
+                showStoryEmpty('Recent events are unavailable.');
+                return;
+            }
+
+            narratorStoryName = decodeHtmlEntities(payload.narrator_name || narratorStoryName) || 'The Narrator';
+            const normalized = window.ChimStoryLog.normalizeEntries(
+                payload.data,
+                narratorStoryName,
+                decodeHtmlEntities
+            );
+
+            if (replaceExisting) resetStoryLog();
+            normalized.forEach(function(entry) {
+                appendStoryEntry(entry, false);
+            });
+
+            showStoryEmpty('No recent story events.');
+            if (replaceExisting) scrollStoryToBottom();
+        } catch (error) {
+            console.error('[Chatbox] Failed to update story log:', error);
+            showStoryEmpty('Recent events are unavailable.');
+        }
+    };
+
+    window.setStoryLogUnavailable = function() {
+        showStoryEmpty('Recent events are unavailable.');
     };
 
     function setActiveTile(buttons, attribute, value) {
@@ -197,6 +350,13 @@
             chatMessages.removeChild(chatMessages.firstChild);
         }
         chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        if (window.ChimStoryLog) {
+            appendStoryEntry(
+                window.ChimStoryLog.normalizeLiveMessage(speaker, text, timestamp, type, source),
+                true
+            );
+        }
     };
 
     /**
@@ -480,6 +640,9 @@
         applyFocusPosition(loadFocusPosition());
         focusModal.classList.remove('hidden');
         focusModal.setAttribute('aria-hidden', 'false');
+        if (storyLogElement && storyLogElement.children.length === 0) {
+            showStoryEmpty('Loading recent events...');
+        }
         focusInput.value = '';
         setTimeout(function() {
             focusInput.focus();
@@ -574,6 +737,7 @@
             const deletedCount = Number(result.deleted_count || 0);
             pushChatboxSystemMessage(`Deleted ${deletedCount} latest visible event${deletedCount === 1 ? '' : 's'}.`);
             showInGameDebugNotification(`Deleted last ${deletedCount} events`);
+            sendControlCommand('story_refresh');
         } catch (_err) {
             pushChatboxSystemMessage(`Failed to delete the last ${deleteCount} events.`);
         } finally {
@@ -1365,6 +1529,10 @@
         deleteEventSelect.addEventListener('change', function() {
             clearPendingDeleteConfirmation();
         });
+    }
+
+    if (storyNewEventsButton) {
+        storyNewEventsButton.addEventListener('click', scrollStoryToBottom);
     }
 
     if (targetsListElement) {

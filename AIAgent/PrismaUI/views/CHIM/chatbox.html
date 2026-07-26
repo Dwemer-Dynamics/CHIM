@@ -174,6 +174,15 @@
                         </div>
 
                     </div>
+                    <section class="focus-chatbox-story" aria-label="Recent story">
+                        <div class="focus-chatbox-story-header">
+                            <span>Recent Story</span>
+                            <span class="focus-chatbox-story-status">Live Event Log</span>
+                        </div>
+                        <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
+                        <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent events...</div>
+                        <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New events</button>
+                    </section>
                     <textarea
                         id="focus-chatbox-input"
                         class="focus-chatbox-input"
@@ -216,6 +225,7 @@
     </div>
     <script src="layout.js"></script>
     <script src="ui_scale.js"></script>
+    <script src="story_log.js"></script>
     <script src="chatbox.js"></script>
 </body>
 </html>

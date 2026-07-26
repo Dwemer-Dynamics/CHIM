@@ -1075,7 +1075,7 @@ body {
     align-items: stretch;
     gap: 14px;
     max-width: 96vw;
-    max-height: 75vh;
+    max-height: 84vh;
 }
 
 .chatbox-targets-window {
@@ -1091,8 +1091,8 @@ body {
 }
 
 .focus-chatbox-panel {
-    width: min(840px, 74vw);
-    max-height: 75vh;
+    width: min(1080px, 78vw);
+    max-height: 84vh;
     display: flex;
     flex-direction: column;
     background: rgba(12, 12, 18, 0.95);
@@ -1235,8 +1235,170 @@ body {
 .focus-chatbox-main {
     display: flex;
     flex-direction: column;
+    flex: 1;
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
+}
+
+.focus-chatbox-story {
+    position: relative;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 220px;
+    max-height: 440px;
+    background: rgba(6, 6, 10, 0.9);
+    border-bottom: 1px solid rgba(242, 124, 17, 0.22);
+    overflow: hidden;
+}
+
+.focus-chatbox-story-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 14px 6px;
+    color: #d5d5dc;
+    border-bottom: 1px solid rgba(242, 124, 17, 0.14);
+    background: rgba(18, 18, 24, 0.92);
+    font-size: 0.76em;
+    font-weight: 700;
+    letter-spacing: 0.45px;
+    text-transform: uppercase;
+}
+
+.focus-chatbox-story-status {
+    color: #777783;
+    font-size: 0.82em;
+    font-weight: 500;
+}
+
+.focus-chatbox-story-log {
+    flex: 1;
+    min-height: 0;
+    padding: 10px 14px 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: auto;
+}
+
+.focus-chatbox-story-log::-webkit-scrollbar {
+    width: 10px;
+}
+
+.focus-chatbox-story-log::-webkit-scrollbar-track {
+    background: rgba(20, 20, 25, 0.5);
+}
+
+.focus-chatbox-story-log::-webkit-scrollbar-thumb {
+    background: rgba(242, 124, 17, 0.34);
+    border-radius: 5px;
+}
+
+.story-entry {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 10px;
+    padding: 3px 0;
+    color: #d8d8de;
+    font-size: 0.95em;
+    line-height: 1.42;
+}
+
+.story-entry-time {
+    padding-top: 2px;
+    color: #5f5f69;
+    font-size: 0.76em;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.story-entry-line {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.story-entry-speaker {
+    margin-right: 7px;
+    color: #b8b8c0;
+    font-weight: 700;
+}
+
+.story-entry.player .story-entry-speaker {
+    color: #f27c11;
+}
+
+.story-entry.npc .story-entry-speaker {
+    color: #b8b8c0;
+}
+
+.story-entry.narrator .story-entry-speaker {
+    color: #b47cff;
+}
+
+.story-entry.action,
+.story-entry.story,
+.story-entry.death,
+.story-entry.scene,
+.story-entry.system {
+    color: #a9a9b2;
+    font-style: italic;
+}
+
+.story-entry.action .story-entry-speaker,
+.story-entry.story .story-entry-speaker {
+    color: #c89b62;
+}
+
+.story-entry.death .story-entry-speaker {
+    color: #c56f6f;
+}
+
+.story-entry.scene {
+    margin: 7px 0 4px;
+    padding: 6px 0;
+    border-top: 1px solid rgba(242, 124, 17, 0.12);
+    border-bottom: 1px solid rgba(242, 124, 17, 0.12);
+    color: #8f8f99;
+}
+
+.story-entry.scene .story-entry-speaker {
+    color: #9f7f5e;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+}
+
+.story-entry.non-llm {
+    opacity: 0.76;
+}
+
+.focus-chatbox-story-empty {
+    position: absolute;
+    inset: 42px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #777783;
+    font-size: 0.9em;
+    pointer-events: none;
+}
+
+.focus-chatbox-story-empty.hidden,
+.focus-chatbox-story-new.hidden {
+    display: none;
+}
+
+.focus-chatbox-story-new {
+    position: absolute;
+    right: 18px;
+    bottom: 12px;
+    padding: 6px 11px;
+    color: #f1f1f4;
+    background: rgba(44, 31, 20, 0.96);
+    border: 1px solid rgba(242, 124, 17, 0.5);
+    border-radius: 999px;
+    font-size: 0.78em;
+    cursor: pointer;
 }
 
 .focus-chatbox-input {
@@ -1370,6 +1532,11 @@ body {
 
     .focus-chatbox-panel {
         width: 100%;
+    }
+
+    .focus-chatbox-story {
+        min-height: 180px;
+        max-height: 300px;
     }
 
     .focus-chatbox-position-picker {
