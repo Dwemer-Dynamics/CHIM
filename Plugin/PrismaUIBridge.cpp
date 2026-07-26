@@ -2542,6 +2542,74 @@ R"CHIM(
         );
     }
 
+    static bool DecodeChunkedHttpBody(
+        const std::string& encodedBody,
+        std::string& decodedBody,
+        std::string& error) {
+        decodedBody.clear();
+        size_t cursor = 0;
+
+        while (cursor < encodedBody.size()) {
+            const size_t sizeLineEnd = encodedBody.find("\r\n", cursor);
+            if (sizeLineEnd == std::string::npos) {
+                error = "Chunk size line is incomplete";
+                return false;
+            }
+
+            std::string sizeText = encodedBody.substr(cursor, sizeLineEnd - cursor);
+            const size_t extensionStart = sizeText.find(';');
+            if (extensionStart != std::string::npos) {
+                sizeText.resize(extensionStart);
+            }
+
+            const size_t firstDigit = sizeText.find_first_not_of(" \t");
+            const size_t lastDigit = sizeText.find_last_not_of(" \t");
+            if (firstDigit == std::string::npos) {
+                error = "Chunk size is empty";
+                return false;
+            }
+            sizeText = sizeText.substr(firstDigit, lastDigit - firstDigit + 1);
+
+            size_t parsedLength = 0;
+            unsigned long long chunkSize = 0;
+            try {
+                chunkSize = std::stoull(sizeText, &parsedLength, 16);
+            } catch (const std::exception&) {
+                error = "Chunk size is invalid";
+                return false;
+            }
+            if (parsedLength != sizeText.size()) {
+                error = "Chunk size contains invalid characters";
+                return false;
+            }
+
+            cursor = sizeLineEnd + 2;
+            if (chunkSize == 0) {
+                return true;
+            }
+            if (chunkSize > encodedBody.size() - cursor) {
+                error = "Chunk data is incomplete";
+                return false;
+            }
+
+            decodedBody.append(
+                encodedBody,
+                cursor,
+                static_cast<size_t>(chunkSize));
+            cursor += static_cast<size_t>(chunkSize);
+
+            if (cursor + 2 > encodedBody.size() ||
+                encodedBody.compare(cursor, 2, "\r\n") != 0) {
+                error = "Chunk terminator is missing";
+                return false;
+            }
+            cursor += 2;
+        }
+
+        error = "Final chunk is missing";
+        return false;
+    }
+
     static std::string FetchJsonFromServer(const std::string& url) {
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
         constexpr int TIMEOUT_SECONDS = 10;
@@ -2586,7 +2654,8 @@ R"CHIM(
 
         // Build HTTP request
         std::string request = "GET " + url + " HTTP/1.1\r\n";
-        request += "Host: " + host + "\r\n";
+        request += "Host: " + host + ":" + portStr + "\r\n";
+        request += "Accept: application/json\r\n";
         request += "Connection: close\r\n";
         request += "\r\n";
 
@@ -2622,13 +2691,66 @@ R"CHIM(
         closesocket(rawSocket);
         WSACleanup();
 
-        // Extract body from HTTP response
-        size_t headerEnd = response.find("\r\n\r\n");
-        if (headerEnd != std::string::npos) {
-            response = response.substr(headerEnd + 4);
+        const size_t headerEnd = response.find("\r\n\r\n");
+        if (headerEnd == std::string::npos) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP response");
+            return "";
         }
 
-        return response;
+        const std::string headers = response.substr(0, headerEnd);
+        std::string body = response.substr(headerEnd + 4);
+
+        const size_t statusStart = headers.find(' ');
+        if (statusStart == std::string::npos || statusStart + 4 > headers.size()) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP status line");
+            return "";
+        }
+
+        int statusCode = 0;
+        try {
+            statusCode = std::stoi(headers.substr(statusStart + 1, 3));
+        } catch (const std::exception&) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP status code");
+            return "";
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            logger::error("[PrismaUIBridge] JSON request failed with HTTP {}", statusCode);
+            return "";
+        }
+
+        std::string lowercaseHeaders = headers;
+        std::transform(
+            lowercaseHeaders.begin(),
+            lowercaseHeaders.end(),
+            lowercaseHeaders.begin(),
+            [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+
+        const size_t transferEncoding =
+            lowercaseHeaders.find("transfer-encoding:");
+        if (transferEncoding != std::string::npos) {
+            const size_t transferEncodingEnd =
+                lowercaseHeaders.find("\r\n", transferEncoding);
+            const std::string encodingValue = lowercaseHeaders.substr(
+                transferEncoding,
+                transferEncodingEnd == std::string::npos
+                    ? std::string::npos
+                    : transferEncodingEnd - transferEncoding);
+            if (encodingValue.find("chunked") != std::string::npos) {
+                std::string decodedBody;
+                std::string decodeError;
+                if (!DecodeChunkedHttpBody(body, decodedBody, decodeError)) {
+                    logger::error(
+                        "[PrismaUIBridge] Failed to decode chunked JSON response: {}",
+                        decodeError);
+                    return "";
+                }
+                body = std::move(decodedBody);
+            }
+        }
+
+        return body;
     }
 
     // ===== Background Life Functions =====
