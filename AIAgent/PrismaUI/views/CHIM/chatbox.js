@@ -56,6 +56,7 @@
     const maxMessages = 100;
     const maxStoryEntries = 150;
     const liveStoryDedupeWindowMs = 15000;
+    const recentStoryRetentionMs = 60000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
     const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
@@ -142,8 +143,8 @@
     }
 
     function pruneRecentStoryContent(now) {
-        recentStoryContent.forEach(function(seenAt, key) {
-            if (now - seenAt > liveStoryDedupeWindowMs) {
+        recentStoryContent.forEach(function(recent, key) {
+            if (!recent || now - recent.seenAt > recentStoryRetentionMs) {
                 recentStoryContent.delete(key);
             }
         });
@@ -183,11 +184,22 @@
 
         const now = Date.now();
         pruneRecentStoryContent(now);
-        if (!isLive && recentStoryContent.has(entry.contentKey)) {
-            if (rowKey) storyEntryKeys.add(rowKey);
-            return false;
+        const recent = recentStoryContent.get(entry.contentKey);
+        if (!isLive && recent) {
+            const matchesLiveEntry = recent.isLive &&
+                now - recent.seenAt <= liveStoryDedupeWindowMs;
+            const matchesPersistedEntry = !recent.isLive &&
+                window.ChimStoryLog.isPersistedDuplicate(recent.entry, entry);
+            if (matchesLiveEntry || matchesPersistedEntry) {
+                if (rowKey) storyEntryKeys.add(rowKey);
+                return false;
+            }
         }
-        if (isLive) recentStoryContent.set(entry.contentKey, now);
+        recentStoryContent.set(entry.contentKey, {
+            entry: entry,
+            isLive: Boolean(isLive),
+            seenAt: now
+        });
 
         const shouldFollow = isStoryAtBottom();
         const row = createStoryEntryElement(entry);

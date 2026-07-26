@@ -61,3 +61,98 @@ test('keeps story events and rejects maintenance events', () => {
     assert.equal(death.speaker, 'Death');
     assert.equal(maintenance, null);
 });
+
+test('collapses duplicate persisted events within ten seconds', () => {
+    const tamrielicKey = '<a href="#">Tamrielic Time</a>';
+    const entries = storyLog.normalizeEntries([
+        {
+            Event: 'quest',
+            Events: 'Quest Updated "CHIM Quests" new objective: CHIM Quest is active!',
+            [tamrielicKey]: '18th of Last Seed, 4E 201, 19:47',
+            'Time (UTC)': '19-07-2026 22:58:01',
+            ROWID: '21220'
+        },
+        {
+            Event: 'quest',
+            Events: 'Quest Updated "CHIM Quests" new objective: CHIM Quest is active!',
+            [tamrielicKey]: '18th of Last Seed, 4E 201, 19:48',
+            'Time (UTC)': '19-07-2026 22:58:06',
+            ROWID: '21226'
+        },
+        {
+            Event: 'infoaction',
+            Events: 'RANGROO uses Sit',
+            [tamrielicKey]: '18th of Last Seed, 4E 201, 21:12',
+            'Time (UTC)': '19-07-2026 22:59:31',
+            ROWID: '21289'
+        },
+        {
+            Event: 'infoaction',
+            Events: 'RANGROO uses Sit',
+            [tamrielicKey]: '18th of Last Seed, 4E 201, 21:13',
+            'Time (UTC)': '19-07-2026 22:59:33',
+            ROWID: '21290'
+        },
+        {
+            Event: 'infoaction',
+            Events: 'RANGROO uses Sit',
+            [tamrielicKey]: '18th of Last Seed, 4E 201, 21:20',
+            'Time (UTC)': '19-07-2026 23:00:03',
+            ROWID: '21313'
+        }
+    ], 'The Narrator');
+
+    assert.deepEqual(entries.map((entry) => entry.rowId), [21220, 21289, 21313]);
+    assert.deepEqual(entries.map((entry) => entry.timestamp), ['19:47', '21:12', '21:20']);
+});
+
+test('cleans near-whole elapsed hour values without changing real fractions', () => {
+    const entries = storyLog.normalizeEntries([
+        {
+            Event: 'info_timeforward',
+            Events: '0.9999984 hours have passed. Current date/time: Morndas, 9:12 PM.',
+            'Time (UTC)': '19-07-2026 22:59:31',
+            ROWID: '1'
+        },
+        {
+            Event: 'info_timeforward',
+            Events: '9.9999984 hours have passed. Current date/time: Tirdas, 7:19 AM.',
+            'Time (UTC)': '19-07-2026 23:00:05',
+            ROWID: '2'
+        },
+        {
+            Event: 'info_timeforward',
+            Events: '1.5 hours have passed. Current date/time: Tirdas, 8:49 AM.',
+            'Time (UTC)': '19-07-2026 23:00:30',
+            ROWID: '3'
+        }
+    ], 'The Narrator');
+
+    assert.equal(entries[0].text, '1 hour has passed. Current date/time: Morndas, 9:12 PM.');
+    assert.equal(entries[1].text, '10 hours have passed. Current date/time: Tirdas, 7:19 AM.');
+    assert.equal(entries[2].text, '1.5 hours have passed. Current date/time: Tirdas, 8:49 AM.');
+});
+
+test('identifies duplicate persisted events received in separate polling batches', () => {
+    const first = storyLog.normalizeEvent({
+        Event: 'infoaction',
+        Events: 'RANGROO uses Sit',
+        'Time (UTC)': '19-07-2026 22:59:31',
+        ROWID: '21289'
+    }, 'The Narrator');
+    const duplicate = storyLog.normalizeEvent({
+        Event: 'infoaction',
+        Events: 'RANGROO uses Sit',
+        'Time (UTC)': '19-07-2026 22:59:33',
+        ROWID: '21290'
+    }, 'The Narrator');
+    const laterRepeat = storyLog.normalizeEvent({
+        Event: 'infoaction',
+        Events: 'RANGROO uses Sit',
+        'Time (UTC)': '19-07-2026 23:00:03',
+        ROWID: '21313'
+    }, 'The Narrator');
+
+    assert.equal(storyLog.isPersistedDuplicate(first, duplicate), true);
+    assert.equal(storyLog.isPersistedDuplicate(first, laterRepeat), false);
+});
