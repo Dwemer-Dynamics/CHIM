@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const viewRoot = path.resolve(__dirname, '../../AIAgent/PrismaUI/views/CHIM');
 const html = fs.readFileSync(path.join(viewRoot, 'chatbox.html'), 'utf8');
+const masterMenuHtml = fs.readFileSync(path.join(viewRoot, 'master_menu.html'), 'utf8');
 const css = fs.readFileSync(path.join(viewRoot, 'chatbox.css'), 'utf8');
 const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
 const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
@@ -55,4 +56,10 @@ test('opens standalone and focused recent context at the newest entry', () => {
     assert.match(script, /window\.openFocusChatbox[\s\S]*?scrollStoryToBottomAfterLayout\(\)/);
     assert.match(script, /window\.onChatboxShown = function\(\)[\s\S]*?scrollStoryToBottomAfterLayout\(\)/);
     assert.match(bridge, /void ShowChatboxPanel\(\)[\s\S]*?window\.onChatboxShown && window\.onChatboxShown\(\)/);
+});
+
+test('labels the standalone panel as Context Window in the Prisma menu', () => {
+    assert.match(masterMenuHtml, /onclick="selectPanel\('chatbox'\)"[\s\S]*?>Context Window<\/button>/);
+    assert.match(masterMenuHtml, />Context Window<\/div>/);
+    assert.doesNotMatch(masterMenuHtml, />Chatbox View<\/(?:button|div)>/);
 });
