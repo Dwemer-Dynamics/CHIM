@@ -61,7 +61,6 @@
     const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
-    let isContextWindowFocused = false;
     let quickChatMode = false;
     let isFocusChatEnabled = false;
     let currentModeAction = 'mode_standard';
@@ -145,6 +144,15 @@
             defer(scrollStoryToBottom);
         });
     }
+
+    window.scrollStandaloneContext = function(deltaY) {
+        if (!storyLogElement || !contextPanelElement || !chatboxViewerElement) return;
+        if (contextPanelElement.parentElement !== chatboxViewerElement) return;
+
+        const delta = Number(deltaY);
+        if (!Number.isFinite(delta)) return;
+        storyLogElement.scrollTop += Math.max(-1200, Math.min(1200, delta));
+    };
 
     function showStoryEmpty(message) {
         if (!storyEmptyElement || !storyLogElement) return;
@@ -628,7 +636,6 @@
     window.closeChat = function() {
         window.closeFocusChatbox(false);
         isChatFocused = false;
-        isContextWindowFocused = false;
         quickChatMode = false;
         if (window.chimChatboxCommand) {
             window.chimChatboxCommand('close');
@@ -800,19 +807,10 @@
         scrollStoryToBottomAfterLayout();
     };
 
-    window.onContextWindowFocused = function() {
-        isContextWindowFocused = true;
-        isChatFocused = false;
-        quickChatMode = false;
-        setContextPlacement(false);
-        scrollStoryToBottomAfterLayout();
-    };
-
     /**
      * Called when chatbox gains focus from C++
      */
     window.onChatboxFocused = function(quickChat) {
-        isContextWindowFocused = false;
         isChatFocused = true;
         quickChatMode = !!quickChat;
         refreshProfileLlmMode(true);
@@ -825,7 +823,6 @@
      */
     window.onChatboxUnfocused = function() {
         const wasQuickChatMode = quickChatMode;
-        isContextWindowFocused = false;
         isChatFocused = false;
         quickChatMode = false;
         window.closeFocusChatbox(false);
@@ -1517,13 +1514,6 @@
     document.addEventListener('click', function() {
         if (isProfileMenuOpen()) closeProfileMenu();
         closeAllTileMenus();
-    });
-
-    document.addEventListener('keydown', function(e) {
-        if (e.key !== 'Escape' || !isContextWindowFocused || isChatFocused) return;
-        e.preventDefault();
-        e.stopPropagation();
-        window.closeChat();
     });
 
     if (focusToggleButton) {

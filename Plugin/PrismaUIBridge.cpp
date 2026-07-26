@@ -4574,7 +4574,6 @@ R"CHIM(
     static std::atomic<bool> g_chatboxDomReady{false};
     static std::atomic<int> g_chatboxState{0}; // 0=hidden, 1=visible
     static std::atomic<bool> g_chatboxQuickFocusActive{false};
-    static std::atomic<bool> g_chatboxContextFocusActive{false};
 
     static void OnChatboxDomReady(PrismaView view);
     static void OnChatboxCommand(const char* argument);
@@ -5821,63 +5820,6 @@ R"CHIM(
         // No auto-focus - player retains control until they press Enter
     }
 
-    static bool FocusContextWindowPanel() {
-        SetChatboxGameplayInputSuppressed(false);
-        ShowChatboxPanel();
-
-        if (!g_prismaUI || !g_chatboxCreated.load() || !g_prismaUI->IsValid(g_chatboxView)) {
-            logger::warn("[PrismaUIBridge] Cannot focus Context Window - chatbox view is unavailable");
-            return false;
-        }
-
-        if (!g_chatboxDomReady.load()) {
-            logger::info("[PrismaUIBridge] Waiting for Context Window DOM ready...");
-            constexpr auto kDomReadyPollInterval = std::chrono::milliseconds(20);
-            constexpr auto kDomReadyTimeout = std::chrono::milliseconds(3000);
-            const auto waitStart = std::chrono::steady_clock::now();
-            while (!g_chatboxDomReady.load()) {
-                if (std::chrono::steady_clock::now() - waitStart >= kDomReadyTimeout) {
-                    g_chatboxContextFocusActive.store(false);
-                    logger::warn("[PrismaUIBridge] Context Window DOM ready timeout");
-                    return false;
-                }
-                std::this_thread::sleep_for(kDomReadyPollInterval);
-            }
-        }
-
-        if (g_prismaUI->HasFocus(g_chatboxView)) {
-            g_prismaUI->Unfocus(g_chatboxView);
-        }
-
-        bool success = false;
-        for (int attempt = 0; attempt < 4; ++attempt) {
-            // Keep gameplay running and avoid the FocusMenu input lock while still
-            // routing wheel/key events to the standalone context view.
-            success = g_prismaUI->Focus(g_chatboxView, false, true);
-            if (success) {
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-
-        if (!success) {
-            g_chatboxContextFocusActive.store(false);
-            logger::warn("[PrismaUIBridge] Failed to focus Context Window");
-            return false;
-        }
-
-        g_chatboxContextFocusActive.store(true);
-        g_chatboxQuickFocusActive.store(false);
-        g_lastChatboxStorySync = std::chrono::steady_clock::now();
-        FetchAndUpdateChatboxStory(true);
-        g_prismaUI->Invoke(
-            g_chatboxView,
-            "window.onContextWindowFocused && window.onContextWindowFocused()",
-            nullptr);
-        logger::info("[PrismaUIBridge] Context Window focused for interaction");
-        return true;
-    }
-
     void HideChatboxPanel() {
         SetChatboxGameplayInputSuppressed(false);
 
@@ -5887,7 +5829,6 @@ R"CHIM(
 
         ClearChatboxTargetOverride();
         g_chatboxQuickFocusActive.store(false);
-        g_chatboxContextFocusActive.store(false);
 
         // Unfocus first if focused
         if (g_prismaUI->HasFocus(g_chatboxView)) {
@@ -5956,15 +5897,10 @@ R"CHIM(
             logger::debug("[PrismaUIBridge] Chatbox DOM ready after {} ms", waitedMs);
         }
 
-        // Convert a context-only focus into the normal text-entry focus path.
         if (g_prismaUI->HasFocus(g_chatboxView)) {
-            if (g_chatboxContextFocusActive.exchange(false)) {
-                g_prismaUI->Unfocus(g_chatboxView);
-            } else {
-                SetChatboxGameplayInputSuppressed(true);
-                logger::debug("[PrismaUIBridge] Chatbox already focused, skipping");
-                return true;
-            }
+            SetChatboxGameplayInputSuppressed(true);
+            logger::debug("[PrismaUIBridge] Chatbox already focused, skipping");
+            return true;
         }
 
         // Unfocus ALL other views first to avoid focus conflicts
@@ -6004,7 +5940,6 @@ R"CHIM(
         
         if (success) {
             SetChatboxGameplayInputSuppressed(true);
-            g_chatboxContextFocusActive.store(false);
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
@@ -6017,7 +5952,6 @@ R"CHIM(
             // JS opens the centered focus chat modal and focuses its textarea.
         } else {
             SetChatboxGameplayInputSuppressed(false);
-            g_chatboxContextFocusActive.store(false);
             g_chatboxQuickFocusActive.store(false);
             logger::warn("[PrismaUIBridge] Failed to focus chatbox panel");
             // Restore original hidden state so a failed quick-focus does not leave the tabbed chatbox visible.
@@ -6031,7 +5965,6 @@ R"CHIM(
 
     void UnfocusChatboxPanel() {
         SetChatboxGameplayInputSuppressed(false);
-        g_chatboxContextFocusActive.store(false);
 
         if (!g_prismaUI || !g_chatboxCreated.load()) {
             return;
@@ -6653,6 +6586,29 @@ R"CHIM(
             return;
         }
 
+        constexpr std::string_view kContextScrollPrefix = "context_scroll|";
+        if (cmd.starts_with(kContextScrollPrefix)) {
+            if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+                !g_prismaUI->IsValid(g_chatboxView) || g_prismaUI->IsHidden(g_chatboxView)) {
+                return;
+            }
+
+            try {
+                double delta = std::stod(cmd.substr(kContextScrollPrefix.size()));
+                if (!std::isfinite(delta)) {
+                    return;
+                }
+                delta = std::clamp(delta, -1200.0, 1200.0);
+                const std::string jsCall = std::format(
+                    "window.scrollStandaloneContext && window.scrollStandaloneContext({})",
+                    delta);
+                g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+            } catch (const std::exception&) {
+                logger::debug("[PrismaUIBridge] Ignoring invalid Context Window scroll command");
+            }
+            return;
+        }
+
         const bool shouldCloseFirst =
             cmd == "history" ||
             cmd == "diaries" ||
@@ -6691,7 +6647,7 @@ R"CHIM(
         } else if (cmd == "debugger") {
             ToggleDebuggerPanel();
         } else if (cmd == "chatbox") {
-            FocusContextWindowPanel();
+            ToggleChatboxPanel();
         } else if (cmd == "settings") {
             ToggleSettingsMenu();
         } else if (cmd == "questmanager") {
@@ -6787,6 +6743,17 @@ R"CHIM(
         
         // Mark as visible
         g_masterMenuVisible.store(true);
+        if (g_masterMenuDomReady.load()) {
+            const bool contextWindowVisible =
+                g_chatboxCreated.load() &&
+                g_prismaUI->IsValid(g_chatboxView) &&
+                !g_prismaUI->IsHidden(g_chatboxView) &&
+                !g_prismaUI->HasFocus(g_chatboxView);
+            const std::string jsCall = std::format(
+                "window.setContextWindowVisible && window.setContextWindowVisible({})",
+                contextWindowVisible ? "true" : "false");
+            g_prismaUI->Invoke(g_masterMenuView, jsCall.c_str(), nullptr);
+        }
     }
 
     void HideMasterMenu() {

@@ -6,6 +6,7 @@ const path = require('node:path');
 const viewRoot = path.resolve(__dirname, '../../AIAgent/PrismaUI/views/CHIM');
 const html = fs.readFileSync(path.join(viewRoot, 'chatbox.html'), 'utf8');
 const masterMenuHtml = fs.readFileSync(path.join(viewRoot, 'master_menu.html'), 'utf8');
+const masterMenuScript = fs.readFileSync(path.join(viewRoot, 'master_menu.js'), 'utf8');
 const css = fs.readFileSync(path.join(viewRoot, 'chatbox.css'), 'utf8');
 const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
 const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
@@ -64,14 +65,16 @@ test('labels the standalone panel as Context Window in the Prisma menu', () => {
     assert.doesNotMatch(masterMenuHtml, />Chatbox View<\/(?:button|div)>/);
 });
 
-test('focuses a master-menu Context Window without entering text chat', () => {
-    assert.match(bridge, /static bool FocusContextWindowPanel\(\)/);
-    assert.match(bridge, /cmd == "chatbox"[\s\S]*?FocusContextWindowPanel\(\)/);
-    assert.match(bridge, /FocusContextWindowPanel\(\)[\s\S]*?g_prismaUI->Focus\(g_chatboxView, false, true\)/);
-    assert.match(bridge, /g_chatboxContextFocusActive/);
-    assert.match(bridge, /if \(success\)[\s\S]*?g_chatboxContextFocusActive\.store\(false\)/);
-    assert.match(script, /window\.onContextWindowFocused = function\(\)/);
-    assert.match(script, /e\.key !== 'Escape' \|\| !isContextWindowFocused[\s\S]*?window\.closeChat\(\)/);
+test('keeps Context Window passive and relays scrolling through the focused master menu', () => {
+    assert.match(bridge, /cmd == "chatbox"[\s\S]*?ToggleChatboxPanel\(\)/);
+    assert.doesNotMatch(bridge, /FocusContextWindowPanel/);
+    assert.doesNotMatch(bridge, /g_chatboxContextFocusActive/);
+    assert.match(bridge, /kContextScrollPrefix = "context_scroll\|"/);
+    assert.match(bridge, /window\.scrollStandaloneContext && window\.scrollStandaloneContext/);
+    assert.match(script, /window\.scrollStandaloneContext = function\(deltaY\)/);
+    assert.match(masterMenuScript, /window\.setContextWindowVisible = function\(visible\)/);
+    assert.match(masterMenuScript, /function handleContextWindowWheel\(event\)/);
+    assert.match(masterMenuScript, /window\.chimMasterMenuCommand\('context_scroll\|' \+ delta\)/);
     assert.match(bridge, /void ShowChatboxPanel\(\)[\s\S]*?No auto-focus - player retains control/);
 });
 
