@@ -1236,7 +1236,7 @@ Function OpenSettingsWheel()
 		_label[1] = "Fast LLM"
 		_label[2] = "Powerful LLM"
 		_label[3] = "Experimental LLM"
-		_label[4] = "Focus Chat"
+		_label[4] = "Compact Chat"
 		
 		UIExtensions.InitMenu("UIWheelMenu")
 		int j = 0

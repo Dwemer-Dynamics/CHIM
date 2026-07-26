@@ -127,7 +127,7 @@
             // Update active model
             updateActiveModel(overlay.active_model_slot, overlay.active_model_label, overlay.active_model_name);
             
-            // Update focus chat
+            // Update Compact Chat
             updateFocusChat(overlay.focus_chat);
             
             // Update active agents from server only until the DLL starts pushing local spatial truth.
@@ -175,7 +175,7 @@
     }
 
     /**
-     * Update the focus chat display
+     * Update the Compact Chat display
      */
     function updateFocusChat(enabled) {
         const statusClass = enabled ? 'on' : 'off';
