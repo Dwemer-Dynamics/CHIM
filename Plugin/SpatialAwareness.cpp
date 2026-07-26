@@ -27,8 +27,10 @@ namespace SpatialAwareness
         // one writer per frame (Present hook) + a handful of audio-tick readers per second - contention is nil.
         std::mutex g_camSnapMutex;
         RE::NiPoint3 g_camSnapPos{};
+        RE::NiPoint3 g_camSnapFwd{};
         std::chrono::steady_clock::time_point g_camSnapWhen{};
         bool g_camSnapValid = false;
+        bool g_camSnapFwdValid = false;
         constexpr auto kCamSnapMaxAge = std::chrono::milliseconds(500);
     }
 
@@ -55,10 +57,21 @@ namespace SpatialAwareness
             RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
             if (camRoot) {
                 const RE::NiPoint3 p = camRoot->world.translate;
+                // Forward = the rotation's local +Y in world space (HMD look direction).
+                RE::NiPoint3 f = camRoot->world.rotate * RE::NiPoint3(0.0f, 1.0f, 0.0f);
+                const float fLen = f.Length();
+                const bool fOk = std::isfinite(f.x) && std::isfinite(f.y) && std::isfinite(f.z) && fLen > 0.5f;
+                if (fOk) {
+                    f /= fLen;
+                }
                 if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
                     (std::abs(p.x) + std::abs(p.y) + std::abs(p.z)) > 0.001f) {
                     std::lock_guard<std::mutex> lk(g_camSnapMutex);
                     g_camSnapPos = p;
+                    if (fOk) {
+                        g_camSnapFwd = f;
+                        g_camSnapFwdValid = true;
+                    }
                     g_camSnapWhen = std::chrono::steady_clock::now();
                     g_camSnapValid = true;
                 }
@@ -95,6 +108,37 @@ namespace SpatialAwareness
             }
         }
         return actor->GetPosition();
+    }
+
+    bool GetPlayerCameraGaze(RE::NiPoint3& a_outOrigin, RE::NiPoint3& a_outForward)
+    {
+        {
+            std::lock_guard<std::mutex> lk(g_camSnapMutex);
+            if (g_camSnapValid && g_camSnapFwdValid &&
+                (std::chrono::steady_clock::now() - g_camSnapWhen) < kCamSnapMaxAge) {
+                a_outOrigin = g_camSnapPos;
+                a_outForward = g_camSnapFwd;
+                return true;
+            }
+        }
+        // Snapshot stale/absent (menus, loading, hook not firing, flatscreen where the hook is a no-op):
+        // fall back to a live camera-root read. Fine on the game thread; off-thread it carries the same
+        // torn-read risk the snapshot exists to avoid, but a stale ray only mis-aims one gaze poll.
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        RE::NiNode* camRoot = cam ? cam->cameraRoot.get() : nullptr;
+        if (!camRoot) {
+            return false;
+        }
+        const RE::NiPoint3 p = camRoot->world.translate;
+        RE::NiPoint3 f = camRoot->world.rotate * RE::NiPoint3(0.0f, 1.0f, 0.0f);
+        const float fLen = f.Length();
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+            !std::isfinite(f.x) || !std::isfinite(f.y) || !std::isfinite(f.z) || fLen < 0.5f) {
+            return false;
+        }
+        a_outOrigin = p;
+        a_outForward = f / fLen;
+        return true;
     }
 
     namespace
