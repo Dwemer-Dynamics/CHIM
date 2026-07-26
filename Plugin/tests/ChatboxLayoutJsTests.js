@@ -75,6 +75,7 @@ test('keeps Context Window passive and relays scrolling through the focused mast
     assert.match(masterMenuScript, /window\.setContextWindowVisible = function\(visible\)/);
     assert.match(masterMenuScript, /function handleContextWindowWheel\(event\)/);
     assert.match(masterMenuScript, /window\.chimMasterMenuCommand\('context_scroll\|' \+ delta\)/);
+    assert.doesNotMatch(script, /isContextWindowFocused/);
     assert.match(bridge, /void ShowChatboxPanel\(\)[\s\S]*?No auto-focus - player retains control/);
 });
 

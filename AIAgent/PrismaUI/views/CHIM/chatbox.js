@@ -666,7 +666,6 @@
      */
     window.openFocusChatbox = function() {
         if (!focusModal || !focusInput) return;
-        isContextWindowFocused = false;
         applyFocusPosition(loadFocusPosition());
         setContextPlacement(true);
         focusModal.classList.remove('hidden');
