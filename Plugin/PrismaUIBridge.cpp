@@ -6002,6 +6002,7 @@ R"CHIM(
         
         if (success) {
             SetChatboxGameplayInputSuppressed(true);
+            g_chatboxContextFocusActive.store(false);
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
@@ -6014,6 +6015,7 @@ R"CHIM(
             // JS opens the centered focus chat modal and focuses its textarea.
         } else {
             SetChatboxGameplayInputSuppressed(false);
+            g_chatboxContextFocusActive.store(false);
             g_chatboxQuickFocusActive.store(false);
             logger::warn("[PrismaUIBridge] Failed to focus chatbox panel");
             // Restore original hidden state so a failed quick-focus does not leave the tabbed chatbox visible.

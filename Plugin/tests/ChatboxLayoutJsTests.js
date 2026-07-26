@@ -68,6 +68,7 @@ test('focuses a master-menu Context Window without entering text chat', () => {
     assert.match(bridge, /static bool FocusContextWindowPanel\(\)/);
     assert.match(bridge, /cmd == "chatbox"[\s\S]*?FocusContextWindowPanel\(\)/);
     assert.match(bridge, /g_chatboxContextFocusActive/);
+    assert.match(bridge, /if \(success\)[\s\S]*?g_chatboxContextFocusActive\.store\(false\)/);
     assert.match(script, /window\.onContextWindowFocused = function\(\)/);
     assert.match(script, /e\.key !== 'Escape' \|\| !isContextWindowFocused[\s\S]*?window\.closeChat\(\)/);
     assert.match(bridge, /void ShowChatboxPanel\(\)[\s\S]*?No auto-focus - player retains control/);
