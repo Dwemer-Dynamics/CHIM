@@ -143,6 +143,38 @@ textarea {
     color: #9bddaa;
 }
 
+.target-selector {
+    display: block;
+    margin-bottom: 8px;
+}
+
+.target-selector > span {
+    display: block;
+    margin-bottom: 4px;
+    color: #8f8f96;
+    font-size: 0.67rem;
+}
+
+.target-selector select {
+    width: 100%;
+    min-height: 32px;
+    padding: 5px 8px;
+    border: 1px solid #4a4a50;
+    border-radius: 5px;
+    outline: none;
+    background: #17171b;
+    color: #e8e8ea;
+}
+
+.target-selector select:focus {
+    border-color: rgb(242, 124, 17);
+}
+
+.target-selector select:disabled {
+    color: #77777e;
+    cursor: not-allowed;
+}
+
 .target-name {
     overflow: hidden;
     color: #f0f0f2;

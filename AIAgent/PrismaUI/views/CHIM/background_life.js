@@ -13,6 +13,7 @@
     const pageLabel = document.getElementById('page-label');
     const targetName = document.getElementById('target-name');
     const targetRefid = document.getElementById('target-refid');
+    const targetSelect = document.getElementById('target-select');
     const targetStateBadge = document.getElementById('target-state-badge');
     const targetStatus = document.getElementById('target-status');
     const enrollmentButton = document.getElementById('enrollment-button');
@@ -38,6 +39,7 @@
         send_letters: false,
         hourly_tracking: false
     };
+    let nearbyTargets = [];
     let targetRequestGeneration = 0;
 
     function sendCommand(command) {
@@ -85,6 +87,7 @@
 
     function setTargetControlsBusy(busy) {
         const available = currentTarget.has_target && currentTarget.exists && currentTarget.background_life_enabled;
+        targetSelect.disabled = busy || nearbyTargets.length === 0;
         enrollmentButton.disabled = busy || !currentTarget.has_target;
         autoActionsToggle.disabled = busy || !available;
         sendLettersToggle.disabled = busy || !available;
@@ -93,9 +96,32 @@
         requestLetterButton.disabled = busy || !available;
     }
 
+    function renderTargetOptions(selectedFormId) {
+        targetSelect.replaceChildren();
+        if (nearbyTargets.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No activated NPCs nearby';
+            targetSelect.appendChild(option);
+            targetSelect.disabled = true;
+            return;
+        }
+
+        nearbyTargets.forEach(function (target) {
+            const option = document.createElement('option');
+            option.value = String(target.form_id || '');
+            const distance = Number(target.distance);
+            const distanceLabel = Number.isFinite(distance) ? ` (${distance.toFixed(1)}m)` : '';
+            option.textContent = `${target.name || 'Unknown NPC'}${distanceLabel}`;
+            option.selected = option.value === String(selectedFormId || '');
+            targetSelect.appendChild(option);
+        });
+        targetSelect.disabled = false;
+    }
+
     function renderTarget() {
         if (!currentTarget.has_target) {
-            targetName.textContent = 'Look at an NPC to manage Background Life.';
+            targetName.textContent = 'No activated NPCs nearby.';
             targetRefid.textContent = 'RefID unavailable';
             targetStateBadge.textContent = 'No target';
             targetStateBadge.classList.remove('enabled');
@@ -200,6 +226,10 @@
         try {
             const nextTarget = typeof payload === 'string' ? JSON.parse(payload) : payload;
             targetRequestGeneration += 1;
+            nearbyTargets = Array.isArray(nextTarget && nextTarget.targets)
+                ? nextTarget.targets
+                : [];
+            renderTargetOptions(nextTarget && nextTarget.selected_form_id);
             currentTarget = Object.assign({
                 has_target: false,
                 name: '',
@@ -551,6 +581,31 @@
     refreshButton.addEventListener('click', function () {
         requestHistory();
         sendCommand('target_refresh');
+    });
+    targetSelect.addEventListener('change', function () {
+        const selected = nearbyTargets.find(function (target) {
+            return String(target.form_id || '') === targetSelect.value;
+        });
+        if (!selected) {
+            return;
+        }
+
+        targetRequestGeneration += 1;
+        currentTarget = Object.assign({}, currentTarget, {
+            has_target: true,
+            name: selected.name || '',
+            refid: selected.refid || '',
+            game_enrolled: !!selected.game_enrolled,
+            exists: false,
+            background_life_enabled: !!selected.game_enrolled,
+            auto_actions: false,
+            send_letters: false,
+            hourly_tracking: false
+        });
+        renderTarget();
+        setTargetControlsBusy(true);
+        setTargetStatus('Loading selected NPC...', '');
+        sendCommand(`target_select|${targetSelect.value}`);
     });
     enrollmentButton.addEventListener('click', function () {
         if (!currentTarget.has_target) {

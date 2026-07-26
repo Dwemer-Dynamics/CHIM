@@ -51,6 +51,7 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
     static std::atomic<bool> g_backgroundLifeDomReady{false};
+    static uint32_t g_backgroundLifeSelectedFormId = 0;
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
     static std::mutex g_mutex;
@@ -2808,6 +2809,62 @@ R"CHIM(
         UpdateBackgroundLifeTargetUI();
     }
 
+    static std::vector<PlayerSpatialCandidate> CollectBackgroundLifeTargets() {
+        auto targets = SpatialSnapshotManager::GetPlayerConversationTargets(
+            "prismaui_background_life_targets", true);
+        std::erase_if(targets, [](const PlayerSpatialCandidate& candidate) {
+            return !candidate.agent ||
+                   candidate.narrator ||
+                   candidate.agent->isNarrator() ||
+                   !candidate.actor ||
+                   candidate.formId == 0;
+        });
+        std::sort(targets.begin(), targets.end(),
+            [](const PlayerSpatialCandidate& lhs, const PlayerSpatialCandidate& rhs) {
+                if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+                    return lhs.distanceMeters < rhs.distanceMeters;
+                }
+                return lhs.name < rhs.name;
+            });
+        return targets;
+    }
+
+    static PlayerSpatialTargetStatus ResolveBackgroundLifeTarget(
+        const std::vector<PlayerSpatialCandidate>& candidates) {
+        PlayerSpatialTargetStatus resolved{};
+        auto selected = std::find_if(candidates.begin(), candidates.end(),
+            [](const PlayerSpatialCandidate& candidate) {
+                return candidate.formId == g_backgroundLifeSelectedFormId;
+            });
+
+        if (selected == candidates.end()) {
+            const auto primary = ResolvePrimaryPrismaTarget(candidates);
+            if (primary.hasTarget) {
+                g_backgroundLifeSelectedFormId = primary.formId;
+                selected = std::find_if(candidates.begin(), candidates.end(),
+                    [&primary](const PlayerSpatialCandidate& candidate) {
+                        return candidate.formId == primary.formId;
+                    });
+            }
+        }
+
+        if (selected == candidates.end()) {
+            g_backgroundLifeSelectedFormId = 0;
+            resolved.status = "No activated NPCs nearby";
+            return resolved;
+        }
+
+        resolved.hasTarget = true;
+        resolved.name = selected->name;
+        resolved.formId = selected->formId;
+        resolved.distanceMeters = selected->distanceMeters;
+        resolved.source = selected->source;
+        resolved.reason = selected->reason;
+        resolved.status = GetPrismaDisplayStatus(*selected);
+        resolved.targetable = selected->targetable;
+        return resolved;
+    }
+
     static void UpdateBackgroundLifeTargetUI() {
         if (!g_prismaUI ||
             !g_backgroundLifeCreated.load() ||
@@ -2816,12 +2873,15 @@ R"CHIM(
             return;
         }
 
-        const auto target = GetPrimaryPrismaTarget("prismaui_background_life");
+        const auto candidates = CollectBackgroundLifeTargets();
+        const auto target = ResolveBackgroundLifeTarget(candidates);
         json payload;
         payload["has_target"] = target.hasTarget;
         payload["name"] = target.hasTarget ? target.name : "";
         payload["refid"] = target.hasTarget ? std::format("{:08X}", target.formId) : "";
+        payload["selected_form_id"] = target.hasTarget ? target.formId : 0;
         payload["game_enrolled"] = false;
+        payload["targets"] = json::array();
 
         if (target.hasTarget) {
             auto* form = RE::TESForm::LookupByID(target.formId);
@@ -2832,6 +2892,21 @@ R"CHIM(
                 actor->IsInFaction(AIAgentRoleMasterFaction);
         }
 
+        for (const auto& candidate : candidates) {
+            const bool enrolled =
+                candidate.actor &&
+                AIAgentRoleMasterFaction &&
+                candidate.actor->IsInFaction(AIAgentRoleMasterFaction);
+            payload["targets"].push_back({
+                {"form_id", candidate.formId},
+                {"name", candidate.name},
+                {"refid", std::format("{:08X}", candidate.formId)},
+                {"distance", candidate.distanceMeters},
+                {"status", GetPrismaDisplayStatus(candidate)},
+                {"game_enrolled", enrolled}
+            });
+        }
+
         const std::string call =
             "window.updateBackgroundLifeTarget('" +
             EscapeForJS(payload.dump()) +
@@ -2840,9 +2915,9 @@ R"CHIM(
     }
 
     static bool SetBackgroundLifeEnrollment(bool enabled) {
-        const auto target = GetPrimaryPrismaTarget("prismaui_background_life_enrollment");
+        const auto target = ResolveBackgroundLifeTarget(CollectBackgroundLifeTargets());
         if (!target.hasTarget || target.formId == 0) {
-            RE::DebugNotification("[CHIM] Look at an NPC before changing Background Life.");
+            RE::DebugNotification("[CHIM] No activated NPC is nearby.");
             UpdateBackgroundLifeTargetUI();
             return false;
         }
@@ -2926,6 +3001,36 @@ R"CHIM(
             return;
         }
         if (command == "target_refresh") {
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        constexpr std::string_view targetSelectPrefix = "target_select|";
+        if (command.starts_with(targetSelectPrefix)) {
+            const std::string formIdText = command.substr(targetSelectPrefix.size());
+            try {
+                std::size_t parsedLength = 0;
+                const auto parsedFormId =
+                    static_cast<uint32_t>(std::stoul(formIdText, &parsedLength, 10));
+                const auto candidates = CollectBackgroundLifeTargets();
+                const bool validSelection =
+                    parsedLength == formIdText.size() &&
+                    std::any_of(candidates.begin(), candidates.end(),
+                        [parsedFormId](const PlayerSpatialCandidate& candidate) {
+                            return candidate.formId == parsedFormId;
+                        });
+                if (validSelection) {
+                    g_backgroundLifeSelectedFormId = parsedFormId;
+                } else {
+                    logger::warn(
+                        "[PrismaUIBridge] Rejected unavailable Background Life target {}",
+                        formIdText);
+                }
+            } catch (const std::exception&) {
+                logger::warn(
+                    "[PrismaUIBridge] Rejected invalid Background Life target {}",
+                    formIdText);
+            }
             UpdateBackgroundLifeTargetUI();
             return;
         }

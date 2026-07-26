@@ -23,9 +23,15 @@
         <section class="management-panel" aria-label="Background Life controls">
             <div class="management-card target-card">
                 <div class="section-heading">
-                    <span>Current Target</span>
+                    <span>Selected NPC</span>
                     <span id="target-state-badge" class="state-badge">No target</span>
                 </div>
+                <label class="target-selector">
+                    <span>Nearby NPC</span>
+                    <select id="target-select" disabled>
+                        <option value="">No activated NPCs nearby</option>
+                    </select>
+                </label>
                 <div id="target-name" class="target-name">Look at an NPC to manage Background Life.</div>
                 <div id="target-refid" class="target-refid">RefID unavailable</div>
                 <button id="enrollment-button" class="control-button primary" type="button" disabled>
