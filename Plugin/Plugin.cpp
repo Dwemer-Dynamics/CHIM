@@ -2159,6 +2159,7 @@ private:
         auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
+        auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
         std::size_t agentMaintenanceCursor = 0;
         int consecutiveErrors = 0;
         
@@ -2496,9 +2497,12 @@ private:
                             }
                         }
                     } else if (avoidBored) {
-                         logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})", 
-                                      player->IsInCombat(), player->IsAttacking(), player->IsSneaking(), 
-                                      CheckScene(player->GetCurrentScene() ), playerInDialog); 
+                        if (now - lastBoredBusyLogAt >= std::chrono::seconds(30)) {
+                            lastBoredBusyLogAt = now;
+                            logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})",
+                                          player->IsInCombat(), player->IsAttacking(), player->IsSneaking(),
+                                          CheckScene(player->GetCurrentScene()), playerInDialog);
+                        }
                     }
 
                     // DYNAMIC PROFILE TIMER LOGIC
