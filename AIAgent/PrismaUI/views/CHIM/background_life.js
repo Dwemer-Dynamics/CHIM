@@ -13,7 +13,9 @@
     const pageLabel = document.getElementById('page-label');
     const targetName = document.getElementById('target-name');
     const targetRefid = document.getElementById('target-refid');
-    const targetSelect = document.getElementById('target-select');
+    const targetMenuToggle = document.getElementById('target-menu-toggle');
+    const targetMenuLabel = document.getElementById('target-menu-label');
+    const targetMenuOptions = document.getElementById('target-menu-options');
     const targetStateBadge = document.getElementById('target-state-badge');
     const targetStatus = document.getElementById('target-status');
     const enrollmentButton = document.getElementById('enrollment-button');
@@ -22,11 +24,19 @@
     const hourlyTrackingToggle = document.getElementById('hourly-tracking-toggle');
     const triggerActionButton = document.getElementById('trigger-action-button');
     const requestLetterButton = document.getElementById('request-letter-button');
+    const directInstructionButton = document.getElementById('direct-instruction-button');
+    const rosterList = document.getElementById('roster-list');
+    const rosterStatus = document.getElementById('roster-status');
+    const rosterCount = document.getElementById('roster-count');
 
     let currentPage = 1;
     let totalPages = 1;
     let searchTimer = null;
     let rumorCreateInFlight = false;
+    let instructionInFlight = false;
+    let rosterRequestGeneration = 0;
+    let rosterRemoveConfirmKey = '';
+    let rosterRemoveConfirmTimer = null;
     let serverBaseUrl = 'http://127.0.0.1:8081/HerikaServer';
     let currentTarget = {
         has_target: false,
@@ -87,36 +97,83 @@
 
     function setTargetControlsBusy(busy) {
         const available = currentTarget.has_target && currentTarget.exists && currentTarget.background_life_enabled;
-        targetSelect.disabled = busy || nearbyTargets.length === 0;
+        targetMenuToggle.disabled = busy || nearbyTargets.length === 0;
         enrollmentButton.disabled = busy || !currentTarget.has_target;
         autoActionsToggle.disabled = busy || !available;
         sendLettersToggle.disabled = busy || !available;
         hourlyTrackingToggle.disabled = busy || !available;
         triggerActionButton.disabled = busy || !available;
         requestLetterButton.disabled = busy || !available;
+        directInstructionButton.disabled = busy || !available;
     }
 
-    function renderTargetOptions(selectedFormId) {
-        targetSelect.replaceChildren();
-        if (nearbyTargets.length === 0) {
-            const option = document.createElement('option');
-            option.value = '';
-            option.textContent = 'No activated NPCs nearby';
-            targetSelect.appendChild(option);
-            targetSelect.disabled = true;
+    function closeTargetMenu() {
+        targetMenuOptions.classList.add('hidden');
+        targetMenuToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    function chooseNearbyTarget(target) {
+        if (!target) {
             return;
         }
 
+        targetRequestGeneration += 1;
+        currentTarget = Object.assign({}, currentTarget, {
+            has_target: true,
+            name: target.name || '',
+            refid: target.refid || '',
+            selected_form_id: target.form_id || 0,
+            game_enrolled: !!target.game_enrolled,
+            exists: false,
+            background_life_enabled: !!target.game_enrolled,
+            auto_actions: false,
+            send_letters: false,
+            hourly_tracking: false
+        });
+        renderTargetOptions(target.form_id);
+        renderTarget();
+        setTargetControlsBusy(true);
+        setTargetStatus('Loading selected NPC...', '');
+        closeTargetMenu();
+        sendCommand(`target_select|${target.form_id}`);
+    }
+
+    function renderTargetOptions(selectedFormId) {
+        targetMenuOptions.replaceChildren();
+        if (nearbyTargets.length === 0) {
+            targetMenuLabel.textContent = 'No activated NPCs nearby';
+            targetMenuToggle.disabled = true;
+            closeTargetMenu();
+            return;
+        }
+
+        let selectedLabel = '';
         nearbyTargets.forEach(function (target) {
-            const option = document.createElement('option');
-            option.value = String(target.form_id || '');
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'target-option-tile';
+            option.setAttribute('role', 'option');
+            option.dataset.formId = String(target.form_id || '');
             const distance = Number(target.distance);
             const distanceLabel = Number.isFinite(distance) ? ` (${distance.toFixed(1)}m)` : '';
-            option.textContent = `${target.name || 'Unknown NPC'}${distanceLabel}`;
-            option.selected = option.value === String(selectedFormId || '');
-            targetSelect.appendChild(option);
+            const name = target.name || 'Unknown NPC';
+            option.appendChild(document.createTextNode(name));
+            if (distanceLabel) {
+                option.appendChild(createElement('span', 'target-option-distance', distanceLabel.trim()));
+            }
+            const selected = option.dataset.formId === String(selectedFormId || '');
+            option.classList.toggle('is-active', selected);
+            option.setAttribute('aria-selected', selected ? 'true' : 'false');
+            if (selected) {
+                selectedLabel = `${name}${distanceLabel}`;
+            }
+            option.addEventListener('click', function () {
+                chooseNearbyTarget(target);
+            });
+            targetMenuOptions.appendChild(option);
         });
-        targetSelect.disabled = false;
+        targetMenuLabel.textContent = selectedLabel || 'Choose nearby NPC';
+        targetMenuToggle.disabled = false;
     }
 
     function renderTarget() {
@@ -173,6 +230,140 @@
         return payload;
     }
 
+    function setRosterStatus(message, isError) {
+        rosterStatus.textContent = message || '';
+        rosterStatus.classList.toggle('error', !!isError);
+    }
+
+    function clearRosterRemoveConfirmation() {
+        rosterRemoveConfirmKey = '';
+        if (rosterRemoveConfirmTimer) {
+            window.clearTimeout(rosterRemoveConfirmTimer);
+            rosterRemoveConfirmTimer = null;
+        }
+    }
+
+    function renderRoster(entries) {
+        rosterList.replaceChildren();
+        rosterCount.textContent = String((entries || []).length);
+        clearRosterRemoveConfirmation();
+
+        if (!entries || entries.length === 0) {
+            rosterList.appendChild(createElement(
+                'div',
+                'roster-empty',
+                'No NPCs are currently enrolled in Background Life.'
+            ));
+            return;
+        }
+
+        entries.forEach(function (entry) {
+            const row = createElement('article', 'roster-entry');
+            const name = entry.name || 'Unknown NPC';
+            const key = entry.refid || name;
+            row.appendChild(createElement('div', 'roster-name', name));
+
+            const removeButton = createElement('button', 'roster-remove', 'Remove');
+            removeButton.type = 'button';
+            removeButton.title = `Remove ${name} from Background Life`;
+            removeButton.addEventListener('click', function () {
+                if (rosterRemoveConfirmKey !== key) {
+                    clearRosterRemoveConfirmation();
+                    rosterRemoveConfirmKey = key;
+                    removeButton.textContent = 'Confirm';
+                    removeButton.classList.add('confirm');
+                    rosterRemoveConfirmTimer = window.setTimeout(function () {
+                        rosterRemoveConfirmKey = '';
+                        removeButton.textContent = 'Remove';
+                        removeButton.classList.remove('confirm');
+                    }, 3500);
+                    return;
+                }
+                removeRosterNpc(entry, removeButton);
+            });
+            row.appendChild(removeButton);
+
+            row.appendChild(createElement(
+                'div',
+                'roster-activity',
+                entry.activity || 'No Background Life activity recorded yet.'
+            ));
+            if (entry.tamrielic_time) {
+                row.appendChild(createElement('div', 'roster-time', entry.tamrielic_time));
+            }
+            rosterList.appendChild(row);
+        });
+    }
+
+    async function refreshRoster() {
+        const generation = ++rosterRequestGeneration;
+        setRosterStatus('Loading NPCs...', false);
+
+        try {
+            const response = await fetch(
+                `${serverBaseUrl}/ui/api/background_life_npc.php?operation=list`,
+                { cache: 'no-store' }
+            );
+            const payload = await parseJsonResponse(response);
+            if (generation !== rosterRequestGeneration) {
+                return;
+            }
+            const roster = Array.isArray(payload.roster) ? payload.roster : [];
+            renderRoster(roster);
+            setRosterStatus(
+                roster.length === 1 ? '1 enrolled NPC' : `${roster.length} enrolled NPCs`,
+                false
+            );
+        } catch (error) {
+            if (generation !== rosterRequestGeneration) {
+                return;
+            }
+            renderRoster([]);
+            setRosterStatus(`Could not load NPCs: ${error.message || error}`, true);
+        }
+    }
+
+    async function removeRosterNpc(entry, button) {
+        clearRosterRemoveConfirmation();
+        button.disabled = true;
+        button.textContent = 'Removing...';
+        setRosterStatus(`Removing ${entry.name || 'NPC'}...`, false);
+
+        try {
+            const body = new URLSearchParams({
+                operation: 'disable',
+                npc_name: entry.name || '',
+                refid: entry.refid || ''
+            });
+            const response = await fetch(`${serverBaseUrl}/ui/api/background_life_npc.php`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: body.toString()
+            });
+            const payload = await parseJsonResponse(response);
+            const formId = parseInt(String(entry.refid || '').replace(/^0x/i, ''), 16);
+            if (Number.isFinite(formId) && formId > 0) {
+                sendCommand(`roster_remove|${formId}`);
+            }
+            if (
+                currentTarget.has_target &&
+                String(currentTarget.refid || '').toUpperCase() === String(entry.refid || '').toUpperCase()
+            ) {
+                currentTarget.background_life_enabled = false;
+                currentTarget.game_enrolled = false;
+                renderTarget();
+            }
+            setRosterStatus(payload.message || 'NPC removed from Background Life.', false);
+            await refreshRoster();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = 'Remove';
+            setRosterStatus(`Could not remove NPC: ${error.message || error}`, true);
+        }
+    }
+
     async function refreshTargetStatus(options) {
         const generation = ++targetRequestGeneration;
         const quiet = !!(options && options.quiet);
@@ -218,6 +409,7 @@
         [350, 1000, 2200].forEach(function (delay) {
             window.setTimeout(function () {
                 refreshTargetStatus({ quiet: true });
+                refreshRoster();
             }, delay);
         });
     }
@@ -276,13 +468,21 @@
         }
     }
 
-    async function queueImmediateRequest(requestType) {
+    async function queueImmediateRequest(requestType, instruction) {
         setTargetControlsBusy(true);
-        setTargetStatus(requestType === 'letter' ? 'Queueing letter request...' : 'Queueing action request...', '');
+        const pendingMessages = {
+            letter: 'Queueing letter request...',
+            instruction: 'Queueing direct instruction...',
+            action: 'Queueing action request...'
+        };
+        setTargetStatus(pendingMessages[requestType] || 'Queueing request...', '');
 
         try {
             const body = targetParameters();
             body.set('request_type', requestType);
+            if (requestType === 'instruction') {
+                body.set('instruction', instruction || '');
+            }
             const response = await fetch(`${serverBaseUrl}/ui/api/background_life_request.php`, {
                 method: 'POST',
                 headers: {
@@ -292,8 +492,10 @@
             });
             const payload = await parseJsonResponse(response);
             setTargetStatus(payload.message || 'Request queued.', 'success');
+            return payload;
         } catch (error) {
             setTargetStatus(`Could not queue request: ${error.message || error}`, 'error');
+            return null;
         } finally {
             setTargetControlsBusy(false);
         }
@@ -337,6 +539,7 @@
     window.setBackgroundLifeServerUrl = function (value) {
         serverBaseUrl = normalizeServerBaseUrl(value);
         refreshTargetStatus({ quiet: true });
+        refreshRoster();
     };
 
     window.openRumorModal = function () {
@@ -374,6 +577,110 @@
         if (form) {
             form.reset();
         }
+    };
+
+    function getInstructionModalOverlay() {
+        return document.getElementById('instruction-modal-overlay');
+    }
+
+    function isInstructionModalOpen() {
+        const overlay = getInstructionModalOverlay();
+        return !!overlay && !overlay.classList.contains('hidden');
+    }
+
+    function setInstructionFormStatus(message, type) {
+        const formStatus = document.getElementById('instruction-form-status');
+        if (!formStatus) {
+            return;
+        }
+        formStatus.textContent = message || '';
+        formStatus.classList.remove('error', 'success');
+        if (type === 'error' || type === 'success') {
+            formStatus.classList.add(type);
+        }
+    }
+
+    function setInstructionSubmitState(busy) {
+        instructionInFlight = !!busy;
+        const submitButton = document.getElementById('instruction-submit-button');
+        if (submitButton) {
+            submitButton.disabled = !!busy;
+            submitButton.textContent = busy ? 'Queueing...' : 'Queue Instruction';
+        }
+    }
+
+    window.openInstructionModal = function () {
+        if (!currentTarget.has_target || !currentTarget.background_life_enabled) {
+            setTargetStatus('Select an enrolled Background Life NPC first.', 'error');
+            return;
+        }
+
+        const overlay = getInstructionModalOverlay();
+        const form = document.getElementById('instruction-form');
+        const target = document.getElementById('instruction-modal-target');
+        if (!overlay || !form) {
+            return;
+        }
+
+        form.reset();
+        if (target) {
+            target.textContent = `Tell ${currentTarget.name || 'the selected NPC'} what to attempt next.`;
+        }
+        setInstructionFormStatus('', '');
+        setInstructionSubmitState(false);
+        overlay.classList.remove('hidden');
+        overlay.setAttribute('aria-hidden', 'false');
+        const input = document.getElementById('instruction-input');
+        if (input) {
+            window.setTimeout(function () {
+                input.focus();
+            }, 0);
+        }
+    };
+
+    window.closeInstructionModal = function () {
+        if (instructionInFlight) {
+            return;
+        }
+        const overlay = getInstructionModalOverlay();
+        const form = document.getElementById('instruction-form');
+        if (!overlay) {
+            return;
+        }
+        overlay.classList.add('hidden');
+        overlay.setAttribute('aria-hidden', 'true');
+        setInstructionFormStatus('', '');
+        if (form) {
+            form.reset();
+        }
+    };
+
+    window.submitInstructionForm = async function (event) {
+        if (event) {
+            event.preventDefault();
+        }
+        if (instructionInFlight) {
+            return;
+        }
+
+        const input = document.getElementById('instruction-input');
+        const instruction = input ? input.value.trim() : '';
+        if (!instruction) {
+            setInstructionFormStatus('Enter an instruction for this NPC.', 'error');
+            return;
+        }
+
+        setInstructionSubmitState(true);
+        setInstructionFormStatus('Queueing Background Life instruction...', '');
+        const result = await queueImmediateRequest('instruction', instruction);
+        setInstructionSubmitState(false);
+        if (!result) {
+            setInstructionFormStatus('Could not queue the instruction.', 'error');
+            return;
+        }
+
+        setInstructionFormStatus(result.message || 'Instruction queued.', 'success');
+        window.setTimeout(window.closeInstructionModal, 350);
     };
 
     window.submitRumorForm = async function (event) {
@@ -580,32 +887,16 @@
     });
     refreshButton.addEventListener('click', function () {
         requestHistory();
+        refreshRoster();
         sendCommand('target_refresh');
     });
-    targetSelect.addEventListener('change', function () {
-        const selected = nearbyTargets.find(function (target) {
-            return String(target.form_id || '') === targetSelect.value;
-        });
-        if (!selected) {
+    targetMenuToggle.addEventListener('click', function () {
+        if (targetMenuToggle.disabled) {
             return;
         }
-
-        targetRequestGeneration += 1;
-        currentTarget = Object.assign({}, currentTarget, {
-            has_target: true,
-            name: selected.name || '',
-            refid: selected.refid || '',
-            game_enrolled: !!selected.game_enrolled,
-            exists: false,
-            background_life_enabled: !!selected.game_enrolled,
-            auto_actions: false,
-            send_letters: false,
-            hourly_tracking: false
-        });
-        renderTarget();
-        setTargetControlsBusy(true);
-        setTargetStatus('Loading selected NPC...', '');
-        sendCommand(`target_select|${targetSelect.value}`);
+        const opening = targetMenuOptions.classList.contains('hidden');
+        targetMenuOptions.classList.toggle('hidden', !opening);
+        targetMenuToggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
     });
     enrollmentButton.addEventListener('click', function () {
         if (!currentTarget.has_target) {
@@ -636,6 +927,7 @@
     requestLetterButton.addEventListener('click', function () {
         queueImmediateRequest('letter');
     });
+    directInstructionButton.addEventListener('click', window.openInstructionModal);
     document.querySelectorAll('.context-button').forEach(function (button) {
         button.addEventListener('click', function () {
             const mode = button.getAttribute('data-mode');
@@ -659,11 +951,28 @@
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape') {
             event.preventDefault();
+            if (isInstructionModalOpen()) {
+                window.closeInstructionModal();
+                return;
+            }
             if (isRumorModalOpen()) {
                 window.closeRumorModal();
                 return;
             }
+            if (!targetMenuOptions.classList.contains('hidden')) {
+                closeTargetMenu();
+                return;
+            }
             window.closePanel();
+        }
+    });
+    document.addEventListener('click', function (event) {
+        if (
+            !targetMenuOptions.classList.contains('hidden') &&
+            !targetMenuOptions.contains(event.target) &&
+            !targetMenuToggle.contains(event.target)
+        ) {
+            closeTargetMenu();
         }
     });
     document.addEventListener('DOMContentLoaded', function () {

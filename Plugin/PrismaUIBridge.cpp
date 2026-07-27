@@ -2971,6 +2971,44 @@ R"CHIM(
         return true;
     }
 
+    static void RemoveBackgroundLifeRosterActor(uint32_t formId) {
+        if (formId == 0 || !AIAgentRoleMasterFaction) {
+            return;
+        }
+
+        auto* form = RE::TESForm::LookupByID(formId);
+        auto* actor = form ? form->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::info(
+                "[PrismaUIBridge] Background Life roster removal saved on server; actor {:08X} is not currently available",
+                formId);
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : "Unknown NPC";
+        const json command = {
+            {"cmdID", 25},
+            {"targetObjectFormId", formId},
+            {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+        };
+        ScriptProxyRun(command.dump());
+        HTTPManager::log(std::format(
+            "disable_bg|{}|{}|{}/{:08X}",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            formId));
+        logger::info(
+            "[PrismaUIBridge] Removed Background Life roster NPC {} ({:08X})",
+            npcName,
+            formId);
+        UpdateBackgroundLifeTargetUI();
+    }
+
     static bool IsSafeBackgroundLifeQuery(const std::string& query) {
         if (query.empty() || query.size() > 1024) {
             return false;
@@ -3046,12 +3084,33 @@ R"CHIM(
             return;
         }
 
+        constexpr std::string_view rosterRemovePrefix = "roster_remove|";
+        if (command.starts_with(rosterRemovePrefix)) {
+            const std::string formIdText = command.substr(rosterRemovePrefix.size());
+            try {
+                std::size_t parsedLength = 0;
+                const auto parsedFormId =
+                    static_cast<uint32_t>(std::stoul(formIdText, &parsedLength, 10));
+                if (parsedLength == formIdText.size() && parsedFormId != 0) {
+                    RemoveBackgroundLifeRosterActor(parsedFormId);
+                } else {
+                    logger::warn(
+                        "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
+                        formIdText);
+                }
+            } catch (const std::exception&) {
+                logger::warn(
+                    "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
+                    formIdText);
+            }
+            return;
+        }
+
         constexpr std::string_view modePrefix = "mode|";
         if (command.starts_with(modePrefix)) {
             const std::string actionId = command.substr(modePrefix.size());
             if (actionId == "mode_inject_log" ||
-                actionId == "mode_inject_chat" ||
-                actionId == "mode_director") {
+                actionId == "mode_inject_chat") {
                 if (ApplyModeSelection(actionId, "Background Life", true)) {
                     UpdateChatboxModeUI(g_chatboxCurrentMode);
                     CheckAndUpdateChatboxControls(true);
