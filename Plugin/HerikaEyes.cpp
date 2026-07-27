@@ -481,6 +481,15 @@ namespace {
     std::unordered_map<RE::FormID, std::chrono::steady_clock::time_point> g_lastGazeEmit;
 
     bool IsGazeCameraEligible() {
+        // Never track gaze during a scripted conversation: in dialogue the player stares at the
+        // NPC's face far past the dwell threshold, and the resulting reaction is a full model
+        // turn that stomps the vanilla dialogue state (the NPC wedges "busy" and quest dialogue
+        // can never resume). The PollPlayerGaze ineligible path also resets the dwell, so
+        // closing the menu never fires a stare accumulated while it was open.
+        if (auto* ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+            return false;
+        }
+
         if (REL::Module::IsVR()) { return true; }
 
         auto* camera = RE::PlayerCamera::GetSingleton();
