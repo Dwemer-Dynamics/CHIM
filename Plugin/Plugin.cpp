@@ -2487,6 +2487,7 @@ private:
                                     const std::string selectedActorName = displayName ? displayName : "";
                                     logger::info("[BORED_TIMER] Event sent to {}", selectedActorName);
                                     ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor, selectedActorName]() {
+                                        SpeakManager::getInstance().startRechatChainForAutonomousEvent();
                                         HTTPManager::stream(std::format("bored|{}|{}|{}|{}", getCurrentTimeMillis(),
                                                                         GetGameTimeStamp(), GetPlayerLocation(),
                                                                         selectedActorName),

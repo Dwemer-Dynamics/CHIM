@@ -2308,6 +2308,22 @@ void SpeakManager::startRechatChainForPlayerInput()
     logger::info("[RECHAT_CHAIN] Opened a fresh chain from player input");
 }
 
+void SpeakManager::startRechatChainForAutonomousEvent()
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    currentRechatChainId.clear();
+    rechatChainClosed = false;
+    rechatChainHardCancelled = false;
+    rechatInFlight = false;
+    rechatInFlightSpeaker.clear();
+    pendingRechatRetry = PendingRechatRetry{};
+    lastRechatter.clear();
+    audienceSnapshotKey.clear();
+    audienceSnapshotCompanions.clear();
+    audienceSnapshotReady = false;
+    logger::info("[RECHAT_CHAIN] Opened a fresh chain from autonomous event");
+}
+
 bool SpeakManager::isRechatChainClosed()
 {
     std::lock_guard<std::mutex> lock(mtx);
