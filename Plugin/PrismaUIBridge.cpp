@@ -3035,7 +3035,10 @@ R"CHIM(
             g_backgroundLifeDomReady.store(true);
             SetBackgroundLifeServerUrl(g_backgroundLifeView);
             UpdateBackgroundLifeTargetUI();
-            FetchBackgroundLifeData("page=1&limit=50");
+            g_prismaUI->Invoke(
+                g_backgroundLifeView,
+                "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+                nullptr);
             return;
         }
         if (command == "target_refresh") {
@@ -3194,7 +3197,10 @@ R"CHIM(
             focused ? "SUCCESS" : "FAILED");
 
         if (g_backgroundLifeDomReady.load()) {
-            FetchBackgroundLifeData("page=1&limit=50");
+            g_prismaUI->Invoke(
+                g_backgroundLifeView,
+                "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+                nullptr);
         }
     }
 

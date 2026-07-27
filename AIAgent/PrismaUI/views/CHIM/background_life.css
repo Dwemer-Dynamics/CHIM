@@ -210,7 +210,6 @@ body {
 }
 
 button,
-select,
 input,
 textarea {
     font: inherit;
@@ -312,6 +311,14 @@ textarea {
     position: relative;
 }
 
+.compact-tile-selector {
+    width: 100%;
+}
+
+.compact-tile-selector > input[type="hidden"] {
+    display: none;
+}
+
 .target-tile-trigger {
     width: 100%;
     min-height: 32px;
@@ -376,6 +383,14 @@ textarea {
     border-radius: 6px;
     background: #17171b;
     box-shadow: 0 14px 30px rgba(0, 0, 0, 0.62);
+}
+
+.compact-tile-selector .target-tile-options {
+    width: max(210px, 100%);
+}
+
+.compact-tile-selector .compact-option-grid {
+    width: max(160px, 100%);
 }
 
 .target-tile-options.hidden {
@@ -503,13 +518,15 @@ textarea {
     background: #202025;
 }
 
-.toolbar label {
+.toolbar label,
+.toolbar-field {
     display: flex;
     flex-direction: column;
     gap: 5px;
 }
 
-.toolbar label > span {
+.toolbar label > span,
+.toolbar-field > span {
     color: #a9a9ad;
     font-size: 0.7rem;
     font-weight: 700;
@@ -517,7 +534,10 @@ textarea {
     letter-spacing: 0.07em;
 }
 
-.toolbar select,
+.toolbar .target-tile-trigger {
+    min-height: 36px;
+}
+
 .toolbar input {
     width: 100%;
     min-height: 36px;
@@ -529,7 +549,6 @@ textarea {
     color: #f0f0f0;
 }
 
-.toolbar select:focus,
 .toolbar input:focus {
     border-color: rgb(242, 124, 17);
 }
@@ -762,7 +781,6 @@ textarea {
     font-weight: 650;
 }
 
-.rumor-field select,
 .rumor-field input,
 .rumor-field textarea {
     width: 100%;
@@ -779,7 +797,11 @@ textarea {
     resize: vertical;
 }
 
-.rumor-field select:focus,
+.rumor-field .target-tile-trigger {
+    min-height: 39px;
+    padding: 10px 11px;
+}
+
 .rumor-field input:focus,
 .rumor-field textarea:focus {
     border-color: rgb(242, 124, 17);
