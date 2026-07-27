@@ -103,6 +103,14 @@ namespace Papyrus {
     int shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       std::string hints, int mode);
 
+    int captureItemModelImage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                              RE::StaticFunctionTag*, std::string plugin, std::string baseid,
+                              std::string runtimeFormId, std::string itemName, int formType, int cropX, int cropY,
+                              int cropW, int cropH);
+
+    int captureAllItemModelImages(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                  RE::StaticFunctionTag*);
+
     int isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int setConf(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,

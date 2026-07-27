@@ -238,6 +238,20 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		if (voiceUploadResult == 0)
 			Debug.Notification("[CHIM] Voice samples uploaded.")
 		endif
+	elseif (actionId == "tools_capture_item_model_image")
+		Debug.Notification("[CHIM] Opening item image selector.")
+		int itemImageResult = RunToolsCaptureItemModelImage()
+		if (itemImageResult == 0)
+			Debug.Notification("[CHIM] Item image selector opened.")
+		elseif (itemImageResult == 1)
+			Debug.Notification("[CHIM] PrismaUI is not available.")
+		elseif (itemImageResult == 2)
+			Debug.Notification("[CHIM] Item image capture is already running.")
+		elseif (itemImageResult == 3)
+			Debug.Notification("[CHIM] No item forms found.")
+		else
+			Debug.Notification("[CHIM] Item image batch failed.")
+		endif
 	elseif (StringUtil.Find(actionId, "sg_") == 0)
 		; Soulgaze actions (check if starts with "sg_")
 		int mode = AIAgentFunctions.get_conf_i("_sgmode")
@@ -972,6 +986,10 @@ EndFunction
 
 int Function RunToolsSendAllVoiceSamples() global
 	return AIAgentFunctions.sendAllVoices()
+EndFunction
+
+int Function RunToolsCaptureItemModelImage() global
+	return AIAgentFunctions.captureAllItemModelImages()
 EndFunction
 
 Function sendAllLocationsOld() global

@@ -1,0 +1,515 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: transparent;
+            color: rgba(255, 255, 255, 0.82);
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+
+        button,
+        input {
+            font: inherit;
+        }
+
+        #previewRect {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: min(72vw, 72vh, 760px);
+            height: min(72vw, 72vh, 760px);
+            transform: translate(-50%, -50%);
+            background: transparent;
+            border: 0;
+            box-shadow: none;
+        }
+
+        body.selectorOpen {
+            background: rgba(6, 7, 9, 0.96);
+        }
+
+        #selector {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: rgba(6, 7, 9, 0.88);
+        }
+
+        .modal {
+            width: min(760px, calc(100vw - 64px));
+            max-height: min(760px, calc(100vh - 64px));
+            display: grid;
+            grid-template-rows: auto auto minmax(220px, 1fr) auto;
+            gap: 14px;
+            padding: 22px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 8px;
+            background: rgba(18, 20, 24, 0.98);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+        }
+
+        .modalHeader,
+        .actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            line-height: 1.2;
+            font-weight: 600;
+        }
+
+        #totalBadge {
+            flex: 0 0 auto;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.1);
+            font-size: 15px;
+            color: rgba(255, 255, 255, 0.76);
+        }
+
+        #pluginFilter {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 11px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 6px;
+            outline: none;
+            background: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.88);
+        }
+
+        #pluginFilter:focus {
+            border-color: rgba(122, 178, 255, 0.8);
+        }
+
+        #pluginList {
+            min-height: 220px;
+            overflow: auto;
+            display: grid;
+            align-content: start;
+            gap: 6px;
+            padding-right: 4px;
+        }
+
+        .pluginRow {
+            width: 100%;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.84);
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .pluginRow:hover,
+        .pluginRow[aria-pressed="true"] {
+            border-color: rgba(122, 178, 255, 0.82);
+            background: rgba(70, 120, 180, 0.26);
+        }
+
+        .pluginName {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .pluginCount {
+            font-variant-numeric: tabular-nums;
+            color: rgba(255, 255, 255, 0.72);
+        }
+
+        .actions {
+            justify-content: flex-end;
+        }
+
+        .actionButton {
+            min-width: 112px;
+            padding: 10px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 6px;
+            color: rgba(255, 255, 255, 0.86);
+            background: rgba(255, 255, 255, 0.08);
+            cursor: pointer;
+        }
+
+        .actionButton.primary {
+            border-color: rgba(122, 178, 255, 0.86);
+            background: rgba(72, 127, 195, 0.86);
+            color: white;
+        }
+
+        .actionButton:hover {
+            filter: brightness(1.12);
+        }
+
+        #status {
+            position: absolute;
+            left: 24px;
+            right: 24px;
+            bottom: 18px;
+            font-size: 18px;
+            text-align: center;
+            opacity: 0.72;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        #frameTick {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 1px;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.04);
+            opacity: 0;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="previewRect" class="hidden"></div>
+    <div id="selector" class="hidden">
+        <section class="modal" role="dialog" aria-modal="true" aria-labelledby="selectorTitle">
+            <div class="modalHeader">
+                <h1 id="selectorTitle">Item Image Capture</h1>
+                <div id="totalBadge">All: 0</div>
+            </div>
+            <input id="pluginFilter" type="text" autocomplete="off" spellcheck="false" placeholder="Filter plugins">
+            <div id="pluginList"></div>
+            <div class="actions">
+                <button id="cancelBtn" class="actionButton" type="button">Cancel</button>
+                <button id="startBtn" class="actionButton primary" type="button">Start</button>
+            </div>
+        </section>
+    </div>
+    <div id="status"></div>
+    <div id="frameTick"></div>
+
+    <script>
+        (function () {
+            "use strict";
+
+            const previewRect = document.getElementById("previewRect");
+            const selector = document.getElementById("selector");
+            const totalBadge = document.getElementById("totalBadge");
+            const pluginFilter = document.getElementById("pluginFilter");
+            const pluginList = document.getElementById("pluginList");
+            const cancelBtn = document.getElementById("cancelBtn");
+            const startBtn = document.getElementById("startBtn");
+            const status = document.getElementById("status");
+            const frameTick = document.getElementById("frameTick");
+
+            let selectorPayload = { total: 0, plugins: [] };
+            let selectedPlugin = "";
+            let captureRunning = false;
+            let cancelSent = false;
+            let gamepadBaseline = new Set();
+
+            function bridge(name, payload) {
+                try {
+                    if (typeof window[name] === "function") {
+                        window[name](typeof payload === "string" ? payload : JSON.stringify(payload));
+                    }
+                } catch (e) {
+                }
+            }
+
+            function gamepadPressedKeys() {
+                const pressed = new Set();
+                try {
+                    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+                    for (let i = 0; i < pads.length; i += 1) {
+                        const pad = pads[i];
+                        if (!pad || !pad.buttons) {
+                            continue;
+                        }
+                        for (let b = 0; b < pad.buttons.length; b += 1) {
+                            if (pad.buttons[b] && pad.buttons[b].pressed) {
+                                pressed.add(i + ":" + b);
+                            }
+                        }
+                    }
+                } catch (e) {
+                }
+                return pressed;
+            }
+
+            function setCaptureRunning(active) {
+                if (captureRunning === active) {
+                    return;
+                }
+                captureRunning = active;
+                cancelSent = false;
+                gamepadBaseline = active ? gamepadPressedKeys() : new Set();
+            }
+
+            function requestCancel(source) {
+                if (!captureRunning || cancelSent) {
+                    return;
+                }
+                cancelSent = true;
+                captureRunning = false;
+                status.textContent = "Canceling item image capture";
+                bridge("chimItemCaptureCancel", { source: source || "input" });
+            }
+
+            function rectPx() {
+                const r = previewRect.getBoundingClientRect();
+                return {
+                    x: Math.round(r.left),
+                    y: Math.round(r.top),
+                    w: Math.round(r.width),
+                    h: Math.round(r.height)
+                };
+            }
+
+            function itemLabel(plugin, count) {
+                return plugin + " (" + count + ")";
+            }
+
+            function renderPlugins() {
+                const q = pluginFilter.value.trim().toLowerCase();
+                const rows = [{ plugin: "", count: selectorPayload.total, label: "All plugins" }]
+                    .concat(selectorPayload.plugins || [])
+                    .filter((entry) => !q || (entry.label || entry.plugin || "").toLowerCase().includes(q));
+
+                pluginList.textContent = "";
+                rows.forEach((entry) => {
+                    const plugin = entry.plugin || "";
+                    const label = entry.label || plugin;
+                    const row = document.createElement("button");
+                    row.type = "button";
+                    row.className = "pluginRow";
+                    row.setAttribute("aria-pressed", selectedPlugin === plugin ? "true" : "false");
+                    row.title = itemLabel(label, entry.count || 0);
+
+                    const name = document.createElement("span");
+                    name.className = "pluginName";
+                    name.textContent = label;
+
+                    const count = document.createElement("span");
+                    count.className = "pluginCount";
+                    count.textContent = String(entry.count || 0);
+
+                    row.appendChild(name);
+                    row.appendChild(count);
+                    row.addEventListener("click", function () {
+                        selectedPlugin = plugin;
+                        renderPlugins();
+                    });
+                    pluginList.appendChild(row);
+                });
+            }
+
+            function showSelector(raw) {
+                try {
+                    selectorPayload = JSON.parse(String(raw || "{}"));
+                } catch (e) {
+                    selectorPayload = { total: 0, plugins: [] };
+                }
+
+                document.body.classList.add("selectorOpen");
+                selectedPlugin = "";
+                setCaptureRunning(false);
+                previewRect.classList.add("hidden");
+                selector.classList.remove("hidden");
+                status.textContent = "";
+                totalBadge.textContent = "All: " + (selectorPayload.total || 0);
+                pluginFilter.value = "";
+                renderPlugins();
+                window.setTimeout(function () {
+                    pluginFilter.focus();
+                }, 0);
+            }
+
+            function closeSelector(action) {
+                selector.classList.add("hidden");
+                bridge("chimItemCaptureSelection", {
+                    action: action || "cancel",
+                    plugin: selectedPlugin
+                });
+            }
+
+            startBtn.addEventListener("click", function () {
+                document.body.classList.remove("selectorOpen");
+                selector.classList.add("hidden");
+                previewRect.classList.remove("hidden");
+                setCaptureRunning(true);
+                status.textContent = "Starting item image capture";
+                bridge("chimItemCaptureSelection", {
+                    action: "start",
+                    plugin: selectedPlugin
+                });
+            });
+
+            cancelBtn.addEventListener("click", function () {
+                closeSelector("cancel");
+            });
+
+            pluginFilter.addEventListener("input", renderPlugins);
+
+            document.addEventListener("keydown", function (ev) {
+                if (captureRunning) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    requestCancel("keydown");
+                    return;
+                }
+                if (!selector.classList.contains("hidden") && ev.key === "Escape") {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    closeSelector("cancel");
+                }
+            }, true);
+
+            ["mousedown", "mouseup", "pointerdown", "wheel", "touchstart", "contextmenu"].forEach(function (eventName) {
+                document.addEventListener(eventName, function (ev) {
+                    if (!captureRunning) {
+                        return;
+                    }
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    requestCancel(eventName);
+                }, true);
+            });
+
+            window.setInterval(function () {
+                if (!captureRunning) {
+                    gamepadBaseline = new Set();
+                    return;
+                }
+                const pressed = gamepadPressedKeys();
+                for (const key of Array.from(gamepadBaseline)) {
+                    if (!pressed.has(key)) {
+                        gamepadBaseline.delete(key);
+                    }
+                }
+                for (const key of pressed) {
+                    if (!gamepadBaseline.has(key)) {
+                        requestCancel("gamepad");
+                        break;
+                    }
+                }
+            }, 100);
+
+            window.chimItemCaptureShowSelector = showSelector;
+
+            window.chimItemCaptureMarkFrame = function () {
+                frameTick.style.opacity = frameTick.style.opacity === "0.04" ? "0.01" : "0.04";
+            };
+
+            window.chimItemCaptureShow = function (raw) {
+                let item = {};
+                try {
+                    item = JSON.parse(String(raw || "{}"));
+                } catch (e) {
+                    bridge("chimItemCapturePreviewReady", { seq: 0, ok: false, error: "bad_json" });
+                    return;
+                }
+
+                selector.classList.add("hidden");
+                previewRect.classList.remove("hidden");
+                document.body.classList.remove("selectorOpen");
+                setCaptureRunning(true);
+
+                const rect = rectPx();
+                const available = typeof window.__prismaUI_showModelPreview === "function";
+                status.textContent = "Capturing " + (item.index || 0) + " / " + (item.total || 0) + "  " + (item.name || item.plugin || "");
+
+                if (!available || rect.w <= 0 || rect.h <= 0) {
+                    bridge("chimItemCapturePreviewReady", {
+                        seq: item.seq || 0,
+                        ok: false,
+                        error: available ? "bad_rect" : "preview_unavailable",
+                        x: rect.x,
+                        y: rect.y,
+                        w: rect.w,
+                        h: rect.h
+                    });
+                    return;
+                }
+
+                const args = {
+                    plugin: item.plugin || "",
+                    localId: Number(item.localId) >>> 0,
+                    formId: Number(item.rawFormID) >>> 0,
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                    zoom: 1.08,
+                    panX: 0,
+                    panY: 0,
+                    flip: 0,
+                    roll: 0,
+                    brightness: 1.18,
+                    spin: 0,
+                    yaw: 180,
+                    pitch: -30
+                };
+
+                try {
+                    window.__prismaUI_showModelPreview(JSON.stringify(args));
+                    bridge("chimItemCapturePreviewReady", {
+                        seq: item.seq || 0,
+                        ok: true,
+                        x: rect.x,
+                        y: rect.y,
+                        w: rect.w,
+                        h: rect.h
+                    });
+                } catch (e) {
+                    bridge("chimItemCapturePreviewReady", {
+                        seq: item.seq || 0,
+                        ok: false,
+                        error: "preview_throw",
+                        x: rect.x,
+                        y: rect.y,
+                        w: rect.w,
+                        h: rect.h
+                    });
+                }
+            };
+
+            window.chimItemCaptureHide = function () {
+                setCaptureRunning(false);
+                document.body.classList.remove("selectorOpen");
+                selector.classList.add("hidden");
+                previewRect.classList.add("hidden");
+                status.textContent = "";
+                try {
+                    if (typeof window.__prismaUI_hideModelPreview === "function") {
+                        window.__prismaUI_hideModelPreview("");
+                    }
+                } catch (e) {
+                }
+            };
+
+            bridge("chimItemCaptureReady", "ready");
+        })();
+    </script>
+</body>
+</html>

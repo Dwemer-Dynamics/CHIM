@@ -771,6 +771,8 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
             path.replace(pos, 8, "pic.php?stuff");
         else if (MutexGetScreenShotSendMode() == 2)
             path.replace(pos, 8, "upl.php?stuff");
+        else if (MutexGetScreenShotSendMode() == 3)
+            path.replace(pos, 8, "item_image.php?stuff");
     }
 
     path.append("&format=png&hints=" + hints);
@@ -984,6 +986,8 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
             path.replace(pos, 8, "pic.php?stuff");
         else if (MutexGetScreenShotSendMode() == 2)
             path.replace(pos, 8, "upl.php?stuff");
+        else if (MutexGetScreenShotSendMode() == 3)
+            path.replace(pos, 8, "item_image.php?stuff");
     }
 
     path.append("&hints=" + hints);

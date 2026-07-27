@@ -324,6 +324,12 @@ namespace PrismaUIBridge {
     // Clear pending action after Papyrus has processed it
     void ClearPendingSettingsAction();
 
+    // Open the all-item model screenshot selector. Returns 0 when the selector opens.
+    int StartItemModelImageBatchCapture();
+
+    // True while the all-item model screenshot selector or worker is active.
+    bool IsItemModelImageBatchCaptureRunning();
+
     // ===== CHIM Master Menu Functions =====
 
     // Create the CHIM master menu panel

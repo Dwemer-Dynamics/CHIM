@@ -369,10 +369,12 @@ void ProcedureTakeShot() {
 
             // hints.append(ScenarioHints());
 
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-            if (cameraObject) {
-                hints.append("&fg=");
-                hints.append(cameraObject.get()->GetDisplayFullName());
+            if (MutexGetScreenShotSendMode() != 3) {
+                auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                if (cameraObject) {
+                    hints.append("&fg=");
+                    hints.append(cameraObject.get()->GetDisplayFullName());
+                }
             }
 
             std::string buffer = uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, hints);
@@ -433,10 +435,12 @@ void ProcedureSendShot(char const* a_path) {
 
         // hints.append(ScenarioHints());
 
-        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-        if (cameraObject) {
-            hints.append("&fg=");
-            hints.append(cameraObject.get()->GetDisplayFullName());
+        if (MutexGetScreenShotSendMode() != 3) {
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+            if (cameraObject) {
+                hints.append("&fg=");
+                hints.append(cameraObject.get()->GetDisplayFullName());
+            }
         }
 
         std::string buffer = uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, hints);
