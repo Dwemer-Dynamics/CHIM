@@ -2483,10 +2483,13 @@ private:
                                 auto selectedActor = randomActor->getActor();
                                 randomActor->incBoredEventsFired();
                                 if (!SpeakManager::getInstance().hasItems() && selectedActor) {
-                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActor->GetDisplayFullName());
-                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor]() {
-                                        HTTPManager::stream(std::format("bored|{}|{}|{}", getCurrentTimeMillis(),
-                                                                        GetGameTimeStamp(), GetPlayerLocation()),
+                                    const char* displayName = selectedActor->GetDisplayFullName();
+                                    const std::string selectedActorName = displayName ? displayName : "";
+                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActorName);
+                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor, selectedActorName]() {
+                                        HTTPManager::stream(std::format("bored|{}|{}|{}|{}", getCurrentTimeMillis(),
+                                                                        GetGameTimeStamp(), GetPlayerLocation(),
+                                                                        selectedActorName),
                                                             selectedActor);
                                     });
                                 } else {
