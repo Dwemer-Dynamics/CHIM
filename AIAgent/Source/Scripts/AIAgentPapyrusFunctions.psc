@@ -1595,6 +1595,22 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				if (curr.IsCleared())
 					isCleared="1";
 				endif;
+				
+				;int doors= localCell.getNumRefs(29); Get doors
+				;if (doors > 0 )
+				;	Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", Cell has "+doors+" doors")
+				;	int ndoors = 0
+				;	while ndoors < doors
+				;		ObjectReference doorRef = localCell.GetNthRef(ndoors,29);
+				;		if (doorRef.isLocked())
+				;			Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", has doors locked ")
+				;			isInterior=2
+				;		endif
+				;		
+				;		ndoors = ndoors +1
+				;	endwhile
+				;endif
+			
 				if (factionOwner)
 					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
