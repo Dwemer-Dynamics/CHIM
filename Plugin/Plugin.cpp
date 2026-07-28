@@ -6022,6 +6022,7 @@ struct InventoryItemSnapshot
     int count = 0;
     json keywords = json::array();
     std::string hashEntry;
+    int gold = 0;
 };
 
 struct ModdedEquipmentSlot
@@ -6569,7 +6570,8 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         // Skip items with missing or invalid names
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
-            inventoryItems.push_back({itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump()});
+            inventoryItems.push_back(
+                {itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump(), boundObject->GetGoldValue()});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6614,7 +6616,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         inventoryDataJson["items"].push_back({{"name", item.name},
                                               {"baseid", item.baseid},
                                               {"count", item.count},
-                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}});
+                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}, 
+                                              {"goldvalue", item.gold}
+            });
     }
 
     if (synchronous) {
