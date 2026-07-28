@@ -2159,6 +2159,7 @@ private:
         auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
+        auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
         std::size_t agentMaintenanceCursor = 0;
         int consecutiveErrors = 0;
         
@@ -2482,10 +2483,14 @@ private:
                                 auto selectedActor = randomActor->getActor();
                                 randomActor->incBoredEventsFired();
                                 if (!SpeakManager::getInstance().hasItems() && selectedActor) {
-                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActor->GetDisplayFullName());
-                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor]() {
-                                        HTTPManager::stream(std::format("bored|{}|{}|{}", getCurrentTimeMillis(),
-                                                                        GetGameTimeStamp(), GetPlayerLocation()),
+                                    const char* displayName = selectedActor->GetDisplayFullName();
+                                    const std::string selectedActorName = displayName ? displayName : "";
+                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActorName);
+                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor, selectedActorName]() {
+                                        SpeakManager::getInstance().startRechatChainForAutonomousEvent();
+                                        HTTPManager::stream(std::format("bored|{}|{}|{}|{}", getCurrentTimeMillis(),
+                                                                        GetGameTimeStamp(), GetPlayerLocation(),
+                                                                        selectedActorName),
                                                             selectedActor);
                                     });
                                 } else {
@@ -2496,9 +2501,12 @@ private:
                             }
                         }
                     } else if (avoidBored) {
-                         logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})", 
-                                      player->IsInCombat(), player->IsAttacking(), player->IsSneaking(), 
-                                      CheckScene(player->GetCurrentScene() ), playerInDialog); 
+                        if (now - lastBoredBusyLogAt >= std::chrono::seconds(30)) {
+                            lastBoredBusyLogAt = now;
+                            logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})",
+                                          player->IsInCombat(), player->IsAttacking(), player->IsSneaking(),
+                                          CheckScene(player->GetCurrentScene()), playerInDialog);
+                        }
                     }
 
                     // DYNAMIC PROFILE TIMER LOGIC

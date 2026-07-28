@@ -203,6 +203,7 @@ public:
     void resetRechatChainState();
     void cancelRechatChain();
     void startRechatChainForPlayerInput();
+    void startRechatChainForAutonomousEvent();
     bool isRechatChainClosed();
     std::string ensureRechatChainId(const std::string& speaker, const std::string& listenerHint,
                                     const std::string& explicitTarget);

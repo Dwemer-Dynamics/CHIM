@@ -2272,6 +2272,11 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+    const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
+    const auto requestText = isAutonomousDirective
+        ? msg
+        : std::format("{}:{}", RE::PlayerCharacter::GetSingleton()->GetName(), msg);
+
     if (actorPtr) {
         auto player = RE::PlayerCharacter::GetSingleton();
         RE::TESObjectCELL* cell = player->GetParentCell();
@@ -2282,14 +2287,13 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                      "(beings in range:" + result + ")"));
 
         HTTPManager::stream(
-            std::format("{}|{}|{}|(Context location: {}){}:{}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
-                        GetPlayerLocation(), RE::PlayerCharacter::GetSingleton()->GetName(), msg),
+            std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
+                        GetPlayerLocation(), requestText),
             actorPtr->getActor());
     } else {
         // Fallback
-        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}:{}", type, getCurrentTimeMillis(),
-                                        GetGameTimeStamp(), GetPlayerLocation(),
-                                        RE::PlayerCharacter::GetSingleton()->GetName(), msg));
+        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(),
+                                        GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
     return 0;
