@@ -129,28 +129,34 @@ public:
         std::transform(actorName.begin(), actorName.end(), actorName.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-        auto trim = [](std::string value) {
-            const auto first = value.find_first_not_of(" \t\r\n");
-            if (first == std::string::npos) return std::string{};
-            const auto last = value.find_last_not_of(" \t\r\n");
-            return value.substr(first, last - first + 1);
-        };
+        if (actorName.empty()) {
+            return false;
+        }
 
-        std::stringstream stream(presentActors);
-        std::string token;
-        while (std::getline(stream, token, ',')) {
-            std::transform(token.begin(), token.end(), token.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            token = trim(token);
+        std::string normalizedActors = presentActors;
+        std::transform(normalizedActors.begin(), normalizedActors.end(), normalizedActors.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
 
-            if (token == actorName) {
-                return true;
+        std::size_t position = normalizedActors.find(actorName);
+        while (position != std::string::npos) {
+            const bool startsAtBoundary = position == 0 || normalizedActors[position - 1] == ',';
+            const std::size_t suffixPosition = position + actorName.size();
+
+            if (startsAtBoundary) {
+                if (suffixPosition == normalizedActors.size() || normalizedActors[suffixPosition] == ',') {
+                    return true;
+                }
+
+                if (normalizedActors.compare(suffixPosition, 2, " (") == 0) {
+                    const std::size_t statusEnd = normalizedActors.find(')', suffixPosition + 2);
+                    if (statusEnd != std::string::npos &&
+                        (statusEnd + 1 == normalizedActors.size() || normalizedActors[statusEnd + 1] == ',')) {
+                        return normalizedActors.compare(suffixPosition, 11, " (far away)") != 0;
+                    }
+                }
             }
 
-            const std::string statusPrefix = actorName + " (";
-            if (token.rfind(statusPrefix, 0) == 0) {
-                return token.find("(far away)") == std::string::npos;
-            }
+            position = normalizedActors.find(actorName, position + 1);
         }
 
         return false;
