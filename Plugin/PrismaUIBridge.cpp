@@ -2806,6 +2806,10 @@ R"CHIM(
         g_backgroundLifeDomReady.store(true);
         SetBackgroundLifeServerUrl(view);
         UpdateBackgroundLifeTargetUI();
+        g_prismaUI->Invoke(
+            view,
+            "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+            nullptr);
     }
 
     static std::vector<PlayerSpatialCandidate> CollectBackgroundLifeTargets() {
