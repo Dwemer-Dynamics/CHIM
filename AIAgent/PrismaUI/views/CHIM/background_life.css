@@ -721,10 +721,6 @@ textarea {
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
 }
 
-.instruction-modal-panel {
-    width: min(560px, 100%);
-}
-
 .rumor-modal-header {
     display: flex;
     align-items: flex-start;

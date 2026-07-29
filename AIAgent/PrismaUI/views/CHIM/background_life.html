@@ -79,7 +79,6 @@
                         <div class="button-stack">
                             <button id="trigger-action-button" class="control-button" type="button" disabled>Trigger Action</button>
                             <button id="request-letter-button" class="control-button" type="button" disabled>Request Letter</button>
-                            <button id="direct-instruction-button" class="control-button" type="button" disabled>Direct Instruction</button>
                         </div>
                     </div>
 
@@ -195,28 +194,6 @@
             </div>
         </div>
 
-        <div id="instruction-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeInstructionModal()">
-            <div class="rumor-modal-panel instruction-modal-panel" role="dialog" aria-modal="true" aria-labelledby="instruction-modal-title">
-                <div class="rumor-modal-header">
-                    <div>
-                        <h2 id="instruction-modal-title">Direct Background Life Instruction</h2>
-                        <p id="instruction-modal-target">Choose what the selected NPC should do next.</p>
-                    </div>
-                    <button class="rumor-modal-close" type="button" onclick="closeInstructionModal()" aria-label="Close direct instruction modal">&times;</button>
-                </div>
-                <form id="instruction-form" class="rumor-form" onsubmit="submitInstructionForm(event)">
-                    <label class="rumor-field">
-                        <span>Instruction</span>
-                        <textarea id="instruction-input" name="instruction" rows="6" maxlength="1000" required placeholder="Describe what this NPC should attempt during their next Background Life action."></textarea>
-                    </label>
-                    <div id="instruction-form-status" class="rumor-form-status" aria-live="polite"></div>
-                    <div class="rumor-form-actions">
-                        <button class="page-button rumor-cancel-button" type="button" onclick="closeInstructionModal()">Cancel</button>
-                        <button id="instruction-submit-button" class="icon-button" type="submit">Queue Instruction</button>
-                    </div>
-                </form>
-            </div>
-        </div>
     </div>
 
     <script src="ui_scale.js"></script>

@@ -30,7 +30,6 @@
     const hourlyTrackingToggle = document.getElementById('hourly-tracking-toggle');
     const triggerActionButton = document.getElementById('trigger-action-button');
     const requestLetterButton = document.getElementById('request-letter-button');
-    const directInstructionButton = document.getElementById('direct-instruction-button');
     const rosterList = document.getElementById('roster-list');
     const rosterStatus = document.getElementById('roster-status');
     const rosterCount = document.getElementById('roster-count');
@@ -43,7 +42,6 @@
     let totalPages = 1;
     let searchTimer = null;
     let rumorCreateInFlight = false;
-    let instructionInFlight = false;
     let rosterRequestGeneration = 0;
     let rosterRemoveConfirmKey = '';
     let rosterRemoveConfirmTimer = null;
@@ -205,7 +203,6 @@
         hourlyTrackingToggle.disabled = busy || !available;
         triggerActionButton.disabled = busy || !available;
         requestLetterButton.disabled = busy || !available;
-        directInstructionButton.disabled = busy || !available;
     }
 
     function closeTargetMenu() {
@@ -569,11 +566,10 @@
         }
     }
 
-    async function queueImmediateRequest(requestType, instruction) {
+    async function queueImmediateRequest(requestType) {
         setTargetControlsBusy(true);
         const pendingMessages = {
             letter: 'Queueing letter request...',
-            instruction: 'Queueing direct instruction...',
             action: 'Queueing action request...'
         };
         setTargetStatus(pendingMessages[requestType] || 'Queueing request...', '');
@@ -581,9 +577,6 @@
         try {
             const body = targetParameters();
             body.set('request_type', requestType);
-            if (requestType === 'instruction') {
-                body.set('instruction', instruction || '');
-            }
             const response = await fetch(`${serverBaseUrl}/ui/api/background_life_request.php`, {
                 method: 'POST',
                 headers: {
@@ -682,110 +675,6 @@
             form.reset();
             rumorHoldDropdown.select('', 'Select hold', false);
         }
-    };
-
-    function getInstructionModalOverlay() {
-        return document.getElementById('instruction-modal-overlay');
-    }
-
-    function isInstructionModalOpen() {
-        const overlay = getInstructionModalOverlay();
-        return !!overlay && !overlay.classList.contains('hidden');
-    }
-
-    function setInstructionFormStatus(message, type) {
-        const formStatus = document.getElementById('instruction-form-status');
-        if (!formStatus) {
-            return;
-        }
-        formStatus.textContent = message || '';
-        formStatus.classList.remove('error', 'success');
-        if (type === 'error' || type === 'success') {
-            formStatus.classList.add(type);
-        }
-    }
-
-    function setInstructionSubmitState(busy) {
-        instructionInFlight = !!busy;
-        const submitButton = document.getElementById('instruction-submit-button');
-        if (submitButton) {
-            submitButton.disabled = !!busy;
-            submitButton.textContent = busy ? 'Queueing...' : 'Queue Instruction';
-        }
-    }
-
-    window.openInstructionModal = function () {
-        if (!currentTarget.has_target || !currentTarget.background_life_enabled) {
-            setTargetStatus('Select an enrolled Background Life NPC first.', 'error');
-            return;
-        }
-
-        const overlay = getInstructionModalOverlay();
-        const form = document.getElementById('instruction-form');
-        const target = document.getElementById('instruction-modal-target');
-        if (!overlay || !form) {
-            return;
-        }
-
-        form.reset();
-        if (target) {
-            target.textContent = `Tell ${currentTarget.name || 'the selected NPC'} what to attempt next.`;
-        }
-        setInstructionFormStatus('', '');
-        setInstructionSubmitState(false);
-        overlay.classList.remove('hidden');
-        overlay.setAttribute('aria-hidden', 'false');
-        const input = document.getElementById('instruction-input');
-        if (input) {
-            window.setTimeout(function () {
-                input.focus();
-            }, 0);
-        }
-    };
-
-    window.closeInstructionModal = function () {
-        if (instructionInFlight) {
-            return;
-        }
-        const overlay = getInstructionModalOverlay();
-        const form = document.getElementById('instruction-form');
-        if (!overlay) {
-            return;
-        }
-        overlay.classList.add('hidden');
-        overlay.setAttribute('aria-hidden', 'true');
-        setInstructionFormStatus('', '');
-        if (form) {
-            form.reset();
-        }
-    };
-
-    window.submitInstructionForm = async function (event) {
-        if (event) {
-            event.preventDefault();
-        }
-        if (instructionInFlight) {
-            return;
-        }
-
-        const input = document.getElementById('instruction-input');
-        const instruction = input ? input.value.trim() : '';
-        if (!instruction) {
-            setInstructionFormStatus('Enter an instruction for this NPC.', 'error');
-            return;
-        }
-
-        setInstructionSubmitState(true);
-        setInstructionFormStatus('Queueing Background Life instruction...', '');
-        const result = await queueImmediateRequest('instruction', instruction);
-        setInstructionSubmitState(false);
-        if (!result) {
-            setInstructionFormStatus('Could not queue the instruction.', 'error');
-            return;
-        }
-
-        setInstructionFormStatus(result.message || 'Instruction queued.', 'success');
-        window.setTimeout(window.closeInstructionModal, 350);
     };
 
     window.submitRumorForm = async function (event) {
@@ -1025,7 +914,6 @@
     requestLetterButton.addEventListener('click', function () {
         queueImmediateRequest('letter');
     });
-    directInstructionButton.addEventListener('click', window.openInstructionModal);
     document.querySelectorAll('.context-button').forEach(function (button) {
         button.addEventListener('click', function () {
             const mode = button.getAttribute('data-mode');
@@ -1049,10 +937,6 @@
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape') {
             event.preventDefault();
-            if (isInstructionModalOpen()) {
-                window.closeInstructionModal();
-                return;
-            }
             if (isRumorModalOpen()) {
                 window.closeRumorModal();
                 return;
