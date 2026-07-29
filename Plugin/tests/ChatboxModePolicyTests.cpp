@@ -19,8 +19,6 @@ int main()
 {
     using namespace std::literals;
 
-    Check(ChatboxModePolicy::IsOneShot("SPAWN"sv),
-          "Spawn mode must reset after submission");
     Check(ChatboxModePolicy::IsOneShot("DIRECTOR"sv),
           "Director mode must reset after submission");
     Check(!ChatboxModePolicy::IsOneShot("STANDARD"sv),
@@ -32,8 +30,6 @@ int main()
     Check(!ChatboxModePolicy::IsOneShot("NARRATOR"sv),
           "Narrator mode must remain selected");
 
-    Check(ChatboxModePolicy::ModeAfterSubmission("SPAWN"sv) == "STANDARD"sv,
-          "Spawn mode did not reset to Standard");
     Check(ChatboxModePolicy::ModeAfterSubmission("DIRECTOR"sv) == "STANDARD"sv,
           "Director mode did not reset to Standard");
     Check(ChatboxModePolicy::ModeAfterSubmission("SHOUT"sv) == "SHOUT"sv,

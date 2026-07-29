@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Background Life</title>
+    <link rel="stylesheet" href="background_life.css">
+</head>
+<body data-chim-menu-scale-target="#background-life-modal">
+    <div id="background-life-modal" class="modal-container">
+        <header class="modal-header">
+            <div>
+                <h1>Background Life</h1>
+                <p>Recent NPC activity across Skyrim</p>
+            </div>
+            <div class="header-actions">
+                <button class="icon-button create-npc-button" type="button" onclick="openNpcCreateModal()">Create NPC</button>
+                <button class="icon-button rumor-button" type="button" onclick="openRumorModal()">Create Rumor</button>
+                <button class="icon-button" id="refresh-button" type="button" title="Refresh activity">Refresh</button>
+                <button class="close-button" type="button" onclick="closePanel()" aria-label="Close">X</button>
+            </div>
+        </header>
+
+        <div class="background-life-workspace">
+            <aside class="roster-panel" aria-label="Current Background Life NPCs">
+                <div class="roster-header">
+                    <div>
+                        <h2>Current NPCs</h2>
+                        <p>Background Life status</p>
+                    </div>
+                    <span id="roster-count" class="roster-count">0</span>
+                </div>
+                <div id="roster-status" class="roster-status" aria-live="polite">Loading NPCs...</div>
+                <div id="roster-list" class="roster-list"></div>
+            </aside>
+
+            <div class="background-life-main">
+                <section class="management-panel" aria-label="Background Life controls">
+                    <div class="management-card target-card">
+                        <div class="section-heading">
+                            <span>Selected NPC</span>
+                            <span id="target-state-badge" class="state-badge">No target</span>
+                        </div>
+                        <div class="target-selector">
+                            <span>Nearby NPC</span>
+                            <div class="target-tile-selector">
+                                <button id="target-menu-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="target-menu-options" disabled>
+                                    <span id="target-menu-label">No activated NPCs nearby</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="target-menu-options" class="target-tile-options hidden" role="listbox" aria-label="Nearby NPC"></div>
+                            </div>
+                        </div>
+                        <div id="target-name" class="target-name">Look at an NPC to manage Background Life.</div>
+                        <div id="target-refid" class="target-refid">RefID unavailable</div>
+                        <button id="enrollment-button" class="control-button primary" type="button" disabled>
+                            Add to Background Life
+                        </button>
+                        <div id="target-status" class="target-status" aria-live="polite"></div>
+                    </div>
+
+                    <div class="management-card">
+                        <div class="section-heading"><span>NPC Settings</span></div>
+                        <label class="toggle-row">
+                            <span>Auto Actions</span>
+                            <input id="auto-actions-toggle" type="checkbox" disabled>
+                        </label>
+                        <label class="toggle-row">
+                            <span>Send Letters</span>
+                            <input id="send-letters-toggle" type="checkbox" disabled>
+                        </label>
+                        <label class="toggle-row">
+                            <span>Hourly Tracking</span>
+                            <input id="hourly-tracking-toggle" type="checkbox" disabled>
+                        </label>
+                    </div>
+
+                    <div class="management-card">
+                        <div class="section-heading"><span>Immediate Actions</span></div>
+                        <div class="button-stack">
+                            <button id="trigger-action-button" class="control-button" type="button" disabled>Trigger Action</button>
+                            <button id="request-letter-button" class="control-button" type="button" disabled>Request Letter</button>
+                        </div>
+                    </div>
+
+                    <div class="management-card">
+                        <div class="section-heading"><span>Inject Context</span></div>
+                        <div class="button-stack">
+                            <button class="control-button context-button" data-mode="mode_inject_log" type="button">Inject Event</button>
+                            <button class="control-button context-button" data-mode="mode_inject_chat" type="button">Inject &amp; Chat</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="toolbar">
+                    <div class="toolbar-field">
+                        <span>NPC</span>
+                        <div class="target-tile-selector compact-tile-selector">
+                            <input id="npc-filter" type="hidden" value="">
+                            <button id="npc-filter-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-filter-options">
+                                <span id="npc-filter-label">All NPCs</span>
+                                <span class="target-tile-arrow" aria-hidden="true"></span>
+                            </button>
+                            <div id="npc-filter-options" class="target-tile-options hidden" role="listbox" aria-label="Filter activity by NPC"></div>
+                        </div>
+                    </div>
+                    <label class="search-field">
+                        <span>Search</span>
+                        <input id="search-input" type="search" placeholder="Search activity">
+                    </label>
+                    <div class="toolbar-field">
+                        <span>Rows</span>
+                        <div class="target-tile-selector compact-tile-selector">
+                            <input id="limit-select" type="hidden" value="50">
+                            <button id="limit-select-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="limit-select-options">
+                                <span id="limit-select-label">50</span>
+                                <span class="target-tile-arrow" aria-hidden="true"></span>
+                            </button>
+                            <div id="limit-select-options" class="target-tile-options compact-option-grid hidden" role="listbox" aria-label="Rows per page">
+                                <button class="target-option-tile" type="button" role="option" data-value="25">25</button>
+                                <button class="target-option-tile is-active" type="button" role="option" aria-selected="true" data-value="50">50</button>
+                                <button class="target-option-tile" type="button" role="option" data-value="100">100</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <main class="activity-container">
+                    <div class="panel-status" id="panel-status" aria-live="polite">Loading activity...</div>
+                    <div class="activity-list" id="activity-list"></div>
+                </main>
+
+                <footer class="panel-footer">
+                    <button class="page-button" id="previous-button" type="button">Previous</button>
+                    <span id="page-label">Page 1 of 1</span>
+                    <button class="page-button" id="next-button" type="button">Next</button>
+                </footer>
+            </div>
+        </div>
+
+        <div id="npc-create-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeNpcCreateModal()">
+            <div class="rumor-modal-panel npc-create-modal-panel" role="dialog" aria-modal="true" aria-labelledby="npc-create-modal-title">
+                <div class="rumor-modal-header">
+                    <div>
+                        <h2 id="npc-create-modal-title">Create Background Life NPC</h2>
+                        <p>Create one structured NPC and add them directly to Background Life.</p>
+                    </div>
+                    <button class="rumor-modal-close" type="button" onclick="closeNpcCreateModal()" aria-label="Close create NPC modal">&times;</button>
+                </div>
+                <form id="npc-create-form" class="rumor-form npc-create-form" onsubmit="submitNpcCreateForm(event)">
+                    <div class="npc-create-grid">
+                        <label class="rumor-field">
+                            <span>Name</span>
+                            <input id="npc-create-name" name="npc_name" type="text" required autocomplete="off">
+                        </label>
+                        <div class="rumor-field">
+                            <span>Gender</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-gender" name="npc_gender" type="hidden" value="male">
+                                <button id="npc-create-gender-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-gender-options">
+                                    <span id="npc-create-gender-label">male</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-gender-options" class="target-tile-options hidden" role="listbox" aria-label="NPC gender"></div>
+                            </div>
+                        </div>
+                        <div class="rumor-field">
+                            <span>Race</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-race" name="npc_race" type="hidden" value="Nord">
+                                <button id="npc-create-race-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-race-options">
+                                    <span id="npc-create-race-label">Nord</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-race-options" class="target-tile-options hidden" role="listbox" aria-label="NPC race"></div>
+                            </div>
+                        </div>
+                        <div class="rumor-field">
+                            <span>Class</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-class" name="npc_class" type="hidden" value="farmer">
+                                <button id="npc-create-class-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-class-options">
+                                    <span id="npc-create-class-label">farmer</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-class-options" class="target-tile-options hidden" role="listbox" aria-label="NPC class"></div>
+                            </div>
+                        </div>
+                        <div class="rumor-field npc-create-location-field">
+                            <span>Location</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-location" name="npc_location" type="hidden" value="">
+                                <button id="npc-create-location-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-location-options">
+                                    <span id="npc-create-location-label">Select discovered location</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-location-options" class="target-tile-options npc-location-options hidden" role="listbox" aria-label="NPC location"></div>
+                            </div>
+                        </div>
+                        <label class="rumor-field npc-create-wide-field">
+                            <span>Background</span>
+                            <textarea id="npc-create-background" name="npc_background" rows="3" required></textarea>
+                        </label>
+                        <label class="rumor-field">
+                            <span>Speech Style</span>
+                            <input id="npc-create-speech-style" name="npc_speech_style" type="text" required>
+                        </label>
+                        <label class="rumor-field npc-create-wide-field">
+                            <span>Goals</span>
+                            <textarea id="npc-create-goal" name="npc_goal" rows="3" required></textarea>
+                        </label>
+                    </div>
+
+                    <details class="npc-create-advanced">
+                        <summary>Advanced Options</summary>
+                        <div class="npc-create-grid">
+                            <label class="rumor-field npc-create-wide-field">
+                                <span>Appearance</span>
+                                <input id="npc-create-appearance" name="npc_appearance" type="text">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Disposition</span>
+                                <input id="npc-create-disposition" name="npc_disposition" type="text" value="friendly">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Starting Point FormID</span>
+                                <input id="npc-create-starting-point" name="npc_starting_point" type="text" placeholder="Uses location when empty">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Gold</span>
+                                <input id="npc-create-gold" name="npc_inventory_gold" type="number" min="0" step="1" value="100">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Iron Ore</span>
+                                <input id="npc-create-iron-ore" name="npc_inventory_iron_ore" type="number" min="0" step="1" value="10">
+                            </label>
+                        </div>
+                    </details>
+
+                    <div id="npc-create-form-status" class="rumor-form-status" aria-live="polite"></div>
+                    <div class="rumor-form-actions">
+                        <button class="page-button rumor-cancel-button" type="button" onclick="closeNpcCreateModal()">Cancel</button>
+                        <button id="npc-create-submit-button" class="icon-button" type="submit">Create NPC</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="rumor-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeRumorModal()">
+            <div class="rumor-modal-panel" role="dialog" aria-modal="true" aria-labelledby="rumor-modal-title">
+                <div class="rumor-modal-header">
+                    <div>
+                        <h2 id="rumor-modal-title">Create Rumor</h2>
+                        <p>Add a rumor directly to Background Life.</p>
+                    </div>
+                    <button class="rumor-modal-close" type="button" onclick="closeRumorModal()" aria-label="Close create rumor modal">&times;</button>
+                </div>
+                <form id="rumor-create-form" class="rumor-form" onsubmit="submitRumorForm(event)">
+                    <div class="rumor-form-row">
+                        <div class="rumor-field">
+                            <span>Hold</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="rumor-hold-select" name="rumor_hold" type="hidden" value="">
+                                <button id="rumor-hold-select-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="rumor-hold-select-options">
+                                    <span id="rumor-hold-select-label">Select hold</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="rumor-hold-select-options" class="target-tile-options hidden" role="listbox" aria-label="Rumor hold">
+                                    <button class="target-option-tile is-active" type="button" role="option" aria-selected="true" data-value="">Select hold</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Skyrim">Skyrim</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Whiterun">Whiterun</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Eastmarch">Eastmarch</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Haafingar">Haafingar</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="The Reach">The Reach</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Hjaalmarch">Hjaalmarch</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="The Pale">The Pale</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Falkreath">Falkreath</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="The Rift">The Rift</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Winterhold">Winterhold</button>
+                                    <button class="target-option-tile" type="button" role="option" data-value="Solstheim">Solstheim</button>
+                                </div>
+                            </div>
+                        </div>
+                        <label class="rumor-field">
+                            <span>Type</span>
+                            <input id="rumor-type-input" name="rumor_type" type="text" placeholder="General">
+                        </label>
+                        <label class="rumor-field">
+                            <span>Length (Days)</span>
+                            <input id="rumor-length-days-input" name="rumor_length_days" type="number" min="1" step="1" value="7">
+                        </label>
+                    </div>
+                    <label class="rumor-field">
+                        <span>Content</span>
+                        <textarea id="rumor-content-input" name="rumor_content" rows="5" required placeholder="Write the rumor text here..."></textarea>
+                    </label>
+                    <div id="rumor-form-status" class="rumor-form-status" aria-live="polite"></div>
+                    <div class="rumor-form-actions">
+                        <button class="page-button rumor-cancel-button" type="button" onclick="closeRumorModal()">Cancel</button>
+                        <button id="rumor-submit-button" class="icon-button" type="submit">Create Rumor</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="ui_scale.js"></script>
+    <script src="background_life.js"></script>
+</body>
+</html>

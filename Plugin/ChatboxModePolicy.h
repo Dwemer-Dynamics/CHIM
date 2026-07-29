@@ -6,7 +6,7 @@ namespace ChatboxModePolicy
 {
     constexpr bool IsOneShot(std::string_view mode)
     {
-        return mode == "DIRECTOR" || mode == "SPAWN";
+        return mode == "DIRECTOR";
     }
 
     constexpr std::string_view ModeAfterSubmission(std::string_view mode)

@@ -21,6 +21,7 @@
 #include <limits>
 #include <list>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 #include <thread>
 #include <unordered_map>
@@ -28,6 +29,9 @@
 #pragma comment(lib, "ws2_32.lib")
 
 namespace logger = SKSE::log;
+
+extern RE::TESFaction* AIAgentRoleMasterFaction;
+extern void ScriptProxyRun(const std::string& jsonStr);
 
 namespace PrismaUIBridge {
 
@@ -37,13 +41,17 @@ namespace PrismaUIBridge {
     static PrismaView g_historyView = 0;
     static PrismaView g_overlayView = 0;
     static PrismaView g_diariesView = 0;
+    static PrismaView g_backgroundLifeView = 0;
     static std::atomic<bool> g_enabled{false};
     static std::atomic<bool> g_panelCreated{false};
     static std::atomic<bool> g_overlayCreated{false};
     static std::atomic<bool> g_diariesCreated{false};
+    static std::atomic<bool> g_backgroundLifeCreated{false};
     static std::atomic<bool> g_domReady{false};
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
+    static std::atomic<bool> g_backgroundLifeDomReady{false};
+    static uint32_t g_backgroundLifeSelectedFormId = 0;
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
     static std::mutex g_mutex;
@@ -248,6 +256,10 @@ namespace PrismaUIBridge {
     static void OnOverlayCommand(const char* argument);
     static void OnDiariesDomReady(PrismaView view);
     static void OnDiariesCommand(const char* argument);
+    static void OnBackgroundLifeDomReady(PrismaView view);
+    static void OnBackgroundLifeCommand(const char* argument);
+    static void UpdateBackgroundLifeTargetUI();
+    static bool SetBackgroundLifeEnrollment(bool enabled);
     static void OnSettingsMenuDomReady(PrismaView view);
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
@@ -266,7 +278,7 @@ namespace PrismaUIBridge {
     void HideDebuggerPanel();
     static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
-    static std::string FetchDiariesFromServer(const std::string& url);
+    static std::string FetchJsonFromServer(const std::string& url);
     static void UpdateCrosshairTargetUI(const std::string& name, float distance, const std::string& status = "",
                                         bool targetable = true);
     static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId);
@@ -1120,6 +1132,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing history panel (view ID: {})", g_historyView);
         g_prismaUI->Show(g_historyView);
         
@@ -1726,7 +1741,7 @@ R"CHIM(
 
         static const std::vector<std::string> validModes{
             "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
-            "DIRECTOR", "SPAWN", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
+            "DIRECTOR", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
         };
         if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
             logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
@@ -1769,7 +1784,6 @@ R"CHIM(
         else if (actionId == "mode_close") modeStr = "CLOSE";
         else if (actionId == "mode_narrator") modeStr = "NARRATOR";
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
-        else if (actionId == "mode_spawn") modeStr = "SPAWN";
         else if (actionId == "mode_cheat") modeStr = "CHEATMODE";
         else if (actionId == "mode_autochat") modeStr = "AUTOCHAT";
         else if (actionId == "mode_inject_log") modeStr = "INJECTION_LOG";
@@ -2364,6 +2378,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing diaries panel");
         
         // Unfocus other views first to avoid focus conflicts
@@ -2449,7 +2466,7 @@ R"CHIM(
                     logger::info("[PrismaUIBridge] Fetching diaries data: mode={}, url={}", mode, url);
 
                     // Fetch from server using HTTP helper
-                    std::string response = FetchDiariesFromServer(url);
+                    std::string response = FetchJsonFromServer(url);
 
                     if (response.empty()) {
                         logger::warn("[PrismaUIBridge] Empty diaries response from server for mode: {}", mode);
@@ -2530,7 +2547,75 @@ R"CHIM(
         );
     }
 
-    static std::string FetchDiariesFromServer(const std::string& url) {
+    static bool DecodeChunkedHttpBody(
+        const std::string& encodedBody,
+        std::string& decodedBody,
+        std::string& error) {
+        decodedBody.clear();
+        size_t cursor = 0;
+
+        while (cursor < encodedBody.size()) {
+            const size_t sizeLineEnd = encodedBody.find("\r\n", cursor);
+            if (sizeLineEnd == std::string::npos) {
+                error = "Chunk size line is incomplete";
+                return false;
+            }
+
+            std::string sizeText = encodedBody.substr(cursor, sizeLineEnd - cursor);
+            const size_t extensionStart = sizeText.find(';');
+            if (extensionStart != std::string::npos) {
+                sizeText.resize(extensionStart);
+            }
+
+            const size_t firstDigit = sizeText.find_first_not_of(" \t");
+            const size_t lastDigit = sizeText.find_last_not_of(" \t");
+            if (firstDigit == std::string::npos) {
+                error = "Chunk size is empty";
+                return false;
+            }
+            sizeText = sizeText.substr(firstDigit, lastDigit - firstDigit + 1);
+
+            size_t parsedLength = 0;
+            unsigned long long chunkSize = 0;
+            try {
+                chunkSize = std::stoull(sizeText, &parsedLength, 16);
+            } catch (const std::exception&) {
+                error = "Chunk size is invalid";
+                return false;
+            }
+            if (parsedLength != sizeText.size()) {
+                error = "Chunk size contains invalid characters";
+                return false;
+            }
+
+            cursor = sizeLineEnd + 2;
+            if (chunkSize == 0) {
+                return true;
+            }
+            if (chunkSize > encodedBody.size() - cursor) {
+                error = "Chunk data is incomplete";
+                return false;
+            }
+
+            decodedBody.append(
+                encodedBody,
+                cursor,
+                static_cast<size_t>(chunkSize));
+            cursor += static_cast<size_t>(chunkSize);
+
+            if (cursor + 2 > encodedBody.size() ||
+                encodedBody.compare(cursor, 2, "\r\n") != 0) {
+                error = "Chunk terminator is missing";
+                return false;
+            }
+            cursor += 2;
+        }
+
+        error = "Final chunk is missing";
+        return false;
+    }
+
+    static std::string FetchJsonFromServer(const std::string& url) {
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -2574,7 +2659,8 @@ R"CHIM(
 
         // Build HTTP request
         std::string request = "GET " + url + " HTTP/1.1\r\n";
-        request += "Host: " + host + "\r\n";
+        request += "Host: " + host + ":" + portStr + "\r\n";
+        request += "Accept: application/json\r\n";
         request += "Connection: close\r\n";
         request += "\r\n";
 
@@ -2610,13 +2696,587 @@ R"CHIM(
         closesocket(rawSocket);
         WSACleanup();
 
-        // Extract body from HTTP response
-        size_t headerEnd = response.find("\r\n\r\n");
-        if (headerEnd != std::string::npos) {
-            response = response.substr(headerEnd + 4);
+        const size_t headerEnd = response.find("\r\n\r\n");
+        if (headerEnd == std::string::npos) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP response");
+            return "";
         }
 
-        return response;
+        const std::string headers = response.substr(0, headerEnd);
+        std::string body = response.substr(headerEnd + 4);
+
+        const size_t statusStart = headers.find(' ');
+        if (statusStart == std::string::npos || statusStart + 4 > headers.size()) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP status line");
+            return "";
+        }
+
+        int statusCode = 0;
+        try {
+            statusCode = std::stoi(headers.substr(statusStart + 1, 3));
+        } catch (const std::exception&) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP status code");
+            return "";
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            logger::error("[PrismaUIBridge] JSON request failed with HTTP {}", statusCode);
+            return "";
+        }
+
+        std::string lowercaseHeaders = headers;
+        std::transform(
+            lowercaseHeaders.begin(),
+            lowercaseHeaders.end(),
+            lowercaseHeaders.begin(),
+            [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+
+        const size_t transferEncoding =
+            lowercaseHeaders.find("transfer-encoding:");
+        if (transferEncoding != std::string::npos) {
+            const size_t transferEncodingEnd =
+                lowercaseHeaders.find("\r\n", transferEncoding);
+            const std::string encodingValue = lowercaseHeaders.substr(
+                transferEncoding,
+                transferEncodingEnd == std::string::npos
+                    ? std::string::npos
+                    : transferEncodingEnd - transferEncoding);
+            if (encodingValue.find("chunked") != std::string::npos) {
+                std::string decodedBody;
+                std::string decodeError;
+                if (!DecodeChunkedHttpBody(body, decodedBody, decodeError)) {
+                    logger::error(
+                        "[PrismaUIBridge] Failed to decode chunked JSON response: {}",
+                        decodeError);
+                    return "";
+                }
+                body = std::move(decodedBody);
+            }
+        }
+
+        return body;
+    }
+
+    // ===== Background Life Functions =====
+
+    void CreateBackgroundLifePanel() {
+        if (!g_prismaUI) {
+            logger::error("[PrismaUIBridge] Cannot create Background Life panel - Prisma UI not initialized");
+            return;
+        }
+
+        if (g_backgroundLifeCreated.load() &&
+            g_backgroundLifeView != 0 &&
+            g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating Background Life panel from CHIM/background_life.html");
+        g_backgroundLifeView = g_prismaUI->CreateView(
+            "CHIM/background_life.html",
+            OnBackgroundLifeDomReady);
+        if (g_backgroundLifeView == 0) {
+            g_lastError = "Failed to create Background Life view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_backgroundLifeView, 112);
+        g_prismaUI->RegisterJSListener(
+            g_backgroundLifeView,
+            "chimBackgroundLifeCommand",
+            OnBackgroundLifeCommand);
+        g_backgroundLifeCreated.store(true);
+    }
+
+    static void SetBackgroundLifeServerUrl(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setBackgroundLifeServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    static void OnBackgroundLifeDomReady(PrismaView view) {
+        g_backgroundLifeDomReady.store(true);
+        SetBackgroundLifeServerUrl(view);
+        UpdateBackgroundLifeTargetUI();
+        g_prismaUI->Invoke(
+            view,
+            "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+            nullptr);
+    }
+
+    static std::vector<PlayerSpatialCandidate> CollectBackgroundLifeTargets() {
+        auto targets = SpatialSnapshotManager::GetPlayerConversationTargets(
+            "prismaui_background_life_targets", true);
+        std::erase_if(targets, [](const PlayerSpatialCandidate& candidate) {
+            return !candidate.agent ||
+                   candidate.narrator ||
+                   candidate.agent->isNarrator() ||
+                   !candidate.actor ||
+                   candidate.formId == 0;
+        });
+        std::sort(targets.begin(), targets.end(),
+            [](const PlayerSpatialCandidate& lhs, const PlayerSpatialCandidate& rhs) {
+                if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+                    return lhs.distanceMeters < rhs.distanceMeters;
+                }
+                return lhs.name < rhs.name;
+            });
+        return targets;
+    }
+
+    static PlayerSpatialTargetStatus ResolveBackgroundLifeTarget(
+        const std::vector<PlayerSpatialCandidate>& candidates) {
+        PlayerSpatialTargetStatus resolved{};
+        auto selected = std::find_if(candidates.begin(), candidates.end(),
+            [](const PlayerSpatialCandidate& candidate) {
+                return candidate.formId == g_backgroundLifeSelectedFormId;
+            });
+
+        if (selected == candidates.end()) {
+            const auto primary = ResolvePrimaryPrismaTarget(candidates);
+            if (primary.hasTarget) {
+                g_backgroundLifeSelectedFormId = primary.formId;
+                selected = std::find_if(candidates.begin(), candidates.end(),
+                    [&primary](const PlayerSpatialCandidate& candidate) {
+                        return candidate.formId == primary.formId;
+                    });
+            }
+        }
+
+        if (selected == candidates.end()) {
+            g_backgroundLifeSelectedFormId = 0;
+            resolved.status = "No activated NPCs nearby";
+            return resolved;
+        }
+
+        resolved.hasTarget = true;
+        resolved.name = selected->name;
+        resolved.formId = selected->formId;
+        resolved.distanceMeters = selected->distanceMeters;
+        resolved.source = selected->source;
+        resolved.reason = selected->reason;
+        resolved.status = GetPrismaDisplayStatus(*selected);
+        resolved.targetable = selected->targetable;
+        return resolved;
+    }
+
+    static void UpdateBackgroundLifeTargetUI() {
+        if (!g_prismaUI ||
+            !g_backgroundLifeCreated.load() ||
+            g_backgroundLifeView == 0 ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        const auto candidates = CollectBackgroundLifeTargets();
+        const auto target = ResolveBackgroundLifeTarget(candidates);
+        json payload;
+        payload["has_target"] = target.hasTarget;
+        payload["name"] = target.hasTarget ? target.name : "";
+        payload["refid"] = target.hasTarget ? std::format("{:08X}", target.formId) : "";
+        payload["selected_form_id"] = target.hasTarget ? target.formId : 0;
+        payload["game_enrolled"] = false;
+        payload["targets"] = json::array();
+
+        if (target.hasTarget) {
+            auto* form = RE::TESForm::LookupByID(target.formId);
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            payload["game_enrolled"] =
+                actor &&
+                AIAgentRoleMasterFaction &&
+                actor->IsInFaction(AIAgentRoleMasterFaction);
+        }
+
+        for (const auto& candidate : candidates) {
+            const bool enrolled =
+                candidate.actor &&
+                AIAgentRoleMasterFaction &&
+                candidate.actor->IsInFaction(AIAgentRoleMasterFaction);
+            payload["targets"].push_back({
+                {"form_id", candidate.formId},
+                {"name", candidate.name},
+                {"refid", std::format("{:08X}", candidate.formId)},
+                {"distance", candidate.distanceMeters},
+                {"status", GetPrismaDisplayStatus(candidate)},
+                {"game_enrolled", enrolled}
+            });
+        }
+
+        const std::string call =
+            "window.updateBackgroundLifeTarget('" +
+            EscapeForJS(payload.dump()) +
+            "')";
+        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+    }
+
+    static bool SetBackgroundLifeEnrollment(bool enabled) {
+        const auto target = ResolveBackgroundLifeTarget(CollectBackgroundLifeTargets());
+        if (!target.hasTarget || target.formId == 0) {
+            RE::DebugNotification("[CHIM] No activated NPC is nearby.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+
+        auto* form = RE::TESForm::LookupByID(target.formId);
+        auto* actor = form ? form->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            RE::DebugNotification("[CHIM] The selected target is not an NPC.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+        if (!AIAgentRoleMasterFaction) {
+            logger::error("[PrismaUIBridge] Cannot change Background Life enrollment - rolemaster faction unavailable");
+            RE::DebugNotification("[CHIM] Background Life faction is unavailable.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : target.name;
+        if (enabled) {
+            actor->AddToFaction(AIAgentRoleMasterFaction, 1);
+        } else {
+            const json command = {
+                {"cmdID", 25},
+                {"targetObjectFormId", target.formId},
+                {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+            };
+            ScriptProxyRun(command.dump());
+        }
+
+        HTTPManager::log(std::format(
+            "{}|{}|{}|{}/{:08X}",
+            enabled ? "enable_bg" : "disable_bg",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            target.formId));
+        logger::info(
+            "[PrismaUIBridge] {} Background Life for {} ({:08X})",
+            enabled ? "Enabled" : "Disabled",
+            npcName,
+            target.formId);
+        RE::DebugNotification(std::format(
+            "[CHIM] Background Life {} for {}.",
+            enabled ? "enabled" : "disabled",
+            npcName).c_str());
+        UpdateBackgroundLifeTargetUI();
+        return true;
+    }
+
+    static void RemoveBackgroundLifeRosterActor(uint32_t formId) {
+        if (formId == 0 || !AIAgentRoleMasterFaction) {
+            return;
+        }
+
+        auto* form = RE::TESForm::LookupByID(formId);
+        auto* actor = form ? form->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::info(
+                "[PrismaUIBridge] Background Life roster removal saved on server; actor {:08X} is not currently available",
+                formId);
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : "Unknown NPC";
+        const json command = {
+            {"cmdID", 25},
+            {"targetObjectFormId", formId},
+            {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+        };
+        ScriptProxyRun(command.dump());
+        HTTPManager::log(std::format(
+            "disable_bg|{}|{}|{}/{:08X}",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            formId));
+        logger::info(
+            "[PrismaUIBridge] Removed Background Life roster NPC {} ({:08X})",
+            npcName,
+            formId);
+        UpdateBackgroundLifeTargetUI();
+    }
+
+    static bool IsSafeBackgroundLifeQuery(const std::string& query) {
+        if (query.empty() || query.size() > 1024) {
+            return false;
+        }
+
+        return std::all_of(query.begin(), query.end(), [](unsigned char value) {
+            return std::isalnum(value) ||
+                   value == '%' || value == '&' || value == '=' || value == '+' ||
+                   value == '.' || value == '_' || value == '-';
+        });
+    }
+
+    static void OnBackgroundLifeCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        const std::string command(argument);
+        if (command == "close") {
+            HideBackgroundLifePanel();
+            return;
+        }
+        if (command == "dom_ready") {
+            g_backgroundLifeDomReady.store(true);
+            SetBackgroundLifeServerUrl(g_backgroundLifeView);
+            UpdateBackgroundLifeTargetUI();
+            g_prismaUI->Invoke(
+                g_backgroundLifeView,
+                "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+                nullptr);
+            return;
+        }
+        if (command == "target_refresh") {
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        constexpr std::string_view targetSelectPrefix = "target_select|";
+        if (command.starts_with(targetSelectPrefix)) {
+            const std::string formIdText = command.substr(targetSelectPrefix.size());
+            try {
+                std::size_t parsedLength = 0;
+                const auto parsedFormId =
+                    static_cast<uint32_t>(std::stoul(formIdText, &parsedLength, 10));
+                const auto candidates = CollectBackgroundLifeTargets();
+                const bool validSelection =
+                    parsedLength == formIdText.size() &&
+                    std::any_of(candidates.begin(), candidates.end(),
+                        [parsedFormId](const PlayerSpatialCandidate& candidate) {
+                            return candidate.formId == parsedFormId;
+                        });
+                if (validSelection) {
+                    g_backgroundLifeSelectedFormId = parsedFormId;
+                } else {
+                    logger::warn(
+                        "[PrismaUIBridge] Rejected unavailable Background Life target {}",
+                        formIdText);
+                }
+            } catch (const std::exception&) {
+                logger::warn(
+                    "[PrismaUIBridge] Rejected invalid Background Life target {}",
+                    formIdText);
+            }
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        constexpr std::string_view enrollmentPrefix = "enrollment|";
+        if (command.starts_with(enrollmentPrefix)) {
+            const std::string operation = command.substr(enrollmentPrefix.size());
+            if (operation == "enable" || operation == "disable") {
+                SetBackgroundLifeEnrollment(operation == "enable");
+            } else {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life enrollment command");
+            }
+            return;
+        }
+
+        constexpr std::string_view rosterRemovePrefix = "roster_remove|";
+        if (command.starts_with(rosterRemovePrefix)) {
+            const std::string formIdText = command.substr(rosterRemovePrefix.size());
+            try {
+                std::size_t parsedLength = 0;
+                const auto parsedFormId =
+                    static_cast<uint32_t>(std::stoul(formIdText, &parsedLength, 10));
+                if (parsedLength == formIdText.size() && parsedFormId != 0) {
+                    RemoveBackgroundLifeRosterActor(parsedFormId);
+                } else {
+                    logger::warn(
+                        "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
+                        formIdText);
+                }
+            } catch (const std::exception&) {
+                logger::warn(
+                    "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
+                    formIdText);
+            }
+            return;
+        }
+
+        constexpr std::string_view modePrefix = "mode|";
+        if (command.starts_with(modePrefix)) {
+            const std::string actionId = command.substr(modePrefix.size());
+            if (actionId == "mode_inject_log" ||
+                actionId == "mode_inject_chat") {
+                if (ApplyModeSelection(actionId, "Background Life", true)) {
+                    UpdateChatboxModeUI(g_chatboxCurrentMode);
+                    CheckAndUpdateChatboxControls(true);
+                    ShowChatboxPanel();
+                }
+            } else {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life mode command");
+            }
+            return;
+        }
+
+        constexpr std::string_view prefix = "fetch|";
+        if (command.starts_with(prefix)) {
+            const std::string query = command.substr(prefix.size());
+            if (!IsSafeBackgroundLifeQuery(query)) {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life query");
+                return;
+            }
+            FetchBackgroundLifeData(query);
+        }
+    }
+
+    void ToggleBackgroundLifePanel() {
+        if (!g_prismaUI) {
+            return;
+        }
+
+        const bool needsCreation =
+            !g_backgroundLifeCreated.load() ||
+            g_backgroundLifeView == 0 ||
+            !g_prismaUI->IsValid(g_backgroundLifeView);
+        if (needsCreation) {
+            CreateBackgroundLifePanel();
+        }
+        if (!g_backgroundLifeCreated.load()) {
+            return;
+        }
+        if (needsCreation) {
+            ShowBackgroundLifePanel();
+            return;
+        }
+
+        if (g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            ShowBackgroundLifePanel();
+        } else {
+            HideBackgroundLifePanel();
+        }
+    }
+
+    void ShowBackgroundLifePanel() {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load()) {
+            CreateBackgroundLifePanel();
+        }
+        if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        if (g_panelCreated.load() && !g_prismaUI->IsHidden(g_historyView)) {
+            HideHistoryPanel();
+        }
+        if (g_overlayCreated.load() && !g_prismaUI->IsHidden(g_overlayView)) {
+            HideOverlayPanel();
+        }
+        if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
+            HideDiariesPanel();
+        }
+        if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
+            HideBrowserPanel();
+        }
+        if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
+            HideQuestManagerPanel();
+        }
+
+        g_prismaUI->Show(g_backgroundLifeView);
+        SetBackgroundLifeServerUrl(g_backgroundLifeView);
+        UpdateBackgroundLifeTargetUI();
+        const bool focused = g_prismaUI->Focus(g_backgroundLifeView, true, false);
+        logger::info(
+            "[PrismaUIBridge] Background Life panel focus: {}",
+            focused ? "SUCCESS" : "FAILED");
+
+        if (g_backgroundLifeDomReady.load()) {
+            g_prismaUI->Invoke(
+                g_backgroundLifeView,
+                "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+                nullptr);
+        }
+    }
+
+    void HideBackgroundLifePanel() {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        if (g_prismaUI->HasFocus(g_backgroundLifeView)) {
+            g_prismaUI->Unfocus(g_backgroundLifeView);
+        }
+        g_prismaUI->Hide(g_backgroundLifeView);
+    }
+
+    bool IsBackgroundLifePanelVisible() {
+        return g_prismaUI &&
+               g_backgroundLifeCreated.load() &&
+               g_backgroundLifeView != 0 &&
+               g_prismaUI->IsValid(g_backgroundLifeView) &&
+               !g_prismaUI->IsHidden(g_backgroundLifeView);
+    }
+
+    void FetchBackgroundLifeData(const std::string& queryString) {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load()) {
+            return;
+        }
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIBackgroundLifeFetch",
+            [queryString]() {
+                try {
+                    const std::string url =
+                        "/HerikaServer/ui/api/background_life_history.php?" + queryString;
+                    const std::string response = FetchJsonFromServer(url);
+                    if (response.empty()) {
+                        throw std::runtime_error("No data received from server");
+                    }
+
+                    const json payload = json::parse(response, nullptr, false);
+                    if (payload.is_discarded()) {
+                        throw std::runtime_error("Server returned invalid JSON");
+                    }
+                    if (!payload.value("success", false)) {
+                        throw std::runtime_error(payload.value(
+                            "error",
+                            "Unable to load Background Life history"));
+                    }
+
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.updateBackgroundLifeHistory('" +
+                            EscapeForJS(response) +
+                            "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                } catch (const std::exception& error) {
+                    logger::error(
+                        "[PrismaUIBridge] Background Life fetch failed: {}",
+                        error.what());
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.showBackgroundLifeError('" +
+                            EscapeForJS(error.what()) +
+                            "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                }
+            });
     }
 
     // ===== CHIM Browser Functions =====
@@ -2807,6 +3467,14 @@ R"CHIM(
             }
             if (!g_prismaUI->IsHidden(g_diariesView)) {
                 g_prismaUI->Hide(g_diariesView);
+            }
+        }
+        if (g_backgroundLifeCreated.load()) {
+            if (g_prismaUI->HasFocus(g_backgroundLifeView)) {
+                g_prismaUI->Unfocus(g_backgroundLifeView);
+            }
+            if (!g_prismaUI->IsHidden(g_backgroundLifeView)) {
+                g_prismaUI->Hide(g_backgroundLifeView);
             }
         }
         if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
@@ -3009,6 +3677,9 @@ R"CHIM(
         }
         if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
             HideDiariesPanel();
+        }
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
         }
         if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
             HideBrowserPanel();
@@ -3822,6 +4493,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing debugger panel");
         g_prismaUI->Show(g_debuggerView);
         g_prismaUI->Focus(g_debuggerView, false, false);
@@ -4195,6 +4869,13 @@ R"CHIM(
                 g_prismaUI->Destroy(g_diariesView);
                 g_diariesView = 0;
                 g_diariesCreated.store(false);
+            }
+
+            if (g_backgroundLifeCreated.load()) {
+                g_prismaUI->Destroy(g_backgroundLifeView);
+                g_backgroundLifeView = 0;
+                g_backgroundLifeCreated.store(false);
+                g_backgroundLifeDomReady.store(false);
             }
             
             if (g_browserCreated.load()) {
@@ -4638,6 +5319,7 @@ R"CHIM(
         UnfocusPrismaViewIfFocused(g_historyView, g_panelCreated.load());
         UnfocusPrismaViewIfFocused(g_overlayView, g_overlayCreated.load());
         UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
+        UnfocusPrismaViewIfFocused(g_backgroundLifeView, g_backgroundLifeCreated.load());
         UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
         UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
@@ -4807,11 +5489,6 @@ R"CHIM(
         bool autoEligible = true;
     };
 
-    static bool IsChatboxSpawnMode()
-    {
-        return g_chatboxCurrentMode == "SPAWN";
-    }
-
     static bool IsChatboxNarratorOnlyMode()
     {
         return g_chatboxCurrentMode == "NARRATOR";
@@ -4912,7 +5589,7 @@ R"CHIM(
             return nearbyAgents;
         }
 
-        if (IsChatboxSpawnMode() || IsChatboxDirectorMode()) {
+        if (IsChatboxDirectorMode()) {
             return nearbyAgents;
         }
 
@@ -5320,7 +5997,7 @@ R"CHIM(
         auto nearbyAgents = CollectChatboxNearbyAgents();
         const bool narratorOnlyMode = IsChatboxNarratorOnlyMode();
         const bool directorMode = IsChatboxDirectorMode();
-        const bool overrideSupported = !narratorOnlyMode && !directorMode && !IsChatboxSpawnMode();
+        const bool overrideSupported = !narratorOnlyMode && !directorMode;
         const bool everyoneSupported =
             overrideSupported && !IsChatboxWhisperMode() && !IsChatboxCloseMode();
         if (!everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
@@ -5465,11 +6142,10 @@ R"CHIM(
         targetsPayload["auto_active"] = !everyoneActive && !overrideTarget && hasAutoTarget;
         targetsPayload["show_everyone"] = everyoneSupported;
         targetsPayload["everyone_active"] = everyoneActive;
-        targetsPayload["empty_message"] = IsChatboxSpawnMode()
-            ? "Target override is unavailable in Spawn mode."
-            : (directorMode ? "No direct speaker targets are available in Director mode."
-                : (narratorOnlyMode ? "Only The Narrator is available in Narrator mode."
-                    : "No spatially available targets right now."));
+        targetsPayload["empty_message"] = directorMode
+            ? "No direct speaker targets are available in Director mode."
+            : (narratorOnlyMode ? "Only The Narrator is available in Narrator mode."
+                : "No spatially available targets right now.");
 
         json targetItems = json::array();
         for (const auto& nearbyAgent : nearbyAgents) {
@@ -5681,7 +6357,7 @@ R"CHIM(
             CheckAndUpdateChatboxControls(true);
         } else if (cmd == "target_override_everyone") {
             if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() ||
-                IsChatboxSpawnMode() || IsChatboxWhisperMode() || IsChatboxCloseMode()) {
+                IsChatboxWhisperMode() || IsChatboxCloseMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
                 return;
@@ -5807,6 +6483,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing chatbox panel (no auto-focus)");
         g_chatboxQuickFocusActive.store(false);
         g_prismaUI->Show(g_chatboxView);
@@ -6002,6 +6681,7 @@ R"CHIM(
 
         return isFocused(g_historyView, g_panelCreated.load()) ||
                isFocused(g_diariesView, g_diariesCreated.load()) ||
+               isFocused(g_backgroundLifeView, g_backgroundLifeCreated.load()) ||
                isFocused(g_browserView, g_browserCreated.load()) ||
                isFocused(g_debuggerView, g_debuggerCreated.load()) ||
                isFocused(g_chatboxView, g_chatboxCreated.load()) ||
@@ -6412,6 +7092,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing settings menu panel");
         g_prismaUI->Show(g_settingsMenuView);
 
@@ -6612,6 +7295,7 @@ R"CHIM(
         const bool shouldCloseFirst =
             cmd == "history" ||
             cmd == "diaries" ||
+            cmd == "backgroundlife" ||
             cmd == "overlay" ||
             cmd == "statushud" ||
             cmd == "aiview" ||
@@ -6636,6 +7320,8 @@ R"CHIM(
             ToggleHistoryPanel();
         } else if (cmd == "diaries") {
             ToggleDiariesPanel();
+        } else if (cmd == "backgroundlife") {
+            ToggleBackgroundLifePanel();
         } else if (cmd == "overlay") {
             ToggleOverlayPanel();
         } else if (cmd == "statushud") {
@@ -6703,6 +7389,10 @@ R"CHIM(
         if (!g_prismaUI->IsValid(g_masterMenuView)) {
             logger::error("[PrismaUIBridge] Master menu view is not valid!");
             return;
+        }
+
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
         }
 
         // Reassert menu order in case another panel changed stacking.

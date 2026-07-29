@@ -116,6 +116,15 @@ namespace PrismaUIBridge {
     // Fetch diaries data from HerikaServer and update the panel
     void FetchDiariesData(const std::string& mode, const std::string& param);
 
+    // ===== Background Life Functions =====
+
+    void CreateBackgroundLifePanel();
+    void ToggleBackgroundLifePanel();
+    void ShowBackgroundLifePanel();
+    void HideBackgroundLifePanel();
+    bool IsBackgroundLifePanelVisible();
+    void FetchBackgroundLifeData(const std::string& queryString);
+
     // ===== CHIM Browser Functions =====
 
     // Create the CHIM browser panel
