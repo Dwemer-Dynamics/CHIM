@@ -702,7 +702,6 @@
 
         document.getElementById('npc-create-disposition').value = defaults.disposition || 'friendly';
         document.getElementById('npc-create-gold').value = defaults.gold_qty || '100';
-        document.getElementById('npc-create-iron-ore').value = defaults.iron_ore_qty || '10';
     }
 
     window.openNpcCreateModal = async function () {
