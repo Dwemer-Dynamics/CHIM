@@ -2159,6 +2159,7 @@ private:
         auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
+        auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
         std::size_t agentMaintenanceCursor = 0;
         int consecutiveErrors = 0;
         
@@ -2482,10 +2483,14 @@ private:
                                 auto selectedActor = randomActor->getActor();
                                 randomActor->incBoredEventsFired();
                                 if (!SpeakManager::getInstance().hasItems() && selectedActor) {
-                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActor->GetDisplayFullName());
-                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor]() {
-                                        HTTPManager::stream(std::format("bored|{}|{}|{}", getCurrentTimeMillis(),
-                                                                        GetGameTimeStamp(), GetPlayerLocation()),
+                                    const char* displayName = selectedActor->GetDisplayFullName();
+                                    const std::string selectedActorName = displayName ? displayName : "";
+                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActorName);
+                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor, selectedActorName]() {
+                                        SpeakManager::getInstance().startRechatChainForAutonomousEvent();
+                                        HTTPManager::stream(std::format("bored|{}|{}|{}|{}", getCurrentTimeMillis(),
+                                                                        GetGameTimeStamp(), GetPlayerLocation(),
+                                                                        selectedActorName),
                                                             selectedActor);
                                     });
                                 } else {
@@ -2496,9 +2501,12 @@ private:
                             }
                         }
                     } else if (avoidBored) {
-                         logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})", 
-                                      player->IsInCombat(), player->IsAttacking(), player->IsSneaking(), 
-                                      CheckScene(player->GetCurrentScene() ), playerInDialog); 
+                        if (now - lastBoredBusyLogAt >= std::chrono::seconds(30)) {
+                            lastBoredBusyLogAt = now;
+                            logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})",
+                                          player->IsInCombat(), player->IsAttacking(), player->IsSneaking(),
+                                          CheckScene(player->GetCurrentScene()), playerInDialog);
+                        }
                     }
 
                     // DYNAMIC PROFILE TIMER LOGIC
@@ -6014,6 +6022,7 @@ struct InventoryItemSnapshot
     int count = 0;
     json keywords = json::array();
     std::string hashEntry;
+    int gold = 0;
 };
 
 struct ModdedEquipmentSlot
@@ -6561,7 +6570,8 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         // Skip items with missing or invalid names
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
-            inventoryItems.push_back({itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump()});
+            inventoryItems.push_back(
+                {itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump(), boundObject->GetGoldValue()});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6606,7 +6616,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         inventoryDataJson["items"].push_back({{"name", item.name},
                                               {"baseid", item.baseid},
                                               {"count", item.count},
-                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}});
+                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}, 
+                                              {"goldvalue", item.gold}
+            });
     }
 
     if (synchronous) {
