@@ -37,11 +37,28 @@
     const rumorHoldSelectToggle = document.getElementById('rumor-hold-select-toggle');
     const rumorHoldSelectLabel = document.getElementById('rumor-hold-select-label');
     const rumorHoldSelectOptions = document.getElementById('rumor-hold-select-options');
+    const npcCreateGender = document.getElementById('npc-create-gender');
+    const npcCreateGenderToggle = document.getElementById('npc-create-gender-toggle');
+    const npcCreateGenderLabel = document.getElementById('npc-create-gender-label');
+    const npcCreateGenderOptions = document.getElementById('npc-create-gender-options');
+    const npcCreateRace = document.getElementById('npc-create-race');
+    const npcCreateRaceToggle = document.getElementById('npc-create-race-toggle');
+    const npcCreateRaceLabel = document.getElementById('npc-create-race-label');
+    const npcCreateRaceOptions = document.getElementById('npc-create-race-options');
+    const npcCreateClass = document.getElementById('npc-create-class');
+    const npcCreateClassToggle = document.getElementById('npc-create-class-toggle');
+    const npcCreateClassLabel = document.getElementById('npc-create-class-label');
+    const npcCreateClassOptions = document.getElementById('npc-create-class-options');
+    const npcCreateLocation = document.getElementById('npc-create-location');
+    const npcCreateLocationToggle = document.getElementById('npc-create-location-toggle');
+    const npcCreateLocationLabel = document.getElementById('npc-create-location-label');
+    const npcCreateLocationOptions = document.getElementById('npc-create-location-options');
 
     let currentPage = 1;
     let totalPages = 1;
     let searchTimer = null;
     let rumorCreateInFlight = false;
+    let npcCreateInFlight = false;
     let rosterRequestGeneration = 0;
     let rosterRemoveConfirmKey = '';
     let rosterRemoveConfirmTimer = null;
@@ -166,6 +183,30 @@
         rumorHoldSelectToggle,
         rumorHoldSelectLabel,
         rumorHoldSelectOptions
+    );
+    const npcCreateGenderDropdown = createTileDropdown(
+        npcCreateGender,
+        npcCreateGenderToggle,
+        npcCreateGenderLabel,
+        npcCreateGenderOptions
+    );
+    const npcCreateRaceDropdown = createTileDropdown(
+        npcCreateRace,
+        npcCreateRaceToggle,
+        npcCreateRaceLabel,
+        npcCreateRaceOptions
+    );
+    const npcCreateClassDropdown = createTileDropdown(
+        npcCreateClass,
+        npcCreateClassToggle,
+        npcCreateClassLabel,
+        npcCreateClassOptions
+    );
+    const npcCreateLocationDropdown = createTileDropdown(
+        npcCreateLocation,
+        npcCreateLocationToggle,
+        npcCreateLocationLabel,
+        npcCreateLocationOptions
     );
 
     function setLoading(loading) {
@@ -595,6 +636,165 @@
         }
     }
 
+    function getNpcCreateModalOverlay() {
+        return document.getElementById('npc-create-modal-overlay');
+    }
+
+    function getNpcCreateForm() {
+        return document.getElementById('npc-create-form');
+    }
+
+    function isNpcCreateModalOpen() {
+        const overlay = getNpcCreateModalOverlay();
+        return !!overlay && !overlay.classList.contains('hidden');
+    }
+
+    function setNpcCreateFormStatus(message, type) {
+        const formStatus = document.getElementById('npc-create-form-status');
+        if (!formStatus) {
+            return;
+        }
+
+        formStatus.textContent = message || '';
+        formStatus.classList.remove('error', 'success');
+        if (type === 'error' || type === 'success') {
+            formStatus.classList.add(type);
+        }
+    }
+
+    function setNpcCreateSubmitState(busy, label) {
+        npcCreateInFlight = !!busy;
+        const submitButton = document.getElementById('npc-create-submit-button');
+        if (submitButton) {
+            submitButton.disabled = !!busy;
+            submitButton.textContent = label || (busy ? 'Creating NPC...' : 'Create NPC');
+        }
+    }
+
+    function optionEntries(values) {
+        return (values || []).map(function (value) {
+            return { value: value, label: value };
+        });
+    }
+
+    function applyNpcCreationOptions(options) {
+        const defaults = options.defaults || {};
+        const form = getNpcCreateForm();
+        if (!form) {
+            return;
+        }
+
+        form.reset();
+        npcCreateGenderDropdown.setOptions(optionEntries(options.genders), defaults.gender || 'male');
+        npcCreateRaceDropdown.setOptions(optionEntries(options.races), defaults.race || 'Nord');
+        npcCreateClassDropdown.setOptions(optionEntries(options.classes), defaults.class || 'farmer');
+        npcCreateLocationDropdown.setOptions(
+            [{ value: '', label: 'Select discovered location' }].concat(
+                (options.locations || []).map(function (location) {
+                    return {
+                        value: location.formid,
+                        label: location.label || location.name
+                    };
+                })
+            ),
+            defaults.location || ''
+        );
+
+        document.getElementById('npc-create-disposition').value = defaults.disposition || 'friendly';
+        document.getElementById('npc-create-gold').value = defaults.gold_qty || '100';
+        document.getElementById('npc-create-iron-ore').value = defaults.iron_ore_qty || '10';
+    }
+
+    window.openNpcCreateModal = async function () {
+        const overlay = getNpcCreateModalOverlay();
+        if (!overlay) {
+            return;
+        }
+
+        if (isRumorModalOpen()) {
+            window.closeRumorModal();
+        }
+        closeTileDropdowns();
+        overlay.classList.remove('hidden');
+        overlay.setAttribute('aria-hidden', 'false');
+        setNpcCreateFormStatus('Loading NPC creation options...', '');
+        setNpcCreateSubmitState(true, 'Loading...');
+
+        try {
+            const response = await fetch(`${serverBaseUrl}/ui/api/background_life_npc_create.php`, {
+                cache: 'no-store'
+            });
+            const payload = await parseJsonResponse(response);
+            applyNpcCreationOptions(payload.data || {});
+            setNpcCreateFormStatus('', '');
+            setNpcCreateSubmitState(false);
+            window.setTimeout(function () {
+                document.getElementById('npc-create-name').focus();
+            }, 0);
+        } catch (error) {
+            console.error('[CHIM Background Life] NPC creation options failed:', error);
+            setNpcCreateFormStatus(`Could not load NPC creation options: ${error.message || error}`, 'error');
+            setNpcCreateSubmitState(true, 'Unavailable');
+        }
+    };
+
+    window.closeNpcCreateModal = function () {
+        const overlay = getNpcCreateModalOverlay();
+        if (!overlay) {
+            return;
+        }
+
+        closeTileDropdowns();
+        overlay.classList.add('hidden');
+        overlay.setAttribute('aria-hidden', 'true');
+        if (!npcCreateInFlight) {
+            setNpcCreateFormStatus('', '');
+            setNpcCreateSubmitState(false);
+        }
+    };
+
+    window.submitNpcCreateForm = async function (event) {
+        if (event) {
+            event.preventDefault();
+        }
+        if (npcCreateInFlight) {
+            return;
+        }
+
+        const form = getNpcCreateForm();
+        if (!form || !form.reportValidity()) {
+            return;
+        }
+        if (!npcCreateLocation.value) {
+            setNpcCreateFormStatus('Select a discovered location for this NPC.', 'error');
+            npcCreateLocationToggle.focus();
+            return;
+        }
+
+        setNpcCreateSubmitState(true);
+        setNpcCreateFormStatus('Creating NPC in Skyrim. This can take up to one minute...', '');
+
+        try {
+            const response = await fetch(`${serverBaseUrl}/ui/api/background_life_npc_create.php`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: new URLSearchParams(new FormData(form)).toString()
+            });
+            const payload = await parseJsonResponse(response);
+            setNpcCreateFormStatus(payload.message || 'NPC created and added to Background Life.', 'success');
+            await Promise.all([refreshRoster(), requestHistory()]);
+            sendCommand('target_refresh');
+            window.setTimeout(window.closeNpcCreateModal, 650);
+        } catch (error) {
+            console.error('[CHIM Background Life] Create NPC failed:', error);
+            setNpcCreateFormStatus(`Create NPC failed: ${error.message || error}`, 'error');
+        } finally {
+            setNpcCreateSubmitState(false);
+        }
+    };
+
     function getRumorModalOverlay() {
         return document.getElementById('rumor-modal-overlay');
     }
@@ -648,6 +848,9 @@
             return;
         }
 
+        if (isNpcCreateModalOpen()) {
+            window.closeNpcCreateModal();
+        }
         form.reset();
         rumorHoldDropdown.select('', 'Select hold', false);
         setRumorFormStatus('', '');
@@ -937,6 +1140,10 @@
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape') {
             event.preventDefault();
+            if (isNpcCreateModalOpen()) {
+                window.closeNpcCreateModal();
+                return;
+            }
             if (isRumorModalOpen()) {
                 window.closeRumorModal();
                 return;

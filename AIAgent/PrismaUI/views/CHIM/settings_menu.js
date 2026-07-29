@@ -17,7 +17,6 @@ const MODE_ACTION_MAP = {
     WHISPER: 'mode_whisper',
     NARRATOR: 'mode_narrator',
     DIRECTOR: 'mode_director',
-    SPAWN: 'mode_spawn',
     CHEATMODE: 'mode_cheat',
     AUTOCHAT: 'mode_autochat',
     INJECTION_LOG: 'mode_inject_log',

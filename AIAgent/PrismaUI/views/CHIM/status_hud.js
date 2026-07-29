@@ -25,7 +25,6 @@
         'STANDARD': { label: 'Standard', class: '' },
         'WHISPER': { label: 'Whisper', class: 'whisper' },
         'DIRECTOR': { label: 'Director', class: 'director' },
-        'SPAWN': { label: 'Spawn', class: 'director' },
         'CHEATMODE': { label: 'Cheat', class: 'cheatmode' },
         'AUTOCHAT': { label: 'Auto', class: 'autochat' },
         'INJECTION_LOG': { label: 'Inject', class: 'director' },

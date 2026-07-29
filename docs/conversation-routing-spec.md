@@ -26,7 +26,7 @@ It does not implement a separate responder-selection algorithm.
 - **Soft eligibility**: Automatic-selection checks that direct targeting may
   bypass.
 - **Conversation mode**: Standard, Whisper, Close, or Shout.
-- **Tool mode**: Director, Spawn, Cheat, Auto Chat, or event injection. Tool
+- **Tool mode**: Director, Cheat, Auto Chat, or event injection. Tool
   modes are not conversation-distance modes.
 
 ## Current Architecture
@@ -89,7 +89,7 @@ select the mode, but it does not mutate global hearing distances.
 
 Prisma exposes one **Mode** selector containing the conversation modes
 Standard, Whisper, Close, Shout, and Narrator plus the tool modes Director,
-Spawn, Cheat Mode, Auto Chat, Event Inject, and Inject & Chat.
+Cheat Mode, Auto Chat, Event Inject, and Inject & Chat.
 
 Pressing Ctrl+Enter selects persistent Close mode before submitting the
 message. Normal Enter uses the currently selected persistent mode. Prisma sends

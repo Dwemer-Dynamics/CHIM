@@ -98,7 +98,6 @@
         SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
         NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' },
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
-        SPAWN: { label: 'Spawn', class: 'director', action: 'mode_spawn' },
         CHEATMODE: { label: 'Cheat Mode', class: 'cheatmode', action: 'mode_cheat' },
         AUTOCHAT: { label: 'Auto Chat', class: 'autochat', action: 'mode_autochat' },
         INJECTION_LOG: { label: 'Event Inject', class: 'director', action: 'mode_inject_log' },
@@ -987,7 +986,6 @@
 
     function getProfileLlmTarget() {
         if (currentModeAction === 'mode_director' ||
-            currentModeAction === 'mode_spawn' ||
             currentTargetOverrideMode === 'everyone') {
             return null;
         }

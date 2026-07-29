@@ -14,6 +14,7 @@
                 <p>Recent NPC activity across Skyrim</p>
             </div>
             <div class="header-actions">
+                <button class="icon-button create-npc-button" type="button" onclick="openNpcCreateModal()">Create NPC</button>
                 <button class="icon-button rumor-button" type="button" onclick="openRumorModal()">Create Rumor</button>
                 <button class="icon-button" id="refresh-button" type="button" title="Refresh activity">Refresh</button>
                 <button class="close-button" type="button" onclick="closePanel()" aria-label="Close">X</button>
@@ -134,6 +135,114 @@
                     <span id="page-label">Page 1 of 1</span>
                     <button class="page-button" id="next-button" type="button">Next</button>
                 </footer>
+            </div>
+        </div>
+
+        <div id="npc-create-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeNpcCreateModal()">
+            <div class="rumor-modal-panel npc-create-modal-panel" role="dialog" aria-modal="true" aria-labelledby="npc-create-modal-title">
+                <div class="rumor-modal-header">
+                    <div>
+                        <h2 id="npc-create-modal-title">Create Background Life NPC</h2>
+                        <p>Create one structured NPC and add them directly to Background Life.</p>
+                    </div>
+                    <button class="rumor-modal-close" type="button" onclick="closeNpcCreateModal()" aria-label="Close create NPC modal">&times;</button>
+                </div>
+                <form id="npc-create-form" class="rumor-form npc-create-form" onsubmit="submitNpcCreateForm(event)">
+                    <div class="npc-create-grid">
+                        <label class="rumor-field">
+                            <span>Name</span>
+                            <input id="npc-create-name" name="npc_name" type="text" required autocomplete="off">
+                        </label>
+                        <div class="rumor-field">
+                            <span>Gender</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-gender" name="npc_gender" type="hidden" value="male">
+                                <button id="npc-create-gender-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-gender-options">
+                                    <span id="npc-create-gender-label">male</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-gender-options" class="target-tile-options hidden" role="listbox" aria-label="NPC gender"></div>
+                            </div>
+                        </div>
+                        <div class="rumor-field">
+                            <span>Race</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-race" name="npc_race" type="hidden" value="Nord">
+                                <button id="npc-create-race-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-race-options">
+                                    <span id="npc-create-race-label">Nord</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-race-options" class="target-tile-options hidden" role="listbox" aria-label="NPC race"></div>
+                            </div>
+                        </div>
+                        <div class="rumor-field">
+                            <span>Class</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-class" name="npc_class" type="hidden" value="farmer">
+                                <button id="npc-create-class-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-class-options">
+                                    <span id="npc-create-class-label">farmer</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-class-options" class="target-tile-options hidden" role="listbox" aria-label="NPC class"></div>
+                            </div>
+                        </div>
+                        <div class="rumor-field npc-create-location-field">
+                            <span>Location</span>
+                            <div class="target-tile-selector compact-tile-selector">
+                                <input id="npc-create-location" name="npc_location" type="hidden" value="">
+                                <button id="npc-create-location-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="npc-create-location-options">
+                                    <span id="npc-create-location-label">Select discovered location</span>
+                                    <span class="target-tile-arrow" aria-hidden="true"></span>
+                                </button>
+                                <div id="npc-create-location-options" class="target-tile-options npc-location-options hidden" role="listbox" aria-label="NPC location"></div>
+                            </div>
+                        </div>
+                        <label class="rumor-field npc-create-wide-field">
+                            <span>Background</span>
+                            <textarea id="npc-create-background" name="npc_background" rows="3" required></textarea>
+                        </label>
+                        <label class="rumor-field">
+                            <span>Speech Style</span>
+                            <input id="npc-create-speech-style" name="npc_speech_style" type="text" required>
+                        </label>
+                        <label class="rumor-field npc-create-wide-field">
+                            <span>Goals</span>
+                            <textarea id="npc-create-goal" name="npc_goal" rows="3" required></textarea>
+                        </label>
+                    </div>
+
+                    <details class="npc-create-advanced">
+                        <summary>Advanced Options</summary>
+                        <div class="npc-create-grid">
+                            <label class="rumor-field npc-create-wide-field">
+                                <span>Appearance</span>
+                                <input id="npc-create-appearance" name="npc_appearance" type="text">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Disposition</span>
+                                <input id="npc-create-disposition" name="npc_disposition" type="text" value="friendly">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Starting Point FormID</span>
+                                <input id="npc-create-starting-point" name="npc_starting_point" type="text" placeholder="Uses location when empty">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Gold</span>
+                                <input id="npc-create-gold" name="npc_inventory_gold" type="number" min="0" step="1" value="100">
+                            </label>
+                            <label class="rumor-field">
+                                <span>Iron Ore</span>
+                                <input id="npc-create-iron-ore" name="npc_inventory_iron_ore" type="number" min="0" step="1" value="10">
+                            </label>
+                        </div>
+                    </details>
+
+                    <div id="npc-create-form-status" class="rumor-form-status" aria-live="polite"></div>
+                    <div class="rumor-form-actions">
+                        <button class="page-button rumor-cancel-button" type="button" onclick="closeNpcCreateModal()">Cancel</button>
+                        <button id="npc-create-submit-button" class="icon-button" type="submit">Create NPC</button>
+                    </div>
+                </form>
             </div>
         </div>
 

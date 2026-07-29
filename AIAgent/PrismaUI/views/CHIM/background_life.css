@@ -697,6 +697,11 @@ textarea {
     color: #ffd0a1;
 }
 
+.create-npc-button {
+    background: rgba(62, 138, 83, 0.22);
+    color: #bcebc7;
+}
+
 .rumor-modal-overlay {
     position: absolute;
     inset: 0;
@@ -719,6 +724,56 @@ textarea {
     border-radius: 8px;
     background: #1a1a1e;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+}
+
+.npc-create-modal-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(900px, 100%);
+    max-height: calc(100vh - 48px);
+}
+
+.npc-create-form {
+    overflow-y: auto;
+}
+
+.npc-create-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 14px;
+}
+
+.npc-create-location-field,
+.npc-create-wide-field {
+    grid-column: 1 / -1;
+}
+
+.npc-create-form .rumor-field textarea {
+    min-height: 78px;
+}
+
+.npc-location-options {
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+.npc-create-advanced {
+    margin: 2px 0 14px;
+    border: 1px solid #3d3d43;
+    border-radius: 6px;
+    background: #151519;
+}
+
+.npc-create-advanced summary {
+    padding: 11px 13px;
+    color: #f2c48f;
+    font-size: 0.86rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.npc-create-advanced .npc-create-grid {
+    padding: 4px 13px 0;
 }
 
 .rumor-modal-header {
@@ -867,5 +922,14 @@ textarea {
 
     .rumor-form-row {
         grid-template-columns: 1fr;
+    }
+
+    .npc-create-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .npc-create-location-field,
+    .npc-create-wide-field {
+        grid-column: auto;
     }
 }

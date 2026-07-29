@@ -1741,7 +1741,7 @@ R"CHIM(
 
         static const std::vector<std::string> validModes{
             "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
-            "DIRECTOR", "SPAWN", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
+            "DIRECTOR", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
         };
         if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
             logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
@@ -1784,7 +1784,6 @@ R"CHIM(
         else if (actionId == "mode_close") modeStr = "CLOSE";
         else if (actionId == "mode_narrator") modeStr = "NARRATOR";
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
-        else if (actionId == "mode_spawn") modeStr = "SPAWN";
         else if (actionId == "mode_cheat") modeStr = "CHEATMODE";
         else if (actionId == "mode_autochat") modeStr = "AUTOCHAT";
         else if (actionId == "mode_inject_log") modeStr = "INJECTION_LOG";
@@ -5486,11 +5485,6 @@ R"CHIM(
         bool autoEligible = true;
     };
 
-    static bool IsChatboxSpawnMode()
-    {
-        return g_chatboxCurrentMode == "SPAWN";
-    }
-
     static bool IsChatboxNarratorOnlyMode()
     {
         return g_chatboxCurrentMode == "NARRATOR";
@@ -5591,7 +5585,7 @@ R"CHIM(
             return nearbyAgents;
         }
 
-        if (IsChatboxSpawnMode() || IsChatboxDirectorMode()) {
+        if (IsChatboxDirectorMode()) {
             return nearbyAgents;
         }
 
@@ -5999,7 +5993,7 @@ R"CHIM(
         auto nearbyAgents = CollectChatboxNearbyAgents();
         const bool narratorOnlyMode = IsChatboxNarratorOnlyMode();
         const bool directorMode = IsChatboxDirectorMode();
-        const bool overrideSupported = !narratorOnlyMode && !directorMode && !IsChatboxSpawnMode();
+        const bool overrideSupported = !narratorOnlyMode && !directorMode;
         const bool everyoneSupported =
             overrideSupported && !IsChatboxWhisperMode() && !IsChatboxCloseMode();
         if (!everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
@@ -6144,11 +6138,10 @@ R"CHIM(
         targetsPayload["auto_active"] = !everyoneActive && !overrideTarget && hasAutoTarget;
         targetsPayload["show_everyone"] = everyoneSupported;
         targetsPayload["everyone_active"] = everyoneActive;
-        targetsPayload["empty_message"] = IsChatboxSpawnMode()
-            ? "Target override is unavailable in Spawn mode."
-            : (directorMode ? "No direct speaker targets are available in Director mode."
-                : (narratorOnlyMode ? "Only The Narrator is available in Narrator mode."
-                    : "No spatially available targets right now."));
+        targetsPayload["empty_message"] = directorMode
+            ? "No direct speaker targets are available in Director mode."
+            : (narratorOnlyMode ? "Only The Narrator is available in Narrator mode."
+                : "No spatially available targets right now.");
 
         json targetItems = json::array();
         for (const auto& nearbyAgent : nearbyAgents) {
@@ -6360,7 +6353,7 @@ R"CHIM(
             CheckAndUpdateChatboxControls(true);
         } else if (cmd == "target_override_everyone") {
             if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() ||
-                IsChatboxSpawnMode() || IsChatboxWhisperMode() || IsChatboxCloseMode()) {
+                IsChatboxWhisperMode() || IsChatboxCloseMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
                 return;
