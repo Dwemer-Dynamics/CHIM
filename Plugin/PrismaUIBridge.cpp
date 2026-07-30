@@ -3048,6 +3048,10 @@ R"CHIM(
             UpdateBackgroundLifeTargetUI();
             return;
         }
+        if (command == "input_capture|on" || command == "input_capture|off") {
+            SetChatboxGameplayInputSuppressed(command == "input_capture|on");
+            return;
+        }
 
         constexpr std::string_view targetSelectPrefix = "target_select|";
         if (command.starts_with(targetSelectPrefix)) {
@@ -3108,22 +3112,6 @@ R"CHIM(
                 logger::warn(
                     "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
                     formIdText);
-            }
-            return;
-        }
-
-        constexpr std::string_view modePrefix = "mode|";
-        if (command.starts_with(modePrefix)) {
-            const std::string actionId = command.substr(modePrefix.size());
-            if (actionId == "mode_inject_log" ||
-                actionId == "mode_inject_chat") {
-                if (ApplyModeSelection(actionId, "Background Life", true)) {
-                    UpdateChatboxModeUI(g_chatboxCurrentMode);
-                    CheckAndUpdateChatboxControls(true);
-                    ShowChatboxPanel();
-                }
-            } else {
-                logger::warn("[PrismaUIBridge] Rejected invalid Background Life mode command");
             }
             return;
         }
@@ -3208,6 +3196,8 @@ R"CHIM(
     }
 
     void HideBackgroundLifePanel() {
+        SetChatboxGameplayInputSuppressed(false);
+
         if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
             !g_prismaUI->IsValid(g_backgroundLifeView)) {
             return;

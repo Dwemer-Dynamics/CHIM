@@ -301,6 +301,11 @@
             marker.style.top = `${entry.percent_y}%`;
             marker.style.background = entry.color || '#f27c11';
             marker.title = `${entry.name}${entry.location ? ` - ${entry.location}` : ''}`;
+            marker.appendChild(createElement(
+                'span',
+                'npc-map-marker-label',
+                entry.name || 'Unknown NPC'
+            ));
             marker.addEventListener('click', (event) => {
                 event.stopPropagation();
                 window.openNpcDetailModal(entry.name);
@@ -435,6 +440,8 @@
 
         npcs.forEach((entry) => {
             const card = createElement('article', 'npc-card');
+            const npcColor = entry.color || '#f27c11';
+            card.style.borderLeftColor = npcColor;
             const portrait = createElement('img', 'npc-portrait');
             portrait.src = resolveServerAssetUrl(entry.portrait_url);
             portrait.alt = '';
@@ -445,7 +452,12 @@
 
             const body = createElement('div', 'npc-card-body');
             const title = createElement('div', 'npc-card-title');
-            title.appendChild(createElement('div', 'npc-card-name', entry.name || 'Unknown NPC'));
+            const name = createElement('div', 'npc-card-name');
+            const color = createElement('span', 'npc-card-color');
+            color.style.backgroundColor = npcColor;
+            name.appendChild(color);
+            name.appendChild(document.createTextNode(entry.name || 'Unknown NPC'));
+            title.appendChild(name);
             const mapButton = createElement('button', 'card-action map', '🗺');
             mapButton.type = 'button';
             mapButton.title = entry.has_coordinates ? 'Show NPC on map' : 'No saved coordinates';
@@ -1304,6 +1316,26 @@
             (mapProvinceBounds.left + mapProvinceBounds.right) / 2,
             (mapProvinceBounds.top + mapProvinceBounds.bottom) / 2
         );
+    });
+
+    function isTextEntry(element) {
+        return element instanceof HTMLElement
+            && element.matches(
+                'textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), [contenteditable="true"]'
+            );
+    }
+
+    document.addEventListener('focusin', (event) => {
+        if (isTextEntry(event.target)) {
+            sendCommand('input_capture|on');
+        }
+    });
+    document.addEventListener('focusout', () => {
+        window.setTimeout(() => {
+            if (!isTextEntry(document.activeElement)) {
+                sendCommand('input_capture|off');
+            }
+        }, 0);
     });
 
     byId('target-menu-toggle').addEventListener('click', () => {
