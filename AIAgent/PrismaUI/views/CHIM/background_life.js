@@ -1183,6 +1183,7 @@
         byId('npc-create-form-status').textContent =
             'Creating NPC in Skyrim. This can take up to one minute...';
         byId('npc-create-form-status').className = 'rumor-form-status';
+        sendCommand('close');
         try {
             const payload = await postForm('/ui/api/background_life_npc_create.php', {
                 npc_name: byId('npc-create-name').value,
