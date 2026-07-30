@@ -1158,12 +1158,21 @@
     };
 
     window.submitNpcCreateForm = async function (event) {
-        event.preventDefault();
+        if (event) event.preventDefault();
         if (npcCreateBusy) return;
-        const form = byId('npc-create-form');
-        if (!form.reportValidity() || !byId('npc-create-location').value) {
+        const requiredFields = [
+            ['npc-create-name', 'Name'],
+            ['npc-create-location', 'Location'],
+            ['npc-create-background', 'Background'],
+            ['npc-create-speech-style', 'Speech Style'],
+            ['npc-create-goal', 'Goals']
+        ];
+        const missingFields = requiredFields
+            .filter(([id]) => !String(byId(id).value || '').trim())
+            .map(([, label]) => label);
+        if (missingFields.length) {
             byId('npc-create-form-status').textContent =
-                'Select a discovered location for this NPC.';
+                `Complete the required fields: ${missingFields.join(', ')}.`;
             byId('npc-create-form-status').className = 'rumor-form-status error';
             return;
         }
@@ -1175,17 +1184,20 @@
             'Creating NPC in Skyrim. This can take up to one minute...';
         byId('npc-create-form-status').className = 'rumor-form-status';
         try {
-            const payload = await parseJsonResponse(await fetch(
-                `${serverBaseUrl}/ui/api/background_life_npc_create.php`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type':
-                            'application/x-www-form-urlencoded; charset=UTF-8'
-                    },
-                    body: new URLSearchParams(new FormData(form)).toString()
-                }
-            ));
+            const payload = await postForm('/ui/api/background_life_npc_create.php', {
+                npc_name: byId('npc-create-name').value,
+                npc_gender: byId('npc-create-gender').value,
+                npc_race: byId('npc-create-race').value,
+                npc_class: byId('npc-create-class').value,
+                npc_location: byId('npc-create-location').value,
+                npc_background: byId('npc-create-background').value,
+                npc_speech_style: byId('npc-create-speech-style').value,
+                npc_goal: byId('npc-create-goal').value,
+                npc_appearance: byId('npc-create-appearance').value,
+                npc_disposition: byId('npc-create-disposition').value,
+                npc_starting_point: byId('npc-create-starting-point').value,
+                npc_inventory_gold: byId('npc-create-gold').value
+            });
             byId('npc-create-form-status').textContent =
                 payload.message || 'NPC created.';
             byId('npc-create-form-status').className = 'rumor-form-status success';
