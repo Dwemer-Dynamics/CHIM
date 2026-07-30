@@ -21,9 +21,18 @@
     let npcCreateBusy = false;
     let removeConfirmation = '';
     let removeTimer = null;
+    const mapProvinceBounds = {
+        left: 0.025,
+        top: 0.14,
+        right: 0.98,
+        bottom: 0.89
+    };
+    let mapFitScale = 1;
     let mapZoom = 1;
+    let mapScale = 1;
     let mapOffsetX = 0;
     let mapOffsetY = 0;
+    let mapInitialized = false;
     let mapDragging = false;
     let mapDragStart = null;
     let nearbyTargets = [];
@@ -260,12 +269,20 @@
     }
 
     function renderMap(map, npcs) {
+        const canvas = byId('map-canvas');
         const image = byId('map-image');
         if (map.image_url) image.src = resolveServerAssetUrl(map.image_url);
         const locationsLayer = byId('location-markers');
         const npcLayer = byId('npc-map-markers');
         locationsLayer.replaceChildren();
         npcLayer.replaceChildren();
+
+        const mapWidth = Number(map.width) || 1950;
+        const mapHeight = Number(map.height) || 1625;
+        const dimensionsChanged =
+            canvas.offsetWidth !== mapWidth || canvas.offsetHeight !== mapHeight;
+        canvas.style.width = `${mapWidth}px`;
+        canvas.style.height = `${mapHeight}px`;
 
         (map.locations || []).forEach((entry) => {
             const marker = createElement('button', 'location-marker');
@@ -290,21 +307,97 @@
             });
             npcLayer.appendChild(marker);
         });
-        applyMapTransform();
+        window.requestAnimationFrame(() => {
+            if (!mapInitialized || dimensionsChanged) {
+                fitMapProvince();
+            } else {
+                applyMapTransform();
+            }
+        });
+    }
+
+    function clamp(value, minimum, maximum) {
+        return Math.min(maximum, Math.max(minimum, value));
+    }
+
+    function updateMapFitScale() {
+        const viewport = byId('map-viewport');
+        const canvas = byId('map-canvas');
+        const provinceWidth =
+            canvas.offsetWidth * (mapProvinceBounds.right - mapProvinceBounds.left);
+        const provinceHeight =
+            canvas.offsetHeight * (mapProvinceBounds.bottom - mapProvinceBounds.top);
+        if (!provinceWidth || !provinceHeight) return false;
+
+        mapFitScale = Math.min(
+            viewport.clientWidth / provinceWidth,
+            viewport.clientHeight / provinceHeight
+        ) * 0.96;
+        return Number.isFinite(mapFitScale) && mapFitScale > 0;
+    }
+
+    function clampMapPan() {
+        const viewport = byId('map-viewport');
+        const canvas = byId('map-canvas');
+        const scaledWidth = canvas.offsetWidth * mapScale;
+        const scaledHeight = canvas.offsetHeight * mapScale;
+
+        mapOffsetX = scaledWidth <= viewport.clientWidth
+            ? (viewport.clientWidth - scaledWidth) / 2
+            : clamp(mapOffsetX, viewport.clientWidth - scaledWidth, 0);
+        mapOffsetY = scaledHeight <= viewport.clientHeight
+            ? (viewport.clientHeight - scaledHeight) / 2
+            : clamp(mapOffsetY, viewport.clientHeight - scaledHeight, 0);
     }
 
     function applyMapTransform() {
+        clampMapPan();
         byId('map-canvas').style.transform =
-            `translate(${mapOffsetX}px, ${mapOffsetY}px) scale(${mapZoom})`;
+            `translate3d(${mapOffsetX}px, ${mapOffsetY}px, 0) scale(${mapScale})`;
         byId('map-zoom-label').textContent = `${Math.round(mapZoom * 100)}%`;
     }
 
-    function changeMapZoom(delta) {
-        mapZoom = Math.max(1, Math.min(2.5, mapZoom + delta));
-        if (mapZoom === 1) {
-            mapOffsetX = 0;
-            mapOffsetY = 0;
+    function setMapCenter(centerX, centerY) {
+        const viewport = byId('map-viewport');
+        const canvas = byId('map-canvas');
+        mapScale = mapFitScale * mapZoom;
+        mapOffsetX = viewport.clientWidth / 2 - centerX * canvas.offsetWidth * mapScale;
+        mapOffsetY = viewport.clientHeight / 2 - centerY * canvas.offsetHeight * mapScale;
+        applyMapTransform();
+    }
+
+    function fitMapProvince() {
+        if (!updateMapFitScale()) return;
+
+        mapZoom = 1;
+        setMapCenter(
+            (mapProvinceBounds.left + mapProvinceBounds.right) / 2,
+            (mapProvinceBounds.top + mapProvinceBounds.bottom) / 2
+        );
+        mapInitialized = true;
+    }
+
+    function zoomMapAt(factor, clientX, clientY) {
+        if (!mapInitialized) {
+            fitMapProvince();
+            if (!mapInitialized) return;
         }
+
+        const viewport = byId('map-viewport');
+        const viewportRect = viewport.getBoundingClientRect();
+        const focalX = clientX === undefined
+            ? viewport.clientWidth / 2
+            : clientX - viewportRect.left;
+        const focalY = clientY === undefined
+            ? viewport.clientHeight / 2
+            : clientY - viewportRect.top;
+        const mapX = (focalX - mapOffsetX) / mapScale;
+        const mapY = (focalY - mapOffsetY) / mapScale;
+
+        mapZoom = clamp(mapZoom * factor, 0.72, 3);
+        mapScale = mapFitScale * mapZoom;
+        mapOffsetX = focalX - mapX * mapScale;
+        mapOffsetY = focalY - mapY * mapScale;
         applyMapTransform();
     }
 
@@ -313,14 +406,13 @@
             setDashboardStatus(`${entry ? entry.name : 'NPC'} has no saved map coordinates.`, true);
             return;
         }
+        if (!mapInitialized && !updateMapFitScale()) return;
+
         mapZoom = Math.max(mapZoom, 1.45);
-        mapOffsetX = 0;
-        mapOffsetY = 0;
-        byId('map-canvas').style.transformOrigin = `${entry.percent_x}% ${entry.percent_y}%`;
+        setMapCenter(entry.percent_x / 100, entry.percent_y / 100);
         document.querySelectorAll('.npc-map-marker').forEach((marker) => {
             marker.classList.toggle('focused', marker.dataset.npc === entry.name);
         });
-        applyMapTransform();
         window.setTimeout(() => {
             document.querySelectorAll('.npc-map-marker').forEach((marker) => {
                 marker.classList.remove('focused');
@@ -1171,17 +1263,24 @@
         }
     });
 
-    byId('map-zoom-in').addEventListener('click', () => changeMapZoom(0.2));
-    byId('map-zoom-out').addEventListener('click', () => changeMapZoom(-0.2));
-    byId('map-reset').addEventListener('click', () => {
-        mapZoom = 1;
-        mapOffsetX = 0;
-        mapOffsetY = 0;
-        byId('map-canvas').style.transformOrigin = '50% 50%';
-        applyMapTransform();
-    });
+    byId('map-zoom-in').addEventListener('click', () => zoomMapAt(1.25));
+    byId('map-zoom-out').addEventListener('click', () => zoomMapAt(0.8));
+    byId('map-reset').addEventListener('click', fitMapProvince);
+    byId('map-viewport').addEventListener('wheel', (event) => {
+        event.preventDefault();
+        zoomMapAt(
+            event.deltaY < 0 ? 1.12 : 1 / 1.12,
+            event.clientX,
+            event.clientY
+        );
+    }, { passive: false });
     byId('map-viewport').addEventListener('mousedown', (event) => {
-        if (mapZoom <= 1) return;
+        if (
+            event.button !== 0
+            || event.target.closest('.location-marker, .npc-map-marker, .map-navigation')
+        ) {
+            return;
+        }
         mapDragging = true;
         mapDragStart = {
             x: event.clientX - mapOffsetX,
@@ -1198,6 +1297,13 @@
     document.addEventListener('mouseup', () => {
         mapDragging = false;
         byId('map-viewport').classList.remove('dragging');
+    });
+    window.addEventListener('resize', () => {
+        if (!mapInitialized || !updateMapFitScale()) return;
+        setMapCenter(
+            (mapProvinceBounds.left + mapProvinceBounds.right) / 2,
+            (mapProvinceBounds.top + mapProvinceBounds.bottom) / 2
+        );
     });
 
     byId('target-menu-toggle').addEventListener('click', () => {
@@ -1237,12 +1343,6 @@
             byId('hourly-tracking-toggle').checked
         );
     });
-    document.querySelectorAll('.context-button').forEach((button) => {
-        button.addEventListener('click', () => {
-            sendCommand(`mode|${button.dataset.mode}`);
-        });
-    });
-
     byId('npc-filter').addEventListener('change', () => {
         currentPage = 1;
         requestHistory();

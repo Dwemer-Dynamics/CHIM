@@ -154,17 +154,19 @@ button:disabled { opacity: 0.45; cursor: default; }
     border-radius: 5px;
     background: #101014;
     cursor: grab;
+    touch-action: none;
+    user-select: none;
 }
 .map-viewport.dragging { cursor: grabbing; }
 .map-canvas {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    transform-origin: 50% 50%;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
     transition: transform 130ms ease;
+    will-change: transform;
 }
-.map-image { width: 100%; height: 100%; object-fit: contain; user-select: none; pointer-events: none; }
+.map-image { display: block; width: 100%; height: auto; user-select: none; pointer-events: none; }
 #location-markers, #npc-map-markers { position: absolute; inset: 0; pointer-events: none; }
 .location-marker, .npc-map-marker {
     position: absolute;
@@ -204,7 +206,6 @@ button:disabled { opacity: 0.45; cursor: default; }
 .error { color: #ef8f96 !important; }
 .success { color: #7ed69e !important; }
 .control-button { width: 100%; margin-top: 7px; }
-.button-stack { display: grid; gap: 6px; }
 .compact-field { display: grid; gap: 5px; color: #c9c9ce; font-size: .72rem; }
 .compact-field input, .search-field input, .rumor-field input, .rumor-field textarea {
     width: 100%;
