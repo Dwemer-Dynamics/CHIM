@@ -11,87 +11,109 @@
         <header class="modal-header">
             <div>
                 <h1>Background Life</h1>
-                <p>Recent NPC activity across Skyrim</p>
+                <p>Manage autonomous NPC activity across Skyrim</p>
             </div>
             <div class="header-actions">
-                <button class="icon-button create-npc-button" type="button" onclick="openNpcCreateModal()">Create NPC</button>
-                <button class="icon-button rumor-button" type="button" onclick="openRumorModal()">Create Rumor</button>
                 <button class="icon-button" id="refresh-button" type="button" title="Refresh activity">Refresh</button>
                 <button class="close-button" type="button" onclick="closePanel()" aria-label="Close">X</button>
             </div>
         </header>
 
-        <div class="background-life-workspace">
-            <aside class="roster-panel" aria-label="Current Background Life NPCs">
-                <div class="roster-header">
-                    <div>
-                        <h2>Current NPCs</h2>
-                        <p>Background Life status</p>
-                    </div>
-                    <span id="roster-count" class="roster-count">0</span>
-                </div>
-                <div id="roster-status" class="roster-status" aria-live="polite">Loading NPCs...</div>
-                <div id="roster-list" class="roster-list"></div>
-            </aside>
+        <nav class="page-tabs" aria-label="Background Life sections">
+            <button class="page-tab active" type="button" data-tab="dashboard" aria-selected="true">🌍 Background Life</button>
+            <button class="page-tab" type="button" data-tab="history" aria-selected="false">📚 History</button>
+            <button class="page-tab" type="button" data-tab="rumors" aria-selected="false">📰 Rumors</button>
+        </nav>
 
-            <div class="background-life-main">
-                <section class="management-panel" aria-label="Background Life controls">
-                    <div class="management-card target-card">
+        <section class="tab-panel active" id="dashboard-tab" data-panel="dashboard">
+            <div class="dashboard-grid">
+                <section class="map-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Skyrim Map</h2>
+                            <p id="dashboard-game-date">Loading current game date...</p>
+                        </div>
+                        <span id="map-zoom-label" class="count-badge">100%</span>
+                    </div>
+                    <div id="map-viewport" class="map-viewport" tabindex="0" aria-label="Background Life map">
+                        <div id="map-canvas" class="map-canvas">
+                            <img id="map-image" alt="Skyrim map">
+                            <div id="location-markers"></div>
+                            <div id="npc-map-markers"></div>
+                        </div>
+                    </div>
+                    <div class="map-navigation" role="group" aria-label="Map controls">
+                        <button id="map-zoom-in" type="button" title="Zoom in">+</button>
+                        <button id="map-zoom-out" type="button" title="Zoom out">−</button>
+                        <button id="map-reset" type="button" title="Fit Skyrim in view">⌂</button>
+                    </div>
+                </section>
+
+                <aside class="dashboard-controls" aria-label="Background Life controls">
+                    <section class="management-card target-card">
                         <div class="section-heading">
-                            <span>Selected NPC</span>
+                            <span>Nearby NPC</span>
                             <span id="target-state-badge" class="state-badge">No target</span>
                         </div>
-                        <div class="target-selector">
-                            <span>Nearby NPC</span>
-                            <div class="target-tile-selector">
-                                <button id="target-menu-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="target-menu-options" disabled>
-                                    <span id="target-menu-label">No activated NPCs nearby</span>
-                                    <span class="target-tile-arrow" aria-hidden="true"></span>
-                                </button>
-                                <div id="target-menu-options" class="target-tile-options hidden" role="listbox" aria-label="Nearby NPC"></div>
-                            </div>
+                        <div class="target-tile-selector">
+                            <button id="target-menu-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="target-menu-options" disabled>
+                                <span id="target-menu-label">No activated NPCs nearby</span>
+                                <span class="target-tile-arrow" aria-hidden="true"></span>
+                            </button>
+                            <div id="target-menu-options" class="target-tile-options hidden" role="listbox" aria-label="Nearby NPC"></div>
                         </div>
                         <div id="target-name" class="target-name">Look at an NPC to manage Background Life.</div>
                         <div id="target-refid" class="target-refid">RefID unavailable</div>
-                        <button id="enrollment-button" class="control-button primary" type="button" disabled>
-                            Add to Background Life
-                        </button>
+                        <button id="enrollment-button" class="control-button primary" type="button" disabled>Add to Background Life</button>
                         <div id="target-status" class="target-status" aria-live="polite"></div>
-                    </div>
+                    </section>
 
-                    <div class="management-card">
-                        <div class="section-heading"><span>NPC Settings</span></div>
-                        <label class="toggle-row">
-                            <span>Auto Actions</span>
-                            <input id="auto-actions-toggle" type="checkbox" disabled>
+                    <section class="management-card">
+                        <div class="section-heading"><span>Background Life</span></div>
+                        <label class="compact-field">
+                            <span>Trigger Time</span>
+                            <input id="trigger-hours-input" type="number" min="1" step="1" value="24">
                         </label>
+                        <button id="save-trigger-hours" class="control-button" type="button">Save Trigger Time</button>
                         <label class="toggle-row">
-                            <span>Send Letters</span>
-                            <input id="send-letters-toggle" type="checkbox" disabled>
+                            <span>Show all NPC coordinates</span>
+                            <input id="show-all-coords-toggle" type="checkbox">
                         </label>
-                        <label class="toggle-row">
-                            <span>Hourly Tracking</span>
-                            <input id="hourly-tracking-toggle" type="checkbox" disabled>
-                        </label>
-                    </div>
+                        <button id="update-all-coords" class="control-button" type="button">Update All NPC Coords</button>
+                    </section>
 
-                    <div class="management-card">
-                        <div class="section-heading"><span>Immediate Actions</span></div>
-                        <div class="button-stack">
-                            <button id="trigger-action-button" class="control-button" type="button" disabled>Trigger Action</button>
-                            <button id="request-letter-button" class="control-button" type="button" disabled>Request Letter</button>
-                        </div>
-                    </div>
+                    <section class="management-card">
+                        <div class="section-heading"><span>Selected NPC Settings</span></div>
+                        <label class="toggle-row"><span>Actions</span><input id="auto-actions-toggle" type="checkbox" disabled></label>
+                        <label class="toggle-row"><span>Letters</span><input id="send-letters-toggle" type="checkbox" disabled></label>
+                        <label class="toggle-row"><span>Tracking</span><input id="hourly-tracking-toggle" type="checkbox" disabled></label>
+                    </section>
 
-                    <div class="management-card">
+                    <section class="management-card">
                         <div class="section-heading"><span>Inject Context</span></div>
                         <div class="button-stack">
                             <button class="control-button context-button" data-mode="mode_inject_log" type="button">Inject Event</button>
                             <button class="control-button context-button" data-mode="mode_inject_chat" type="button">Inject &amp; Chat</button>
                         </div>
-                    </div>
-                </section>
+                    </section>
+                </aside>
 
+                <section class="npc-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <h2>Background Life NPCs</h2>
+                            <p id="roster-status" aria-live="polite">Loading NPCs...</p>
+                        </div>
+                        <span id="roster-count" class="count-badge">0</span>
+                    </div>
+                    <button class="icon-button create-npc-button full-width-action" type="button" onclick="openNpcCreateModal()">Create NPC</button>
+                    <div id="roster-list" class="npc-card-grid"></div>
+                </section>
+            </div>
+        </section>
+
+        <section class="tab-panel" id="history-tab" data-panel="history" hidden>
+            <div class="history-layout">
                 <section class="toolbar">
                     <div class="toolbar-field">
                         <span>NPC</span>
@@ -111,30 +133,70 @@
                     <div class="toolbar-field">
                         <span>Rows</span>
                         <div class="target-tile-selector compact-tile-selector">
-                            <input id="limit-select" type="hidden" value="50">
+                            <input id="limit-select" type="hidden" value="20">
                             <button id="limit-select-toggle" class="target-tile-trigger" type="button" aria-expanded="false" aria-controls="limit-select-options">
-                                <span id="limit-select-label">50</span>
+                                <span id="limit-select-label">20</span>
                                 <span class="target-tile-arrow" aria-hidden="true"></span>
                             </button>
                             <div id="limit-select-options" class="target-tile-options compact-option-grid hidden" role="listbox" aria-label="Rows per page">
-                                <button class="target-option-tile" type="button" role="option" data-value="25">25</button>
-                                <button class="target-option-tile is-active" type="button" role="option" aria-selected="true" data-value="50">50</button>
+                                <button class="target-option-tile is-active" type="button" role="option" aria-selected="true" data-value="20">20</button>
+                                <button class="target-option-tile" type="button" role="option" data-value="50">50</button>
                                 <button class="target-option-tile" type="button" role="option" data-value="100">100</button>
                             </div>
                         </div>
                     </div>
                 </section>
-
                 <main class="activity-container">
                     <div class="panel-status" id="panel-status" aria-live="polite">Loading activity...</div>
                     <div class="activity-list" id="activity-list"></div>
                 </main>
-
                 <footer class="panel-footer">
                     <button class="page-button" id="previous-button" type="button">Previous</button>
                     <span id="page-label">Page 1 of 1</span>
                     <button class="page-button" id="next-button" type="button">Next</button>
                 </footer>
+            </div>
+        </section>
+
+        <section class="tab-panel" id="rumors-tab" data-panel="rumors" hidden>
+            <div class="rumors-layout">
+                <div class="rumors-header">
+                    <div>
+                        <h2>Rumors</h2>
+                        <p>Manage current and expired Background Life rumors.</p>
+                    </div>
+                    <button class="icon-button rumor-button" type="button" onclick="openRumorModal()">Create Rumor</button>
+                </div>
+                <div id="rumors-status" class="panel-status" aria-live="polite">Loading rumors...</div>
+                <div class="rumor-columns">
+                    <section class="rumor-list-panel">
+                        <h3>Current Rumors</h3>
+                        <div id="current-rumors-list" class="rumor-list"></div>
+                    </section>
+                    <section class="rumor-list-panel">
+                        <h3>Outdated Rumors</h3>
+                        <div id="outdated-rumors-list" class="rumor-list"></div>
+                    </section>
+                </div>
+            </div>
+        </section>
+
+        <div id="npc-detail-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeNpcDetailModal()">
+            <div class="rumor-modal-panel npc-detail-panel" role="dialog" aria-modal="true" aria-labelledby="npc-detail-title">
+                <div class="rumor-modal-header">
+                    <div>
+                        <h2 id="npc-detail-title">NPC History</h2>
+                        <p id="npc-detail-subtitle">Recent Background Life activity.</p>
+                    </div>
+                    <button class="rumor-modal-close" type="button" onclick="closeNpcDetailModal()" aria-label="Close NPC details">&times;</button>
+                </div>
+                <nav class="detail-tabs" aria-label="NPC history sections">
+                    <button class="detail-tab active" type="button" data-detail-tab="events">📚 Event History</button>
+                    <button class="detail-tab" type="button" data-detail-tab="letters">✉️ Letters</button>
+                    <button class="detail-tab" type="button" data-detail-tab="thoughts">💭 Inner Thoughts</button>
+                </nav>
+                <div id="npc-detail-status" class="panel-status">Loading NPC history...</div>
+                <div id="npc-detail-content" class="npc-detail-content"></div>
             </div>
         </div>
 
@@ -252,6 +314,7 @@
                     <button class="rumor-modal-close" type="button" onclick="closeRumorModal()" aria-label="Close create rumor modal">&times;</button>
                 </div>
                 <form id="rumor-create-form" class="rumor-form" onsubmit="submitRumorForm(event)">
+                    <input id="rumor-id" name="rumor_id" type="hidden" value="">
                     <div class="rumor-form-row">
                         <div class="rumor-field">
                             <span>Hold</span>
