@@ -505,11 +505,13 @@
             ));
             card.appendChild(body);
 
+            card.appendChild(createElement('div', 'npc-card-row-label', 'Actions'));
             const requests = createElement('div', 'npc-card-requests');
             requests.appendChild(cardRequestButton(entry, 'action', 'Trigger Action'));
             requests.appendChild(cardRequestButton(entry, 'letter', 'Send Letter'));
             card.appendChild(requests);
 
+            card.appendChild(createElement('div', 'npc-card-row-label', 'Rules'));
             const actions = createElement('div', 'npc-card-actions');
             actions.appendChild(cardSettingButton(
                 entry,
