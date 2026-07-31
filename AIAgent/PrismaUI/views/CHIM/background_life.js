@@ -505,6 +505,11 @@
             ));
             card.appendChild(body);
 
+            const requests = createElement('div', 'npc-card-requests');
+            requests.appendChild(cardRequestButton(entry, 'action', 'Trigger Action'));
+            requests.appendChild(cardRequestButton(entry, 'letter', 'Send Letter'));
+            card.appendChild(requests);
+
             const actions = createElement('div', 'npc-card-actions');
             actions.appendChild(cardSettingButton(
                 entry,
@@ -539,6 +544,37 @@
             card.addEventListener('click', () => window.openNpcDetailModal(entry.name));
             list.appendChild(card);
         });
+    }
+
+    function cardRequestButton(entry, requestType, label) {
+        const button = createElement('button', 'card-action card-request', label);
+        button.type = 'button';
+        button.title = requestType === 'action'
+            ? `Trigger a Background Life action for ${entry.name}`
+            : `Send a Background Life letter from ${entry.name}`;
+        button.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            button.disabled = true;
+            button.textContent = requestType === 'action' ? 'Triggering...' : 'Sending...';
+            try {
+                const payload = await postForm('/ui/api/background_life_request.php', {
+                    request_type: requestType,
+                    npc_name: entry.name || '',
+                    refid: entry.refid || ''
+                });
+                setDashboardStatus(
+                    `${label} completed for ${entry.name}. ${payload.message || ''}`.trim(),
+                    false
+                );
+                await refreshDashboard();
+            } catch (error) {
+                setDashboardStatus(`${label} failed: ${error.message || error}`, true);
+            } finally {
+                button.disabled = false;
+                button.textContent = label;
+            }
+        });
+        return button;
     }
 
     function cardSettingButton(entry, setting, stateKey, label, title) {
