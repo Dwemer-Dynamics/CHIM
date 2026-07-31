@@ -125,6 +125,14 @@ namespace PrismaUIBridge {
     bool IsBackgroundLifePanelVisible();
     void FetchBackgroundLifeData(const std::string& queryString);
 
+    // ===== CHIM NPC Manager Functions =====
+
+    void CreateNpcManagerPanel();
+    void ToggleNpcManagerPanel();
+    void ShowNpcManagerPanel();
+    void HideNpcManagerPanel();
+    bool IsNpcManagerPanelVisible();
+
     // ===== CHIM Browser Functions =====
 
     // Create the CHIM browser panel

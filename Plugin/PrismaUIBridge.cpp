@@ -42,15 +42,18 @@ namespace PrismaUIBridge {
     static PrismaView g_overlayView = 0;
     static PrismaView g_diariesView = 0;
     static PrismaView g_backgroundLifeView = 0;
+    static PrismaView g_npcManagerView = 0;
     static std::atomic<bool> g_enabled{false};
     static std::atomic<bool> g_panelCreated{false};
     static std::atomic<bool> g_overlayCreated{false};
     static std::atomic<bool> g_diariesCreated{false};
     static std::atomic<bool> g_backgroundLifeCreated{false};
+    static std::atomic<bool> g_npcManagerCreated{false};
     static std::atomic<bool> g_domReady{false};
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
     static std::atomic<bool> g_backgroundLifeDomReady{false};
+    static std::atomic<bool> g_npcManagerDomReady{false};
     static uint32_t g_backgroundLifeSelectedFormId = 0;
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
@@ -260,6 +263,9 @@ namespace PrismaUIBridge {
     static void OnBackgroundLifeCommand(const char* argument);
     static void UpdateBackgroundLifeTargetUI();
     static bool SetBackgroundLifeEnrollment(bool enabled);
+    static void OnNpcManagerDomReady(PrismaView view);
+    static void OnNpcManagerCommand(const char* argument);
+    static void UpdateNpcManagerTargets();
     static void OnSettingsMenuDomReady(PrismaView view);
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
@@ -3182,6 +3188,9 @@ R"CHIM(
         if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
             HideDiariesPanel();
         }
+        if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) {
+            HideNpcManagerPanel();
+        }
         if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
             HideBrowserPanel();
         }
@@ -3277,6 +3286,169 @@ R"CHIM(
                     }
                 }
             });
+    }
+
+    // ===== CHIM NPC Manager Functions =====
+
+    static void SetNpcManagerServerUrl() {
+        if (!g_prismaUI || !g_npcManagerCreated.load() ||
+            g_npcManagerView == 0 || !g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setNpcManagerServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(g_npcManagerView, call.c_str(), nullptr);
+    }
+
+    static void UpdateNpcManagerTargets() {
+        if (!g_prismaUI || !g_npcManagerCreated.load() ||
+            g_npcManagerView == 0 || !g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+
+        json payload;
+        payload["targets"] = json::array();
+        for (const auto& candidate : CollectBackgroundLifeTargets()) {
+            payload["targets"].push_back({
+                {"form_id", candidate.formId},
+                {"name", candidate.name},
+                {"refid", std::format("{:08X}", candidate.formId)},
+                {"distance", candidate.distanceMeters}
+            });
+        }
+
+        const std::string call =
+            "window.updateNpcManagerTargets('" + EscapeForJS(payload.dump()) + "')";
+        g_prismaUI->Invoke(g_npcManagerView, call.c_str(), nullptr);
+    }
+
+    static void OnNpcManagerDomReady(PrismaView view) {
+        (void)view;
+        g_npcManagerDomReady.store(true);
+        SetNpcManagerServerUrl();
+        UpdateNpcManagerTargets();
+    }
+
+    static void OnNpcManagerCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        const std::string command(argument);
+        if (command == "close") {
+            HideNpcManagerPanel();
+        } else if (command == "dom_ready") {
+            g_npcManagerDomReady.store(true);
+            SetNpcManagerServerUrl();
+            UpdateNpcManagerTargets();
+        } else if (command == "targets_refresh") {
+            UpdateNpcManagerTargets();
+        } else if (command == "input_capture|on" || command == "input_capture|off") {
+            SetChatboxGameplayInputSuppressed(command == "input_capture|on");
+        } else {
+            logger::warn("[PrismaUIBridge] Unknown NPC manager command: {}", command);
+        }
+    }
+
+    void CreateNpcManagerPanel() {
+        if (!g_prismaUI) {
+            return;
+        }
+        if (g_npcManagerCreated.load() && g_npcManagerView != 0 &&
+            g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating CHIM NPC manager panel");
+        g_npcManagerView = g_prismaUI->CreateView("CHIM/npc_manager.html", OnNpcManagerDomReady);
+        if (g_npcManagerView == 0) {
+            g_lastError = "Failed to create CHIM NPC manager view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_npcManagerView, 113);
+        g_prismaUI->RegisterJSListener(g_npcManagerView, "chimNpcManagerCommand", OnNpcManagerCommand);
+        g_npcManagerCreated.store(true);
+    }
+
+    void ToggleNpcManagerPanel() {
+        if (!g_prismaUI) {
+            return;
+        }
+        if (!g_npcManagerCreated.load() || g_npcManagerView == 0 ||
+            !g_prismaUI->IsValid(g_npcManagerView)) {
+            CreateNpcManagerPanel();
+        }
+        if (!g_npcManagerCreated.load()) {
+            return;
+        }
+
+        if (g_prismaUI->IsHidden(g_npcManagerView)) {
+            ShowNpcManagerPanel();
+        } else {
+            HideNpcManagerPanel();
+        }
+    }
+
+    void ShowNpcManagerPanel() {
+        if (!g_prismaUI || !g_npcManagerCreated.load()) {
+            CreateNpcManagerPanel();
+        }
+        if (!g_prismaUI || !g_npcManagerCreated.load() ||
+            !g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+
+        if (g_panelCreated.load() && !g_prismaUI->IsHidden(g_historyView)) {
+            HideHistoryPanel();
+        }
+        if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
+            HideDiariesPanel();
+        }
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
+        if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
+            HideBrowserPanel();
+        }
+        if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
+            HideQuestManagerPanel();
+        }
+
+        g_prismaUI->Show(g_npcManagerView);
+        SetNpcManagerServerUrl();
+        UpdateNpcManagerTargets();
+        const bool focused = g_prismaUI->Focus(g_npcManagerView, true, false);
+        logger::info(
+            "[PrismaUIBridge] CHIM NPC manager focus: {}",
+            focused ? "SUCCESS" : "FAILED");
+        if (g_npcManagerDomReady.load()) {
+            g_prismaUI->Invoke(
+                g_npcManagerView,
+                "window.onNpcManagerShown && window.onNpcManagerShown()",
+                nullptr);
+        }
+    }
+
+    void HideNpcManagerPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+        if (!g_prismaUI || !g_npcManagerCreated.load() ||
+            !g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+        if (g_prismaUI->HasFocus(g_npcManagerView)) {
+            g_prismaUI->Unfocus(g_npcManagerView);
+        }
+        g_prismaUI->Hide(g_npcManagerView);
+    }
+
+    bool IsNpcManagerPanelVisible() {
+        return g_prismaUI && g_npcManagerCreated.load() && g_npcManagerView != 0 &&
+               g_prismaUI->IsValid(g_npcManagerView) && !g_prismaUI->IsHidden(g_npcManagerView);
     }
 
     // ===== CHIM Browser Functions =====
@@ -3475,6 +3647,14 @@ R"CHIM(
             }
             if (!g_prismaUI->IsHidden(g_backgroundLifeView)) {
                 g_prismaUI->Hide(g_backgroundLifeView);
+            }
+        }
+        if (g_npcManagerCreated.load()) {
+            if (g_prismaUI->HasFocus(g_npcManagerView)) {
+                g_prismaUI->Unfocus(g_npcManagerView);
+            }
+            if (!g_prismaUI->IsHidden(g_npcManagerView)) {
+                g_prismaUI->Hide(g_npcManagerView);
             }
         }
         if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
@@ -4877,6 +5057,13 @@ R"CHIM(
                 g_backgroundLifeCreated.store(false);
                 g_backgroundLifeDomReady.store(false);
             }
+
+            if (g_npcManagerCreated.load()) {
+                g_prismaUI->Destroy(g_npcManagerView);
+                g_npcManagerView = 0;
+                g_npcManagerCreated.store(false);
+                g_npcManagerDomReady.store(false);
+            }
             
             if (g_browserCreated.load()) {
                 g_prismaUI->Destroy(g_browserView);
@@ -5320,6 +5507,7 @@ R"CHIM(
         UnfocusPrismaViewIfFocused(g_overlayView, g_overlayCreated.load());
         UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
         UnfocusPrismaViewIfFocused(g_backgroundLifeView, g_backgroundLifeCreated.load());
+        UnfocusPrismaViewIfFocused(g_npcManagerView, g_npcManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
         UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
@@ -6682,6 +6870,7 @@ R"CHIM(
         return isFocused(g_historyView, g_panelCreated.load()) ||
                isFocused(g_diariesView, g_diariesCreated.load()) ||
                isFocused(g_backgroundLifeView, g_backgroundLifeCreated.load()) ||
+               isFocused(g_npcManagerView, g_npcManagerCreated.load()) ||
                isFocused(g_browserView, g_browserCreated.load()) ||
                isFocused(g_debuggerView, g_debuggerCreated.load()) ||
                isFocused(g_chatboxView, g_chatboxCreated.load()) ||
@@ -7302,6 +7491,7 @@ R"CHIM(
             cmd == "history" ||
             cmd == "diaries" ||
             cmd == "backgroundlife" ||
+            cmd == "npcmanager" ||
             cmd == "overlay" ||
             cmd == "statushud" ||
             cmd == "aiview" ||
@@ -7328,6 +7518,8 @@ R"CHIM(
             ToggleDiariesPanel();
         } else if (cmd == "backgroundlife") {
             ToggleBackgroundLifePanel();
+        } else if (cmd == "npcmanager") {
+            ToggleNpcManagerPanel();
         } else if (cmd == "overlay") {
             ToggleOverlayPanel();
         } else if (cmd == "statushud") {
@@ -7399,6 +7591,9 @@ R"CHIM(
 
         if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
             HideBackgroundLifePanel();
+        }
+        if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) {
+            HideNpcManagerPanel();
         }
 
         // Reassert menu order in case another panel changed stacking.
