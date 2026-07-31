@@ -3216,6 +3216,7 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
     return result;
 }
 
+// This method have been expanded to return more than one type of marker, depending on the modifier parameter:
 
 RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                                       RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier) {
@@ -3229,13 +3230,14 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
     
     RE::TESObjectREFR* result = nullptr;
 
-    logger::info("getLocationCenterMarker: Location has no world marker");
     RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
 
     
     auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
     auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
     auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
+    auto outsideEntranceMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fb);
+    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x00010f63c);
 
     // Iterate over specialRefs using begin()/end()
     for (auto it = refs->begin(); it != refs->end(); ++it) {
@@ -3243,7 +3245,7 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
         if (refData.type) {
             if (refData.type->formType == RE::FormType::LocationRefType) {
                 if (modifier == 0) {
-                    if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                    if (refData.type == locationCenterRefType) {  // LocationCenterMarker
                         RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
 
                         logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
@@ -3254,7 +3256,7 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
                         }
                     }
                 } else if (modifier == 1) {
-                    if (refData.type->GetFormID() == 0x000130fc) {  // insideMarkerRefType
+                    if (refData.type == insideMarkerRefType) {  // insideMarkerRefType
                         RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
                         logger::info("getLocationCenterMarker: Found special ref insideMarkerRefType {:08X}",
                                      refData.refData.refID);
@@ -3264,9 +3266,29 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
                         }
                     }
                 } else if (modifier == 2) {
-                    if (refData.type->GetFormID() == 0x000130f9) {  // bossTreasureMarkerRefType
+                    if (refData.type == bossTreasureMarkerRefType) {  // bossTreasureMarkerRefType
                         RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
                         logger::info("getLocationCenterMarker: Found special ref bossTreasureMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 3) {
+                    if (refData.type == outsideEntranceMarkerRefType) {  // Outside entrance marker
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref outsideEntranceMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 4) {
+                    if (refData.type == mapMarkerRefType) {  // MapMarker ref type
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref MapMarkerReftType  {:08X}",
                                      refData.refData.refID);
                         if (t) {
                             result = t->AsReference();
@@ -4382,8 +4404,17 @@ std::string Papyrus::GetLocationSpecialRefsString(RE::BSScript::Internal::Virtua
     auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
     auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);//BossTreasureMarker
     auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
+    auto outsideEntranceMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fb);
+    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x00010f63c);
 
-    if (!insideMarkerRefType && !bossTreasureMarkerRefType && !locationCenterRefType) {
+    RE::TESObjectREFR *stdMarker = nullptr;
+
+    if (location->worldLocMarker) {
+        if (location->worldLocMarker.get())
+            stdMarker = location->worldLocMarker.get().get();
+    }
+
+    if (!insideMarkerRefType && !bossTreasureMarkerRefType && !locationCenterRefType && !outsideEntranceMarkerRefType && !mapMarkerRefType && !stdMarker) {
         return "";
     }
 
@@ -4398,7 +4429,8 @@ std::string Papyrus::GetLocationSpecialRefsString(RE::BSScript::Internal::Virtua
         auto refID = refData.refData.refID;
 
         // Only include the three types we care about
-        if (refData.type != insideMarkerRefType && refData.type != bossTreasureMarkerRefType && refData.type != locationCenterRefType) {
+        if (refData.type != insideMarkerRefType && refData.type != bossTreasureMarkerRefType &&
+            refData.type != locationCenterRefType && refData.type != outsideEntranceMarkerRefType && refData.type != mapMarkerRefType) {
             continue;
         }
 
@@ -4410,6 +4442,15 @@ std::string Papyrus::GetLocationSpecialRefsString(RE::BSScript::Internal::Virtua
            << std::setfill('0') << refID;
 
         first = false;
+    }
+    if (stdMarker) {
+        if (!first) {
+            ss << ";";
+        }
+
+        ss << "0x" << std::hex << std::setw(8) << std::setfill('0') << mapMarkerRefType->GetFormID() << ":0x" << std::hex
+           << std::setw(8)
+           << std::setfill('0') << stdMarker->GetFormID();
     }
 
     return ss.str();
