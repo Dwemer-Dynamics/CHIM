@@ -276,6 +276,19 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
     background: #17171b;
     box-shadow: 0 10px 24px rgba(0,0,0,.78);
 }
+.target-option-search {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    width: 100%;
+    margin-bottom: 5px;
+    padding: 7px 8px;
+    border: 1px solid var(--accent-line);
+    border-radius: 4px;
+    background: #202025;
+    color: #fff;
+}
+.target-option-search:focus { outline: 1px solid var(--accent); }
 .target-option-tile {
     width: 100%;
     display: flex;

@@ -2885,6 +2885,16 @@ R"CHIM(
         payload["selected_form_id"] = target.hasTarget ? target.formId : 0;
         payload["game_enrolled"] = false;
         payload["targets"] = json::array();
+        payload["player_location_formid"] = 0;
+        payload["player_location_name"] = "";
+
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            if (auto* location = player->GetCurrentLocation()) {
+                payload["player_location_formid"] = location->GetFormID();
+                const char* locationName = location->GetFullName();
+                payload["player_location_name"] = locationName ? locationName : "";
+            }
+        }
 
         if (target.hasTarget) {
             auto* form = RE::TESForm::LookupByID(target.formId);

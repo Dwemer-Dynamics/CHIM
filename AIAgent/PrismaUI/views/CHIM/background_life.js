@@ -38,6 +38,7 @@
     let nearbyTargets = [];
     let targetGeneration = 0;
     let currentTarget = emptyTarget();
+    let currentPlayerLocation = { formid: '', name: '' };
 
     function emptyTarget() {
         return {
@@ -114,8 +115,9 @@
         });
     }
 
-    function createTileDropdown(input, toggle, label, options) {
+    function createTileDropdown(input, toggle, label, options, config) {
         if (!input || !toggle || !label || !options) return null;
+        const settings = config || {};
         const dropdown = {
             input,
             toggle,
@@ -138,6 +140,21 @@
             },
             setOptions(entries, preferredValue) {
                 options.replaceChildren();
+                if (settings.searchPlaceholder) {
+                    const search = createElement('input', 'target-option-search');
+                    search.type = 'search';
+                    search.placeholder = settings.searchPlaceholder;
+                    search.setAttribute('aria-label', settings.searchPlaceholder);
+                    search.addEventListener('input', () => {
+                        const query = search.value.trim().toLowerCase();
+                        options.querySelectorAll('[data-value]').forEach((option) => {
+                            option.hidden = query !== '' &&
+                                !option.textContent.toLowerCase().includes(query);
+                        });
+                    });
+                    options.appendChild(search);
+                    dropdown.search = search;
+                }
                 entries.forEach((entry) => {
                     const option = createElement('button', 'target-option-tile', entry.label);
                     option.type = 'button';
@@ -158,6 +175,13 @@
             closeTileDropdowns(dropdown);
             options.classList.toggle('hidden', !opening);
             toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+            if (opening && dropdown.search) {
+                dropdown.search.value = '';
+                options.querySelectorAll('[data-value]').forEach((option) => {
+                    option.hidden = false;
+                });
+                window.setTimeout(() => dropdown.search.focus(), 0);
+            }
         });
         options.addEventListener('click', (event) => {
             const option = event.target.closest('[data-value]');
@@ -209,7 +233,8 @@
         byId('npc-create-location'),
         byId('npc-create-location-toggle'),
         byId('npc-create-location-label'),
-        byId('npc-create-location-options')
+        byId('npc-create-location-options'),
+        { searchPlaceholder: 'Type to find a location' }
     );
 
     function switchPage(page) {
@@ -755,6 +780,10 @@
         try {
             const next = typeof payload === 'string' ? JSON.parse(payload) : payload;
             nearbyTargets = Array.isArray(next && next.targets) ? next.targets : [];
+            currentPlayerLocation = {
+                formid: String((next && next.player_location_formid) || ''),
+                name: String((next && next.player_location_name) || '')
+            };
             currentTarget = Object.assign(emptyTarget(), next || {});
             renderTargetOptions(next && next.selected_form_id);
             renderTarget();
@@ -1111,8 +1140,20 @@
         return (values || []).map((value) => ({ value, label: value }));
     }
 
+    function normalizeFormId(value) {
+        return String(value || '').trim().replace(/^0x/i, '').replace(/^0+/, '').toUpperCase();
+    }
+
     function applyNpcCreationOptions(options) {
         const defaults = options.defaults || {};
+        const locations = options.locations || [];
+        const playerLocationId = normalizeFormId(currentPlayerLocation.formid);
+        const playerLocationName = String(currentPlayerLocation.name || '').trim().toLowerCase();
+        const playerLocation = locations.find((location) => (
+            playerLocationId !== '' && normalizeFormId(location.formid) === playerLocationId
+        )) || locations.find((location) => (
+            playerLocationName !== '' && String(location.name || '').trim().toLowerCase() === playerLocationName
+        ));
         byId('npc-create-form').reset();
         npcCreateGenderDropdown.setOptions(
             optionEntries(options.genders),
@@ -1128,12 +1169,12 @@
         );
         npcCreateLocationDropdown.setOptions(
             [{ value: '', label: 'Select discovered location' }].concat(
-                (options.locations || []).map((location) => ({
+                locations.map((location) => ({
                     value: location.formid,
                     label: location.label || location.name
                 }))
             ),
-            defaults.location || ''
+            (playerLocation && playerLocation.formid) || defaults.location || ''
         );
         byId('npc-create-disposition').value = defaults.disposition || 'friendly';
         byId('npc-create-gold').value = defaults.gold_qty || '100';
