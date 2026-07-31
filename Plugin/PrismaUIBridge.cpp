@@ -6984,6 +6984,12 @@ R"CHIM(
             return;
         }
 
+        if (actionId == "open_background_life") {
+            HideSettingsMenu();
+            ShowBackgroundLifePanel();
+            return;
+        }
+
         // NPC Profile assignment
         if (actionId.starts_with("profile_") && !npcName.empty()) {
             std::string profileNum = actionId.substr(8); // Extract number after "profile_"

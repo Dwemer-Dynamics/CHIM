@@ -330,6 +330,18 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
 .card-action.map { font-size: .83rem; text-decoration: none; }
 .card-action.remove { border-color: rgba(217,92,104,.48); color: #efa0a7; }
 .card-action.active { border-color: #429761; background: rgba(56,133,83,.35); color: #9ee3b5; }
+.card-setting-toggle { position: relative; padding-right: 13px; }
+.card-setting-toggle::after {
+    content: '';
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #a95059;
+}
+.card-setting-toggle.is-enabled::after { background: #4f9b68; }
 .empty-state { padding: 22px 12px; color: var(--muted); font-size: .76rem; text-align: center; }
 
 .history-layout, .rumors-layout { height: 100%; display: flex; flex-direction: column; margin: 10px; overflow: hidden; }

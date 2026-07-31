@@ -481,23 +481,26 @@
             card.appendChild(body);
 
             const actions = createElement('div', 'npc-card-actions');
-            actions.appendChild(cardRequestButton(
+            actions.appendChild(cardSettingButton(
                 entry,
-                'action',
-                'Action',
-                'Run one Background Life action now'
+                'auto_actions',
+                'auto_actions',
+                'Actions',
+                'Automatic actions'
             ));
-            actions.appendChild(cardRequestButton(
+            actions.appendChild(cardSettingButton(
                 entry,
-                'letter',
-                'Letter',
-                'Ask this NPC to write a letter now'
+                'send_letters',
+                'send_letters',
+                'Letters',
+                'Automatic letters'
             ));
-            actions.appendChild(cardRequestButton(
+            actions.appendChild(cardSettingButton(
                 entry,
-                'track',
-                'Track',
-                'Update this NPC map position'
+                'hourly_tracking',
+                'hourly_tracking',
+                'Tracking',
+                'Hourly tracking'
             ));
             const remove = createElement('button', 'card-action remove', 'Remove');
             remove.type = 'button';
@@ -513,35 +516,42 @@
         });
     }
 
-    function cardRequestButton(entry, requestType, label, title) {
-        const button = createElement('button', 'card-action', label);
+    function cardSettingButton(entry, setting, stateKey, label, title) {
+        const button = createElement('button', 'card-action card-setting-toggle', label);
         button.type = 'button';
-        button.title = title;
+        const renderState = () => {
+            const enabled = !!entry[stateKey];
+            button.classList.toggle('is-enabled', enabled);
+            button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            button.title = `${title}: ${enabled ? 'enabled' : 'disabled'}`;
+        };
+        renderState();
         button.addEventListener('click', async (event) => {
             event.stopPropagation();
             button.disabled = true;
-            const original = button.textContent;
-            button.textContent = 'Working...';
+            const nextValue = !entry[stateKey];
             try {
-                const payload = await queueRequest(entry, requestType);
-                setDashboardStatus(payload.message || `${label} request processed.`, false);
+                const payload = await postForm('/ui/api/background_life_npc.php', {
+                    operation: 'toggle',
+                    setting,
+                    value: nextValue ? '1' : '0',
+                    npc_name: entry.name || '',
+                    refid: entry.refid || ''
+                });
+                entry[stateKey] = !!(payload.data && payload.data[stateKey]);
+                renderState();
+                setDashboardStatus(
+                    `${label} ${entry[stateKey] ? 'enabled' : 'disabled'} for ${entry.name}.`,
+                    false
+                );
                 await refreshDashboard();
             } catch (error) {
                 setDashboardStatus(`${label} failed: ${error.message || error}`, true);
             } finally {
                 button.disabled = false;
-                button.textContent = original;
             }
         });
         return button;
-    }
-
-    function queueRequest(entry, requestType) {
-        return postForm('/ui/api/background_life_request.php', {
-            request_type: requestType,
-            npc_name: entry.name || '',
-            refid: entry.refid || ''
-        });
     }
 
     function clearRemoveConfirmation() {
