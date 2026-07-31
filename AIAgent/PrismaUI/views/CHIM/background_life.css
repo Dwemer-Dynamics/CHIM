@@ -117,7 +117,8 @@ button:disabled { opacity: 0.45; cursor: default; }
     height: 100%;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(380px, 1.06fr) minmax(245px, 0.6fr) minmax(450px, 1.25fr);
+    grid-template-areas: "map npcs controls";
+    grid-template-columns: minmax(380px, 1.06fr) minmax(450px, 1.25fr) minmax(245px, 0.6fr);
     gap: 10px;
     padding: 10px;
 }
@@ -131,6 +132,9 @@ button:disabled { opacity: 0.45; cursor: default; }
     background: var(--panel);
 }
 .map-panel, .npc-panel { display: flex; flex-direction: column; padding: 10px; }
+.map-panel { grid-area: map; order: 1; }
+.npc-panel { grid-area: npcs; order: 2; }
+.dashboard-controls { grid-area: controls; order: 3; }
 .panel-heading, .rumors-header { justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .panel-heading h2, .rumors-header h2, .rumor-modal-header h2 { font-size: 0.92rem; color: #fff; }
 .count-badge, .state-badge {
@@ -396,8 +400,13 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
 ::-webkit-scrollbar-track { background: rgba(0,0,0,.15); }
 
 @media (max-width: 1180px) {
-    .dashboard-grid { grid-template-columns: minmax(350px, 1fr) minmax(240px, .62fr); }
-    .npc-panel { grid-column: 1 / -1; max-height: 330px; }
+    .dashboard-grid {
+        grid-template-areas:
+            "map npcs"
+            "controls controls";
+        grid-template-columns: minmax(350px, 1fr) minmax(400px, 1.15fr);
+    }
+    .npc-panel { max-height: 330px; }
     .npc-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
