@@ -1390,6 +1390,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 			destMarker = AIAgentFunctions.getLocationCenterMarker(curr,0); Will search for Location Center Marker.
 		endif
 		
+		
 		if (!destMarker)
 			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor/getLocationCenterMarker: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		elseif (destMarker.isDisabled())
@@ -1560,22 +1561,63 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				Location currParent2 = PO3_SKSEFunctions.GetParentLocation(currParent)
 				Faction factionOwner = None;
 				
+				ObjectReference locationCenterMarkerRef = AIAgentFunctions.getLocationCenterMarker(curr,0)
+				ObjectReference insideEntranceMarkerRef = AIAgentFunctions.getLocationCenterMarker(curr,1)
+				ObjectReference outsideEntranceMarkerRef = AIAgentFunctions.getLocationCenterMarker(curr,3)
+				ObjectReference mapMarkerRefType = AIAgentFunctions.getLocationCenterMarker(curr,4)
+				ObjectReference rawLocationMarker = AIAgentFunctions.getLocationMarkerFor(curr)
+				
 				Cell localCell = destMarker.getParentCell()
 				if (referenceCell)
 					localCell = referenceCell
 					Debug.Trace("[CHIM] SendLocation Using reference cell from caller: "+DecToHex(referenceCell.GetFormID())+","+referenceCell.GetName())
 				endif
-				int isInterior = 0 
-				if (localCell)
-					;AIAgentPlayerScript.sendCellInfo(localCell,curr,false)
-					factionOwner = localCell.GetFactionOwner()
-					if (localCell.isInterior())
-						isInterior = 1
+				
+				if (locationCenterMarkerRef.getParentCell())
+					localCell = locationCenterMarkerRef.getParentCell()
+					Debug.Trace("[CHIM] SendLocation Using reference cell from locationCenterMarkerRef: "+DecToHex(localCell.GetFormID())+","+localCell.GetName())
+				endif
+				
+				int flags = 0
+				
+				; insideEntranceMarkerRef (bits 0-1)
+				if (insideEntranceMarkerRef)
+					if (insideEntranceMarkerRef.IsInInterior())
+						flags += 1 ; 01
 					endif
+				else
+					flags += 2 ; 10
 				endif
-				if destMarker.isInInterior()
-					isInterior = 1
+
+				; locationCenterMarkerRef (bits 2-3)
+				if (locationCenterMarkerRef)
+					if (locationCenterMarkerRef.IsInInterior())
+						flags += 1 * 4 ; 01 << 2
+					endif
+				else
+					flags += 2 * 4 ; 10 << 2
 				endif
+
+				; rawLocationMarker (bits 4-5)
+				if (rawLocationMarker)
+					if (rawLocationMarker.IsInInterior())
+						flags += 1 * 16 ; 01 << 4
+					endif
+				else
+					flags += 2 * 16 ; 10 << 4
+				endif
+
+				; outsideEntranceMarkerRef (bits 6-7)
+				if (outsideEntranceMarkerRef)
+					if (outsideEntranceMarkerRef.IsInInterior())
+						flags += 1 * 64 ; 01 << 6
+					endif
+				else
+					flags += 2 * 64 ; 10 << 6
+				endif
+
+				int isInterior = flags
+				
 				string parName =""
 				string parName2 =""
 				if (currParent)
@@ -1594,6 +1636,23 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					isCleared="1";
 				endif;
 				
+				
+				
+				Worldspace cws= locationCenterMarkerRef.GetWorldSpace()
+				if (!cws)
+					cws= insideEntranceMarkerRef.GetWorldSpace()
+				endif
+				if (!cws)
+					cws= outsideEntranceMarkerRef.GetWorldSpace()
+				endif
+				if (!cws)
+					cws = mapMarkerRefType.GetWorldSpace()
+				endif
+				string worldspaceName=""
+			
+				if (cws)
+					worldspaceName = cws.GetName()
+				endif
 				;int doors= localCell.getNumRefs(29); Get doors
 				;if (doors > 0 )
 				;	Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", Cell has "+doors+" doors")
@@ -1611,9 +1670,9 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 			
 				if (factionOwner)
 					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
-					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared+"/"+worldspaceName,"util_location_name")
 				else
-					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared+"/"+worldspaceName,"util_location_name")
 				endif
 				
 			endif
@@ -1623,6 +1682,7 @@ EndFunction
 
 Function sendAllLocations() global
 
+	float startTime=Utility.GetCurrentRealTime();
 	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: START")
 	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 1/3 sending factions")
 	sendAllfactions();
@@ -1821,6 +1881,8 @@ Function sendAllLocations() global
 	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 3/3 sending unique NPCs and its location")
 	sendAllNpcs();
 	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: END")
+	float endTime=Utility.GetCurrentRealTime();
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: "+(endTime - startTime)+" secs");
 EndFunction
 
 ; Global wrapper function for spell access to Master Wheel
