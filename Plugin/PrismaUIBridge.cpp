@@ -3379,11 +3379,19 @@ R"CHIM(
         if (!g_prismaUI) {
             return;
         }
-        if (!g_npcManagerCreated.load() || g_npcManagerView == 0 ||
-            !g_prismaUI->IsValid(g_npcManagerView)) {
+
+        const bool needsCreation =
+            !g_npcManagerCreated.load() ||
+            g_npcManagerView == 0 ||
+            !g_prismaUI->IsValid(g_npcManagerView);
+        if (needsCreation) {
             CreateNpcManagerPanel();
         }
         if (!g_npcManagerCreated.load()) {
+            return;
+        }
+        if (needsCreation) {
+            ShowNpcManagerPanel();
             return;
         }
 
