@@ -62,6 +62,7 @@
                 <button type="button" class="editor-tab" data-tab="roleplay">🎭 Roleplay</button>
                 <button type="button" class="editor-tab" data-tab="relationships">🤝 Relationships</button>
                 <button type="button" class="editor-tab" data-tab="info">ℹ Info</button>
+                <button type="button" class="editor-tab" data-tab="actions">⚡ Actions</button>
             </nav>
 
             <form id="npc-form" autocomplete="off">
@@ -121,11 +122,40 @@
                             <pre id="metadata-output">{}</pre>
                         </details>
                     </section>
+
+                    <section class="tab-panel" data-panel="actions" hidden>
+                        <p class="action-note">The game must be running and unpaused for Visit and Teleport.</p>
+                        <div class="npc-action-list">
+                            <article class="npc-action-card">
+                                <div class="npc-action-copy">
+                                    <h3>Visit</h3>
+                                    <p>Move the player to this NPC's current position.</p>
+                                </div>
+                                <button id="visit-action" class="button secondary" type="button">Visit</button>
+                            </article>
+                            <article class="npc-action-card">
+                                <div class="npc-action-copy">
+                                    <h3>Teleport</h3>
+                                    <p>Move this NPC to the player's current position.</p>
+                                </div>
+                                <button id="teleport-action" class="button secondary" type="button">Teleport</button>
+                            </article>
+                            <article class="npc-action-card inception-card">
+                                <div class="npc-action-copy">
+                                    <h3>Background Life Inception</h3>
+                                    <p>Give this NPC a one-time thought for their next Background Life decision.</p>
+                                </div>
+                                <textarea id="bgl-inception-idea" rows="4" placeholder="Enter the thought to influence their next decision"></textarea>
+                                <button id="bgl-inception-action" class="button secondary" type="button">Set Thought</button>
+                            </article>
+                        </div>
+                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                    </section>
                 </div>
 
                 <footer class="editor-actions">
                     <span id="save-status"></span>
-                    <button id="cancel-button" class="button secondary" type="button">Cancel</button>
+                    <button id="cancel-button" class="button secondary" type="button">Close</button>
                     <button id="save-button" class="button primary" type="submit">Save NPC</button>
                 </footer>
             </form>
