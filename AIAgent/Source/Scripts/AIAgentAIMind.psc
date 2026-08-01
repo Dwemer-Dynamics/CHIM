@@ -1917,6 +1917,9 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 			finalActor.SetDisplayName(npcName,1)
 			StorageUtil.SetStringValue(finalActor,"forced_name",npcName)
 		endif
+
+		; Protect the generated profile name from external name distributors.
+		addRenamedKeyword(finalActor,npcName)
 		
 		
 		finalActor.EvaluatePackage()
@@ -2050,10 +2053,15 @@ EndFunction
 int Function SpawnBook(string itemname,int itembase,int locationMarker ,String taskid,String content) global
 
 	Debug.Trace("[CHIM] SpawnBook, SendNote: "+itemname)
-	Book itemToSpawnBase=Game.GetFormFromFile(0x022d30, "AIAgent.esp") as Book 
-	
-				
-	SpawnItem(itemname,itemToSpawnBase.GetFormId(),locationMarker ,taskid) 
+	if (itembase == 0)
+		Book itemToSpawnBase=Game.GetFormFromFile(0x022d30, "AIAgent.esp") as Book 
+		SpawnItem(itemname,itemToSpawnBase.GetFormId(),locationMarker ,taskid) 
+	else
+		Book itemToSpawnBase=Game.GetFormFromFile(0x045CEF, "AIAgent.esp") as Book 
+		SpawnItem(itemname,itemToSpawnBase.GetFormId(),locationMarker ,taskid)
+	endif
+	; Use the dedicated book-shaped dynamic page template. Letters keep using AIAGenericNote.
+	;SpawnItem(itemname,0x045CE7,locationMarker ,taskid)
 	
 EndFunction
 
@@ -3811,6 +3819,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			endif
 			
 			if (locReference)
+				String intent=cmd[2]
 				Faction SandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
 				akTarget.RemoveFromFaction(SandboxFaction);
 				Utility.Wait(1);; Give time to package to finish
@@ -3819,11 +3828,16 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				ActorUtil.ClearPackageOverride(akTarget)
 				
 				Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+				if (intent == "sleep")
+					Debug.Trace("[CHIM] StayAtPlace. intent is to sleep")
+					 SandboxWorkPackage = Game.GetFormFromFile(0x4adf0,"AIAgent.esp") as Package		; Package sandboxSleep	
+				endif
 				Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
 				akTarget.SetFactionRank(SandboxFaction,1)
 
 				PO3_SKSEFunctions.SetLinkedRef(akTarget,None,MoveTargetKw)
 				PO3_SKSEFunctions.SetLinkedRef(akTarget,locReference)
+				
 				
 				ActorUtil.AddPackageOverride(akTarget, SandboxWorkPackage, 99)
 				

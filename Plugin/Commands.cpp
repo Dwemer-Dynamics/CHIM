@@ -1,12 +1,15 @@
 #include "Commands.h"
 
 #include "Globals.h"
+#include "DynamicDiaryBook.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ActorTargetIdentifierUtils.h"
 #include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "Papyrus.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "Replacements.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
@@ -178,6 +181,52 @@ std::string jusTrim(const std::string& input) {
     return result.substr(start, end - start + 1);
 }
 
+RE::Actor* resolveExplicitActorTarget(const ActorTargetIdentifierUtils::ParsedTarget& parsedTarget,
+                                      RE::TESObjectCELL* expectedCell, RE::Actor* sourceActor,
+                                      float radius, bool allowDead) {
+    if (!parsedTarget.hasRefId || !sourceActor) {
+        return nullptr;
+    }
+
+    auto* form = RE::TESForm::LookupByID(static_cast<RE::FormID>(parsedTarget.refId));
+    auto* actor = form ? form->As<RE::Actor>() : nullptr;
+    if (!actor || actor->IsDeleted() || actor->IsDisabled() ||
+        (!allowDead && actor->IsDead()) || !actor->Is3DLoaded() ||
+        !actor->GetActorRuntimeData().currentProcess) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} is not a valid loaded actor",
+                     parsedTarget.refId);
+        return nullptr;
+    }
+
+    auto* actorCell = actor->GetParentCell();
+    if (!expectedCell || !expectedCell->IsAttached() || !actorCell || !actorCell->IsAttached()) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} has no attached action cell",
+                     parsedTarget.refId);
+        return nullptr;
+    }
+
+    const bool expectedInterior = expectedCell->IsInteriorCell();
+    const bool actorInterior = actorCell->IsInteriorCell();
+    if (expectedInterior != actorInterior ||
+        (expectedInterior && expectedCell != actorCell) ||
+        (!expectedInterior && sourceActor->GetWorldspace() != actor->GetWorldspace())) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} is outside the source actor's loaded area",
+                     parsedTarget.refId);
+        return nullptr;
+    }
+
+    const float distance = sourceActor->GetPosition().GetDistance(actor->GetPosition());
+    if (radius > 0.0f && distance > radius) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} is outside action radius ({:.1f} > {:.1f})",
+                     parsedTarget.refId, distance, radius);
+        return nullptr;
+    }
+
+    logger::info("[ACTION_TARGET] Resolved RefID {:08X} to '{}' at {:.1f} units",
+                 parsedTarget.refId, actor->GetDisplayFullName(), distance);
+    return actor;
+}
+
 std::vector<std::string> splitString(const std::string& input) {
     std::stringstream ss(input);
     std::string segment;
@@ -271,26 +320,22 @@ void refreshNpcVoiceRecovery(const std::shared_ptr<AIAgent>& agentPtr, const std
     }
 
     auto audiofile = AudioFilesBufferManager::findAudioFile(actor);
-    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-    if (finaudioFileDetected.good()) {
-        auto size = finaudioFileDetected.stream->totalSize;
-        if (size > 0) {
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-            std::string finalData(buffer.get(), size);
+    std::string finalData;
+    std::string readFailure;
+    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+        logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
+        HTTPUploader& uploader = HTTPUploader::getInstance();
+        uploader.UploadVoiceSample(finalData, actorName, audiofile);
 
-            if (!finalData.empty()) {
-                logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                uploader.UploadVoiceSample(finalData, actorName, audiofile);
-
-                if (agentPtr) {
-                    agentPtr->setNeedsVoiceSample(false);
-                    agentPtr->setVoiceSamplePath(audiofile);
-                }
-                return;
-            }
+        if (agentPtr) {
+            agentPtr->setNeedsVoiceSample(false);
+            agentPtr->setVoiceSamplePath(audiofile);
         }
+        return;
+    }
+    if (!audiofile.empty()) {
+        logger::warn("[RefreshNPCVoice] Could not read sample for {} from {}: {}", actorName, audiofile,
+                     readFailure);
     }
 
     if (agentPtr) {
@@ -602,14 +647,25 @@ std::string getPreferredActorDisplayName(RE::Actor* actor, const std::string& fa
     return resolvedName;
 }
 
-RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
-    if (isPlayerTeleportTargetName(rawTargetName)) {
-        return RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+RE::Actor* resolveActionActorTarget(const std::string& rawTargetName, RE::Actor* sourceActor,
+                                    float radius, bool allowDead) {
+    const auto parsedTarget = ActorTargetIdentifierUtils::Parse(rawTargetName);
+    if (parsedTarget.hasRefId && sourceActor) {
+        if (auto* exactTarget = resolveExplicitActorTarget(
+                parsedTarget, sourceActor->GetParentCell(), sourceActor, radius, allowDead)) {
+            return exactTarget;
+        }
     }
 
-    auto targetName = jusTrim(rawTargetName);
+    const auto targetName = parsedTarget.fallbackName;
+    auto* player = RE::PlayerCharacter::GetSingleton();
     if (targetName.empty()) {
-        return RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+        return jusTrim(rawTargetName).empty()
+            ? (player ? player->As<RE::Actor>() : nullptr)
+            : nullptr;
+    }
+    if (isPlayerTeleportTargetName(targetName)) {
+        return player ? player->As<RE::Actor>() : nullptr;
     }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -625,18 +681,20 @@ RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
         }
     }
 
-    auto player = RE::PlayerCharacter::GetSingleton();
-    if (!player) {
+    if (!sourceActor || !sourceActor->GetParentCell()) {
         return nullptr;
     }
 
-    auto playerCell = player->GetParentCell();
-    if (!playerCell) {
-        return nullptr;
-    }
-
-    auto targetRef = findActorInCell(targetName, playerCell, player->As<RE::Actor>(), 4096.0f, false);
+    auto* targetRef = findActorInCell(
+        targetName, sourceActor->GetParentCell(), sourceActor, radius, allowDead);
     return targetRef ? targetRef->As<RE::Actor>() : nullptr;
+}
+
+RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    return player
+        ? resolveActionActorTarget(rawTargetName, player->As<RE::Actor>(), 4096.0f, false)
+        : nullptr;
 }
 
 RE::Actor* resolveNarratorRoleTargetActor(const std::string& rawTargetName) {
@@ -932,14 +990,31 @@ void parseRoleCommand(std::string rawCommand) {
             int fidType = atoi(splitResult[1].c_str());
             int fidLoc = atoi(splitResult[2].c_str());
 
-            auto oNoteId = RE::TESDataHandler::GetSingleton()->LookupFormID((RE::FormID)0x021d0b, "AIAgent.esp");
-            auto oNote = RE::TESForm::LookupByID(oNoteId);
+            constexpr std::string_view encodedPrefix = "b64:";
+            if (splitResult[4].starts_with(encodedPrefix)) {
+                const auto content = HTTPManager::base64_decode(splitResult[4].substr(encodedPrefix.size()));
+                if (!DynamicDiaryBook::StoreDiaryText(splitResult[0], content)) {
+                    logger::warn("[PHYSICAL_DIARY] No readable text was cached for '{}'", splitResult[0]);
+                }
+            } else {
+                logger::warn("[PHYSICAL_DIARY] Server did not provide encoded text for '{}'", splitResult[0]);
+            }
 
-            SpeakManager::getInstance().downloadFakeNote(splitResult[0]);
+            auto* ownerForm = RE::TESForm::LookupByID(static_cast<RE::FormID>(fidLoc));
+            auto* ownerActor = ownerForm ? ownerForm->As<RE::Actor>() : nullptr;
+            if (DynamicDiaryBook::ActorCarriesDiary(ownerActor, splitResult[0])) {
+                logger::info("[PHYSICAL_DIARY] Refreshed '{}' for {}; physical book already present",
+                             splitResult[0], ownerActor->GetDisplayFullName());
+                responsePop("rolecommand");
+                return;
+            }
+
+            logger::info("[PHYSICAL_DIARY] '{}' is missing from {}; spawning replacement",
+                         splitResult[0], ownerActor ? ownerActor->GetDisplayFullName() : "unresolved NPC");
 
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             auto args = RE::MakeFunctionArguments(std::move(splitResult[0]), std::move(fidType), std::move(fidLoc),
-                                                  std::move(splitResult[3]), std::move(splitResult[4]));
+                                                  std::move(splitResult[3]), std::string{});
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SpawnBook",
                                                                                        args, callback);
         }
@@ -2422,7 +2497,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     }
                 }
             }
-            buffer.append(boundObject->GetName()).append(equiped).append(",");
+            buffer.append(std::to_string(count)).append(" ").append(boundObject->GetName()).append(equiped).append(",");
         }
 
         HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
@@ -2913,17 +2988,11 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         // For these, we don't need a target actor - just cast at a location
         if (deliveryType == 4) {
             // Target Location spell - try to find nearby target for location, else use caster's location
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            
             // If target specified, try to find them for their location
             if (!targetName.empty() && targetName != "self" && targetName != actorname && 
                 targetName != "Target Location") {
-                auto targetAgentPtr = aiam.getAgentByName(targetName);
-                if (targetAgentPtr) {
-                    targetToCastOn = targetAgentPtr->getActor();
-                } else if (targetName == aiam.getPlayerName()) {
-                    targetToCastOn = RE::PlayerCharacter::GetSingleton();
-                }
+                targetToCastOn =
+                    resolveActionActorTarget(targetName, targetActor, 2048.0f, false);
             }
             
             // If no valid target found or target is "Target Location", use caster as reference point
@@ -2936,14 +3005,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             if (targetName.empty() || targetName == "self" || targetName == actorname) {
                 targetToCastOn = targetActor;  // Cast on self
             } else {
-                // Find target by name
-                AIAgentManager& aiam = AIAgentManager::getInstance();
-                auto targetAgentPtr = aiam.getAgentByName(targetName);
-                if (targetAgentPtr) {
-                    targetToCastOn = targetAgentPtr->getActor();
-                } else if (targetName == aiam.getPlayerName()) {
-                    targetToCastOn = RE::PlayerCharacter::GetSingleton();
-                }
+                targetToCastOn =
+                    resolveActionActorTarget(targetName, targetActor, 2048.0f, false);
             }
         }
         
@@ -4264,6 +4327,17 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
+        if (PrismaUIBridge::GetCurrentChatboxMode() == "CLOSE") {
+            const float closeRadius =
+                PlayerConversationRouter::GetCloseRadiusUnits(player->IsSneaking());
+            spatialSettings.maxAirDistance = closeRadius;
+            spatialSettings.interiorMaxDistance = closeRadius;
+            spatialSettings.exteriorMaxDistance = closeRadius;
+            spatialSettings.autoHearingDistance = 0.0f;
+            spatialSettings.immediateDistance = 0.0f;
+            return spatialSettings;
+        }
+
         const float distanceMultiplier = PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();
         spatialSettings.maxAirDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
@@ -4300,6 +4374,9 @@ float GetAudibleActorsDistanceMultiplier(RE::Actor* speaker)
 {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
+        if (PrismaUIBridge::GetCurrentChatboxMode() == "CLOSE") {
+            return -1.0f;
+        }
         return PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();
     }
 
@@ -4942,23 +5019,30 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
 RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* cell, RE::Actor* sourceActor,
                                    float radius, bool allowDead) {
     RE::TESObjectREFR* target = nullptr;
-    bool interior = PlayerIsInInterior();
-    auto prd = RE::PlayerCharacter::GetSingleton()->GetParentCell();
-
     auto player = RE::PlayerCharacter::GetSingleton();
-    auto playerLoc = player->GetCurrentLocation();
-    RE::Actor* result = nullptr;
-    RE::TESObjectREFR* from = sourceActor->AsReference();
 
     // Validate source actor
-    if (!sourceActor || !from) {
+    if (!sourceActor || !player) {
         logger::warn("findActorInCell: Invalid source actor");
+        return nullptr;
+    }
+
+    const auto parsedTarget = ActorTargetIdentifierUtils::Parse(targetName);
+    if (parsedTarget.hasRefId) {
+        if (auto* exactTarget =
+                resolveExplicitActorTarget(parsedTarget, cell, sourceActor, radius, allowDead)) {
+            return exactTarget->AsReference();
+        }
+    }
+
+    targetName = parsedTarget.fallbackName;
+    if (targetName.empty()) {
         return nullptr;
     }
 
     float lastDistance = 10000;
     if (cell) {
-        cell->ForEachReference([&target, &targetName, &from, &sourceActor, allowDead,
+        cell->ForEachReference([&target, &targetName, &sourceActor, allowDead,
                                 &lastDistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
             float distance = 10000;
             // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(), object.GetFormID());

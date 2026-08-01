@@ -15,6 +15,7 @@
 
 namespace logger = SKSE::log;
 
+const char* GetPluginVersion();
 
 extern std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange,std::string separator,float farAwayLimit);
 extern void ExtendPlayerSpeechMaintenanceSuppress(std::chrono::milliseconds duration);
@@ -874,31 +875,42 @@ public:
     }
 
 
-    std::shared_ptr<AIAgent> getLessBoredAgentNearby(std::string beings) {
+    std::shared_ptr<AIAgent> getLessBoredAgentNearby(const std::string& beings) {
         std::vector<std::shared_ptr<AIAgent>> localAgents;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             localAgents = agents;
         }
 
-        if (localAgents.empty()) {
-            return nullptr;  // Return nullptr if agents vector is empty
-        }
-
-        // Sort agents based on their "boredom" level (ascending order)
-        std::sort(localAgents.begin(), localAgents.end(),
-                  [](const std::shared_ptr<AIAgent>& a, const std::shared_ptr<AIAgent>& b) {
-                      return a->getBoredEventsFired() < b->getBoredEventsFired();
-                  });
-
+        std::vector<std::shared_ptr<AIAgent>> candidates;
         for (const auto& agent : localAgents) {
+            if (!agent) continue;
             if (!agent->isPresent(beings)) continue;
             if (!agent->isAvailableforDialog(false)) continue;
             if (!agent->getActor()) continue;
-            return agent;  // Return the first valid agent (least bored)
+            candidates.push_back(agent);
         }
 
-        return nullptr;
+        if (candidates.empty()) return nullptr;
+
+        const auto leastBored = std::min_element(
+            candidates.begin(), candidates.end(),
+            [](const std::shared_ptr<AIAgent>& a, const std::shared_ptr<AIAgent>& b) {
+                return a->getBoredEventsFired() < b->getBoredEventsFired();
+            });
+        const auto minimumBoredEvents = (*leastBored)->getBoredEventsFired();
+
+        std::vector<std::shared_ptr<AIAgent>> leastBoredCandidates;
+        for (const auto& agent : candidates) {
+            if (agent->getBoredEventsFired() == minimumBoredEvents) {
+                leastBoredCandidates.push_back(agent);
+            }
+        }
+
+        std::random_device rd;
+        std::mt19937 rng(rd());
+        std::uniform_int_distribution<std::size_t> distribution(0, leastBoredCandidates.size() - 1);
+        return leastBoredCandidates[distribution(rng)];
     }
 
     // Other member functions...

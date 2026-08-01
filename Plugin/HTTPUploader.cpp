@@ -1,5 +1,8 @@
 #include <algorithm>
+#include <cctype>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <vector>
 #include "HTTPUploader.h"
 #include "Conf.h"
@@ -17,6 +20,73 @@ namespace logger = SKSE::log;
 extern const wchar_t *StringToWideString(std::string &str);
 extern int MutexGetScreenShotSendMode();
 extern void MutexSetScreenShotSendMode(int newVal);
+
+namespace {
+    std::string EscapeVoiceSampleJson(const std::string& value) {
+        std::ostringstream escaped;
+        for (unsigned char character : value) {
+            switch (character) {
+                case '"':
+                    escaped << "\\\"";
+                    break;
+                case '\\':
+                    escaped << "\\\\";
+                    break;
+                case '\b':
+                    escaped << "\\b";
+                    break;
+                case '\f':
+                    escaped << "\\f";
+                    break;
+                case '\n':
+                    escaped << "\\n";
+                    break;
+                case '\r':
+                    escaped << "\\r";
+                    break;
+                case '\t':
+                    escaped << "\\t";
+                    break;
+                default:
+                    if (character < 0x20) {
+                        escaped << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                                << static_cast<int>(character) << std::dec;
+                    } else {
+                        escaped << static_cast<char>(character);
+                    }
+                    break;
+            }
+        }
+        return escaped.str();
+    }
+
+    std::string UrlEncodeVoiceSampleField(const std::string& value) {
+        std::ostringstream encoded;
+        encoded << std::uppercase << std::hex;
+        for (unsigned char character : value) {
+            if (std::isalnum(character) || character == '-' || character == '_' || character == '.' ||
+                character == '~') {
+                encoded << static_cast<char>(character);
+            } else {
+                encoded << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(character);
+            }
+        }
+        return encoded.str();
+    }
+
+    std::string VoiceSampleContentType(const std::string& originalName) {
+        std::string normalized = originalName;
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+        if (normalized.ends_with(".wav")) {
+            return "audio/x-wav";
+        }
+        if (normalized.ends_with(".ogg")) {
+            return "audio/ogg";
+        }
+        return "application/octet-stream";
+    }
+}
 
 struct FileCloser {
     typedef HANDLE pointer;
@@ -169,11 +239,29 @@ std::string HTTPUploader::UploadVoiceSample(std::string data, std::string codena
 std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::string codename, std::string originalName,
                                                     std::string referenceText) {
     constexpr int kVoiceUploadTimeoutMs = 30000;
-    const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
-    const char *szContent =
-        "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
-        "filename=\"wavData.wav\"\r\nContent-Type: audio/x-wav\r\n\r\n";
-    const char *szEndData = "\r\n------974767299852498929531610575--\r\n";
+    constexpr const char* boundary = "----974767299852498929531610575";
+    const std::string headers =
+        std::string("Content-Type: multipart/form-data; boundary=") + boundary + "\r\nAccept: application/json";
+
+    std::ostringstream metadata;
+    metadata << "{\"schema\":\"chim.voice_sample.v1\","
+             << "\"game\":\"skyrim\","
+             << "\"actor_name\":\"" << EscapeVoiceSampleJson(codename) << "\","
+             << "\"original_name\":\"" << EscapeVoiceSampleJson(originalName) << "\"";
+    if (!referenceText.empty()) {
+        metadata << ",\"reference_text\":\"" << EscapeVoiceSampleJson(referenceText) << "\"";
+    }
+    metadata << "}";
+
+    const std::string metadataPart =
+        std::string("--") + boundary + "\r\n" +
+        "Content-Disposition: form-data; name=\"metadata\"\r\n" +
+        "Content-Type: application/json; charset=utf-8\r\n\r\n" + metadata.str() + "\r\n";
+    const std::string filePart =
+        std::string("--") + boundary + "\r\n" +
+        "Content-Disposition: form-data; name=\"file\"; filename=\"voiceSample.dat\"\r\n" +
+        "Content-Type: " + VoiceSampleContentType(originalName) + "\r\n\r\n";
+    const std::string endPart = std::string("\r\n--") + boundary + "--\r\n";
 
     std::string server(Conf::getInstance().getServer());
     std::wstring wideServer = StringToWideString(server);
@@ -183,9 +271,20 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
     std::string path = Conf::getInstance().getPath();
     auto pos = path.find("comm.php");
     if (pos != std::string::npos) {
-        path.replace(pos, 8, "vsx.php?stuff");
+        path.replace(pos, 8, "vsx.php");
+    } else if ((pos = path.find("main.php")) != std::string::npos) {
+        path.replace(pos, 8, "vsx.php");
+    } else if ((pos = path.find("gamedata.php")) != std::string::npos) {
+        path.replace(pos, 12, "vsx.php");
     }
-    path.append("&codename=").append(codename).append("&oname=").append(originalName);
+    const auto queryPosition = path.find('?');
+    if (queryPosition != std::string::npos) {
+        path = path.substr(0, queryPosition);
+    }
+    path.append("?stuff&codename=")
+        .append(UrlEncodeVoiceSampleField(codename))
+        .append("&oname=")
+        .append(UrlEncodeVoiceSampleField(originalName));
     std::wstring widePath = StringToWideString(path);
 
     logger::info("Using VSX: {}", server + ":" + port + "/" + path);
@@ -227,7 +326,7 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
 
     // Add headers
 
-    std::wstring wideHeaders = std::wstring(szHeaders, szHeaders + strlen(szHeaders));
+    std::wstring wideHeaders(headers.begin(), headers.end());
 
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::info("Failed to add headers: {}", GetLastError());
@@ -238,7 +337,14 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
     }
 
     // Calculate the total size of the data
-    size_t totalSize = strlen(szContent) + data.length() + strlen(szEndData);
+    const size_t totalSize = metadataPart.size() + filePart.size() + data.size() + endPart.size();
+    if (totalSize > MAXDWORD) {
+        logger::error("Voice sample upload is too large: {} bytes", totalSize);
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
 
     // Send the request
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0,
@@ -251,30 +357,15 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
     }
 
     // Write the multipart form data
-    DWORD bytesWritten = 0;
-    if (!WinHttpWriteData(hRequest, szContent, static_cast<DWORD>(strlen(szContent)), &bytesWritten) ||
-        bytesWritten != strlen(szContent)) {
-        logger::info("Failed to write initial part of the data: {}", GetLastError());
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
-
-    bytesWritten = 0;
-    if (!WinHttpWriteData(hRequest, data.c_str(), static_cast<DWORD>(data.length()), &bytesWritten) ||
-        bytesWritten != data.length()) {
-        logger::info("Failed to write main data: {}", GetLastError());
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
-
-    bytesWritten = 0;
-    if (!WinHttpWriteData(hRequest, szEndData, static_cast<DWORD>(strlen(szEndData)), &bytesWritten) ||
-        bytesWritten != strlen(szEndData)) {
-        logger::info("Failed to write final part of the data: {}", GetLastError());
+    const auto writePart = [hRequest](const void* buffer, size_t size) {
+        DWORD bytesWritten = 0;
+        return size <= MAXDWORD &&
+               WinHttpWriteData(hRequest, buffer, static_cast<DWORD>(size), &bytesWritten) &&
+               bytesWritten == static_cast<DWORD>(size);
+    };
+    if (!writePart(metadataPart.data(), metadataPart.size()) || !writePart(filePart.data(), filePart.size()) ||
+        !writePart(data.data(), data.size()) || !writePart(endPart.data(), endPart.size())) {
+        logger::info("Failed to write voice sample multipart data: {}", GetLastError());
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -288,6 +379,13 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return "";
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, NULL, &statusCode,
+                            &statusSize, NULL)) {
+        logger::info("Voice sample upload HTTP status: {}", statusCode);
     }
 
     // Read the response

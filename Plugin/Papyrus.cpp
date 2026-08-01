@@ -32,6 +32,7 @@
 #include "ThreadPool.h"
 #include "Voicerec.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "MusicManager.h"
 #include "RE/D/DialogueMenu.h"
 #include "RE/G/GFxValue.h"
@@ -697,25 +698,20 @@ static bool sendAllVoice(const std::chrono::steady_clock::time_point& deadline, 
         }
         audioData.assign("Sound\\Voice\\" + filename);
 
-        RE::BSResourceNiBinaryStream finaudioFileDetected(audioData);
-        if (finaudioFileDetected.good()) {
-            auto size = finaudioFileDetected.stream->totalSize;
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-
-            std::string finalData(buffer.get(), size);
-
-            if (size > 0) {
-                if (VoiceUploadBatchTimedOut(deadline)) {
-                    timedOut = true;
-                    break;
-                }
-
-                logger::info("Uploading {} {}", pair.first, audioData);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                std::string uploadResponse = uploader.UploadVoiceSample(finalData, pair.first, audioData);
+        std::string finalData;
+        std::string readFailure;
+        if (ResourceFileReader::Read(audioData, finalData, readFailure)) {
+            if (VoiceUploadBatchTimedOut(deadline)) {
+                timedOut = true;
+                break;
             }
+
+            logger::info("Uploading {} {}", pair.first, audioData);
+            HTTPUploader& uploader = HTTPUploader::getInstance();
+            std::string uploadResponse = uploader.UploadVoiceSample(finalData, pair.first, audioData);
             // At this point. the voice should be cloned
+        } else {
+            logger::warn("[VOICE] Could not read bundled sample {}: {}", audioData, readFailure);
         }
     }
 
@@ -1065,23 +1061,15 @@ static bool sendAllVoiceLongestSamples(const std::chrono::steady_clock::time_poi
             continue;
         }
 
-        RE::BSResourceNiBinaryStream stream(sample.path);
-        if (!stream.good() || !stream.stream) {
-            missedVoiceTypes[voiceTypeKey] = std::format("candidate stream open failed: {}", sample.path);
+        std::string finalData;
+        std::string readFailure;
+        if (!ResourceFileReader::Read(sample.path, finalData, readFailure)) {
+            missedVoiceTypes[voiceTypeKey] = std::format("candidate read failed: {} ({})", sample.path, readFailure);
             continue;
         }
 
-        const auto size = stream.stream->totalSize;
-        if (size <= 0) {
-            missedVoiceTypes[voiceTypeKey] = std::format("candidate stream size is zero: {}", sample.path);
-            continue;
-        }
-
-        auto buffer = std::make_unique<char[]>(size);
-        stream.read(buffer.get(), size);
-
-        std::string finalData(buffer.get(), size);
-        logger::info("[VOICE] Uploading longest sample for {} -> {} ({} bytes)", voiceTypeKey, sample.path, size);
+        logger::info("[VOICE] Uploading longest sample for {} -> {} ({} bytes)", voiceTypeKey, sample.path,
+                     finalData.size());
         uploader.UploadVoiceSample(finalData, voiceTypeKey, sample.path);
         missedVoiceTypes.erase(voiceTypeKey);
         uploadedCount++;
@@ -1361,44 +1349,26 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     /* Try to generate voice*/
 
                     auto audiofile = AudioFilesBufferManager::findAudioFile(agent->getActor());
-                    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-                    if (finaudioFileDetected.good()) {
-                        auto size = finaudioFileDetected.stream->totalSize;
-                        auto buffer = std::make_unique<char[]>(size);
-                        finaudioFileDetected.read(buffer.get(), size);
+                    std::string finalData;
+                    std::string readFailure;
+                    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+                        logger::info("Uploading voice sample {}, size {}", audiofile, finalData.size());
 
-                        std::string finalData(buffer.get(), size);
+                        HTTPUploader& uploader = HTTPUploader::getInstance();
 
-                        if (size > 0) {
-                            logger::info("Uploading voice sample {}, size {}", audiofile, size);
+                        std::string uploadResponse =
+                            uploader.UploadVoiceSample(finalData, agent->getActorName(), audiofile);
+                        logger::info("Sending addnpc signal for {}@{}", targetActor->GetDisplayFullName(), category);
+                        HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
+                                                     GetGameTimeStamp(), targetActor->GetDisplayFullName(), category));
 
-                            HTTPUploader& uploader = HTTPUploader::getInstance();
-
-                            std::string uploadResponse =
-                                uploader.UploadVoiceSample(finalData, agent->getActorName(), audiofile);
-                            logger::info("Sending addnpc signal for {}@{}", targetActor->GetDisplayFullName(),
-                                         category);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(),
-                                                         category));
-                            
-                            // Voice sample uploaded successfully
-                            agent->setNeedsVoiceSample(false);
-                            agent->setVoiceSamplePath(audiofile);
-                        } else {
-                            // File found but empty - mark for deferred upload
-                            logger::warn("[VOICE] Voice file found but empty for {} - will capture from dialogue", 
-                                        targetActor->GetDisplayFullName());
-                            agent->setNeedsVoiceSample(true);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(),
-                                                         category));
-                        }
+                        // Voice sample uploaded successfully
+                        agent->setNeedsVoiceSample(false);
+                        agent->setVoiceSamplePath(audiofile);
                         // At this point. the voice should be cloned
                     } else {
-                        // No audio file found - mark for deferred upload when NPC speaks
-                        logger::warn("[VOICE] No voice sample found for {} - will capture from dialogue events", 
-                                    targetActor->GetDisplayFullName());
+                        logger::warn("[VOICE] Could not read voice sample for {} from {}: {}; will capture from dialogue events",
+                                     targetActor->GetDisplayFullName(), audiofile, readFailure);
                         agent->setNeedsVoiceSample(true);
                         HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), targetActor->GetDisplayFullName(),
@@ -1486,7 +1456,10 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
     return 0;
 }
 
-int sendMessageReal(std::string msg, std::string type) {
+int sendMessageReal(
+    std::string msg,
+    std::string type,
+    const PlayerConversationRoutingContext& routingContext) {
     logger::info("Call from papyrus: sendMessage");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     PrismaUIBridge::BumpDialogueStopGeneration();
@@ -1543,14 +1516,26 @@ int sendMessageReal(std::string msg, std::string type) {
         }
     }
 
+    PlayerConversationRoutingContext effectiveRoutingContext = routingContext;
     std::string typeRevised;
 
-    if (type.empty())
+    if (type == "inputtext_i") {
+        typeRevised.assign("inputtext_s");
+        effectiveRoutingContext.mode = PlayerConversationSpeechMode::Close;
+    } else {
+        const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
+        effectiveRoutingContext.mode =
+            PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
+        effectiveRoutingContext.narratorMode =
+            effectiveRoutingContext.narratorMode || currentConversationMode == "NARRATOR";
+    }
+
+    if (type != "inputtext_i" && type.empty())
         if (player->IsSneaking())
             typeRevised.assign("inputtext_s");
         else
             typeRevised.assign("inputtext");
-    else
+    else if (type != "inputtext_i")
         typeRevised.assign(type);
 
     /* If not is animation busy, some plugin said shen can't call functions atm. To be revised*/
@@ -1747,6 +1732,7 @@ int sendMessageReal(std::string msg, std::string type) {
             ThreadPool::getInstance().cancelTasksByType("HTTPStream");
             ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
             SPGResponse::getInstance().clearAllQueues();
+            SpeakManager::getInstance().startRechatChainForPlayerInput();
         }
 
         SpeakManager::getInstance().deleteQueue();
@@ -1755,8 +1741,10 @@ int sendMessageReal(std::string msg, std::string type) {
 
         SpeakManager::getInstance().stopRechatForNseconds(3);  // To avoid rechat if any rechat is pending
 
-        HTTPManager::stream(std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
-                                        RE::PlayerCharacter::GetSingleton()->GetName(), msg));
+        HTTPManager::streamPlayer(
+            std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
+                        RE::PlayerCharacter::GetSingleton()->GetName(), msg),
+            effectiveRoutingContext);
     }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -1925,6 +1913,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
     if (code == "_sound_volume") {
         AudioManagerController::GetInstance().setVolume(f_Value);
         logger::info("Setting volume to {}/100", f_Value);
+
+    } else if (code == "_head_voice_volume") {
+        SpeakManager::getInstance().setHeadVoiceVolumePercent(f_Value);
+        logger::info("Setting narrator/player TTS volume to {}/100", f_Value);
 
     } else if (code == "_sound_preclip") {
         SpeakManager::getInstance().setPreclip(f_Value);
@@ -2207,7 +2199,11 @@ int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
 
     if (type == "setconf" || (type == "setConf")) {
-
+        constexpr std::string_view modePrefix = "chim_mode@";
+        if (msg.starts_with(modePrefix)) {
+            PrismaUIBridge::SetCurrentChatboxMode(
+                msg.substr(modePrefix.size()), "Papyrus Mode Selection", false);
+        }
     } else {
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "(beings in range:" + result + ")"));
@@ -2276,6 +2272,11 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+    const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
+    const auto requestText = isAutonomousDirective
+        ? msg
+        : std::format("{}:{}", RE::PlayerCharacter::GetSingleton()->GetName(), msg);
+
     if (actorPtr) {
         auto player = RE::PlayerCharacter::GetSingleton();
         RE::TESObjectCELL* cell = player->GetParentCell();
@@ -2286,14 +2287,13 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                      "(beings in range:" + result + ")"));
 
         HTTPManager::stream(
-            std::format("{}|{}|{}|(Context location: {}){}:{}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
-                        GetPlayerLocation(), RE::PlayerCharacter::GetSingleton()->GetName(), msg),
+            std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
+                        GetPlayerLocation(), requestText),
             actorPtr->getActor());
     } else {
         // Fallback
-        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}:{}", type, getCurrentTimeMillis(),
-                                        GetGameTimeStamp(), GetPlayerLocation(),
-                                        RE::PlayerCharacter::GetSingleton()->GetName(), msg));
+        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(),
+                                        GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
     return 0;

@@ -3,6 +3,18 @@
 let hotkeyCloseArmedAt = 0;
 let hudLayoutExpanded = false;
 let toolsExpanded = false;
+let contextWindowVisible = false;
+
+window.setPluginVersion = function(version) {
+    const normalizedVersion = String(version || '').trim();
+    const title = normalizedVersion ? `CHIM (${normalizedVersion})` : 'CHIM';
+    const titleElement = document.getElementById('master-menu-title');
+
+    document.title = title;
+    if (titleElement) {
+        titleElement.textContent = title;
+    }
+};
 
 // Show description in footer
 window.showDescription = function(text) {
@@ -34,11 +46,95 @@ function initMasterMenu() {
     
     // Add keyboard listener for ESC key to close menu
     document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('wheel', handleContextWindowWheel, { passive: false });
 
     initLayoutPickers();
+    initMenuScalePicker();
     setHudLayoutExpanded(false);
     setToolsExpanded(false);
 }
+
+window.setContextWindowVisible = function(visible) {
+    contextWindowVisible = !!visible;
+};
+
+function getContextWindowBounds() {
+    const viewportWidth = window.innerWidth || 0;
+    const viewportHeight = window.innerHeight || 0;
+    const compact = viewportWidth <= 900;
+    const baseWidth = compact
+        ? Math.min(520, Math.max(0, viewportWidth - 40))
+        : Math.min(720, viewportWidth * 0.44);
+    const baseHeight = compact
+        ? Math.min(240, viewportHeight * 0.28)
+        : Math.min(300, viewportHeight * 0.32);
+    const requestedScale = window.chimUIScale ? window.chimUIScale.getPercent() / 100 : 1;
+    const fittingScale = baseWidth > 0 && baseHeight > 0
+        ? Math.min(
+            Math.max(1, viewportWidth - 48) / baseWidth,
+            Math.max(1, viewportHeight - 48) / baseHeight
+        )
+        : 1;
+    const scale = Math.max(1, Math.min(requestedScale, fittingScale));
+    const width = baseWidth * scale;
+    const height = baseHeight * scale;
+    const gap = window.chimLayout ? window.chimLayout.getGap() : 20;
+    const corner = window.chimLayout ? window.chimLayout.getCorner('chatbox') : 'bottom-left';
+    const left = corner.endsWith('right') ? viewportWidth - gap - width : gap;
+    const top = corner.startsWith('bottom') ? viewportHeight - gap - height : gap;
+
+    return {
+        left: left,
+        top: top,
+        right: left + width,
+        bottom: top + height
+    };
+}
+
+function handleContextWindowWheel(event) {
+    if (!contextWindowVisible || !window.chimMasterMenuCommand) {
+        return;
+    }
+
+    const bounds = getContextWindowBounds();
+    if (event.clientX < bounds.left || event.clientX > bounds.right ||
+        event.clientY < bounds.top || event.clientY > bounds.bottom) {
+        return;
+    }
+
+    const delta = Math.max(-1200, Math.min(1200, Number(event.deltaY) || 0));
+    if (delta === 0) {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    window.chimMasterMenuCommand('context_scroll|' + delta);
+}
+
+function updateMenuScalePicker() {
+    const percent = window.chimUIScale ? window.chimUIScale.getPercent() : 100;
+    document.querySelectorAll('.menu-scale-btn[data-scale]').forEach(function (button) {
+        const isActive = Number.parseInt(button.dataset.scale, 10) === percent;
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
+function initMenuScalePicker() {
+    updateMenuScalePicker();
+    window.addEventListener('chim-ui-scale-change', updateMenuScalePicker);
+    window.addEventListener('chim-ui-scale-applied', updateMenuScalePicker);
+}
+
+window.setMenuScale = function (percent) {
+    if (!window.chimUIScale) {
+        return;
+    }
+    const selectedPercent = window.chimUIScale.setPercent(percent);
+    updateMenuScalePicker();
+    window.showDescription('Prisma menu size set to ' + selectedPercent + '%');
+};
 
 // Handle keyboard events
 function handleKeyDown(event) {

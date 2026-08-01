@@ -26,6 +26,44 @@ namespace logger = SKSE::log;
 std::list<RE::FormID> currentQuestsDetectedFormEditorID;
 std::mutex currentQuestsDetectedFormEditorIDMutex;
 
+namespace {
+    constexpr std::size_t kMaxLocationParentDepth = 32;
+
+    RE::BGSLocation* FindCurrentHold(RE::BGSLocation* location)
+    {
+        if (!location) {
+            return nullptr;
+        }
+
+        auto* immediateParent = location->parentLoc;
+        std::size_t depth = 0;
+        for (auto* current = location; current && depth < kMaxLocationParentDepth;
+             current = current->parentLoc, ++depth) {
+            if (current->HasKeywordString("LocTypeHold")) {
+                return current;
+            }
+        }
+
+        return immediateParent;
+    }
+
+    void AppendCurrentHold(std::string& context, RE::BGSLocation* location)
+    {
+        auto* hold = FindCurrentHold(location);
+        if (!hold) {
+            return;
+        }
+
+        const char* holdName = hold->GetFullName();
+        if (!holdName || holdName[0] == '\0') {
+            return;
+        }
+
+        context.append(" ,Hold: ");
+        context.append(holdName);
+    }
+}
+
 std::uint32_t ConvertToTimestamp(const std::tm& time) {
     // Convert std::tm to std::time_t
     std::time_t timeValue = std::mktime(const_cast<std::tm*>(&time));
@@ -466,9 +504,7 @@ std::string GetPlayerLocation() {
                         location.append("");
                     }
                 }
-
-                location.append(" ,Hold: ");
-                location.append(player->GetCurrentLocation()->parentLoc->GetFullName());
+                AppendCurrentHold(location, player->GetCurrentLocation());
             }
 
         } else {
@@ -483,12 +519,7 @@ std::string GetPlayerLocation() {
                 if (location.empty())
                     location.assign(locpointer->GetFullName());
 
-                if (locpointer->parentLoc == nullptr)
-                    ;
-                else {
-                    location.append(" ,Hold: ");
-                    location.append(locpointer->parentLoc->GetFullName());
-                }
+                AppendCurrentHold(location, locpointer);
             }
 
             RE::TESWorldSpace* worldPointer = player->GetWorldspace();

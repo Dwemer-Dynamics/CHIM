@@ -23,6 +23,11 @@ namespace SpatialAwareness
     // the renderer and return torn positions, heard as voices drifting away mid-scene.
     void UpdatePlayerCameraSnapshot();
 
+    // HMD gaze ray (position + normalized forward) from the same per-frame snapshot. Returns false when
+    // no valid pose is available yet. Off-game-thread callers (SHARMAT gaze dwell polling) must use this,
+    // never a live camRoot read - same torn-transform hazard as the position above.
+    bool GetPlayerCameraGaze(RE::NiPoint3& a_outOrigin, RE::NiPoint3& a_outForward);
+
     struct Settings
     {
         float maxAirDistance = 4000.0f;

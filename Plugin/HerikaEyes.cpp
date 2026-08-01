@@ -3,9 +3,12 @@
 #include <d3d11.h>
 
 #include <chrono>
+#include <cctype>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 
 #include "Globals.h"
@@ -13,12 +16,97 @@
 #include "HTTPManager.h"
 #include "Misc.h"
 #include "RE/Skyrim.h"
+#include "SpatialAwareness.h"
 #include "ThreadPool.h"
 #pragma comment(lib, "d3d11.lib")
 
 namespace logger = SKSE::log;
 
 std::string globalHints;
+
+namespace {
+    std::string EncodeVisualQueryValue(const std::string& value) {
+        std::ostringstream encoded;
+        encoded << std::uppercase << std::hex;
+        for (unsigned char character : value) {
+            if (std::isalnum(character) || character == '-' || character == '_' || character == '.' ||
+                character == '~') {
+                encoded << character;
+            } else {
+                encoded << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(character);
+            }
+        }
+        return encoded.str();
+    }
+
+    std::string FormIdText(RE::FormID formId) {
+        return std::format("{:08X}", static_cast<std::uint32_t>(formId));
+    }
+
+    std::string VisualSubjectType(RE::TESObjectREFR* reference) {
+        if (reference->As<RE::Actor>()) {
+            return "actor";
+        }
+
+        auto* baseObject = reference->GetBaseObject();
+        if (baseObject && baseObject->GetFormType() == RE::FormType::Furniture) {
+            return "furniture";
+        }
+
+        return "object";
+    }
+
+    std::string BuildVisualCaptureMetadata() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return "&visual_type=scene&visual_perspective=first_person";
+        }
+
+        const std::string location = GetPlayerLocation();
+        std::string subjectType = "scene";
+        std::string subjectName;
+        std::string subjectKey = "scene:" + location;
+        std::string pluginName;
+        std::string baseId;
+        std::string refId;
+
+        auto* crosshairData = RE::CrosshairPickData::GetSingleton();
+        auto crosshairTarget = crosshairData ? crosshairData->target : RE::ObjectRefHandle{};
+        if (crosshairTarget) {
+            auto reference = crosshairTarget.get();
+            if (reference) {
+                subjectName = reference->GetDisplayFullName();
+                refId = FormIdText(reference->GetFormID());
+                subjectType = VisualSubjectType(reference.get());
+
+                if (auto* baseObject = reference->GetBaseObject()) {
+                    baseId = FormIdText(baseObject->GetLocalFormID());
+                    if (auto* sourceFile = baseObject->GetFile(0)) {
+                        pluginName = sourceFile->GetFilename();
+                    }
+                    subjectKey = subjectType + ":" + pluginName + ":" + baseId;
+                } else {
+                    subjectKey = subjectType + ":" + refId;
+                }
+            }
+        }
+
+        std::string cellId;
+        if (auto* cell = player->GetParentCell()) {
+            cellId = FormIdText(cell->GetFormID());
+        }
+
+        return "&visual_type=" + EncodeVisualQueryValue(subjectType) +
+               "&visual_key=" + EncodeVisualQueryValue(subjectKey) +
+               "&visual_name=" + EncodeVisualQueryValue(subjectName) +
+               "&visual_plugin=" + EncodeVisualQueryValue(pluginName) +
+               "&visual_baseid=" + EncodeVisualQueryValue(baseId) +
+               "&visual_refid=" + EncodeVisualQueryValue(refId) +
+               "&visual_cell=" + EncodeVisualQueryValue(cellId) +
+               "&visual_location=" + EncodeVisualQueryValue(location) +
+               "&visual_perspective=first_person";
+    }
+}
 
 extern int MutexGetScreenShotSendMode();
 extern void MutexSetScreenShotSendMode(int newVal);
@@ -278,6 +366,7 @@ void ProcedureTakeShot() {
             std::string hints;
 
             hints.append("&vc=" + globalHints);
+            hints.append(BuildVisualCaptureMetadata());
 
             // hints.append(ScenarioHints());
 
@@ -341,6 +430,7 @@ void ProcedureSendShot(char const* a_path) {
         std::string hints;
 
         hints.append("&vc=" + globalHints);
+        hints.append(BuildVisualCaptureMetadata());
 
         // hints.append(ScenarioHints());
 
@@ -372,21 +462,39 @@ void ProcedureSendShot(char const* a_path) {
 // physics_raw pipe as VR body contact (plain name per upstream review: DLL events are not ext_*;
 // core logs it as a fast command, the SHARMAT server extension renames + turns it into an
 // in-character reaction). The DLL only detects "player stared at <region> of <actor>" - the server owns
-// every reaction, prompt, and relationship/scene/child gate. Inert without that extension. Not VR-gated:
-// the crosshair pick works on flatscreen as well.
+// every reaction, prompt, and relationship/scene/child gate. Inert without that extension. VR gaze is
+// always eligible; flatscreen gaze is eligible only while the camera is actually first-person.
 // ---------------------------------------------------------------------------------------------------
 namespace {
     constexpr float       kGazeSeconds        = 6.0f;    // continuous dwell before a gaze fires
+    constexpr float       kGazeDwellGrace     = 0.75f;   // VR: brief target loss (head jitter) that does NOT reset the dwell
     constexpr float       kGazeDistance       = 350.0f;  // max player<->target distance (game units)
-    constexpr float       kGazeCooldown       = 20.0f;   // seconds between gaze events for the same actor
+    constexpr float       kGazeCooldown       = 25.0f;   // matches SHARMAT's default server-side gaze cooldown
     constexpr float       kGazeNodeMaxDist    = 45.0f;   // hit must be within this of a mapped node, else "person"
     constexpr const char* kGazePhysicsEvent   = "physics_raw"; // same pipe as touch/grab/spank (plain name, see header note)
 
     std::mutex                                                            g_gazeMutex;
     RE::FormID                                                            g_gazeDwellActor = 0;
     std::chrono::steady_clock::time_point                                 g_gazeDwellStart{};
+    std::chrono::steady_clock::time_point                                 g_gazeLastSeen{};
     bool                                                                  g_gazeFired = false; // fired for current dwell
     std::unordered_map<RE::FormID, std::chrono::steady_clock::time_point> g_lastGazeEmit;
+
+    bool IsGazeCameraEligible() {
+        // Never track gaze during a scripted conversation: in dialogue the player stares at the
+        // NPC's face far past the dwell threshold, and the resulting reaction is a full model
+        // turn that stomps the vanilla dialogue state (the NPC wedges "busy" and quest dialogue
+        // can never resume). The PollPlayerGaze ineligible path also resets the dwell, so
+        // closing the menu never fires a stare accumulated while it was open.
+        if (auto* ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+            return false;
+        }
+
+        if (REL::Module::IsVR()) { return true; }
+
+        auto* camera = RE::PlayerCamera::GetSingleton();
+        return camera && camera->IsInFirstPerson();
+    }
 
     std::string CleanGazeField(std::string s) {
         for (auto& c : s) {
@@ -395,25 +503,26 @@ namespace {
         return s;
     }
 
+    struct GazeNodeCand { const char* node; const char* region; };
+    constexpr GazeNodeCand kGazeNodeCands[] = {
+        { "NPC Head [Head]",     "eyes"   },
+        { "NPC L Breast",        "tits"   },
+        { "NPC R Breast",        "tits"   },
+        { "NPC Spine2 [Spn2]",   "tits"   }, // chest fallback when breast nodes are absent
+        { "NPC L Butt",          "ass"    },
+        { "NPC R Butt",          "ass"    },
+        { "NPC GenitalsScrotum", "crotch" },
+        { "NPC Pelvis [Pelv]",   "crotch" }, // lower fallback
+    };
+
     // Classify the gazed region by the body node nearest the crosshair hit point.
     // Returns "eyes" | "tits" | "ass" | "crotch" | "person".
     std::string ClassifyGazeRegion(RE::Actor* actor, const RE::NiPoint3& hit) {
         auto* root = actor->Get3D();
         if (!root) { return "person"; }
-        struct Cand { const char* node; const char* region; };
-        static const Cand cands[] = {
-            { "NPC Head [Head]",     "eyes"   },
-            { "NPC L Breast",        "tits"   },
-            { "NPC R Breast",        "tits"   },
-            { "NPC Spine2 [Spn2]",   "tits"   }, // chest fallback when breast nodes are absent
-            { "NPC L Butt",          "ass"    },
-            { "NPC R Butt",          "ass"    },
-            { "NPC GenitalsScrotum", "crotch" },
-            { "NPC Pelvis [Pelv]",   "crotch" }, // lower fallback
-        };
         float       best       = 1.0e30f;
         const char* bestRegion = "person";
-        for (const auto& c : cands) {
+        for (const auto& c : kGazeNodeCands) {
             auto* n = root->GetObjectByName(c.node);
             if (!n) { continue; }
             const RE::NiPoint3 d    = n->world.translate - hit;
@@ -427,22 +536,100 @@ namespace {
         return bestRegion;
     }
 
+    // ---- VR path: CrosshairPickData is the wrong signal there (targetActor tracks the ACTIVATION/hand
+    // ray, and collisionPoint reads through the SSE struct layout are not valid on the VR runtime), so
+    // VR gaze is driven by the HMD ray instead: dwell target = the actor nearest the view axis, region =
+    // the body node nearest the ray. ----
+
+    // Perpendicular distance from ray (origin, unit dir) to a point; points behind the origin never match.
+    float RayPointDistance(const RE::NiPoint3& origin, const RE::NiPoint3& dir, const RE::NiPoint3& p) {
+        const RE::NiPoint3 v = p - origin;
+        const float        t = v.Dot(dir);
+        if (t <= 0.0f) { return 1.0e30f; }
+        const RE::NiPoint3 closest{ origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t };
+        return (p - closest).Length();
+    }
+
+    std::string ClassifyGazeRegionByRay(RE::Actor* actor, const RE::NiPoint3& origin, const RE::NiPoint3& dir) {
+        auto* root = actor->Get3D();
+        if (!root) { return "person"; }
+        float       best       = 1.0e30f;
+        const char* bestRegion = "person";
+        for (const auto& c : kGazeNodeCands) {
+            auto* n = root->GetObjectByName(c.node);
+            if (!n) { continue; }
+            const float dist = RayPointDistance(origin, dir, n->world.translate);
+            if (dist < best) {
+                best       = dist;
+                bestRegion = c.region;
+            }
+        }
+        if (best > kGazeNodeMaxDist) { return "person"; } // ray passes far from every mapped node
+        return bestRegion;
+    }
+
+    // Which actor is the HMD ray resting on? Nearest to the view axis within the cone and range.
+    // Safe off the game thread: uses only the paced camera snapshot + actor ref positions.
+    RE::FormID VrPickGazeActor(const RE::NiPoint3& origin, const RE::NiPoint3& dir) {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* lists  = RE::ProcessLists::GetSingleton();
+        if (!player || !lists) { return 0; }
+        constexpr float kGazeConeMinCos = 0.94f;  // ~20 degree half-angle
+        float      bestCos = kGazeConeMinCos;
+        RE::FormID best    = 0;
+        for (auto& handle : lists->highActorHandles) {
+            auto actorPtr = handle.get();
+            RE::Actor* actor = actorPtr.get();
+            if (!actor || actor == player) { continue; }
+            if (actor->IsDead() || actor->IsDisabled() || !actor->Is3DLoaded()) { continue; }
+            RE::NiPoint3 to = actor->GetPosition();
+            to.z += 96.0f;  // aim at the torso/head band, not the feet
+            to -= origin;
+            const float dist = to.Length();
+            if (dist < 1.0f || dist > kGazeDistance) { continue; }
+            const float cosAngle = to.Dot(dir) / dist;
+            if (cosAngle > bestCos) {
+                bestCos = cosAngle;
+                best    = actor->GetFormID();
+            }
+        }
+        return best;
+    }
+
     // Runs on the GAME THREAD (scene-graph node reads are unsafe off-thread). Re-verifies the target,
     // gates, and emits the gaze event on a worker thread.
     void FireGazeOnGameThread(RE::FormID expectActor, float seconds) {
-        auto* pick = RE::CrosshairPickData::GetSingleton();
-        if (!pick) { return; }
-        auto       actorPtr = pick->targetActor.get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
-        RE::Actor* actor    = actorPtr ? actorPtr->As<RE::Actor>() : nullptr;
-        if (!actor || actor->GetFormID() != expectActor) { return; }  // player looked away / not an actor
+        // PollPlayerGaze runs on CHIM's manager thread. Re-check the camera here so a flatscreen
+        // player who changed to third-person while the task was queued cannot emit a stale gaze.
+        if (!IsGazeCameraEligible()) { return; }
+
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player || actor == player || actor->IsDead()) { return; }
+        if (!player) { return; }
+
+        RE::Actor*  actor = nullptr;
+        std::string region;
+        if (REL::Module::IsVR()) {
+            // Game thread: the live camera-root read is tear-free here, and the ray re-verify
+            // catches a head that moved off the target while the task was queued.
+            RE::NiPoint3 origin{}, dir{};
+            if (!SpatialAwareness::GetPlayerCameraGaze(origin, dir)) { return; }
+            if (VrPickGazeActor(origin, dir) != expectActor) { return; }  // looked away
+            auto* form = RE::TESForm::LookupByID(expectActor);
+            actor = form ? form->As<RE::Actor>() : nullptr;
+            if (!actor || actor == player || actor->IsDead()) { return; }
+            region = ClassifyGazeRegionByRay(actor, origin, dir);
+        } else {
+            auto* pick = RE::CrosshairPickData::GetSingleton();
+            if (!pick) { return; }
+            auto actorPtr = pick->targetActor.get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
+            actor = actorPtr ? actorPtr->As<RE::Actor>() : nullptr;
+            if (!actor || actor->GetFormID() != expectActor) { return; }  // player looked away / not an actor
+            if (actor == player || actor->IsDead()) { return; }
+            region = ClassifyGazeRegion(actor, pick->collisionPoint);
+        }
 
         const RE::NiPoint3 delta = actor->GetPosition() - player->GetPosition();
         if (delta.Length() > kGazeDistance) { return; }
-
-        const RE::NiPoint3 hit    = pick->collisionPoint;
-        std::string        region = ClassifyGazeRegion(actor, hit);
 
         // Lewd regions (tits/ass/crotch) only fire for a MALE player staring at a FEMALE NPC; otherwise
         // the gaze degrades to general "person" staring. Eyes-gaze fires for any pairing.
@@ -475,12 +662,27 @@ namespace {
 // crosshair has dwelled on the same actor and, past a threshold, marshals a game-thread read to
 // classify the gazed region and emit. Cheap; does its own dwell/cooldown bookkeeping.
 void PollPlayerGaze() {
-    auto* pick = RE::CrosshairPickData::GetSingleton();
-    if (!pick) { return; }
+    if (!IsGazeCameraEligible()) {
+        // Do not carry a partial first-person dwell through time spent in third-person. Starting a
+        // new first-person view must earn the complete dwell interval before it can emit a gaze.
+        std::lock_guard<std::mutex> lk(g_gazeMutex);
+        g_gazeDwellActor = 0;
+        g_gazeFired      = false;
+        return;
+    }
+
     if (!RE::PlayerCharacter::GetSingleton()) { return; }
 
     RE::FormID cur = 0;
-    {
+    if (REL::Module::IsVR()) {
+        // Manager thread: the paced snapshot is the only safe camera read here (a live
+        // camRoot read off the game thread returns torn/static transforms in VR).
+        RE::NiPoint3 origin{}, dir{};
+        if (!SpatialAwareness::GetPlayerCameraGaze(origin, dir)) { return; }
+        cur = VrPickGazeActor(origin, dir);
+    } else {
+        auto* pick = RE::CrosshairPickData::GetSingleton();
+        if (!pick) { return; }
         auto actorPtr = pick->targetActor.get();
         if (actorPtr) { cur = actorPtr->GetFormID(); }
     }
@@ -489,6 +691,12 @@ void PollPlayerGaze() {
     std::lock_guard<std::mutex> lk(g_gazeMutex);
 
     if (cur == 0) {  // not looking at any actor
+        // VR head jitter flicks the cone off the target for a frame or two; a brief loss keeps
+        // the dwell alive so a natural stare can actually accumulate the full interval.
+        if (g_gazeDwellActor != 0 &&
+            std::chrono::duration<float>(now - g_gazeLastSeen).count() < kGazeDwellGrace) {
+            return;
+        }
         g_gazeDwellActor = 0;
         g_gazeFired      = false;
         return;
@@ -496,9 +704,11 @@ void PollPlayerGaze() {
     if (cur != g_gazeDwellActor) {  // switched target -> restart dwell
         g_gazeDwellActor = cur;
         g_gazeDwellStart = now;
+        g_gazeLastSeen   = now;
         g_gazeFired      = false;
         return;
     }
+    g_gazeLastSeen = now;
     if (g_gazeFired) { return; }  // already emitted for this continuous dwell
 
     const float elapsed = std::chrono::duration<float>(now - g_gazeDwellStart).count();
