@@ -227,6 +227,9 @@
         renderRelationships(detail.relationships || {});
         byId('relationships-locked').checked = !!detail.relationships_locked;
         byId('metadata-output').textContent = JSON.stringify(detail.metadata || {}, null, 2);
+        byId('bgl-inception-idea').value = '';
+        byId('action-status').textContent = '';
+        byId('action-status').classList.remove('error');
         switchEditorTab('general');
         byId('save-status').textContent = '';
         byId('save-status').classList.remove('error');
@@ -376,6 +379,40 @@
         }
     }
 
+    async function runNpcAction(action, button) {
+        if (!currentDetail) return;
+        const idea = action === 'bgl_inception' ? byId('bgl-inception-idea').value.trim() : '';
+        const status = byId('action-status');
+        if (action === 'bgl_inception' && !idea) {
+            status.textContent = 'Enter a thought before setting Background Life inception.';
+            status.classList.add('error');
+            return;
+        }
+
+        button.disabled = true;
+        status.textContent = 'Sending action...';
+        status.classList.remove('error');
+        try {
+            const result = await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    operation: 'action',
+                    action,
+                    id: Number(byId('npc-id').value),
+                    idea
+                })
+            }));
+            status.textContent = result.message || 'Action sent.';
+            if (action === 'bgl_inception') byId('bgl-inception-idea').value = '';
+        } catch (error) {
+            status.textContent = `Action failed: ${error.message || error}`;
+            status.classList.add('error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     function closeEditor() {
         byId('editor-backdrop').classList.add('hidden');
         currentDetail = null;
@@ -431,6 +468,9 @@
     byId('close-button').addEventListener('click', () => sendCommand('close'));
     byId('editor-close').addEventListener('click', closeEditor);
     byId('cancel-button').addEventListener('click', closeEditor);
+    byId('visit-action').addEventListener('click', (event) => runNpcAction('visit', event.currentTarget));
+    byId('teleport-action').addEventListener('click', (event) => runNpcAction('teleport', event.currentTarget));
+    byId('bgl-inception-action').addEventListener('click', (event) => runNpcAction('bgl_inception', event.currentTarget));
     byId('add-relationship').addEventListener('click', () => addRelationshipRow('', { aff: 0, type: 'neutral' }));
     form.addEventListener('submit', saveNpc);
     document.addEventListener('keydown', (event) => {

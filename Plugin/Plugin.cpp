@@ -56,6 +56,11 @@ using json = nlohmann::json;
 #define PLUGIN_VERSION "3.1.4"
 #define PLUGIN_RELEASE_DATE "2026-07-15"
 
+const char* GetPluginVersion()
+{
+    return PLUGIN_VERSION;
+}
+
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
 /* Plugin Globals */

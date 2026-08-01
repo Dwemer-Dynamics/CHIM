@@ -416,6 +416,22 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
 .detail-tab { flex: 1; color: #fff; }
 .detail-tab.active { border-color: var(--accent); background: #533116; }
 .npc-detail-content { min-height: 280px; max-height: 58vh; overflow-y: auto; padding: 10px 14px 14px; }
+
+#npc-detail-overlay {
+    position: absolute;
+    inset: 12px;
+    border-radius: 6px;
+}
+
+#npc-detail-overlay .npc-detail-panel {
+    width: min(720px, calc(100% - 24px));
+    max-height: min(620px, calc(100% - 24px));
+}
+
+#npc-detail-overlay .npc-detail-content {
+    min-height: 180px;
+    max-height: min(420px, 46vh);
+}
 .detail-entry { padding: 9px 0; border-bottom: 1px solid #3a3a40; }
 .detail-entry h4 { color: #fff; font-size: .75rem; }
 .detail-entry p { margin-top: 5px; color: #c9c9cd; font-size: .71rem; line-height: 1.4; white-space: pre-wrap; }

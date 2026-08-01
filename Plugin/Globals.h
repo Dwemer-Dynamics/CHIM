@@ -15,6 +15,7 @@
 
 namespace logger = SKSE::log;
 
+const char* GetPluginVersion();
 
 extern std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, float visionRange,std::string separator,float farAwayLimit);
 extern void ExtendPlayerSpeechMaintenanceSuppress(std::chrono::milliseconds duration);

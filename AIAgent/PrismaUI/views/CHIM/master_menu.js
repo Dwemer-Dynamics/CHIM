@@ -5,6 +5,17 @@ let hudLayoutExpanded = false;
 let toolsExpanded = false;
 let contextWindowVisible = false;
 
+window.setPluginVersion = function(version) {
+    const normalizedVersion = String(version || '').trim();
+    const title = normalizedVersion ? `CHIM (${normalizedVersion})` : 'CHIM';
+    const titleElement = document.getElementById('master-menu-title');
+
+    document.title = title;
+    if (titleElement) {
+        titleElement.textContent = title;
+    }
+};
+
 // Show description in footer
 window.showDescription = function(text) {
     const descElement = document.getElementById('hover-description');
