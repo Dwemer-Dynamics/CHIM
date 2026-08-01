@@ -7453,9 +7453,20 @@ R"CHIM(
         logger::info("[PrismaUIBridge] Master menu created successfully");
     }
 
+    static void UpdateMasterMenuVersion(PrismaView view) {
+        if (!g_prismaUI || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        const std::string jsCall = "window.setPluginVersion && window.setPluginVersion('" +
+                                   EscapeForJS(GetPluginVersion()) + "')";
+        g_prismaUI->Invoke(view, jsCall.c_str(), nullptr);
+    }
+
     static void OnMasterMenuDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Master menu DOM ready");
         g_masterMenuDomReady.store(true);
+        UpdateMasterMenuVersion(view);
     }
 
     static void OnMasterMenuCommand(const char* argument) {
@@ -7468,6 +7479,8 @@ R"CHIM(
         if (cmd == "close" || cmd == "dom_ready") {
             if (cmd == "close") {
                 HideMasterMenu();
+            } else {
+                UpdateMasterMenuVersion(g_masterMenuView);
             }
             return;
         }
