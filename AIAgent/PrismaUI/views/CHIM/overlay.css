@@ -98,7 +98,7 @@ body {
     border-bottom: 1px solid rgba(60, 60, 70, 0.4);
 }
 
-/* Horizontal Group - Mode, Active Model, Focus Chat */
+/* Horizontal Group - Mode, Active Model, Compact Chat */
 .horizontal-group {
     display: flex;
     gap: 10px;

@@ -1,8 +1,13 @@
 #pragma once
 
+#include "PlayerConversationRouter.h"
+
 extern bool sttBindedKey;
 
-int sendMessageReal(std::string msg, std::string type);
+int sendMessageReal(
+    std::string msg,
+    std::string type,
+    const PlayerConversationRoutingContext& routingContext = {});
 
 // Open mic helper functions
 void triggerOpenMicRecording();

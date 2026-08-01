@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CHIM NPCs</title>
+    <link rel="stylesheet" href="npc_manager.css">
+</head>
+<body>
+    <main class="manager-shell" aria-label="CHIM NPC manager">
+        <header class="panel-header">
+            <div>
+                <h1>CHIM NPCs</h1>
+                <p>Edit discovered NPC profiles without leaving the game.</p>
+            </div>
+            <button id="close-button" class="icon-button" type="button" aria-label="Close">×</button>
+        </header>
+
+        <section class="toolbar" aria-label="NPC filters">
+            <div class="scope-switch" role="group" aria-label="NPC scope">
+                <button type="button" class="scope-button active" data-scope="nearby">Nearby</button>
+                <button type="button" class="scope-button" data-scope="all">All NPCs</button>
+            </div>
+            <label class="filter-field search-field">
+                <span>Search</span>
+                <input id="search-input" type="search" placeholder="Name, race, or RefID">
+            </label>
+            <label class="filter-field">
+                <span>Profile</span>
+                <select id="profile-filter"><option value="">All profiles</option></select>
+            </label>
+            <button id="refresh-button" class="button secondary" type="button">Refresh</button>
+        </section>
+
+        <div class="status-line">
+            <span id="status-text">Loading nearby NPCs...</span>
+            <span id="result-count"></span>
+        </div>
+        <section id="npc-grid" class="npc-grid" aria-live="polite"></section>
+        <footer class="pagination-bar">
+            <button id="previous-page" class="button secondary compact" type="button">Previous</button>
+            <span id="page-label">Page 1</span>
+            <button id="next-page" class="button secondary compact" type="button">Next</button>
+        </footer>
+    </main>
+
+    <div id="editor-backdrop" class="editor-backdrop hidden" role="presentation">
+        <section class="editor-modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+            <header class="editor-header">
+                <div class="editor-identity">
+                    <img id="editor-portrait" alt="NPC portrait">
+                    <div>
+                        <h2 id="editor-title">NPC Profile</h2>
+                        <p id="editor-subtitle"></p>
+                    </div>
+                </div>
+                <button id="editor-close" class="icon-button" type="button" aria-label="Close editor">×</button>
+            </header>
+
+            <nav class="editor-tabs" aria-label="NPC editor sections">
+                <button type="button" class="editor-tab active" data-tab="general">⚙ General</button>
+                <button type="button" class="editor-tab" data-tab="roleplay">🎭 Roleplay</button>
+                <button type="button" class="editor-tab" data-tab="relationships">🤝 Relationships</button>
+                <button type="button" class="editor-tab" data-tab="info">ℹ Info</button>
+                <button type="button" class="editor-tab" data-tab="actions">⚡ Actions</button>
+            </nav>
+
+            <form id="npc-form" autocomplete="off">
+                <input id="npc-id" type="hidden">
+                <div class="editor-content">
+                    <section class="tab-panel active" data-panel="general">
+                        <div class="form-grid two-columns">
+                            <label class="form-field"><span>Name</span><input name="npc_name" required></label>
+                            <label class="form-field"><span>Profile</span><select name="profile_id" required></select></label>
+                        </div>
+                        <div class="flag-row">
+                            <label class="check-field"><input name="npc_favorite" type="checkbox"><span>Favorite NPC</span></label>
+                            <label class="check-field"><input name="lock_profile" type="checkbox"><span>Lock Profile</span></label>
+                        </div>
+                        <h3>Profile Features</h3>
+                        <div id="feature-toggles" class="toggle-grid"></div>
+                        <label class="form-field"><span>Prompt Head Override</span><textarea name="prompt_head" rows="7"></textarea></label>
+                    </section>
+
+                    <section class="tab-panel" data-panel="roleplay" hidden>
+                        <label class="form-field"><span>Core Identity</span><textarea name="core" rows="4"></textarea></label>
+                        <label class="form-field"><span>Static Biography</span><textarea name="npc_static_bio" rows="5"></textarea></label>
+                        <label class="form-field"><span>Appearance</span><textarea name="appearance" rows="4"></textarea></label>
+                        <label class="form-field"><span>Personality</span><textarea name="personality" rows="4"></textarea></label>
+                        <label class="form-field"><span>Occupation</span><textarea name="occupation" rows="3"></textarea></label>
+                        <label class="form-field"><span>Skills</span><textarea name="skills" rows="3"></textarea></label>
+                        <label class="form-field"><span>Speech Style</span><textarea name="speechstyle" rows="4"></textarea></label>
+                        <label class="form-field"><span>Goals</span><textarea name="goals" rows="4"></textarea></label>
+                    </section>
+
+                    <section class="tab-panel" data-panel="relationships" hidden>
+                        <div class="section-heading">
+                            <div>
+                                <h3>Relationships</h3>
+                                <p>Affinity ranges from -100 to 100.</p>
+                            </div>
+                            <button id="add-relationship" class="button secondary compact" type="button">Add</button>
+                        </div>
+                        <label class="check-field relationship-lock"><input id="relationships-locked" type="checkbox"><span>Lock relationship updates</span></label>
+                        <div id="relationship-list" class="relationship-list"></div>
+                        <label class="form-field"><span>Recent Middle Term Memory</span><textarea name="middle_term_latest" rows="8"></textarea></label>
+                    </section>
+
+                    <section class="tab-panel" data-panel="info" hidden>
+                        <div class="form-grid two-columns">
+                            <label class="form-field"><span>Gender</span><input name="gender"></label>
+                            <label class="form-field"><span>Race</span><input name="race"></label>
+                            <label class="form-field"><span>Base ID</span><input name="base"></label>
+                            <label class="form-field"><span>Reference ID</span><input name="refid"></label>
+                            <label class="form-field"><span>Voice Type</span><input name="voiceid"></label>
+                            <label class="form-field"><span>Tags</span><input name="tags"></label>
+                        </div>
+                        <label class="form-field"><span>Oghma Knowledge Tags</span><textarea name="oghma_knowledge_tags" rows="3"></textarea></label>
+                        <label class="form-field"><span>Emote Moods</span><textarea name="emote_moods" rows="3"></textarea></label>
+                        <details class="metadata-readonly">
+                            <summary>Read-only game metadata</summary>
+                            <pre id="metadata-output">{}</pre>
+                        </details>
+                    </section>
+
+                    <section class="tab-panel" data-panel="actions" hidden>
+                        <p class="action-note">The game must be running and unpaused for Visit and Teleport.</p>
+                        <div class="npc-action-list">
+                            <article class="npc-action-card">
+                                <div class="npc-action-copy">
+                                    <h3>Visit</h3>
+                                    <p>Move the player to this NPC's current position.</p>
+                                </div>
+                                <button id="visit-action" class="button secondary" type="button">Visit</button>
+                            </article>
+                            <article class="npc-action-card">
+                                <div class="npc-action-copy">
+                                    <h3>Teleport</h3>
+                                    <p>Move this NPC to the player's current position.</p>
+                                </div>
+                                <button id="teleport-action" class="button secondary" type="button">Teleport</button>
+                            </article>
+                            <article class="npc-action-card inception-card">
+                                <div class="npc-action-copy">
+                                    <h3>Background Life Inception</h3>
+                                    <p>Give this NPC a one-time thought for their next Background Life decision.</p>
+                                </div>
+                                <textarea id="bgl-inception-idea" rows="4" placeholder="Enter the thought to influence their next decision"></textarea>
+                                <button id="bgl-inception-action" class="button secondary" type="button">Set Thought</button>
+                            </article>
+                        </div>
+                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                    </section>
+                </div>
+
+                <footer class="editor-actions">
+                    <span id="save-status"></span>
+                    <button id="cancel-button" class="button secondary" type="button">Close</button>
+                    <button id="save-button" class="button primary" type="submit">Save NPC</button>
+                </footer>
+            </form>
+        </section>
+    </div>
+
+    <script src="npc_manager.js"></script>
+</body>
+</html>

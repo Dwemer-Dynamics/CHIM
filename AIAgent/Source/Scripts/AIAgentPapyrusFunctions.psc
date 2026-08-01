@@ -348,12 +348,13 @@ Event OnKeyDown(int keyCode)
     string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 	
 	If messageText != ""
-		if (Input.IsKeyPressed(29))	; Left Shift
-			Debug.Trace("[CHIM] Shift modifier, will cast intimacy bubble");
-			IntimacySpell.cast(Game.GetPlayer())
-			
+		string inputType = ""
+		if (Input.IsKeyPressed(29))	; Left Ctrl
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
+			inputType = "inputtext_i"
 		endif;
-		AIAgentFunctions.sendMessage(messageText,"")
+		AIAgentFunctions.sendMessage(messageText,inputType)
 		
 		
     EndIf
@@ -547,11 +548,13 @@ Function TriggerTextChatAction()
 	string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 
 	If messageText != ""
-		if (Input.IsKeyPressed(29)) ; Left Shift
-			Debug.Trace("[CHIM] Shift modifier, will cast intimacy bubble")
-			IntimacySpell.cast(Game.GetPlayer())
+		string inputType = ""
+		if (Input.IsKeyPressed(29)) ; Left Ctrl
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
+			inputType = "inputtext_i"
 		endif
-		AIAgentFunctions.sendMessage(messageText,"")
+		AIAgentFunctions.sendMessage(messageText,inputType)
 	EndIf
 EndFunction
 
@@ -962,7 +965,9 @@ Bool Function SafeProcess(bool allowMenuMode = false)
 EndFunction
 
 Function RunToolsSendFactionLocationInfo() global
+	Debug.Trace("[CHIM] AUDIT sendAllLocations START");
 	sendAllLocations()
+	Debug.Trace("[CHIM] AUDIT sendAllLocations END");
 EndFunction
 
 int Function RunToolsSendAllVoiceSamples() global
@@ -1231,7 +1236,7 @@ Function OpenSettingsWheel()
 		_label[1] = "Fast LLM"
 		_label[2] = "Powerful LLM"
 		_label[3] = "Experimental LLM"
-		_label[4] = "Focus Chat"
+		_label[4] = "Compact Chat"
 		
 		UIExtensions.InitMenu("UIWheelMenu")
 		int j = 0
@@ -1261,25 +1266,23 @@ Function OpenSettingsWheel()
 EndFunction
 
 Function OpenModeWheel()
-	String[] _modes = new String[8]
+	String[] _modes = new String[7]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
-	_modes[3] = "SPAWN"
-	_modes[4] = "CHEATMODE"
-	_modes[5] = "AUTOCHAT"
-	_modes[6] = "INJECTION_LOG"
-	_modes[7] = "INJECTION_CHAT"
+	_modes[3] = "CHEATMODE"
+	_modes[4] = "AUTOCHAT"
+	_modes[5] = "INJECTION_LOG"
+	_modes[6] = "INJECTION_CHAT"
 	
-	String[] _label = new String[8]
+	String[] _label = new String[7]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
-	_label[3] = "Spawn NPC"
-	_label[4] = "Cheat Mode"
-	_label[5] = "Auto Chat"
-	_label[6] = "Inject Event"
-	_label[7] = "Inject & Chat"
+	_label[3] = "Cheat Mode"
+	_label[4] = "Auto Chat"
+	_label[5] = "Inject Event"
+	_label[6] = "Inject & Chat"
 		
 	int j=0
 	UIExtensions.InitMenu("UIWheelMenu")
@@ -1295,16 +1298,6 @@ Function OpenModeWheel()
 	_currentModeIndex = ret
 	StorageUtil.SetIntValue(None, "AIAgent_CurrentModeIndex", _currentModeIndex)
 	AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
-	
-	if (_currentModeIndex==1)
-		Debug.Trace("[CHIM] Enabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",200,200,200)
-		AIAgentFunctions.setConf("_max_distance_outside",200,200,200)
-	else
-		Debug.Trace("[CHIM] Disabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",mdi,mdi as int,mdi as string)
-		AIAgentFunctions.setConf("_max_distance_outside",mdo,mdo as int,mdo as string)
-	endif
 EndFunction
 
 Function OpenSoulgazeWheel()
@@ -1405,7 +1398,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 			if destMarker
 				String types = ""
 				if (tags == "")
-					Debug.Trace("[CHIM] Loading tags from caller: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					Debug.Trace("[CHIM] Loading tags: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					; -------------------------------
 					;  CLASSIFY THIS LOCATION, no tags provided
 					; -------------------------------
@@ -1600,6 +1593,22 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				if (curr.IsCleared())
 					isCleared="1";
 				endif;
+				
+				;int doors= localCell.getNumRefs(29); Get doors
+				;if (doors > 0 )
+				;	Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", Cell has "+doors+" doors")
+				;	int ndoors = 0
+				;	while ndoors < doors
+				;		ObjectReference doorRef = localCell.GetNthRef(ndoors,29);
+				;		if (doorRef.isLocked())
+				;			Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", has doors locked ")
+				;			isInterior=2
+				;		endif
+				;		
+				;		ndoors = ndoors +1
+				;	endwhile
+				;endif
+			
 				if (factionOwner)
 					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
@@ -1614,6 +1623,8 @@ EndFunction
 
 Function sendAllLocations() global
 
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: START")
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 1/3 sending factions")
 	sendAllfactions();
 	
 	; --- Load all location keywords we care about ---
@@ -1655,7 +1666,7 @@ Function sendAllLocations() global
 	Keyword isPlayerHouse  = Game.GetForm(0x000fc1a3) as Keyword
 	; ---------------------------------------------------------------------------------------------
 
-
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 2/3 sending main locations")
 	; --- Get all locations ---
 	Form[] allLocations = PO3_SKSEFunctions.GetAllForms(104)
 	Debug.Trace("[CHIM] Total locations: " + allLocations.Length)
@@ -1668,7 +1679,9 @@ Function sendAllLocations() global
 	
 	while i < lengthA
 		Location curr = allLocations[i] as Location
-		
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllLocations: "+i+"/"+lengthA+ " sent")
+		endif
 		Debug.Trace("[CHIM] Location: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		
 		if curr
@@ -1805,9 +1818,9 @@ Function sendAllLocations() global
 
 		i += 1
 	endwhile
-
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 3/3 sending unique NPCs and its location")
 	sendAllNpcs();
-
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: END")
 EndFunction
 
 ; Global wrapper function for spell access to Master Wheel
@@ -1894,25 +1907,23 @@ Function OpenModeToggleWheel(float holdTime)
 		Return
 	EndIf
 	
-	String[] _modes = new String[8]
+	String[] _modes = new String[7]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
-	_modes[3] = "SPAWN"
-	_modes[4] = "CHEATMODE"
-	_modes[5] = "AUTOCHAT"
-	_modes[6] = "INJECTION_LOG"
-	_modes[7] = "INJECTION_CHAT"
+	_modes[3] = "CHEATMODE"
+	_modes[4] = "AUTOCHAT"
+	_modes[5] = "INJECTION_LOG"
+	_modes[6] = "INJECTION_CHAT"
 	
-	String[] _label = new String[8]
+	String[] _label = new String[7]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
-	_label[3] = "Spawn NPC"
-	_label[4] = "Cheat Mode"
-	_label[5] = "Auto Chat"
-	_label[6] = "Inject Event"
-	_label[7] = "Inject & Chat"
+	_label[3] = "Cheat Mode"
+	_label[4] = "Auto Chat"
+	_label[5] = "Inject Event"
+	_label[6] = "Inject & Chat"
 	
 	If (holdTime < 0.5) 
 		; Quick press - Open wheel menu
@@ -1945,16 +1956,6 @@ Function OpenModeToggleWheel(float holdTime)
 		String currentMode = _modes[_currentModeIndex]
 		Debug.Notification("[CHIM] Chat mode: "+currentMode)
 		AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
-	endif
-	
-	if (_currentModeIndex == 1)
-		Debug.Trace("[CHIM] Enabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",200,200,200)
-		AIAgentFunctions.setConf("_max_distance_outside",200,200,200)
-	else
-		Debug.Trace("[CHIM] Disabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",mdi,mdi as int,mdi as string)
-		AIAgentFunctions.setConf("_max_distance_outside",mdo,mdo as int,mdo as string)
 	endif
 EndFunction
 
@@ -1994,6 +1995,9 @@ Function sendAllfactions() global
 	int lengthA=allLocations.Length
 	int i=0;
 	while i < lengthA
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllfactions: "+i+"/"+lengthA+ " sent")
+		endif
 		Faction afFaction=allLocations[i] as Faction
 		
 		if afFaction
@@ -2008,7 +2012,11 @@ Function sendAllfactions() global
 				name = DecToHex(afFaction.GetFormId())
 			endif
 			ObjectReference cont=PO3_SKSEFunctions.GetVendorFactionContainer(afFaction)
-			string vendorRef=DecToHex(cont.GetFormId())
+			
+			string vendorRef = "";
+			if (cont)
+				vendorRef=DecToHex(cont.GetFormId())
+			endif
 			Debug.Trace("[CHIM] [FACTION] Adding faction "+name + " / "+DecToHex(afFaction.GetFormId()));
 			retFnc=AIAgentFunctions.logMessage(DecToHex(afFaction.GetFormId())+"/"+name+"/"+vendorRef,"util_faction_name")
 		endif
@@ -2025,24 +2033,38 @@ Function sendAllNpcs() global
 	
 	int lengthA=allNpcs.Length
 	int i=0;
+	int done = 0
 	while i < lengthA
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllNpcs: "+i+"/"+lengthA+ " sent")
+		endif
 		Actor akActor=allNpcs[i] as Actor
-		if (!akActor.isEnabled())
-			Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
-			
-		elseif (akActor.GetActorBase().isUnique())
-			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
-			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
-			; Also, send location where this NPC is located at.
-			Cell currCell = akActor.GetParentCell()
-			Location currLoc = akActor.GetCurrentLocation()
-			
-			AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
-			
+		if (akActor && akActor.GetType() == 62 )
+			;Debug.Trace("[CHIM] [ACTORS] Checking "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			if (!akActor.isEnabled())
+				;Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+				
+			elseif (akActor.GetActorBase())
+				if (akActor.GetActorBase().isUnique())
+					Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+					int retFnc=AIAgentFunctions.addBasicProfile(akActor)
+					done = done + 1
+					; Also, send location where this NPC is located at.
+					Cell currCell = akActor.GetParentCell()
+					Location currLoc = akActor.GetCurrentLocation()
+					
+					AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
+				else
+					;Debug.Trace("[CHIM] [ACTORS] Bypassing (not unique)  "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+				endif
+			else 
+				;Debug.Trace("[CHIM] [ACTORS] Bypassing (not actor base)  "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+			endif
 		endif
 		
 		i=i+1
 		
 	endwhile
+	Debug.Trace("[CHIM] [ACTORS] End, sent actors: "+done);
 	return
 EndFunction

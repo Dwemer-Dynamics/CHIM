@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdarg>
 #include <cstddef>
+#include <atomic>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include "Globals.h"
+#include "HeadVoiceVolumeUtils.h"
 
 // Track last event type for narration detection
 extern std::string lastEventType;
@@ -116,6 +118,7 @@ private:
 
     int resolution = 500 * 1;  // 10 def value
     float animIntensity = 1.0f;
+    std::atomic<float> headVoiceVolumeMultiplier{1.0f};
 
     bool interrupt = false;
     bool forceInterruptCurrentPlayback = false;
@@ -124,6 +127,7 @@ private:
     std::string rechatInFlightSpeaker = "";
     std::string currentRechatChainId = "";
     bool rechatChainClosed = false;
+    bool rechatChainHardCancelled = false;
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
@@ -155,6 +159,14 @@ public:
 
     void setNarratorDisplayName(const std::string& displayName);
     std::string getNarratorDisplayName();
+
+    void setHeadVoiceVolumePercent(float percent) {
+        headVoiceVolumeMultiplier.store(HeadVoiceVolumeUtils::PercentToMultiplier(percent), std::memory_order_relaxed);
+    }
+
+    float getHeadVoiceVolumeMultiplier() const {
+        return headVoiceVolumeMultiplier.load(std::memory_order_relaxed);
+    }
 
     int getResolution() {
         std::lock_guard<std::mutex> lock(mtx);
@@ -189,6 +201,9 @@ public:
     }
 
     void resetRechatChainState();
+    void cancelRechatChain();
+    void startRechatChainForPlayerInput();
+    void startRechatChainForAutonomousEvent();
     bool isRechatChainClosed();
     std::string ensureRechatChainId(const std::string& speaker, const std::string& listenerHint,
                                     const std::string& explicitTarget);

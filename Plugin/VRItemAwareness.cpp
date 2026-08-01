@@ -497,6 +497,13 @@ namespace
             return;
         }
 
+        // No body-contact turns while the player is in a scripted conversation - same
+        // quest-breaking hazard as gaze: the spoken reaction stomps the vanilla dialogue
+        // state and the NPC can wedge "busy" mid-quest.
+        if (auto* ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+            return;
+        }
+
         const auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(g_bodyContactMutex);
