@@ -38,6 +38,7 @@
     let nearbyTargets = [];
     let targetGeneration = 0;
     let currentTarget = emptyTarget();
+    let currentPlayerLocation = { formid: '', name: '' };
 
     function emptyTarget() {
         return {
@@ -114,8 +115,9 @@
         });
     }
 
-    function createTileDropdown(input, toggle, label, options) {
+    function createTileDropdown(input, toggle, label, options, config) {
         if (!input || !toggle || !label || !options) return null;
+        const settings = config || {};
         const dropdown = {
             input,
             toggle,
@@ -138,6 +140,21 @@
             },
             setOptions(entries, preferredValue) {
                 options.replaceChildren();
+                if (settings.searchPlaceholder) {
+                    const search = createElement('input', 'target-option-search');
+                    search.type = 'search';
+                    search.placeholder = settings.searchPlaceholder;
+                    search.setAttribute('aria-label', settings.searchPlaceholder);
+                    search.addEventListener('input', () => {
+                        const query = search.value.trim().toLowerCase();
+                        options.querySelectorAll('[data-value]').forEach((option) => {
+                            option.hidden = query !== '' &&
+                                !option.textContent.toLowerCase().includes(query);
+                        });
+                    });
+                    options.appendChild(search);
+                    dropdown.search = search;
+                }
                 entries.forEach((entry) => {
                     const option = createElement('button', 'target-option-tile', entry.label);
                     option.type = 'button';
@@ -158,6 +175,13 @@
             closeTileDropdowns(dropdown);
             options.classList.toggle('hidden', !opening);
             toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+            if (opening && dropdown.search) {
+                dropdown.search.value = '';
+                options.querySelectorAll('[data-value]').forEach((option) => {
+                    option.hidden = false;
+                });
+                window.setTimeout(() => dropdown.search.focus(), 0);
+            }
         });
         options.addEventListener('click', (event) => {
             const option = event.target.closest('[data-value]');
@@ -209,7 +233,8 @@
         byId('npc-create-location'),
         byId('npc-create-location-toggle'),
         byId('npc-create-location-label'),
-        byId('npc-create-location-options')
+        byId('npc-create-location-options'),
+        { searchPlaceholder: 'Type to find a location' }
     );
 
     function switchPage(page) {
@@ -480,24 +505,34 @@
             ));
             card.appendChild(body);
 
+            card.appendChild(createElement('div', 'npc-card-row-label', 'Actions'));
+            const requests = createElement('div', 'npc-card-requests');
+            requests.appendChild(cardRequestButton(entry, 'action', 'Trigger Action'));
+            requests.appendChild(cardRequestButton(entry, 'letter', 'Send Letter'));
+            card.appendChild(requests);
+
+            card.appendChild(createElement('div', 'npc-card-row-label', 'Rules'));
             const actions = createElement('div', 'npc-card-actions');
-            actions.appendChild(cardRequestButton(
+            actions.appendChild(cardSettingButton(
                 entry,
-                'action',
-                'Action',
-                'Run one Background Life action now'
+                'auto_actions',
+                'auto_actions',
+                'Actions',
+                'Automatic actions'
             ));
-            actions.appendChild(cardRequestButton(
+            actions.appendChild(cardSettingButton(
                 entry,
-                'letter',
-                'Letter',
-                'Ask this NPC to write a letter now'
+                'send_letters',
+                'send_letters',
+                'Letters',
+                'Automatic letters'
             ));
-            actions.appendChild(cardRequestButton(
+            actions.appendChild(cardSettingButton(
                 entry,
-                'track',
-                'Track',
-                'Update this NPC map position'
+                'hourly_tracking',
+                'hourly_tracking',
+                'Tracking',
+                'Hourly tracking'
             ));
             const remove = createElement('button', 'card-action remove', 'Remove');
             remove.type = 'button';
@@ -513,35 +548,73 @@
         });
     }
 
-    function cardRequestButton(entry, requestType, label, title) {
-        const button = createElement('button', 'card-action', label);
+    function cardRequestButton(entry, requestType, label) {
+        const button = createElement('button', 'card-action card-request', label);
         button.type = 'button';
-        button.title = title;
+        button.title = requestType === 'action'
+            ? `Trigger a Background Life action for ${entry.name}`
+            : `Send a Background Life letter from ${entry.name}`;
         button.addEventListener('click', async (event) => {
             event.stopPropagation();
             button.disabled = true;
-            const original = button.textContent;
-            button.textContent = 'Working...';
+            button.textContent = requestType === 'action' ? 'Triggering...' : 'Sending...';
             try {
-                const payload = await queueRequest(entry, requestType);
-                setDashboardStatus(payload.message || `${label} request processed.`, false);
+                const payload = await postForm('/ui/api/background_life_request.php', {
+                    request_type: requestType,
+                    npc_name: entry.name || '',
+                    refid: entry.refid || ''
+                });
+                setDashboardStatus(
+                    `${label} completed for ${entry.name}. ${payload.message || ''}`.trim(),
+                    false
+                );
                 await refreshDashboard();
             } catch (error) {
                 setDashboardStatus(`${label} failed: ${error.message || error}`, true);
             } finally {
                 button.disabled = false;
-                button.textContent = original;
+                button.textContent = label;
             }
         });
         return button;
     }
 
-    function queueRequest(entry, requestType) {
-        return postForm('/ui/api/background_life_request.php', {
-            request_type: requestType,
-            npc_name: entry.name || '',
-            refid: entry.refid || ''
+    function cardSettingButton(entry, setting, stateKey, label, title) {
+        const button = createElement('button', 'card-action card-setting-toggle', label);
+        button.type = 'button';
+        const renderState = () => {
+            const enabled = !!entry[stateKey];
+            button.classList.toggle('is-enabled', enabled);
+            button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            button.title = `${title}: ${enabled ? 'enabled' : 'disabled'}`;
+        };
+        renderState();
+        button.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            button.disabled = true;
+            const nextValue = !entry[stateKey];
+            try {
+                const payload = await postForm('/ui/api/background_life_npc.php', {
+                    operation: 'toggle',
+                    setting,
+                    value: nextValue ? '1' : '0',
+                    npc_name: entry.name || '',
+                    refid: entry.refid || ''
+                });
+                entry[stateKey] = !!(payload.data && payload.data[stateKey]);
+                renderState();
+                setDashboardStatus(
+                    `${label} ${entry[stateKey] ? 'enabled' : 'disabled'} for ${entry.name}.`,
+                    false
+                );
+                await refreshDashboard();
+            } catch (error) {
+                setDashboardStatus(`${label} failed: ${error.message || error}`, true);
+            } finally {
+                button.disabled = false;
+            }
         });
+        return button;
     }
 
     function clearRemoveConfirmation() {
@@ -745,6 +818,10 @@
         try {
             const next = typeof payload === 'string' ? JSON.parse(payload) : payload;
             nearbyTargets = Array.isArray(next && next.targets) ? next.targets : [];
+            currentPlayerLocation = {
+                formid: String((next && next.player_location_formid) || ''),
+                name: String((next && next.player_location_name) || '')
+            };
             currentTarget = Object.assign(emptyTarget(), next || {});
             renderTargetOptions(next && next.selected_form_id);
             renderTarget();
@@ -1101,8 +1178,20 @@
         return (values || []).map((value) => ({ value, label: value }));
     }
 
+    function normalizeFormId(value) {
+        return String(value || '').trim().replace(/^0x/i, '').replace(/^0+/, '').toUpperCase();
+    }
+
     function applyNpcCreationOptions(options) {
         const defaults = options.defaults || {};
+        const locations = options.locations || [];
+        const playerLocationId = normalizeFormId(currentPlayerLocation.formid);
+        const playerLocationName = String(currentPlayerLocation.name || '').trim().toLowerCase();
+        const playerLocation = locations.find((location) => (
+            playerLocationId !== '' && normalizeFormId(location.formid) === playerLocationId
+        )) || locations.find((location) => (
+            playerLocationName !== '' && String(location.name || '').trim().toLowerCase() === playerLocationName
+        ));
         byId('npc-create-form').reset();
         npcCreateGenderDropdown.setOptions(
             optionEntries(options.genders),
@@ -1118,12 +1207,12 @@
         );
         npcCreateLocationDropdown.setOptions(
             [{ value: '', label: 'Select discovered location' }].concat(
-                (options.locations || []).map((location) => ({
+                locations.map((location) => ({
                     value: location.formid,
                     label: location.label || location.name
                 }))
             ),
-            defaults.location || ''
+            (playerLocation && playerLocation.formid) || defaults.location || ''
         );
         byId('npc-create-disposition').value = defaults.disposition || 'friendly';
         byId('npc-create-gold').value = defaults.gold_qty || '100';
