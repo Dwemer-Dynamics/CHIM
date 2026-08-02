@@ -2290,7 +2290,10 @@ R"CHIM(
     }
 
     static void OnDiariesDomReady(PrismaView view) {
-        logger::info("[PrismaUIBridge] Diaries panel DOM ready, waiting for JavaScript initialization");
+        (void)view;
+        logger::info("[PrismaUIBridge] Diaries panel DOM ready, triggering initial fetch");
+        g_diariesDomReady.store(true);
+        FetchDiariesData("people", "");
     }
 
     static void OnDiariesCommand(const char* argument) {
@@ -2305,9 +2308,8 @@ R"CHIM(
         if (cmd == "close") {
             HideDiariesPanel();
         } else if (cmd == "dom_ready") {
-            logger::info("[PrismaUIBridge] Diaries JavaScript ready, triggering initial fetch");
+            logger::info("[PrismaUIBridge] Diaries JavaScript ready");
             g_diariesDomReady.store(true);
-            FetchDiariesData("people", "");
         } else if (cmd.substr(0, 9) == "js_debug|") {
             // Debug messages from JavaScript
             std::string debugMsg = cmd.substr(9);
