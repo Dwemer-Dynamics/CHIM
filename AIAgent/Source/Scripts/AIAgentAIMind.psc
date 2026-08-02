@@ -3888,11 +3888,12 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			bool useRawCoords= false
 			;;useRawCoords = !akTarget.IsInInterior() 
 			Worldspace cws= akTarget.GetWorldSpace()
-			
+			string worldspaceName=""
 			
 			if (cws)
-				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetName())
-				if (cws.GetName() == "Skyrim" || cws.GetName() == "")
+				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetFormId())
+				worldspaceName = cws.GetName()
+				if (worldspaceName == "Skyrim" ||worldspaceName == "")
 					if !akTarget.IsInInterior() 
 						useRawCoords = true
 					endif
@@ -3929,8 +3930,17 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				endif
 			endif
 
+			string isInInterior="0";
+			if akTarget.IsInInterior()
+				isInInterior="1";
+			endif			
 			
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID()),"util_location_npc")
+			string realCoordsUsed="0";
+			if useRawCoords
+				realCoordsUsed="1";
+			endif			
+			
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -3939,7 +3949,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			endif
 			
 			AIAgentFunctions.scanActorsAroundOffline(akTarget);
-			
+			AIAgentPapyrusFunctions.sendLocation( loc,"",akTarget.GetParentCell());
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
 			ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
