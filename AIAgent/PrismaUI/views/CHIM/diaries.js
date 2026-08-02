@@ -16,14 +16,16 @@ function initializeDiaries() {
     if (diariesInitialized) {
         return;
     }
+    if (!window.chimDiariesCommand) {
+        setTimeout(initializeDiaries, 100);
+        return;
+    }
     diariesInitialized = true;
 
     console.log('[Diaries] DOM loaded, initializing...');
 
-    if (window.chimDiariesCommand) {
-        window.chimDiariesCommand('js_debug|SCRIPT LOADED - diaries.js v3');
-        window.chimDiariesCommand('dom_ready');
-    }
+    window.chimDiariesCommand('js_debug|SCRIPT LOADED - diaries.js v4');
+    window.chimDiariesCommand('dom_ready');
 }
 
 if (document.readyState === 'loading') {
@@ -31,6 +33,7 @@ if (document.readyState === 'loading') {
 } else {
     setTimeout(initializeDiaries, 0);
 }
+setTimeout(initializeDiaries, 100);
 
 /**
  * Load the list of people with diary entries
