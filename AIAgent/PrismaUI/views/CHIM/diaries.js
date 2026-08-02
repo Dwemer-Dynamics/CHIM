@@ -8,7 +8,7 @@ let diariesInitialized = false;
 let peopleData = [];
 let entriesData = [];
 let currentDiaryEntry = null;
-const diaryAudio = new Audio();
+let diaryAudio = null;
 let diaryAudioRequest = null;
 
 // Signal readiness only after this script has installed its native callbacks.
@@ -24,7 +24,7 @@ function initializeDiaries() {
 
     console.log('[Diaries] DOM loaded, initializing...');
 
-    window.chimDiariesCommand('js_debug|SCRIPT LOADED - diaries.js v4');
+    window.chimDiariesCommand('js_debug|SCRIPT LOADED - diaries.js v5');
     window.chimDiariesCommand('dom_ready');
 }
 
@@ -247,22 +247,47 @@ function setDiaryAudioState(label, status, disabled = false) {
     if (statusElement) statusElement.textContent = status || '';
 }
 
+// Create media playback only when requested so missing Prisma media APIs cannot block diary loading.
+function getDiaryAudio() {
+    if (diaryAudio) return diaryAudio;
+
+    try {
+        const audio = document.createElement('audio');
+        if (!audio || typeof audio.play !== 'function') return null;
+
+        audio.addEventListener('ended', function() {
+            setDiaryAudioState('&#9654; Play Audio', '');
+        });
+        diaryAudio = audio;
+        return diaryAudio;
+    } catch (error) {
+        console.error('[Diaries] Audio initialization failed:', error);
+        return null;
+    }
+}
+
 async function toggleDiaryAudio() {
     if (!currentDiaryEntry || !currentDiaryEntry.audio_endpoint) {
         setDiaryAudioState('&#9654; Play Audio', 'Audio is unavailable for this entry.');
         return;
     }
 
-    if (diaryAudio.src) {
-        if (diaryAudio.paused) {
+    const audio = getDiaryAudio();
+    if (!audio) {
+        setDiaryAudioState('&#9654; Play Audio', 'Audio playback is unavailable in this Prisma runtime.');
+        return;
+    }
+
+    if (audio.src) {
+        if (audio.paused) {
             try {
-                await diaryAudio.play();
+                await audio.play();
                 setDiaryAudioState('&#10074;&#10074; Pause', 'Playing');
             } catch (error) {
                 setDiaryAudioState('&#9654; Play Audio', error.message || 'Playback failed.');
             }
         } else {
-            diaryAudio.pause();
+            audio.pause();
             setDiaryAudioState('&#9654; Play Audio', 'Paused');
         }
         return;
@@ -282,8 +307,8 @@ async function toggleDiaryAudio() {
         }
 
         diaryAudioRequest = null;
-        diaryAudio.src = result.audio_url;
-        await diaryAudio.play();
+        audio.src = result.audio_url;
+        await audio.play();
         setDiaryAudioState('&#10074;&#10074; Pause', `Playing ${result.author || 'NPC'} with ${result.connector || 'configured TTS'}`);
     } catch (error) {
         if (error.name === 'AbortError') return;
@@ -297,17 +322,15 @@ function stopDiaryAudio() {
         diaryAudioRequest.abort();
         diaryAudioRequest = null;
     }
-    diaryAudio.pause();
-    diaryAudio.removeAttribute('src');
-    diaryAudio.load();
+    if (diaryAudio) {
+        diaryAudio.pause();
+        diaryAudio.removeAttribute('src');
+        diaryAudio.load();
+    }
     setDiaryAudioState('&#9654; Play Audio', '');
 }
 
 window.stopDiaryAudio = stopDiaryAudio;
-
-diaryAudio.addEventListener('ended', function() {
-    setDiaryAudioState('&#9654; Play Audio', '');
-});
 
 /**
  * Switch between views
