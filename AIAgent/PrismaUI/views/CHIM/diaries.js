@@ -1,36 +1,36 @@
-// Immediate test - this runs as soon as the file loads
-(function() {
-    // Try to notify C++ that JS is loaded
-    setTimeout(function() {
-        if (window.chimDiariesCommand) {
-            window.chimDiariesCommand('js_debug|SCRIPT LOADED - diaries.js v2');
-        }
-    }, 100);
-})();
-
 // Navigation state
 let currentView = 'people'; // 'people', 'entries', 'diary'
 let currentPerson = '';
 let navigationStack = [];
+let diariesInitialized = false;
 
 // Data cache
 let peopleData = [];
 let entriesData = [];
+let currentDiaryEntry = null;
+const diaryAudio = new Audio();
+let diaryAudioRequest = null;
 
-/**
- * Initialize when DOM is ready
- */
-window.addEventListener('DOMContentLoaded', function() {
+// Signal readiness only after this script has installed its native callbacks.
+function initializeDiaries() {
+    if (diariesInitialized) {
+        return;
+    }
+    diariesInitialized = true;
+
     console.log('[Diaries] DOM loaded, initializing...');
-    
-    // Notify C++ that DOM is ready
+
     if (window.chimDiariesCommand) {
+        window.chimDiariesCommand('js_debug|SCRIPT LOADED - diaries.js v3');
         window.chimDiariesCommand('dom_ready');
     }
-    
-    // Load initial data
-    loadPeopleList();
-});
+}
+
+if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', initializeDiaries, { once: true });
+} else {
+    setTimeout(initializeDiaries, 0);
+}
 
 /**
  * Load the list of people with diary entries
@@ -176,6 +176,7 @@ function renderEntriesList() {
  */
 function selectEntry(entryId) {
     console.log('[Diaries] Selected entry:', entryId);
+    stopDiaryAudio();
     navigationStack.push('entries');
     
     // Show diary view with loading state
@@ -215,6 +216,7 @@ window.updateDiaryContent = function(data) {
  */
 function renderDiaryContent(entry) {
     const container = document.getElementById('diary-content');
+    currentDiaryEntry = entry;
     container.className = 'diary-parchment';
     
     container.innerHTML = `
@@ -224,9 +226,85 @@ function renderDiaryContent(entry) {
                 ${escapeHtml(entry.date || 'Unknown date')} • ${escapeHtml(entry.location || 'Unknown location')}
             </div>
         </div>
+        <div class="diary-audio-controls">
+            <button type="button" id="diary-audio-button" class="diary-audio-btn" onclick="toggleDiaryAudio()">&#9654; Play Audio</button>
+            <span id="diary-audio-status" class="diary-audio-status" aria-live="polite"></span>
+        </div>
         <div class="diary-body">${escapeHtml(entry.content)}</div>
     `;
 }
+
+function setDiaryAudioState(label, status, disabled = false) {
+    const button = document.getElementById('diary-audio-button');
+    const statusElement = document.getElementById('diary-audio-status');
+    if (button) {
+        button.innerHTML = label;
+        button.disabled = disabled;
+    }
+    if (statusElement) statusElement.textContent = status || '';
+}
+
+async function toggleDiaryAudio() {
+    if (!currentDiaryEntry || !currentDiaryEntry.audio_endpoint) {
+        setDiaryAudioState('&#9654; Play Audio', 'Audio is unavailable for this entry.');
+        return;
+    }
+
+    if (diaryAudio.src) {
+        if (diaryAudio.paused) {
+            try {
+                await diaryAudio.play();
+                setDiaryAudioState('&#10074;&#10074; Pause', 'Playing');
+            } catch (error) {
+                setDiaryAudioState('&#9654; Play Audio', error.message || 'Playback failed.');
+            }
+        } else {
+            diaryAudio.pause();
+            setDiaryAudioState('&#9654; Play Audio', 'Paused');
+        }
+        return;
+    }
+
+    diaryAudioRequest = new AbortController();
+    setDiaryAudioState('Generating...', 'Generating audio with the NPC voice...', true);
+
+    try {
+        const response = await fetch(currentDiaryEntry.audio_endpoint, {
+            cache: 'no-store',
+            signal: diaryAudioRequest.signal
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success || !result.audio_url) {
+            throw new Error(result.error || 'Diary audio could not be generated.');
+        }
+
+        diaryAudioRequest = null;
+        diaryAudio.src = result.audio_url;
+        await diaryAudio.play();
+        setDiaryAudioState('&#10074;&#10074; Pause', `Playing ${result.author || 'NPC'} with ${result.connector || 'configured TTS'}`);
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        console.error('[Diaries] Audio failed:', error);
+        setDiaryAudioState('&#9654; Play Audio', error.message || 'Diary audio failed.');
+    }
+}
+
+function stopDiaryAudio() {
+    if (diaryAudioRequest) {
+        diaryAudioRequest.abort();
+        diaryAudioRequest = null;
+    }
+    diaryAudio.pause();
+    diaryAudio.removeAttribute('src');
+    diaryAudio.load();
+    setDiaryAudioState('&#9654; Play Audio', '');
+}
+
+window.stopDiaryAudio = stopDiaryAudio;
+
+diaryAudio.addEventListener('ended', function() {
+    setDiaryAudioState('&#9654; Play Audio', '');
+});
 
 /**
  * Switch between views
@@ -257,6 +335,7 @@ function switchView(viewName) {
  * Navigate back to previous view
  */
 function navigateBack() {
+    stopDiaryAudio();
     const previousView = navigationStack.pop();
     
     if (previousView === 'people') {
@@ -281,6 +360,7 @@ function navigateBack() {
  */
 function closePanel() {
     console.log('[Diaries] Closing panel');
+    stopDiaryAudio();
     
     if (window.chimDiariesCommand) {
         window.chimDiariesCommand('close');

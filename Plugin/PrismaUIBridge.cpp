@@ -2266,6 +2266,8 @@ R"CHIM(
 
         logger::info("[PrismaUIBridge] Creating CHIM diaries panel from CHIM/diaries.html...");
 
+        g_diariesDomReady.store(false);
+
         // Create the view - path is relative to Data/PrismaUI/views/
         g_diariesView = g_prismaUI->CreateView("CHIM/diaries.html", OnDiariesDomReady);
 
@@ -2288,11 +2290,7 @@ R"CHIM(
     }
 
     static void OnDiariesDomReady(PrismaView view) {
-        logger::info("[PrismaUIBridge] Diaries panel DOM ready, triggering initial fetch");
-        g_diariesDomReady.store(true);
-        
-        // Trigger initial people list fetch
-        FetchDiariesData("people", "");
+        logger::info("[PrismaUIBridge] Diaries panel DOM ready, waiting for JavaScript initialization");
     }
 
     static void OnDiariesCommand(const char* argument) {
@@ -2307,8 +2305,9 @@ R"CHIM(
         if (cmd == "close") {
             HideDiariesPanel();
         } else if (cmd == "dom_ready") {
-            logger::info("[PrismaUIBridge] Diaries DOM ready signal received");
+            logger::info("[PrismaUIBridge] Diaries JavaScript ready, triggering initial fetch");
             g_diariesDomReady.store(true);
+            FetchDiariesData("people", "");
         } else if (cmd.substr(0, 9) == "js_debug|") {
             // Debug messages from JavaScript
             std::string debugMsg = cmd.substr(9);
@@ -2427,6 +2426,8 @@ R"CHIM(
         }
 
         logger::info("[PrismaUIBridge] Hiding diaries panel");
+
+        g_prismaUI->Invoke(g_diariesView, "window.stopDiaryAudio && window.stopDiaryAudio()", nullptr);
         
         // Remove focus first
         g_prismaUI->Unfocus(g_diariesView);
