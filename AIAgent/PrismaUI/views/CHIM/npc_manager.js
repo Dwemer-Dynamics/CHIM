@@ -227,12 +227,26 @@
         renderRelationships(detail.relationships || {});
         byId('relationships-locked').checked = !!detail.relationships_locked;
         byId('metadata-output').textContent = JSON.stringify(detail.metadata || {}, null, 2);
+        renderTeleportAction(detail.metadata && detail.metadata.npc_manager_return_location);
         byId('bgl-inception-idea').value = '';
         byId('action-status').textContent = '';
         byId('action-status').classList.remove('error');
         switchEditorTab('general');
         byId('save-status').textContent = '';
         byId('save-status').classList.remove('error');
+    }
+
+    // Keep the reversible teleport control aligned with the return point stored by HerikaServer.
+    function renderTeleportAction(returnLocation) {
+        const hasReturnLocation = !!returnLocation && typeof returnLocation === 'object';
+        const locationName = hasReturnLocation ? String(returnLocation.name || '').trim() : '';
+        const button = byId('teleport-action');
+        button.dataset.action = hasReturnLocation ? 'return' : 'teleport';
+        button.textContent = hasReturnLocation ? 'Return NPC' : 'Teleport';
+        byId('teleport-action-title').textContent = hasReturnLocation ? 'Return NPC' : 'Teleport';
+        byId('teleport-action-description').textContent = hasReturnLocation
+            ? `Send this NPC back to ${locationName || 'their previous location'}.`
+            : "Move this NPC to the player's current position and save their previous location.";
     }
 
     function renderFeatureToggles(toggles) {
@@ -405,6 +419,18 @@
             }));
             status.textContent = result.message || 'Action sent.';
             if (action === 'bgl_inception') byId('bgl-inception-idea').value = '';
+            if (action === 'teleport' || action === 'return') {
+                const returnLocation = result.next_action === 'return'
+                    ? { name: result.return_location || '' }
+                    : null;
+                if (!currentDetail.metadata || typeof currentDetail.metadata !== 'object') {
+                    currentDetail.metadata = {};
+                }
+                if (returnLocation) currentDetail.metadata.npc_manager_return_location = returnLocation;
+                else delete currentDetail.metadata.npc_manager_return_location;
+                byId('metadata-output').textContent = JSON.stringify(currentDetail.metadata, null, 2);
+                renderTeleportAction(returnLocation);
+            }
         } catch (error) {
             status.textContent = `Action failed: ${error.message || error}`;
             status.classList.add('error');
@@ -469,7 +495,9 @@
     byId('editor-close').addEventListener('click', closeEditor);
     byId('cancel-button').addEventListener('click', closeEditor);
     byId('visit-action').addEventListener('click', (event) => runNpcAction('visit', event.currentTarget));
-    byId('teleport-action').addEventListener('click', (event) => runNpcAction('teleport', event.currentTarget));
+    byId('teleport-action').addEventListener('click', (event) => {
+        runNpcAction(event.currentTarget.dataset.action || 'teleport', event.currentTarget);
+    });
     byId('bgl-inception-action').addEventListener('click', (event) => runNpcAction('bgl_inception', event.currentTarget));
     byId('add-relationship').addEventListener('click', () => addRelationshipRow('', { aff: 0, type: 'neutral' }));
     form.addEventListener('submit', saveNpc);
