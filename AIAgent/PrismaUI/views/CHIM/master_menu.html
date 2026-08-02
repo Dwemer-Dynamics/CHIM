@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>CHIM Master Menu</title>
+    <title>CHIM</title>
     <link rel="stylesheet" href="master_menu.css">
 </head>
 <body data-chim-menu-scale-target="#master-modal">
@@ -10,7 +10,8 @@
         <!-- Header -->
         <div class="modal-header">
             <div class="breadcrumb">
-                <span>CHIM Master Menu</span>
+                <img class="master-menu-icon" src="images/chim-icon.png" alt="">
+                <span id="master-menu-title">CHIM</span>
             </div>
             <button class="close-btn" onclick="closeMenu()">×</button>
         </div>
@@ -43,6 +44,9 @@
                         <button class="setting-btn" onclick="selectPanel('backgroundlife')"
                                 onmouseenter="showDescription('Review recent Background Life activity - pauses game')"
                                 onmouseleave="clearDescription()">Background Life</button>
+                        <button class="setting-btn" onclick="selectPanel('npcmanager')"
+                                onmouseenter="showDescription('Browse and edit discovered CHIM NPC profiles - pauses game')"
+                                onmouseleave="clearDescription()">CHIM NPCs</button>
                         <button class="setting-btn" onclick="selectPanel('overlay')"
                                 onmouseenter="showDescription('Display CHIM Status Bar with current mode and settings')"
                                 onmouseleave="clearDescription()">Status Bar</button>

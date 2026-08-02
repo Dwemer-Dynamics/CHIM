@@ -527,12 +527,12 @@ body {
 
 .chatbox-profile-menu {
     position: absolute;
-    top: calc(100% - 2px);
+    top: 8px;
     left: 10px;
     width: min(430px, calc(100vw - 40px));
-    max-height: min(520px, 62vh);
+    max-height: calc(58vh - 36px);
     overflow-y: auto;
-    z-index: 100;
+    z-index: 300;
     padding: 16px;
     border: 1px solid rgba(242, 124, 17, 0.55);
     border-radius: 8px;
@@ -1243,7 +1243,7 @@ body {
     flex: 1;
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .focus-chatbox-context {
