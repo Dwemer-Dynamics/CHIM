@@ -254,13 +254,22 @@ std::string makeSTT(std::string wavData) {
 
     ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
 
-    auto player = RE::PlayerCharacter::GetSingleton();
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        logger::error("Cannot process STT response because the player is unavailable");
+        return "";
+    }
     logger::debug("Processing response and gathering context information...");
     
     auto result = InspectLocations(player->AsReference());
 
     char timeDateString[200];
-    RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, true);
+    auto* calendar = RE::Calendar::GetSingleton();
+    if (!calendar) {
+        logger::error("Cannot process STT response because the game calendar is unavailable");
+        return "";
+    }
+    calendar->GetTimeDateString(timeDateString, 200, true);
 
     HTTPManager::log(std::format("infoloc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(Context location: " + std::string(GetPlayerLocation()) + ", Buildings to go:" +
@@ -336,13 +345,13 @@ std::string makeSTT(std::string wavData) {
      routingContext.narratorMode = currentConversationMode == "NARRATOR";
      HTTPManager::streamPlayer(
          std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
-                     RE::PlayerCharacter::GetSingleton()->GetName(), buffer),
+                     player->GetName(), buffer),
          routingContext);
      SpeakManager::getInstance().deleteQueue();
 
      AIAgentManager& aiam = AIAgentManager::getInstance();
      json sData;
-     sData["speaker"] = RE::PlayerCharacter::GetSingleton()->GetName();
+     sData["speaker"] = player->GetName();
      sData["location"] = GetPlayerLocation();
      sData["speech"] = buffer;
      sData["listener"] = "#HERIKA_NPC1#";
@@ -354,10 +363,10 @@ std::string makeSTT(std::string wavData) {
     
     auto originalName = aiam.getPlayerName();
     if (originalName == "Prisoner") {
-        originalName = RE::PlayerCharacter::GetSingleton()->GetName();
+        originalName = player->GetName();
         aiam.setPlayerName(originalName);
     }
-    RE::PlayerCharacter::GetSingleton()->SetDisplayName(originalName.c_str(), true);
+    player->SetDisplayName(originalName.c_str(), true);
 
     return buffer;
 }

@@ -983,8 +983,10 @@ private:
     #define LOCATIONLIST_H
 class LocationList {
 public:
-    using Iterator = std::unordered_map<std::string, RE::TESObjectREFR*>::iterator;
-    using ConstIterator = std::unordered_map<std::string, RE::TESObjectREFR*>::const_iterator;
+    using LocationHandle = RE::ObjectRefHandle;
+    using LocationSnapshot = std::vector<std::pair<std::string, LocationHandle>>;
+    using Iterator = std::unordered_map<std::string, LocationHandle>::iterator;
+    using ConstIterator = std::unordered_map<std::string, LocationHandle>::const_iterator;
 
     static LocationList& GetInstance() {
         static LocationList instance;
@@ -992,8 +994,11 @@ public:
     }
 
     inline void AddLocation(const std::string& name, RE::TESObjectREFR* location) {
+        if (!location) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(mutex);
-        locationMap[name] = location;
+        locationMap[name] = location->GetHandle();
     }
 
     inline void RemoveLocation(const std::string& name) {
@@ -1012,11 +1017,22 @@ public:
         // return it != locationMap.end() ? it->second : nullptr;
         for (const auto& pair : locationMap) {
             if (pair.first.find(name) != std::string::npos) {
-                return pair.second;
+                auto location = pair.second.get();
+                return location ? location.get() : nullptr;
             }
         }
 
         return nullptr;
+    }
+
+    LocationSnapshot Snapshot() {
+        std::lock_guard<std::mutex> lock(mutex);
+        LocationSnapshot snapshot;
+        snapshot.reserve(locationMap.size());
+        for (const auto& entry : locationMap) {
+            snapshot.emplace_back(entry.first, entry.second);
+        }
+        return snapshot;
     }
 
     Iterator begin() { return locationMap.begin(); }
@@ -1033,7 +1049,7 @@ private:
     LocationList(const LocationList&) = delete;
     LocationList& operator=(const LocationList&) = delete;
 
-    std::unordered_map<std::string, RE::TESObjectREFR*> locationMap;
+    std::unordered_map<std::string, LocationHandle> locationMap;
     std::mutex mutex;
 };
 

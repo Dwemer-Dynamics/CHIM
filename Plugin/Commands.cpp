@@ -882,10 +882,18 @@ RE::TESForm* findLocation(std::string parameter) {
 
     if (!locationForm) {
         auto player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            logger::warn("[findLocation] Player is unavailable while searching nearby locations");
+            return nullptr;
+        }
         // Lets search for any building around
-        for (const auto& entry : LocationList::GetInstance()) {
+        for (const auto& entry : LocationList::GetInstance().Snapshot()) {
             const std::string& name = entry.first;
-            RE::TESObjectREFR* location = entry.second;
+            auto locationRef = entry.second.get();
+            RE::TESObjectREFR* location = locationRef ? locationRef.get() : nullptr;
+            if (!location) {
+                continue;
+            }
             if (location->GetPosition().GetDistance(player->GetPosition()) < 10000) {
                 
                 std::string normalizedname = entry.first;
@@ -4086,9 +4094,17 @@ bool PlayerIsInInterior() {
 std::string InspectLocations(RE::TESObjectREFR* reference) {
     std::string buffer;
 
-    for (const auto& entry : LocationList::GetInstance()) {
-        const std::string& name = entry.first;
-        RE::TESObjectREFR* location = entry.second;
+    if (!reference) {
+        logger::warn("InspectLocations: reference is unavailable");
+        return "none";
+    }
+
+    for (const auto& entry : LocationList::GetInstance().Snapshot()) {
+        auto locationRef = entry.second.get();
+        RE::TESObjectREFR* location = locationRef ? locationRef.get() : nullptr;
+        if (!location) {
+            continue;
+        }
         if (location->GetPosition().GetDistance(reference->GetPosition()) < 10000) buffer.append(entry.first + ",");
     }
     if (buffer.empty()) buffer.assign("none");
