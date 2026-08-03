@@ -15,6 +15,7 @@
 #include "SpeakManager.h"
 #include "MusicManager.h"
 #include "SpatialAwareness.h"
+#include "VRItemAwareness.h"
 #include "json.hpp"
 #include "RE/Skyrim.h"
 
@@ -3961,6 +3962,26 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             // Refresh inventory after giving item
             logger::info("[GiveItemTo] Refreshing inventory for {} after giving item", agentPtr->getActorName());
             RefreshAIAgentInventory(npc, agentPtr->getActorName(), true);
+        }
+
+    } else if (command.contains("TakeHeldItem")) {
+        responsePop("command");
+        const auto requestedItem = ItemIdentifierUtils::ParseInventoryItemIdentifier(trim(parameter));
+        if (!requestedItem.baseId.has_value() || requestedItem.name.empty()) {
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@TakeHeldItem@" + trim(parameter) + "@Error: invalid held item identifier"),
+                             agentPtr->getActor());
+            return;
+        }
+
+        auto* recipient = agentPtr->getActor();
+        const auto error = VRItemAwareness::BeginHeldItemHandoff(
+            recipient, requestedItem.baseId.value(), requestedItem.name);
+        if (!error.empty()) {
+            logger::info("[HELD_ITEM_HANDOFF] Could not start for {}: {}", requestedItem.name, error);
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@TakeHeldItem@" + requestedItem.name + "@Error: " + error),
+                             recipient);
         }
 
     } else if (command.contains("PickupItem")) {
