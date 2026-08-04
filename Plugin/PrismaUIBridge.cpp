@@ -5,6 +5,7 @@
 #include "ThreadPool.h"
 #include "Papyrus.h"
 #include "HTTPManager.h"
+#include "AudioManager.h"
 #include "Globals.h"
 #include "SpeakManager.h"
 #include "SPGResponse.h"
@@ -14,12 +15,14 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <winhttp.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <limits>
 #include <list>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -27,6 +30,7 @@
 #include <unordered_map>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winhttp.lib")
 
 namespace logger = SKSE::log;
 
@@ -52,6 +56,10 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_domReady{false};
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
+    static std::atomic<std::uint64_t> g_diaryAudioGeneration{0};
+    static std::atomic<bool> g_diaryAudioPlaying{false};
+    static std::mutex g_diaryAudioPlayerMutex;
+    static std::unique_ptr<AudioManager> g_diaryAudioPlayer;
     static std::atomic<bool> g_backgroundLifeDomReady{false};
     static std::atomic<bool> g_npcManagerDomReady{false};
     static uint32_t g_backgroundLifeSelectedFormId = 0;
@@ -64,6 +72,22 @@ namespace PrismaUIBridge {
     constexpr auto kOverlayFetchMinInterval = std::chrono::seconds(8);
     constexpr auto kChatboxControlsMinInterval = std::chrono::milliseconds(250);
     constexpr auto kChatboxStorySyncMinInterval = std::chrono::milliseconds(1500);
+
+    // WinHTTP accepts UTF-16 host and path values while CHIM configuration is UTF-8.
+    static std::wstring Utf8ToWide(const std::string& value) {
+        if (value.empty()) {
+            return {};
+        }
+
+        const int size = MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+        if (size <= 0) {
+            return {};
+        }
+
+        std::wstring result(static_cast<std::size_t>(size), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size);
+        return result;
+    }
     
     // Crosshair target state (for overlay)
     static std::string g_lastCrosshairTarget = "";
@@ -285,6 +309,8 @@ namespace PrismaUIBridge {
     static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
     static std::string FetchJsonFromServer(const std::string& url);
+    static void PlayDiaryAudio(const std::string& entryId);
+    static void StopDiaryAudio();
     static void UpdateCrosshairTargetUI(const std::string& name, float distance, const std::string& status = "",
                                         bool targetable = true);
     static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId);
@@ -2266,6 +2292,8 @@ R"CHIM(
 
         logger::info("[PrismaUIBridge] Creating CHIM diaries panel from CHIM/diaries.html...");
 
+        g_diariesDomReady.store(false);
+
         // Create the view - path is relative to Data/PrismaUI/views/
         g_diariesView = g_prismaUI->CreateView("CHIM/diaries.html", OnDiariesDomReady);
 
@@ -2288,11 +2316,180 @@ R"CHIM(
     }
 
     static void OnDiariesDomReady(PrismaView view) {
+        (void)view;
         logger::info("[PrismaUIBridge] Diaries panel DOM ready, triggering initial fetch");
         g_diariesDomReady.store(true);
-        
-        // Trigger initial people list fetch
         FetchDiariesData("people", "");
+    }
+
+    static void UpdateDiaryAudioUI(const std::string& state, const std::string& status) {
+        if (!g_prismaUI || !g_diariesCreated.load() || !g_prismaUI->IsValid(g_diariesView)) {
+            return;
+        }
+
+        const std::string script = "window.updateDiaryAudioState && window.updateDiaryAudioState('" +
+                                   EscapeForJS(state) + "','" + EscapeForJS(status) + "')";
+        g_prismaUI->Invoke(g_diariesView, script.c_str(), nullptr);
+    }
+
+    // Downloads a generated diary WAV from HerikaServer for native in-game playback.
+    static std::vector<BYTE> FetchDiaryAudio(const std::string& entryId, DWORD& statusCode) {
+        std::vector<BYTE> result;
+        statusCode = 0;
+
+        HINTERNET session = WinHttpOpen(L"CHIM Diary Audio/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session) {
+            logger::error("[PrismaUIBridge] Diary audio WinHttpOpen failed: {}", GetLastError());
+            return result;
+        }
+
+        WinHttpSetTimeouts(session, 5000, 5000, 120000, 120000);
+        const std::wstring server = Utf8ToWide(Conf::getInstance().getServer());
+        const INTERNET_PORT port = static_cast<INTERNET_PORT>(std::stoi(Conf::getInstance().getPort()));
+        HINTERNET connection = WinHttpConnect(session, server.c_str(), port, 0);
+        if (!connection) {
+            logger::error("[PrismaUIBridge] Diary audio WinHttpConnect failed: {}", GetLastError());
+            WinHttpCloseHandle(session);
+            return result;
+        }
+
+        const std::wstring path =
+            Utf8ToWide("/HerikaServer/ui/api/chim_diary_audio.php?entry=" + entryId + "&raw=1");
+        HINTERNET request = WinHttpOpenRequest(connection, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                               WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
+        if (!request ||
+            !WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+            !WinHttpReceiveResponse(request, nullptr)) {
+            logger::error("[PrismaUIBridge] Diary audio request failed: {}", GetLastError());
+            if (request) WinHttpCloseHandle(request);
+            WinHttpCloseHandle(connection);
+            WinHttpCloseHandle(session);
+            return result;
+        }
+
+        DWORD statusSize = sizeof(statusCode);
+        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+
+        constexpr std::size_t kMaxDiaryAudioBytes = 64 * 1024 * 1024;
+        DWORD available = 0;
+        while (WinHttpQueryDataAvailable(request, &available) && available > 0) {
+            if (result.size() + available > kMaxDiaryAudioBytes) {
+                logger::error("[PrismaUIBridge] Diary audio exceeded {} bytes", kMaxDiaryAudioBytes);
+                result.clear();
+                break;
+            }
+
+            const std::size_t offset = result.size();
+            result.resize(offset + available);
+            DWORD bytesRead = 0;
+            if (!WinHttpReadData(request, result.data() + offset, available, &bytesRead) || bytesRead == 0) {
+                result.resize(offset);
+                break;
+            }
+            result.resize(offset + bytesRead);
+        }
+
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return result;
+    }
+
+    static void StopDiaryAudio() {
+        g_diaryAudioGeneration.fetch_add(1);
+        std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+        if (g_diaryAudioPlayer && g_diaryAudioPlaying.exchange(false)) {
+            g_diaryAudioPlayer->Stop();
+        }
+    }
+
+    static void PlayDiaryAudio(const std::string& entryId) {
+        const std::uint64_t generation = g_diaryAudioGeneration.fetch_add(1) + 1;
+        UpdateDiaryAudioUI("loading", "Generating audio with the NPC voice...");
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIDiaryAudio",
+            [entryId, generation]() {
+                DWORD statusCode = 0;
+                std::vector<BYTE> audio = FetchDiaryAudio(entryId, statusCode);
+                if (generation != g_diaryAudioGeneration.load()) {
+                    return;
+                }
+
+                if (statusCode != 200 || audio.size() < 12 ||
+                    std::memcmp(audio.data(), "RIFF", 4) != 0 || std::memcmp(audio.data() + 8, "WAVE", 4) != 0) {
+                    std::string error = "Diary audio could not be generated.";
+                    if (!audio.empty() && audio.size() < 4096) {
+                        try {
+                            const auto response = json::parse(std::string(audio.begin(), audio.end()));
+                            error = response.value("error", error);
+                        } catch (...) {
+                        }
+                    }
+                    logger::error("[PrismaUIBridge] Diary audio failed for entry {} (HTTP {}, {} bytes): {}",
+                                  entryId, statusCode, audio.size(), error);
+                    UpdateDiaryAudioUI("error", error);
+                    return;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+                    if (!g_diaryAudioPlayer) {
+                        auto player = std::make_unique<AudioManager>();
+                        if (!player->Initialize()) {
+                            logger::error("[PrismaUIBridge] Failed to initialize diary audio playback");
+                            UpdateDiaryAudioUI("error", "CHIM could not initialize audio playback.");
+                            return;
+                        }
+                        g_diaryAudioPlayer = std::move(player);
+                    }
+
+                    g_diaryAudioPlayer->Stop();
+                    g_diaryAudioPlayer->setSpatialUpdatesEnabled(false);
+                    g_diaryAudioPlayer->setVolume(100.0f);
+                    if (!g_diaryAudioPlayer->LoadWAV(audio.data(), audio.size())) {
+                        logger::error("[PrismaUIBridge] Diary audio WAV load failed for entry {}", entryId);
+                        UpdateDiaryAudioUI("error", "The generated diary audio was not a playable WAV file.");
+                        return;
+                    }
+
+                    const X3DAUDIO_VECTOR centered{0.0f, 0.0f, 0.0f};
+                    g_diaryAudioPlayer->Update(centered, centered, 0.0f);
+                    if (!g_diaryAudioPlayer->Play()) {
+                        logger::error("[PrismaUIBridge] Diary audio playback failed for entry {}", entryId);
+                        UpdateDiaryAudioUI("error", "CHIM could not start diary audio playback.");
+                        return;
+                    }
+                    g_diaryAudioPlaying.store(true);
+                }
+
+                logger::info("[PrismaUIBridge] Playing diary audio for entry {} ({} bytes)", entryId, audio.size());
+                UpdateDiaryAudioUI("playing", "Playing diary audio");
+
+                while (generation == g_diaryAudioGeneration.load()) {
+                    bool playing = false;
+                    {
+                        std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+                        if (g_diaryAudioPlayer) {
+                            const X3DAUDIO_VECTOR centered{0.0f, 0.0f, 0.0f};
+                            g_diaryAudioPlayer->Update(centered, centered, 0.0f);
+                            playing = g_diaryAudioPlayer->isPlaying();
+                        }
+                    }
+                    if (!playing) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+
+                if (generation == g_diaryAudioGeneration.load()) {
+                    std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+                    if (g_diaryAudioPlayer) g_diaryAudioPlayer->Stop();
+                    g_diaryAudioPlaying.store(false);
+                    UpdateDiaryAudioUI("idle", "");
+                }
+            },
+            entryId, std::chrono::seconds(180));
     }
 
     static void OnDiariesCommand(const char* argument) {
@@ -2307,7 +2504,7 @@ R"CHIM(
         if (cmd == "close") {
             HideDiariesPanel();
         } else if (cmd == "dom_ready") {
-            logger::info("[PrismaUIBridge] Diaries DOM ready signal received");
+            logger::info("[PrismaUIBridge] Diaries JavaScript ready");
             g_diariesDomReady.store(true);
         } else if (cmd.substr(0, 9) == "js_debug|") {
             // Debug messages from JavaScript
@@ -2324,6 +2521,17 @@ R"CHIM(
             // Extract entry ID
             std::string entryId = cmd.substr(12);
             FetchDiariesData("entry", entryId);
+        } else if (cmd.substr(0, 11) == "play_audio|") {
+            const std::string entryId = cmd.substr(11);
+            if (!entryId.empty() && std::all_of(entryId.begin(), entryId.end(), [](unsigned char value) {
+                    return std::isdigit(value) != 0;
+                })) {
+                PlayDiaryAudio(entryId);
+            } else {
+                UpdateDiaryAudioUI("error", "The selected diary entry is invalid.");
+            }
+        } else if (cmd == "stop_audio") {
+            StopDiaryAudio();
         } else if (cmd == "navigate_back") {
             logger::debug("[PrismaUIBridge] Navigation back in diaries");
         }
@@ -2427,6 +2635,10 @@ R"CHIM(
         }
 
         logger::info("[PrismaUIBridge] Hiding diaries panel");
+
+        StopDiaryAudio();
+        g_prismaUI->Invoke(g_diariesView,
+                           "window.updateDiaryAudioState && window.updateDiaryAudioState('idle','')", nullptr);
         
         // Remove focus first
         g_prismaUI->Unfocus(g_diariesView);

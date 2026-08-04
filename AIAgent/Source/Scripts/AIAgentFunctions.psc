@@ -27,6 +27,11 @@ int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
 int function isGameVR() Global Native									; 1 if VR
 
+int function sendLocationFast(Location curr,string tags,Cell referenceCell=None) global Native
+int function sendFactionFast(Faction factions,string name) global Native
+int function sendNPCFast(Actor akActor) global Native
+
+
 ; Conf opts send
 int function setConf(String code,float float_value,int int_value,String string_value) Global Native
 
