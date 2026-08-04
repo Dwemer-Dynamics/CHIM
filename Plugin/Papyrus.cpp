@@ -3311,7 +3311,7 @@ RE::TESObjectREFR* getLocationCenterMarkerImpl( RE::BGSLocation* a_loc, int modi
     auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
     auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
     auto outsideEntranceMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fb);
-    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x00010f63c);
+    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0010f63c);
 
     // Iterate over specialRefs using begin()/end()
     for (auto it = refs->begin(); it != refs->end(); ++it) {
