@@ -232,6 +232,41 @@ body {
     font-style: italic;
 }
 
+.diary-audio-controls {
+    align-items: center;
+    background: rgba(35, 29, 22, 0.12);
+    border: 1px solid rgba(75, 52, 25, 0.35);
+    border-radius: 5px;
+    display: flex;
+    gap: 12px;
+    margin-bottom: 22px;
+    padding: 10px 12px;
+}
+
+.diary-audio-btn {
+    background: rgb(242, 124, 17);
+    border: 1px solid #9b4b08;
+    border-radius: 4px;
+    color: #fff;
+    cursor: pointer;
+    font-weight: 600;
+    padding: 8px 14px;
+}
+
+.diary-audio-btn:hover:not(:disabled) {
+    background: #ff963d;
+}
+
+.diary-audio-btn:disabled {
+    cursor: wait;
+    opacity: 0.7;
+}
+
+.diary-audio-status {
+    color: #45351f;
+    font-size: 0.9em;
+}
+
 .diary-body {
     font-size: 1.1em;
     line-height: 1.8;

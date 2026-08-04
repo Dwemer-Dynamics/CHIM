@@ -124,7 +124,7 @@
                     </section>
 
                     <section class="tab-panel" data-panel="actions" hidden>
-                        <p class="action-note">The game must be running and unpaused for Visit and Teleport.</p>
+                        <p class="action-note">The game must be running and unpaused for Visit, Teleport, and Return NPC.</p>
                         <div class="npc-action-list">
                             <article class="npc-action-card">
                                 <div class="npc-action-copy">
@@ -135,10 +135,10 @@
                             </article>
                             <article class="npc-action-card">
                                 <div class="npc-action-copy">
-                                    <h3>Teleport</h3>
-                                    <p>Move this NPC to the player's current position.</p>
+                                    <h3 id="teleport-action-title">Teleport</h3>
+                                    <p id="teleport-action-description">Move this NPC to the player's current position and save their previous location.</p>
                                 </div>
-                                <button id="teleport-action" class="button secondary" type="button">Teleport</button>
+                                <button id="teleport-action" class="button secondary" type="button" data-action="teleport">Teleport</button>
                             </article>
                             <article class="npc-action-card inception-card">
                                 <div class="npc-action-copy">
