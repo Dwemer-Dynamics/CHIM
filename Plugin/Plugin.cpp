@@ -8217,6 +8217,8 @@ EventHandlers {
                 logger::info("[RECHAT_CELL_CANCEL] Player cell changed {:08X} -> {:08X}; cancelling autonomous dialogue",
                              previousPlayerCellFormId, currentPlayerCellFormId);
 
+                VRItemAwareness::CancelPendingHandoff("player changed cells");
+
                 SpatialAwareness::InvalidateCache();
                 SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(2000));
                 ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");

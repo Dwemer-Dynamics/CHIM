@@ -3344,6 +3344,24 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 	endif
 EndFunction
 
+Function AcceptHeldItemFromPlayer(Actor npc, ObjectReference itemRef, string itemName) global
+	if (!npc || !itemRef)
+		return
+	endif
+
+	Actor player = Game.GetPlayer()
+	Debug.SendAnimationEvent(npc, "IdlePickup")
+	Utility.Wait(0.25)
+	npc.AddItem(itemRef)
+	Utility.Wait(0.25)
+	Debug.TraceUser("ChimHTTPSender", "AIAgentRefreshInventory|"+npc.GetFormID())
+
+	string resultText = npc.GetDisplayName()+" accepted "+itemName+" from "+player.GetDisplayName()+"."
+	AIAgentFunctions.logMessageForActor(resultText, "infoaction", npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor("command@TakeHeldItem@"+itemName+"@"+resultText, "funcret", npc.GetDisplayName())
+	Debug.Notification("[CHIM] "+resultText)
+EndFunction
+
 
 function PlaceCam(Actor npc,int position = 0,bool abBypassSitCheck=false,float randomAngle=0.0) global
 
