@@ -2352,31 +2352,34 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         if (locationForm) {
             auto value = locationForm->As<RE::BGSLocation>();
-            for (int i = 0; i < value->specialRefs.size(); i++) {
-                auto specialRefs = value->specialRefs[i];
-                auto ref = RE::TESForm::LookupByID(specialRefs.refData.refID);  // Get Markers
+            if (value) {
+                for (int i = 0; i < value->specialRefs.size(); i++) {
+                    auto specialRefs = value->specialRefs[i];
+                    auto ref = RE::TESForm::LookupByID(specialRefs.refData.refID);  // Get Markers
 
-                if (ref) {
-                    // logger::info(" 0x{:08x} ", specialRefs.refData.refID);
-                    if (ref->GetFormType() == RE::FormType::Reference) {
-                        auto refFinal = ref->As<RE::TESObjectREFR>();
-                        if (refFinal->GetBaseObject()->GetFormID() == 0x3b) {
-                            logger::info("Early XMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
-                                         ref->GetFormID());
-                            markerForm = refFinal;
-                            break;
-                        } else if (refFinal->GetBaseObject()->GetFormID() == 0x10) {
-                            logger::info("Early MapMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
-                                         ref->GetFormID());
-                            markerForm = refFinal;
-                            break;
+                    if (ref) {
+                        // logger::info(" 0x{:08x} ", specialRefs.refData.refID);
+                        if (ref->GetFormType() == RE::FormType::Reference) {
+                            auto refFinal = ref->As<RE::TESObjectREFR>();
+                            if (refFinal->GetBaseObject()->GetFormID() == 0x3b) {
+                                logger::info("Early XMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
+                                             ref->GetFormID());
+                                markerForm = refFinal;
+                                break;
+                            } else if (refFinal->GetBaseObject()->GetFormID() == 0x10) {
+                                logger::info("Early MapMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
+                                             ref->GetFormID());
+                                markerForm = refFinal;
+                                break;
+                            }
                         }
                     }
                 }
             }
             if (!markerForm) {
                 auto value = locationForm->As<RE::BGSLocation>();
-                if (value->worldLocMarker) {
+                
+                if (value && value->worldLocMarker) {
                     auto wmarkerPtr = value->worldLocMarker.get();
                     if (wmarkerPtr) {
                         auto wmarker = wmarkerPtr.get();
