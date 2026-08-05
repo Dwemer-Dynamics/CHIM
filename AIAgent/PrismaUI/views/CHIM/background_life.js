@@ -39,6 +39,16 @@
     let targetGeneration = 0;
     let currentTarget = emptyTarget();
     let currentPlayerLocation = { formid: '', name: '' };
+    let nativePostAvailable = false;
+    let nativePostSequence = 0;
+    const nativePostRequests = new Map();
+    const nativePostEndpoints = new Map([
+        ['/ui/api/background_life_dashboard.php', 'dashboard'],
+        ['/ui/api/background_life_npc.php', 'npc'],
+        ['/ui/api/background_life_npc_create.php', 'npc_create'],
+        ['/ui/api/background_life_request.php', 'request'],
+        ['/ui/api/background_life_rumors.php', 'rumors']
+    ]);
 
     function emptyTarget() {
         return {
@@ -102,12 +112,52 @@
 
     async function postForm(path, values) {
         const body = values instanceof URLSearchParams ? values : new URLSearchParams(values);
+        const endpoint = nativePostEndpoints.get(path);
+        if (nativePostAvailable && endpoint) {
+            const requestId = `bgl_${Date.now()}_${nativePostSequence += 1}`;
+            return new Promise((resolve, reject) => {
+                const timeout = window.setTimeout(() => {
+                    nativePostRequests.delete(requestId);
+                    reject(new Error('Background Life request timed out'));
+                }, 75000);
+                nativePostRequests.set(requestId, { resolve, reject, timeout });
+                sendCommand(`post|${requestId}|${endpoint}|${body.toString()}`);
+            });
+        }
         return parseJsonResponse(await fetch(`${serverBaseUrl}${path}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
             body: body.toString()
         }));
     }
+
+    window.setBackgroundLifeNativePostAvailable = function (available) {
+        nativePostAvailable = available === true;
+    };
+
+    window.resolveBackgroundLifePost = function (requestId, responseText) {
+        const pending = nativePostRequests.get(requestId);
+        if (!pending) return;
+        nativePostRequests.delete(requestId);
+        window.clearTimeout(pending.timeout);
+        try {
+            const payload = JSON.parse(responseText);
+            if (!payload || !payload.success) {
+                throw new Error((payload && (payload.error || payload.message)) || 'Background Life request failed');
+            }
+            pending.resolve(payload);
+        } catch (error) {
+            pending.reject(error);
+        }
+    };
+
+    window.rejectBackgroundLifePost = function (requestId, message) {
+        const pending = nativePostRequests.get(requestId);
+        if (!pending) return;
+        nativePostRequests.delete(requestId);
+        window.clearTimeout(pending.timeout);
+        pending.reject(new Error(message || 'Background Life request failed'));
+    };
 
     function closeTileDropdowns(except) {
         tileDropdowns.forEach((dropdown) => {
