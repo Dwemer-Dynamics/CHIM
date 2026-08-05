@@ -320,6 +320,8 @@ namespace PrismaUIBridge {
                                         bool targetable = true);
     static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId);
     static std::string EscapeForJS(const std::string& raw);
+    static void SetEventLogViewServerUrl(PrismaView view, const char* setterName);
+    static void FetchAndUpdateChatboxStory(bool replaceExisting);
     static bool ApplyModeSelection(const std::string& actionId, const char* sourceTag, bool showNotification);
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification);
     static void UpdateChatboxTargetUI(const std::string& name, float distance);
@@ -1085,6 +1087,7 @@ R"CHIM(
     static void OnHistoryDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] History panel DOM ready - view can now be shown/hidden");
         g_domReady.store(true);
+        SetEventLogViewServerUrl(view, "setHistoryServerUrl");
 
         // Initial fetch of conversation history
         FetchAndUpdateHistory();
@@ -1103,6 +1106,8 @@ R"CHIM(
             }
             HideHistoryPanel();
         } else if (cmd == "refresh") {
+            FetchAndUpdateHistory();
+        } else if (cmd.starts_with("event_deleted|")) {
             FetchAndUpdateHistory();
         } else if (cmd == "unfocus") {
             // Allow JS to request unfocus (e.g., after completing an action)
@@ -1769,6 +1774,17 @@ R"CHIM(
             pos += 2;
         }
         return escaped;
+    }
+
+    static void SetEventLogViewServerUrl(PrismaView view, const char* setterName) {
+        if (!g_prismaUI || view == 0 || !setterName || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort() + "/HerikaServer";
+        const std::string call =
+            "window." + std::string(setterName) + " && window." + setterName + "('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
     }
 
     bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag, bool showNotification) {
@@ -6775,6 +6791,7 @@ R"CHIM(
     static void OnChatboxDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Chatbox panel DOM ready");
         g_chatboxDomReady.store(true);
+        SetEventLogViewServerUrl(view, "setChatboxServerUrl");
         g_lastChatboxTargetsPayload.clear();
         g_prismaDisplayStatusCache.clear();
         
@@ -6809,6 +6826,9 @@ R"CHIM(
             }
             HideChatboxPanel();
         } else if (cmd == "story_refresh") {
+            g_lastChatboxStorySync = std::chrono::steady_clock::now();
+            FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("event_deleted|")) {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
         } else if (cmd.starts_with("send|")) {
