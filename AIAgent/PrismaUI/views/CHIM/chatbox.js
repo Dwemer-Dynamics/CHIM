@@ -89,7 +89,7 @@
     let narratorStoryName = 'The Narrator';
     
     // Server URL
-    const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
+    let serverUrl = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
 
     const modeConfig = {
         STANDARD: { label: 'Standard', class: 'standard', action: 'mode_standard' },
@@ -170,6 +170,10 @@
     function createStoryEntryElement(entry) {
         const row = document.createElement('div');
         row.className = 'story-entry ' + entry.kind + (entry.source === 'subtitle' ? ' non-llm' : '');
+        if (entry.rowId > 0) {
+            row.dataset.rowId = String(entry.rowId);
+            row.classList.add('has-delete');
+        }
 
         const time = document.createElement('span');
         time.className = 'story-entry-time';
@@ -190,8 +194,81 @@
         line.appendChild(text);
         row.appendChild(time);
         row.appendChild(line);
+        if (entry.rowId > 0) {
+            row.appendChild(createStoryDeleteButton(entry.rowId));
+        }
         return row;
     }
+
+    function createStoryDeleteButton(rowId) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'story-entry-delete';
+        button.textContent = '\u{1F5D1}';
+        button.title = 'Delete this event';
+        button.setAttribute('aria-label', 'Delete this event');
+        button.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            confirmAndDeleteEvent(button, rowId);
+        });
+        return button;
+    }
+
+    async function confirmAndDeleteEvent(button, rowId) {
+        if (button.disabled) return;
+        if (!button.classList.contains('confirm-delete')) {
+            button.classList.add('confirm-delete');
+            button.title = 'Click again to delete';
+            setTimeout(function() {
+                button.classList.remove('confirm-delete');
+                button.title = 'Delete this event';
+            }, 3000);
+            return;
+        }
+
+        button.disabled = true;
+        try {
+            const formData = new FormData();
+            formData.append('rowid', String(rowId));
+            const response = await fetch(`${serverUrl}/ui/cmd/action_delete_event.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.message || 'Failed to delete event.');
+            }
+            window.removeEventLogEntry(rowId);
+            sendControlCommand('event_deleted|' + rowId);
+        } catch (error) {
+            button.disabled = false;
+            button.classList.remove('confirm-delete');
+            button.title = 'Delete this event';
+            pushChatboxSystemMessage(error.message || 'Failed to delete event.');
+        }
+    }
+
+    window.setChatboxServerUrl = function(url) {
+        const normalized = String(url || '').replace(/\/$/, '');
+        if (normalized) serverUrl = normalized;
+    };
+
+    window.removeEventLogEntry = function(rowId) {
+        const normalizedRowId = Number(rowId || 0);
+        if (!storyLogElement || normalizedRowId <= 0) return;
+        const rowKey = 'row:' + normalizedRowId;
+        const row = storyLogElement.querySelector(`[data-row-id="${normalizedRowId}"]`);
+        if (row) row.remove();
+        storyEntryKeys.delete(rowKey);
+        recentStoryContent.forEach(function(recent, key) {
+            if (recent && recent.entry && Number(recent.entry.rowId || 0) === normalizedRowId) {
+                recentStoryContent.delete(key);
+            }
+        });
+        showStoryEmpty();
+    };
 
     function appendStoryEntry(entry, isLive) {
         if (!storyLogElement || !entry) return false;
@@ -746,7 +823,7 @@
             const formData = new FormData();
             formData.append('count', String(deleteCount));
 
-            const response = await fetch(`${SERVER_URL}/ui/cmd/action_delete_recent_events.php`, {
+            const response = await fetch(`${serverUrl}/ui/cmd/action_delete_recent_events.php`, {
                 method: 'POST',
                 body: formData,
                 cache: 'no-store'
@@ -1155,7 +1232,7 @@
                 target_type: target.type,
                 target_name: target.name
             });
-            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php?${params.toString()}`, {
+            const response = await fetch(`${serverUrl}/ui/api/chim_profile_llm_mode.php?${params.toString()}`, {
                 cache: 'no-store'
             });
             const result = await response.json();
@@ -1198,7 +1275,7 @@
                 formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
             }
 
-            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php`, {
+            const response = await fetch(`${serverUrl}/ui/api/chim_profile_llm_mode.php`, {
                 method: 'POST',
                 body: formData,
                 cache: 'no-store'
@@ -1250,7 +1327,7 @@
             formData.append('enabled', enabled ? '1' : '0');
             formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
 
-            const response = await fetch(`${SERVER_URL}/ui/api/chim_profile_llm_mode.php`, {
+            const response = await fetch(`${serverUrl}/ui/api/chim_profile_llm_mode.php`, {
                 method: 'POST',
                 body: formData,
                 cache: 'no-store'
@@ -1379,7 +1456,7 @@
         try {
             const formData = new FormData();
             formData.append('mode', mode);
-            const response = await fetch(`${SERVER_URL}/ui/cmd/action_set_rechat_mode.php`, {
+            const response = await fetch(`${serverUrl}/ui/cmd/action_set_rechat_mode.php`, {
                 method: 'POST',
                 body: formData,
                 cache: 'no-store'

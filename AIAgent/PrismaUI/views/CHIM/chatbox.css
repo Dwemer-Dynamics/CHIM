@@ -1352,10 +1352,48 @@ body {
 
 .story-entry {
     display: block;
+    position: relative;
     padding: 1px 0;
     color: #d8d8de;
     font-size: 0.95em;
     line-height: 1.42;
+}
+
+.story-entry.has-delete {
+    padding-right: 25px;
+}
+
+.story-entry-delete {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #777780;
+    font: inherit;
+    font-size: 0.78em;
+    line-height: 20px;
+    cursor: pointer;
+}
+
+.story-entry-delete:hover,
+.story-entry-delete.confirm-delete {
+    border-color: rgba(184, 62, 67, 0.7);
+    background: rgba(128, 35, 40, 0.45);
+    color: #ff9a9e;
+}
+
+.story-entry-delete:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
+#chim-chatbox-viewer > #chim-chatbox .story-entry-delete {
+    display: none;
 }
 
 .story-entry-time {

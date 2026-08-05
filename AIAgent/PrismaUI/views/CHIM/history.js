@@ -15,6 +15,7 @@
     let entries = [];
     let lastRowId = 0;
     let narratorName = 'The Narrator';
+    let serverUrl = 'http://192.168.169.218:8081/HerikaServer';
     const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext']);
 
     /**
@@ -109,6 +110,11 @@
         }
     };
 
+    window.setHistoryServerUrl = function(url) {
+        const normalized = String(url || '').replace(/\/$/, '');
+        if (normalized) serverUrl = normalized;
+    };
+
     /**
      * Render all entries to the DOM
      */
@@ -201,6 +207,8 @@
     function createEntryElement(entry, sanitizedEventData, sourceOverride) {
         const div = document.createElement('div');
         div.className = 'history-entry';
+        const rowId = Number(entry.ROWID || entry.rowId || 0);
+        if (rowId > 0) div.dataset.rowId = String(rowId);
         
         // Parse the event data - strip HTML from all fields
         const eventType = stripHtml(entry['Event'] || 'chat');
@@ -260,13 +268,80 @@
         div.innerHTML = `
             <div class="entry-header">
                 <span class="entry-speaker">${escapeHtml(speaker || 'Unknown')}</span>
-                <span class="entry-timestamp">${escapeHtml(timestamp)}</span>
+                <span class="entry-header-actions">
+                    <span class="entry-timestamp">${escapeHtml(timestamp)}</span>
+                </span>
             </div>
             <div class="entry-text">${escapeHtml(text)}</div>
         `;
+        if (rowId > 0) {
+            div.querySelector('.entry-header-actions').appendChild(createDeleteButton(rowId));
+        }
         
         return div;
     }
+
+    function createDeleteButton(rowId) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'entry-delete';
+        button.textContent = '\u{1F5D1}';
+        button.title = 'Delete this event';
+        button.setAttribute('aria-label', 'Delete this event');
+        button.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            confirmAndDeleteEvent(button, rowId);
+        });
+        return button;
+    }
+
+    async function confirmAndDeleteEvent(button, rowId) {
+        if (button.disabled) return;
+        if (!button.classList.contains('confirm-delete')) {
+            button.classList.add('confirm-delete');
+            button.title = 'Click again to delete';
+            setTimeout(function() {
+                button.classList.remove('confirm-delete');
+                button.title = 'Delete this event';
+            }, 3000);
+            return;
+        }
+
+        button.disabled = true;
+        try {
+            const formData = new FormData();
+            formData.append('rowid', String(rowId));
+            const response = await fetch(`${serverUrl}/ui/cmd/action_delete_event.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.message || 'Failed to delete event.');
+            }
+            window.removeEventLogEntry(rowId);
+            if (window.chimHistoryCommand) {
+                window.chimHistoryCommand('event_deleted|' + rowId);
+            }
+        } catch (error) {
+            button.disabled = false;
+            button.classList.remove('confirm-delete');
+            button.title = error.message || 'Failed to delete event.';
+        }
+    }
+
+    window.removeEventLogEntry = function(rowId) {
+        const normalizedRowId = Number(rowId || 0);
+        if (normalizedRowId <= 0) return;
+        entries = entries.filter(function(entry) {
+            return Number(entry.ROWID || entry.rowId || 0) !== normalizedRowId;
+        });
+        const row = historyList.querySelector(`[data-row-id="${normalizedRowId}"]`);
+        if (row) row.remove();
+        if (!historyList.querySelector('.history-entry')) showEmpty();
+    };
 
     /**
      * Escape HTML special characters
