@@ -308,6 +308,11 @@ namespace PrismaUIBridge {
     void HideDebuggerPanel();
     static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
+    static std::string RequestJsonFromServer(
+        const std::string& method,
+        const std::string& url,
+        const std::string& requestBody,
+        int timeoutSeconds);
     static std::string FetchJsonFromServer(const std::string& url);
     static void PlayDiaryAudio(const std::string& entryId);
     static void StopDiaryAudio();
@@ -2833,9 +2838,12 @@ R"CHIM(
         return false;
     }
 
-    static std::string FetchJsonFromServer(const std::string& url) {
+    static std::string RequestJsonFromServer(
+        const std::string& method,
+        const std::string& url,
+        const std::string& requestBody,
+        int timeoutSeconds) {
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
-        constexpr int TIMEOUT_SECONDS = 10;
 
         WSADATA wsaData;
         int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -2862,7 +2870,7 @@ R"CHIM(
         inet_pton(AF_INET, host.c_str(), &serverAddr.sin_addr);
 
         // Set timeout
-        DWORD timeout = TIMEOUT_SECONDS * 1000;
+        DWORD timeout = static_cast<DWORD>(timeoutSeconds * 1000);
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
@@ -2876,19 +2884,32 @@ R"CHIM(
         }
 
         // Build HTTP request
-        std::string request = "GET " + url + " HTTP/1.1\r\n";
+        std::string request = method + " " + url + " HTTP/1.1\r\n";
         request += "Host: " + host + ":" + portStr + "\r\n";
         request += "Accept: application/json\r\n";
+        if (method == "POST") {
+            request += "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
+            request += "Content-Length: " + std::to_string(requestBody.size()) + "\r\n";
+        }
         request += "Connection: close\r\n";
         request += "\r\n";
+        request += requestBody;
 
         // Send request
-        iResult = send(rawSocket, request.c_str(), static_cast<int>(request.length()), 0);
-        if (iResult == SOCKET_ERROR) {
-            logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
-            closesocket(rawSocket);
-            WSACleanup();
-            return "";
+        size_t bytesSent = 0;
+        while (bytesSent < request.size()) {
+            iResult = send(
+                rawSocket,
+                request.data() + bytesSent,
+                static_cast<int>(request.size() - bytesSent),
+                0);
+            if (iResult == SOCKET_ERROR || iResult == 0) {
+                logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
+                closesocket(rawSocket);
+                WSACleanup();
+                return "";
+            }
+            bytesSent += static_cast<size_t>(iResult);
         }
 
         // Receive response
@@ -2976,6 +2997,10 @@ R"CHIM(
         return body;
     }
 
+    static std::string FetchJsonFromServer(const std::string& url) {
+        return RequestJsonFromServer("GET", url, "", 10);
+    }
+
     // ===== Background Life Functions =====
 
     void CreateBackgroundLifePanel() {
@@ -3018,6 +3043,10 @@ R"CHIM(
         const std::string call =
             "window.setBackgroundLifeServerUrl('" + EscapeForJS(serverUrl) + "')";
         g_prismaUI->Invoke(view, call.c_str(), nullptr);
+        g_prismaUI->Invoke(
+            view,
+            "window.setBackgroundLifeNativePostAvailable && window.setBackgroundLifeNativePostAvailable(true)",
+            nullptr);
     }
 
     static void OnBackgroundLifeDomReady(PrismaView view) {
@@ -3252,6 +3281,75 @@ R"CHIM(
         });
     }
 
+    static bool IsSafeBackgroundLifePostValue(const std::string& value, size_t maxLength) {
+        if (value.empty() || value.size() > maxLength) {
+            return false;
+        }
+
+        return std::all_of(value.begin(), value.end(), [](unsigned char character) {
+            return std::isalnum(character) ||
+                   character == '%' || character == '&' || character == '=' || character == '+' ||
+                   character == '*' || character == '.' || character == '_' || character == '-';
+        });
+    }
+
+    static void PostBackgroundLifeData(
+        const std::string& requestId,
+        const std::string& endpoint,
+        const std::string& body) {
+        static const std::unordered_map<std::string, std::string> endpoints = {
+            {"dashboard", "/HerikaServer/ui/api/background_life_dashboard.php"},
+            {"npc", "/HerikaServer/ui/api/background_life_npc.php"},
+            {"npc_create", "/HerikaServer/ui/api/background_life_npc_create.php"},
+            {"request", "/HerikaServer/ui/api/background_life_request.php"},
+            {"rumors", "/HerikaServer/ui/api/background_life_rumors.php"}
+        };
+        const auto endpointEntry = endpoints.find(endpoint);
+        if (endpointEntry == endpoints.end() ||
+            !IsSafeBackgroundLifePostValue(requestId, 64) ||
+            !IsSafeBackgroundLifePostValue(body, 32768)) {
+            logger::warn("[PrismaUIBridge] Rejected invalid Background Life POST request");
+            return;
+        }
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIBackgroundLifePost",
+            [requestId, url = endpointEntry->second, body]() {
+                try {
+                    const std::string response = RequestJsonFromServer("POST", url, body, 60);
+                    if (response.empty()) {
+                        throw std::runtime_error("No data received from server");
+                    }
+
+                    const json payload = json::parse(response, nullptr, false);
+                    if (payload.is_discarded()) {
+                        throw std::runtime_error("Server returned invalid JSON");
+                    }
+
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.resolveBackgroundLifePost('" + EscapeForJS(requestId) +
+                            "','" + EscapeForJS(response) + "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                } catch (const std::exception& error) {
+                    logger::error(
+                        "[PrismaUIBridge] Background Life POST failed: {}",
+                        error.what());
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.rejectBackgroundLifePost('" + EscapeForJS(requestId) +
+                            "','" + EscapeForJS(error.what()) + "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                }
+            });
+    }
+
     static void OnBackgroundLifeCommand(const char* argument) {
         if (!argument) {
             return;
@@ -3341,6 +3439,23 @@ R"CHIM(
                     "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
                     formIdText);
             }
+            return;
+        }
+
+        constexpr std::string_view postPrefix = "post|";
+        if (command.starts_with(postPrefix)) {
+            const size_t requestIdEnd = command.find('|', postPrefix.size());
+            const size_t endpointEnd = requestIdEnd == std::string::npos
+                ? std::string::npos
+                : command.find('|', requestIdEnd + 1);
+            if (requestIdEnd == std::string::npos || endpointEnd == std::string::npos) {
+                logger::warn("[PrismaUIBridge] Rejected malformed Background Life POST command");
+                return;
+            }
+            PostBackgroundLifeData(
+                command.substr(postPrefix.size(), requestIdEnd - postPrefix.size()),
+                command.substr(requestIdEnd + 1, endpointEnd - requestIdEnd - 1),
+                command.substr(endpointEnd + 1));
             return;
         }
 
