@@ -1612,7 +1612,12 @@ void parseRoleCommand(std::string rawCommand) {
         if (splitResult.size() != 2) {
             logger::info("Command has not enough parms {}", command);
         } else {
-            sendMessageReal(splitResult[0], splitResult[1]);
+            const std::string message = splitResult[0];
+            const std::string messageType = splitResult[1];
+            // Browser STT commands arrive on the manager worker, while routing reads live Skyrim objects.
+            SKSE::GetTaskInterface()->AddTask([message, messageType]() {
+                sendMessageReal(message, messageType);
+            });
         }
     } else if (command.contains("QuestNotifySound")) {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
