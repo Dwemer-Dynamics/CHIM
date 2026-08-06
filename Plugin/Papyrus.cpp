@@ -4006,6 +4006,22 @@ int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObject
     }
 
     if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 1);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 3);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 4);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationMarkerForImpl(a_loc);
+    }
+
+    if (!destMarker) {
         logger::error("sendLocationFast: No destination marker found for location {},{:08X}", a_loc->GetName(),
                       a_loc->GetFormID());
         return 0;
