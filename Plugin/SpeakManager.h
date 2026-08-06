@@ -5,6 +5,8 @@
 #include <cstdarg>
 #include <cstddef>
 #include <atomic>
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -131,6 +133,13 @@ private:
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
+    struct RecentAiSubtitle {
+        RE::FormID speakerFormId;
+        std::string text;
+        std::chrono::steady_clock::time_point expiresAt;
+    };
+    std::mutex recentAiSubtitleMutex;
+    std::deque<RecentAiSubtitle> recentAiSubtitles;
     struct PendingRechatRetry {
         bool active = false;
         std::string speaker = "";
@@ -288,6 +297,8 @@ public:
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);
     void clearPlayerPlaybackCompletedCallback();
     void recoverFromProcessingFailure(const std::string& actorName);
+    void registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
+    bool isRecentAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
 
     bool downloadFakeNote(std::string name);
     
