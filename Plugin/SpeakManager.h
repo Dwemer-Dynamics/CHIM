@@ -132,6 +132,7 @@ private:
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
+    bool currentPlaybackRechatGenerated = false;
     struct PendingRechatRetry {
         bool active = false;
         std::string speaker = "";
@@ -284,6 +285,7 @@ public:
     float getPlaybackDropoffOutside();
 
     void abortPendingUtterances(const std::string& reason, bool includeCurrentPlayback = true);
+    bool cancelRechatSpeech();
     void deleteQueue(bool isActionCommand = false);
     void deleteQueuedPlayerLines();
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);
