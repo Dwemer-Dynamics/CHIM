@@ -9,6 +9,7 @@ struct ResponseItem {
     std::string text;
     long long timestamp;
     std::string actor;
+    bool rechatGenerated = false;
 };
 
 class SPGResponse {
@@ -22,7 +23,7 @@ public:
     ResponseItem getLastItem(const std::string& key);
     int getSize(const std::string& key);
     ResponseItem getFirstItem(const std::string& key);
-    void decodeAndEnqueue(const std::string& data);
+    void decodeAndEnqueue(const std::string& data, bool rechatGenerated = false);
     void eraseOldItems(const std::string& key);
     void clearQueue(const std::string& key);
     void moveFirstToLast(const std::string& key);

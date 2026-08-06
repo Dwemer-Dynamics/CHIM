@@ -924,7 +924,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             SpeakManager::getInstance().completeRechatAttempt(speaker, true);
                             rechatResponseReceived = true;
                         }
-                        spgResponse.decodeAndEnqueue(line.c_str());
+                        spgResponse.decodeAndEnqueue(line.c_str(), rechatDepth > 0);
                         streamedLineCount++;
 
 
