@@ -9,7 +9,7 @@
 #include "Misc.h"
 namespace logger = SKSE::log;
 
-static const ResponseItem defaultNullResponseItem = {"", 0};
+static const ResponseItem defaultNullResponseItem = {"", 0, "", false};
 static const auto qTtl=3000000000000;
 
 
@@ -27,7 +27,7 @@ SPGResponse& SPGResponse::getInstance() {
     return instance;
 }
 
-void SPGResponse::decodeAndEnqueue(const std::string& data) {
+void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated) {
     std::stringstream ss(data);
     std::string line;
     while (std::getline(ss, line)) {
@@ -48,7 +48,7 @@ void SPGResponse::decodeAndEnqueue(const std::string& data) {
         auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
         auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
-        ResponseItem fitem = {message, nanos,actorname};
+        ResponseItem fitem = {message, nanos, actorname, rechatGenerated};
         
         this->enqueue(action, fitem);
         
@@ -151,7 +151,7 @@ ResponseItem SPGResponse::getLastItem(const std::string& key) {
         }
     }
 
-    return ResponseItem{"", 0};
+    return ResponseItem{"", 0, "", false};
 }
 
 
@@ -237,4 +237,11 @@ void SPGResponse::clearAllQueues() {
     }
     m_responses.clear();
     logger::info("All queues cleared");
+}
+
+void SPGResponse::clearRechatItems() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (auto& [key, responseQueue] : m_responses) {
+        std::erase_if(responseQueue, [](const ResponseItem& item) { return item.rechatGenerated; });
+    }
 }

@@ -5,6 +5,8 @@
 #include <cstdarg>
 #include <cstddef>
 #include <atomic>
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -27,43 +29,46 @@ struct ScriptLine {
 	std::string phonetic;// text in the Latin alphabet to use with lip sync when using non-Latin languages
     std::string rechatTargetHint;
     std::string utteranceId;
+    bool rechatGenerated;
     float volumeBoost; // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
     float duration;      // Duration of the line in seconds, used for timing animations and lip sync
 
 
     ScriptLine(const std::string& sub, const std::string& exp, const std::string& act, const std::string& anim,
                const std::string& targetactor, const std::string& ph, float volBoost = 1.0f, float duration=-1,
-               const std::string& rechatTarget = "", const std::string& utterance = "")
+               const std::string& rechatTarget = "", const std::string& utterance = "", bool fromRechat = false)
         : subtitle(sub), expression(exp), action(act), animation(anim), actor(targetactor), phonetic(ph),
-          rechatTargetHint(rechatTarget), utteranceId(utterance), volumeBoost(volBoost), duration(duration) {}
+          rechatTargetHint(rechatTarget), utteranceId(utterance), rechatGenerated(fromRechat),
+          volumeBoost(volBoost), duration(duration) {}
 
-    static ScriptLine parse(const std::string& input, const std::string& actor, char delimiter = '/') {
+    static ScriptLine parse(const std::string& input, const std::string& actor, char delimiter = '/',
+                            bool fromRechat = false) {
         logger::debug("Parsing input: {} for actor: {}", input, actor);
         size_t firstDelim = input.find(delimiter);
         if (firstDelim == std::string::npos) {
             logger::debug("First delimiter not found");
-            return ScriptLine("", "", "", "", "", "", 1.0f);  // Handle the case when the delimiter is not found
+            return ScriptLine("", "", "", "", "", "", 1.0f, -1, "", "", fromRechat);  // Handle the case when the delimiter is not found
         }
 
         std::string sub = input.substr(0, firstDelim);
         size_t secondDelim = input.find(delimiter, firstDelim + 1);
         if (secondDelim == std::string::npos) {
             logger::debug("Second delimiter not found");
-            return ScriptLine(sub, "", "", "", actor, "", 1.0f);  // Handle the case when the second delimiter is not found
+            return ScriptLine(sub, "", "", "", actor, "", 1.0f, -1, "", "", fromRechat);  // Handle the case when the second delimiter is not found
         }
 
         std::string exp = input.substr(firstDelim + 1, secondDelim - firstDelim - 1);
         size_t thirdDelim = input.find(delimiter, secondDelim + 1);
         if (thirdDelim == std::string::npos) {
             logger::debug("Third delimiter not found");
-            return ScriptLine(sub, exp, "", "", actor, "", 1.0f);  // Handle the case when the third delimiter is not found
+            return ScriptLine(sub, exp, "", "", actor, "", 1.0f, -1, "", "", fromRechat);  // Handle the case when the third delimiter is not found
         }
 
         std::string act = input.substr(secondDelim + 1, thirdDelim - secondDelim - 1);
 		size_t fourthDelim = input.find(delimiter, thirdDelim + 1);
         if (fourthDelim == std::string::npos) {
             logger::debug("Fourth delimiter not found");
-            return ScriptLine(sub, exp, act, "", actor, "", 1.0f);  // Handle the case when the fourth delimiter is not found
+            return ScriptLine(sub, exp, act, "", actor, "", 1.0f, -1, "", "", fromRechat);  // Handle the case when the fourth delimiter is not found
         }
 
         
@@ -72,7 +77,7 @@ struct ScriptLine {
         if (fifthDelim == std::string::npos) {
             // No volume boost field, just phonetic
             std::string phonetic = input.substr(fourthDelim + 1);
-            return ScriptLine(sub, exp, act, anim, actor, phonetic, 1.0f);
+            return ScriptLine(sub, exp, act, anim, actor, phonetic, 1.0f, -1, "", "", fromRechat);
         }
         
         std::string phonetic = input.substr(fourthDelim + 1, fifthDelim - fourthDelim - 1);
@@ -103,7 +108,8 @@ struct ScriptLine {
             volumeBoost = 1.0f;
         }
 
-        return ScriptLine(sub, exp, act, anim, actor, phonetic, volumeBoost, -1, rechatTargetHint, utteranceId);
+        return ScriptLine(sub, exp, act, anim, actor, phonetic, volumeBoost, -1, rechatTargetHint, utteranceId,
+                          fromRechat);
     }
 };
 
@@ -131,6 +137,14 @@ private:
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
+    bool currentPlaybackRechatGenerated = false;
+    struct RecentAiSubtitle {
+        RE::FormID speakerFormId;
+        std::string text;
+        std::chrono::steady_clock::time_point expiresAt;
+    };
+    std::mutex recentAiSubtitleMutex;
+    std::deque<RecentAiSubtitle> recentAiSubtitles;
     struct PendingRechatRetry {
         bool active = false;
         std::string speaker = "";
@@ -283,11 +297,14 @@ public:
     float getPlaybackDropoffOutside();
 
     void abortPendingUtterances(const std::string& reason, bool includeCurrentPlayback = true);
+    bool cancelRechatSpeech(const std::string& reason);
     void deleteQueue(bool isActionCommand = false);
     void deleteQueuedPlayerLines();
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);
     void clearPlayerPlaybackCompletedCallback();
     void recoverFromProcessingFailure(const std::string& actorName);
+    void registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
+    bool isRecentAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
 
     bool downloadFakeNote(std::string name);
     
