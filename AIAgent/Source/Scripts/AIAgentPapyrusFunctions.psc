@@ -343,6 +343,7 @@ Event OnKeyDown(int keyCode)
 	If !SafeProcess()
       Return
     EndIf
+	Actor selectedActor = Game.GetCurrentCrosshairRef() as Actor
 	AIAgentAIMind.resetCam()
     UIExtensions.OpenMenu("UITextEntryMenu")
     string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
@@ -354,7 +355,7 @@ Event OnKeyDown(int keyCode)
 			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
 			inputType = "inputtext_i"
 		endif;
-		AIAgentFunctions.sendMessage(messageText,inputType)
+		SendLegacyTextMessage(messageText,inputType,selectedActor)
 		
 		
     EndIf
@@ -543,6 +544,7 @@ Function TriggerTextChatAction()
 		Return
 	EndIf
 
+	Actor selectedActor = Game.GetCurrentCrosshairRef() as Actor
 	AIAgentAIMind.resetCam()
 	UIExtensions.OpenMenu("UITextEntryMenu")
 	string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
@@ -554,8 +556,16 @@ Function TriggerTextChatAction()
 			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
 			inputType = "inputtext_i"
 		endif
-		AIAgentFunctions.sendMessage(messageText,inputType)
+		SendLegacyTextMessage(messageText,inputType,selectedActor)
 	EndIf
+EndFunction
+
+Function SendLegacyTextMessage(String messageText, String inputType, Actor selectedActor)
+	if selectedActor != None
+		AIAgentFunctions.sendMessageToActor(messageText,inputType,selectedActor)
+	else
+		AIAgentFunctions.sendMessage(messageText,inputType)
+	endif
 EndFunction
 
 Function TriggerVoiceChatAction()
