@@ -9241,7 +9241,10 @@ EventHandlers {
         }
 
         auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
-        RE::TESTopicInfo* source = topicForm ? topicForm->As<RE::TESTopicInfo>() : nullptr;
+        RE::TESTopicInfo* source =
+            topicForm && topicForm->GetFormType() == RE::FormType::Info
+                ? static_cast<RE::TESTopicInfo*>(topicForm)
+                : nullptr;
         
         if (source) {
             //logger::info("TESTopicInfoEvent {} {}", source->GetFormID(),event->topicInfoID);
