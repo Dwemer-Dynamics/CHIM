@@ -2357,31 +2357,34 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         if (locationForm) {
             auto value = locationForm->As<RE::BGSLocation>();
-            for (int i = 0; i < value->specialRefs.size(); i++) {
-                auto specialRefs = value->specialRefs[i];
-                auto ref = RE::TESForm::LookupByID(specialRefs.refData.refID);  // Get Markers
+            if (value) {
+                for (int i = 0; i < value->specialRefs.size(); i++) {
+                    auto specialRefs = value->specialRefs[i];
+                    auto ref = RE::TESForm::LookupByID(specialRefs.refData.refID);  // Get Markers
 
-                if (ref) {
-                    // logger::info(" 0x{:08x} ", specialRefs.refData.refID);
-                    if (ref->GetFormType() == RE::FormType::Reference) {
-                        auto refFinal = ref->As<RE::TESObjectREFR>();
-                        if (refFinal->GetBaseObject()->GetFormID() == 0x3b) {
-                            logger::info("Early XMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
-                                         ref->GetFormID());
-                            markerForm = refFinal;
-                            break;
-                        } else if (refFinal->GetBaseObject()->GetFormID() == 0x10) {
-                            logger::info("Early MapMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
-                                         ref->GetFormID());
-                            markerForm = refFinal;
-                            break;
+                    if (ref) {
+                        // logger::info(" 0x{:08x} ", specialRefs.refData.refID);
+                        if (ref->GetFormType() == RE::FormType::Reference) {
+                            auto refFinal = ref->As<RE::TESObjectREFR>();
+                            if (refFinal->GetBaseObject()->GetFormID() == 0x3b) {
+                                logger::info("Early XMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
+                                             ref->GetFormID());
+                                markerForm = refFinal;
+                                break;
+                            } else if (refFinal->GetBaseObject()->GetFormID() == 0x10) {
+                                logger::info("Early MapMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
+                                             ref->GetFormID());
+                                markerForm = refFinal;
+                                break;
+                            }
                         }
                     }
                 }
             }
             if (!markerForm) {
                 auto value = locationForm->As<RE::BGSLocation>();
-                if (value->worldLocMarker) {
+                
+                if (value && value->worldLocMarker) {
                     auto wmarkerPtr = value->worldLocMarker.get();
                     if (wmarkerPtr) {
                         auto wmarker = wmarkerPtr.get();
@@ -3979,14 +3982,47 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             return;
         }
 
-        auto* recipient = agentPtr->getActor();
-        const auto error = VRItemAwareness::BeginHeldItemHandoff(
-            recipient, requestedItem.baseId.value(), requestedItem.name);
-        if (!error.empty()) {
-            logger::info("[HELD_ITEM_HANDOFF] Could not start for {}: {}", requestedItem.name, error);
-            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                         "command@TakeHeldItem@" + requestedItem.name + "@Error: " + error),
-                             recipient);
+        int isVR = ((REL::Module::GetRuntime() == REL::Module::Runtime::VR)) ? 1 : 0;
+        if (!isVR) {
+            auto npc = agentPtr->getActor();
+            auto itemForm = RE::TESForm::LookupByID(requestedItem.baseId.value());
+            if (itemForm == nullptr) {
+                logger::error("[TakeHeldItem] Could not find item form for BaseID: 0x{:X}", requestedItem.baseId.value());
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@TakeHeldItem@" + requestedItem.name + "@Error: item form not found"),
+                                 npc);
+                return;
+            }
+            auto itemRef = itemForm->As<RE::TESObjectREFR>();
+            auto itemName = requestedItem.name;
+
+            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(itemRef), std::move(itemName),1);
+            auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+
+            if (!vm) {
+                logger::error("[PickupItem] Failed to get VirtualMachine!");
+                return;
+            }
+
+            bool dispatchResult = vm->DispatchStaticCall("AIAgentAIMind", "PickupItemFromWorld", args, callback);
+            if (!dispatchResult) {
+                logger::error("[HELD_ITEM_NO_VR] Failed to dispatch Papyrus call!");
+            } else {
+                logger::info("[HELD_ITEM_NO_VR] Successfully dispatched PickupItemFromWorld for {}.",
+                             requestedItem.name);
+            }
+
+        } else {
+            auto* recipient = agentPtr->getActor();
+            const auto error =
+                VRItemAwareness::BeginHeldItemHandoff(recipient, requestedItem.baseId.value(), requestedItem.name);
+            if (!error.empty()) {
+                logger::info("[HELD_ITEM_HANDOFF] Could not start for {}: {}", requestedItem.name, error);
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@TakeHeldItem@" + requestedItem.name + "@Error: " + error),
+                                 recipient);
+            }
         }
 
     } else if (command.contains("PickupItem")) {
@@ -4070,7 +4106,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             
             // Call PickupItemFromWorld with the actual ObjectReference (much faster - no scanning in Papyrus)
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(itemRef), std::move(itemName));
+            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(itemRef), std::move(itemName),0);
             auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
             
             if (!vm) {

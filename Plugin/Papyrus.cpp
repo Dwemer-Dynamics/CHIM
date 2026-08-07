@@ -2191,6 +2191,21 @@ int Papyrus::sendMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMSta
     return result;
 }
 
+int Papyrus::sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                RE::StaticFunctionTag*, std::string msg, std::string type, RE::Actor* targetActor) {
+    ScopedPapyrusLock lock("sendMessageToActor");
+
+    PlayerConversationRoutingContext routingContext{};
+    if (targetActor) {
+        routingContext.explicitTargetFormId = targetActor->GetFormID();
+        if (const auto* targetName = targetActor->GetDisplayFullName()) {
+            routingContext.explicitTargetName = targetName;
+        }
+    }
+
+    return sendMessageReal(msg, type, routingContext);
+}
+
 int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         std::string msg, std::string type) {
     ScopedPapyrusLock lock("logMessage");
@@ -3311,7 +3326,7 @@ RE::TESObjectREFR* getLocationCenterMarkerImpl( RE::BGSLocation* a_loc, int modi
     auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
     auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
     auto outsideEntranceMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fb);
-    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x00010f63c);
+    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0010f63c);
 
     // Iterate over specialRefs using begin()/end()
     for (auto it = refs->begin(); it != refs->end(); ++it) {
@@ -4003,6 +4018,22 @@ int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObject
     RE::TESObjectREFR* destMarker = getWorldLocationMarkerForImpl(a_loc);
     if (!destMarker) {
         destMarker = getLocationCenterMarkerImpl(a_loc, 0);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 1);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 3);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 4);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationMarkerForImpl(a_loc);
     }
 
     if (!destMarker) {
@@ -5156,6 +5187,7 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
+    a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
     a_vm->RegisterFunction("commandEndedForActor", "AIAgentFunctions", commandEndedForActor, false);
     a_vm->RegisterFunction("getHerikaFormId", "AIAgentFunctions", getHerikaFormId, false);

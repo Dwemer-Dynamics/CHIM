@@ -162,6 +162,38 @@ body {
     margin-bottom: 6px;
 }
 
+.entry-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.entry-delete {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #777780;
+    font: inherit;
+    font-size: 0.82em;
+    line-height: 22px;
+    cursor: pointer;
+}
+
+.entry-delete:hover,
+.entry-delete.confirm-delete {
+    border-color: rgba(184, 62, 67, 0.7);
+    background: rgba(128, 35, 40, 0.45);
+    color: #ff9a9e;
+}
+
+.entry-delete:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
 .entry-speaker {
     font-weight: 600;
     font-size: 1.05em;

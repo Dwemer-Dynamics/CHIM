@@ -3277,18 +3277,30 @@ Function SpawnNpcTemplateNearPlayer(Form npcTemplateForm, int amount, string tem
 	AIAgentFunctions.logMessageForActor("command@SpawnNPC@" + templateLabel + "@" + resultText, "funcret", narratorActorName)
 EndFunction
 
-Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName) global
+Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName, int isHeldItem = 0) global
 	if (!npc || !itemRef)
+		Debug.Trace("[CHIM] PickupItemFromWorld no npc/itemRef")
 		return
 	endif
 	
 	; Check distance to item
 	float distance
-	distance = npc.GetDistance(itemRef)
+	float threshold = 128
+	if (isHeldItem == 0)
+		distance = npc.GetDistance(itemRef)
+	else
+		distance = npc.GetDistance(Game.GetPlayer())
+		threshold = 250
+	endif
 	
-	if (distance < 64.0)
+	if (distance < threshold )
 		; Close enough - pick up immediately
-		Debug.SendAnimationEvent(npc, "IdlePickup")
+		if (isHeldItem == 0)
+			Debug.SendAnimationEvent(npc, "IdlePickup")
+		else
+			Debug.SendAnimationEvent(npc, "IdleTake")
+		endif
+		Debug.Trace("[CHIM] PickupItemFromWorld close enough: Held by player:"+isHeldItem+", distance "+ distance)
 		Utility.Wait(0.5)
 		
 		; Activate the item to pick it up
@@ -3315,8 +3327,12 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		;StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
 		; Make the NPC walk to the item (intent=4 for pickup)
 		;MoveToTarget(npc, itemRef, 4)
-		
-		npc.PathToReference(itemRef, 1);Move it next to it
+		Debug.Trace("[CHIM] PickupItemFromWorld NOT close enough: Held by player:"+isHeldItem+", distance "+ distance)
+		if (isHeldItem == 0)
+			npc.PathToReference(itemRef, 1);Move it next to it
+		else
+			npc.PathToReference(Game.GetPlayer(), 1);Move it next to it
+		endif
 
 		Debug.SendAnimationEvent(npc, "IdlePickup")
 		Utility.Wait(0.5)
@@ -3342,24 +3358,6 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 		
 	endif
-EndFunction
-
-Function AcceptHeldItemFromPlayer(Actor npc, ObjectReference itemRef, string itemName) global
-	if (!npc || !itemRef)
-		return
-	endif
-
-	Actor player = Game.GetPlayer()
-	Debug.SendAnimationEvent(npc, "IdlePickup")
-	Utility.Wait(0.25)
-	npc.AddItem(itemRef)
-	Utility.Wait(0.25)
-	Debug.TraceUser("ChimHTTPSender", "AIAgentRefreshInventory|"+npc.GetFormID())
-
-	string resultText = npc.GetDisplayName()+" accepted "+itemName+" from "+player.GetDisplayName()+"."
-	AIAgentFunctions.logMessageForActor(resultText, "infoaction", npc.GetDisplayName())
-	AIAgentFunctions.logMessageForActor("command@TakeHeldItem@"+itemName+"@"+resultText, "funcret", npc.GetDisplayName())
-	Debug.Notification("[CHIM] "+resultText)
 EndFunction
 
 
