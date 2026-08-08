@@ -2191,6 +2191,21 @@ int Papyrus::sendMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMSta
     return result;
 }
 
+int Papyrus::sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                RE::StaticFunctionTag*, std::string msg, std::string type, RE::Actor* targetActor) {
+    ScopedPapyrusLock lock("sendMessageToActor");
+
+    PlayerConversationRoutingContext routingContext{};
+    if (targetActor) {
+        routingContext.explicitTargetFormId = targetActor->GetFormID();
+        if (const auto* targetName = targetActor->GetDisplayFullName()) {
+            routingContext.explicitTargetName = targetName;
+        }
+    }
+
+    return sendMessageReal(msg, type, routingContext);
+}
+
 int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         std::string msg, std::string type) {
     ScopedPapyrusLock lock("logMessage");
@@ -5172,6 +5187,7 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
+    a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
     a_vm->RegisterFunction("commandEndedForActor", "AIAgentFunctions", commandEndedForActor, false);
     a_vm->RegisterFunction("getHerikaFormId", "AIAgentFunctions", getHerikaFormId, false);

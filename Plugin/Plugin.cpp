@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.2.2"
-#define PLUGIN_RELEASE_DATE "2026-08-04"
+#define PLUGIN_VERSION "3.2.3"
+#define PLUGIN_RELEASE_DATE "2026-08-06"
 
 const char* GetPluginVersion()
 {
@@ -9241,7 +9241,10 @@ EventHandlers {
         }
 
         auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
-        RE::TESTopicInfo* source = topicForm ? topicForm->As<RE::TESTopicInfo>() : nullptr;
+        RE::TESTopicInfo* source =
+            topicForm && topicForm->GetFormType() == RE::FormType::Info
+                ? static_cast<RE::TESTopicInfo*>(topicForm)
+                : nullptr;
         
         if (source) {
             //logger::info("TESTopicInfoEvent {} {}", source->GetFormID(),event->topicInfoID);

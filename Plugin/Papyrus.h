@@ -73,6 +73,9 @@ namespace Papyrus {
     int sendMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                     std::string msg, std::string type);
 
+    int sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                           RE::StaticFunctionTag*, std::string msg, std::string type, RE::Actor* targetActor);
+
     int commandEnded(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                      std::string commmand);
 

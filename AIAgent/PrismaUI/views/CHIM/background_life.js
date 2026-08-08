@@ -378,6 +378,11 @@
             marker.title = `${entry.name}${entry.location ? ` - ${entry.location}` : ''}`;
             marker.appendChild(createElement(
                 'span',
+                'npc-map-marker-icon',
+                entry.activity_icon || '✨'
+            ));
+            marker.appendChild(createElement(
+                'span',
                 'npc-map-marker-label',
                 entry.name || 'Unknown NPC'
             ));
@@ -432,8 +437,10 @@
 
     function applyMapTransform() {
         clampMapPan();
-        byId('map-canvas').style.transform =
+        const canvas = byId('map-canvas');
+        canvas.style.transform =
             `translate3d(${mapOffsetX}px, ${mapOffsetY}px, 0) scale(${mapScale})`;
+        canvas.style.setProperty('--bgl-info-scale', String(1 / mapZoom));
         byId('map-zoom-label').textContent = `${Math.round(mapZoom * 100)}%`;
     }
 
@@ -548,11 +555,27 @@
                 'npc-card-meta',
                 [entry.race, entry.location].filter(Boolean).join(' · ') || 'Location unknown'
             ));
-            body.appendChild(createElement(
-                'div',
-                'npc-card-activity',
-                entry.activity || 'No recent Background Life activity.'
+            const activity = createElement('div', 'npc-card-activity');
+            activity.appendChild(createElement(
+                'span',
+                'npc-card-activity-icon',
+                entry.activity_icon || '✨'
             ));
+            const activityCopy = createElement('div', 'npc-card-activity-copy');
+            activityCopy.appendChild(createElement(
+                'div',
+                'npc-card-activity-title',
+                `Last activity: ${entry.activity_label || 'Activity'}`
+            ));
+            const activitySummary = createElement(
+                'div',
+                'npc-card-activity-summary',
+                entry.activity || 'No recent activity recorded.'
+            );
+            activitySummary.title = entry.activity || 'No recent activity recorded.';
+            activityCopy.appendChild(activitySummary);
+            activity.appendChild(activityCopy);
+            body.appendChild(activity);
             card.appendChild(body);
 
             card.appendChild(createElement('div', 'npc-card-row-label', 'Actions'));
