@@ -734,11 +734,11 @@ function TravelToTargetEnd(Actor npc) global
 					;Only log as background event id npc is not 3dloaded
 					;AIAgentFunctions.logMessageForActor(npc.GetDisplayName() +" reaches destination "+destinationName,"backgroundaction",npc.GetDisplayName())
 					Debug.Trace("[CHIM] TravelToTargetEnd: not present "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
-					ResetPackages(npc)					
+					;ResetPackages(npc)					
 					;Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
 					;ActorUtil.AddPackageOverride(npc, doNothing,99)
 					;npc.EvaluatePackage()
-					Sandbox(npc,""); doNothing moves the NPC
+					Sandbox(npc,"",destination); doNothing moves the NPC
 					
 				else
 					; If NPC present, issue a low priority donothing
@@ -2409,7 +2409,46 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 EndFunction
 
 
-int Function Sandbox(Actor npc,String taskid) global
+int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) global
+
+	if (npc.Is3DLoaded())
+		
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+		Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+		
+		npc.SetFactionRank(sandboxFaction,1)
+
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
+		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+				
+		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
+		npc.EvaluatePackage();
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
+				
+	else 
+		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+		Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+		
+		npc.SetFactionRank(sandboxFaction,1)
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+		
+		if (nearHere)
+			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" should sandbox near "+DecToHex(nearHere.GetFormID()))
+			PO3_SKSEFunctions.SetLinkedRef(npc,nearHere)
+		endif;
+		
+		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100,0)
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
+		npc.EvaluatePackage();
+	
+	endif
+	;AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" talks to "+(Game.GetPlayer().GetDisplayName())+" about the topic he/she knows","instruction",npc.GetDisplayName())
+endFunction
+
+int Function SandboxOld(Actor npc,String taskid) global
 
 	if (npc.Is3DLoaded())
 		
@@ -3739,6 +3778,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				Debug.Trace("[CHIM] BackgroundCmd, destination: "+destination.GetName()+ ", FormId:"+DecToHex(locrefId))
 				ObjectReference destMarker= AIAgentFunctions.getWorldLocationMarkerFor(destination);
 				ObjectReference destMarkerMain= AIAgentFunctions.getLocationCenterMarker(destination,0);
+				ObjectReference insideMarkerRef= AIAgentFunctions.getLocationCenterMarker(destination,1);
+				ObjectReference outsideEntranceMarkerRef= AIAgentFunctions.getLocationCenterMarker(destination,3);
+				ObjectReference mapMarkerRef= AIAgentFunctions.getLocationCenterMarker(destination,4);
 				
 				Debug.Trace("[CHIM] BackgroundCmd, destMarker: "+DecToHex(destMarker.GetFormId()))
 				Debug.Trace("[CHIM] BackgroundCmd, destMarkerMain: "+DecToHex(destMarkerMain.GetFormId()))
@@ -3747,6 +3789,12 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					TravelToLocation(akTarget,destMarkerMain,destination.GetName())
 				elseif (destMarker)
 					TravelToLocation(akTarget,destMarker,destination.GetName())
+				elseif (insideMarkerRef)
+					TravelToLocation(akTarget,insideMarkerRef,destination.GetName())
+				elseif (outsideEntranceMarkerRef)
+					TravelToLocation(akTarget,outsideEntranceMarkerRef,destination.GetName())
+				elseif (mapMarkerRef)
+					TravelToLocation(akTarget,mapMarkerRef,destination.GetName())
 				else
 					Debug.Trace("[CHIM] BackgroundCmd, failed to find destMarker")
 				endif
@@ -3956,7 +4004,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				realCoordsUsed="1";
 			endif			
 			
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed,"util_location_npc")
+			float rx=akTarget.GetPositionX();
+			float ry=akTarget.GetPositionY();
+			float rz=akTarget.GetPositionZ();
+			
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+rx+"/"+ry+"/"+rz+"/","util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -4311,3 +4363,30 @@ function CameraFollow(Actor npc, ObjectReference akTarget) global
 	npc.EvaluatePackage()
 	
 endFunction
+
+
+function DevScanForStatics() global
+	
+	Debug.Trace("[CHIM] DevScanForStatics")
+	ObjectReference[] staticsArr = PO3_SKSEFunctions.FindAllReferencesOfFormType(Game.GetPlayer(),34,1000)	
+	int statics = staticsArr.length
+	int j = 0
+	while j < statics
+		;Debug.Trace("[CHIM] [SPAWN_ITEM] container check "+j);
+		ObjectReference localStatic = staticsArr[j]
+		if (localStatic)
+			if (!localStatic.isDisabled() && !localStatic.isDeleted())
+				
+				;Debug.Trace("[CHIM] [SPAWN_ITEM] Found Static "+DecToHex(localStatic.GetFormId())+" "+localStatic.GetType()+" "+localStatic.GetName());
+				Form base = localStatic.GetBaseObject()
+				if (base && (base.GetFormId() == 0x34 || base.GetFormId() == 0x3b )); XMarkerHeading, XMarker
+					string baseFormEditorId = PO3_SKSEFunctions.GetFormEditorID(localStatic)
+					Debug.Trace("[CHIM] [SPAWN_ITEM] Found XMarkerHeading Static <"+baseFormEditorId+">, base:"+DecToHex(base.GetFormId())+" "+base.GetType()+" "+base.GetName() + "/ ref: "+DecToHex(localStatic.GetFormId())+" "+localStatic.GetType()+" "+localStatic.GetName());
+				endif
+			endif
+		endif
+		j = j +1 
+	endwhile
+	
+endFunction
+

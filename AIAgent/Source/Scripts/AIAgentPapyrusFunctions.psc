@@ -344,6 +344,7 @@ Event OnKeyDown(int keyCode)
       Return
     EndIf
 	AIAgentAIMind.resetCam()
+	AIAgentAIMind.DevScanForStatics()
     UIExtensions.OpenMenu("UITextEntryMenu")
     string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 	
