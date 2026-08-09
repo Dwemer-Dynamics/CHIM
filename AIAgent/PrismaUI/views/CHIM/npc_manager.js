@@ -33,6 +33,14 @@
         if (window.chimNpcManagerCommand) window.chimNpcManagerCommand(command);
     }
 
+    document.querySelectorAll('[data-settings-page]').forEach((button) => {
+        button.addEventListener('click', () => {
+            if (button.dataset.settingsPage !== 'npcs') {
+                sendCommand(`tab_${button.dataset.settingsPage}`);
+            }
+        });
+    });
+
     function normalizeBaseUrl(value) {
         let base = String(value || '').trim().replace(/\/+$/, '');
         if (!/\/HerikaServer$/i.test(base)) base += '/HerikaServer';
