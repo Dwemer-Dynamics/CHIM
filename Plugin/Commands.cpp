@@ -3156,8 +3156,10 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                         npc);
 
         auto player = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+        auto playerName = getPreferredActorDisplayName(player, "Player");
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(amount));
+        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(amount),
+                                              std::move(playerName));
 
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "RentRoom", args,
                                                                                    callback);

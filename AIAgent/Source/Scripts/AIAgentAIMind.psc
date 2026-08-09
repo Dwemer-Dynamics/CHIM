@@ -2833,9 +2833,12 @@ Function ConfirmMoveInventoryItem(Actor source, Actor target, Form akItemToRemov
 	Debug.Trace("ConfirmMoveInventoryItem end");
 EndFunction
 
-Function RentRoom(Actor player, Actor innkeeper, int cost) global
+Function RentRoom(Actor player, Actor innkeeper, int cost, String playerName) global
 	if (!player || !innkeeper)
 		return
+	endif
+	if (playerName == "")
+		playerName = "Player"
 	endif
 
 	Form goldForm = Game.GetForm(0x0000000F)
@@ -2845,7 +2848,7 @@ Function RentRoom(Actor player, Actor innkeeper, int cost) global
 	endif
 
 	if (player.GetItemCount(goldForm) < cost)
-		AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" does not have enough gold to rent a room.","itemfound",innkeeper.GetDisplayName())
+		AIAgentFunctions.logMessageForActor(playerName+" does not have enough gold to rent a room.","itemfound",innkeeper.GetDisplayName())
 		return
 	endif
 
@@ -2858,7 +2861,7 @@ Function RentRoom(Actor player, Actor innkeeper, int cost) global
 
 	player.RemoveItem(goldForm, cost)
 	innkeeper.AddItem(goldForm, cost)
-	AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" paid "+cost+" gold to "+innkeeper.GetDisplayName()+" to rent a room.","itemfound",innkeeper.GetDisplayName())
+	AIAgentFunctions.logMessageForActor(playerName+" paid "+cost+" gold to "+innkeeper.GetDisplayName()+" to rent a room.","itemfound",innkeeper.GetDisplayName())
 EndFunction
 
 Function HireCarriage(Actor player, Actor driver, ObjectReference destination, String destinationName, int cost) global
