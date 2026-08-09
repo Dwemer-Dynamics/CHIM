@@ -22,8 +22,10 @@
         <section id="globals-page" class="page active">
             <div id="global-tabs" class="sub-tabs"></div>
             <form id="globals-form">
-                <div id="global-sections" class="settings-grid"></div>
-                <section class="settings-section context-options-section">
+                <div class="settings-content-panel">
+                    <div id="global-sections" class="settings-grid"></div>
+                </div>
+                <section class="settings-section context-options-section settings-content-panel">
                     <h2>🧩 Prompt Context Selections</h2>
                     <div id="prompt-context-options" class="context-options-grid"></div>
                 </section>
@@ -38,20 +40,38 @@
                         <button id="new-profile" class="button primary" type="button">New</button>
                         <button id="delete-profile" class="button danger" type="button">Delete</button>
                     </div>
+                    <section class="profile-slot-panel">
+                        <h2>Profile Slots</h2>
+                        <div id="profile-slot-summary" class="profile-slot-summary"></div>
+                    </section>
                     <div id="profile-list" class="profile-list"></div>
                 </aside>
                 <form id="profile-form" class="profile-editor">
+                    <header class="profile-editor-toolbar">
+                        <div>
+                            <span>Editing Profile</span>
+                            <strong id="profile-editor-name">Select a profile</strong>
+                        </div>
+                        <button class="button primary" type="submit">Save Profile</button>
+                    </header>
                     <section class="settings-section">
                         <h2>⚙ Profile Core</h2>
-                        <div class="field-grid two-column">
+                        <div class="profile-core-grid">
                             <label class="field"><span>Name</span><input name="label" required></label>
                             <label class="field"><span>Slot</span><select name="slot"><option value="">No slot</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+                            <label class="toggle-field profile-default-card"><input name="default_npc" type="checkbox"><span>Default NPC Profile</span></label>
                         </div>
-                        <label class="toggle-field"><input name="default_npc" type="checkbox"><span>Default NPC Profile</span></label>
                         <label class="field"><span>Prompt</span><textarea name="prompt" rows="7"></textarea></label>
                     </section>
-                    <div id="profile-connectors" class="settings-grid"></div>
-                    <div id="profile-metadata-sections" class="settings-grid"></div>
+                    <section class="settings-section grouped-section">
+                        <h2>🧠 Connector Selection</h2>
+                        <p>Choose the services used by this profile.</p>
+                        <div id="profile-connectors" class="connector-selection-grid"></div>
+                    </section>
+                    <section class="settings-section grouped-section">
+                        <h2>🗂 Profile Settings</h2>
+                        <div id="profile-metadata-sections" class="profile-settings-columns"></div>
+                    </section>
                     <section class="settings-section profile-overrides">
                         <h2>🌐 Global Settings Overrides</h2>
                         <p>Enable only the settings this profile should override.</p>
@@ -62,7 +82,6 @@
                         <p>Unknown plugin metadata is preserved. Edit only when needed.</p>
                         <textarea id="profile-metadata-json" rows="12" spellcheck="false"></textarea>
                     </details>
-                    <footer class="action-bar"><button class="button primary" type="submit">Save Profile</button></footer>
                 </form>
             </div>
         </section>

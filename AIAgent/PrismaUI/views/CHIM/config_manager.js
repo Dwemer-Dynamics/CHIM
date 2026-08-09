@@ -7,6 +7,7 @@
     let profileData = null;
     let selectedProfileId = 0;
     let activeGlobalTab = 'prompt-rechat';
+    let selectSequence = 0;
 
     function command(value) { if (window.chimConfigManagerCommand) window.chimConfigManagerCommand(value); }
     function asBool(value) {
@@ -17,6 +18,71 @@
         let base = String(value || '').trim().replace(/\/+$/, '');
         if (!/\/HerikaServer$/i.test(base)) base += '/HerikaServer';
         return base;
+    }
+    function closeTileSelectors(except) {
+        document.querySelectorAll('.settings-tile-selector.expanded').forEach((selector) => {
+            if (selector === except) return;
+            selector.classList.remove('expanded');
+            selector.querySelector('.settings-tile-trigger').setAttribute('aria-expanded', 'false');
+        });
+    }
+    function syncTileSelect(select) {
+        const selector = select.closest('.settings-tile-selector');
+        if (!selector) return;
+        const selected = select.options[select.selectedIndex];
+        selector.querySelector('.settings-tile-value').textContent = selected ? selected.textContent : 'Not assigned';
+        selector.querySelector('.settings-tile-trigger').disabled = select.disabled;
+        selector.querySelectorAll('.settings-tile-option').forEach((option) => {
+            const active = option.dataset.value === select.value;
+            option.classList.toggle('selected', active);
+            option.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+    }
+    function enhanceSelect(select) {
+        if (select.closest('.settings-tile-selector')) return select.closest('.settings-tile-selector');
+        const selector = document.createElement('div');
+        const trigger = document.createElement('button');
+        const value = document.createElement('span');
+        const arrow = document.createElement('span');
+        const options = document.createElement('div');
+        const listId = `settings-select-options-${++selectSequence}`;
+        selector.className = 'settings-tile-selector';
+        trigger.type = 'button'; trigger.className = 'settings-tile-trigger';
+        trigger.setAttribute('aria-haspopup', 'listbox'); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', listId);
+        value.className = 'settings-tile-value'; arrow.className = 'settings-tile-arrow'; arrow.setAttribute('aria-hidden', 'true');
+        options.className = 'settings-tile-options'; options.id = listId; options.setAttribute('role', 'listbox');
+        Array.from(select.options).forEach((nativeOption) => {
+            const option = document.createElement('button');
+            option.type = 'button'; option.className = 'settings-tile-option'; option.dataset.value = nativeOption.value;
+            option.setAttribute('role', 'option'); option.textContent = nativeOption.textContent;
+            option.addEventListener('click', () => {
+                select.value = nativeOption.value;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+                syncTileSelect(select); closeTileSelectors(); trigger.focus();
+            });
+            options.appendChild(option);
+        });
+        trigger.append(value, arrow);
+        trigger.addEventListener('click', () => {
+            const opening = !selector.classList.contains('expanded');
+            closeTileSelectors(opening ? selector : null);
+            selector.classList.toggle('expanded', opening);
+            trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        });
+        selector.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            event.stopPropagation(); closeTileSelectors(); trigger.focus();
+        });
+        select.classList.add('settings-native-select');
+        select.parentNode.insertBefore(selector, select);
+        selector.append(trigger, options, select);
+        select.addEventListener('change', () => syncTileSelect(select));
+        syncTileSelect(select);
+        return selector;
+    }
+    function setControlDisabled(control, disabled) {
+        control.disabled = disabled;
+        if (control.matches('select')) syncTileSelect(control);
     }
     async function responseData(response) {
         let payload;
@@ -49,6 +115,7 @@
             control.name = name; control.value = value === null || value === undefined ? '' : String(value);
             if (field.min !== undefined) control.min = field.min; if (field.max !== undefined) control.max = field.max; if (field.step !== undefined) control.step = field.step;
             wrapper.appendChild(control);
+            if (control.matches('select')) enhanceSelect(control);
             if (field.description) { const help = document.createElement('small'); help.textContent = field.description; wrapper.appendChild(help); }
         }
         return wrapper;
@@ -109,11 +176,23 @@
     }
     function renderProfileList() {
         const list = byId('profile-list'); list.replaceChildren();
+        const slots = byId('profile-slot-summary'); slots.replaceChildren();
+        for (let slot = 1; slot <= 4; slot += 1) {
+            const profile = (profileData.profiles || []).find((item) => Number(item.slot) === slot);
+            const row = document.createElement('div'); row.className = 'slot-summary-row';
+            const label = document.createElement('strong'); label.textContent = `Slot ${slot}`;
+            const value = document.createElement('span'); value.textContent = profile ? profile.label : 'Empty';
+            row.append(label, value); slots.appendChild(row);
+        }
         (profileData.profiles || []).forEach((profile) => {
             const button = document.createElement('button'); button.type = 'button'; button.className = `profile-card${profile.id === selectedProfileId ? ' active' : ''}`;
+            const titleRow = document.createElement('div'); titleRow.className = 'profile-card-title';
             const title = document.createElement('strong'); title.textContent = profile.label;
-            const meta = document.createElement('small'); meta.textContent = `${profile.default_npc ? 'Default · ' : ''}${profile.slot ? `Slot ${profile.slot} · ` : ''}${profile.npc_count} NPCs`;
-            button.append(title, meta); button.addEventListener('click', () => loadProfile(profile.id)); list.appendChild(button);
+            const badges = document.createElement('span'); badges.className = 'profile-badges';
+            if (profile.default_npc) { const badge = document.createElement('span'); badge.className = 'profile-badge'; badge.textContent = 'Default'; badges.appendChild(badge); }
+            if (profile.slot) { const badge = document.createElement('span'); badge.className = 'profile-badge'; badge.textContent = `Slot ${profile.slot}`; badges.appendChild(badge); }
+            const meta = document.createElement('small'); meta.textContent = `${profile.npc_count} NPCs${profile.dynamic_profile ? ' · Dynamic' : ''}${profile.auto_diary ? ' · Diary' : ''}`;
+            titleRow.append(title, badges); button.append(titleRow, meta); button.addEventListener('click', () => loadProfile(profile.id)); list.appendChild(button);
         });
     }
     async function loadProfile(id) {
@@ -125,7 +204,9 @@
     function renderProfile(detail) {
         const form = byId('profile-form');
         form.elements.label.value = detail.core.label || ''; form.elements.slot.value = detail.core.slot || '';
+        syncTileSelect(form.elements.slot);
         form.elements.default_npc.checked = asBool(detail.core.default_npc); form.elements.prompt.value = detail.core.prompt || '';
+        byId('profile-editor-name').textContent = detail.core.label || 'Profile';
         const connectorRoot = byId('profile-connectors'); connectorRoot.replaceChildren();
         Object.entries(detail.connector_catalog || {}).forEach(([group, fields]) => {
             const section = document.createElement('section'); section.className = 'settings-section'; const title = document.createElement('h2'); title.textContent = group; section.appendChild(title);
@@ -157,10 +238,10 @@
                 const label = document.createElement('span'); label.textContent = field.label || field.name; enable.append(checkbox, label);
                 const valueField = Object.assign({}, field, { label: 'Override Value' });
                 const control = fieldControl(valueField, field.value, 'override:');
-                control.querySelectorAll('input, textarea, select').forEach((element) => { element.disabled = !checkbox.checked; });
+                control.querySelectorAll('input, textarea, select').forEach((element) => setControlDisabled(element, !checkbox.checked));
                 checkbox.addEventListener('change', () => {
                     row.classList.toggle('disabled', !checkbox.checked);
-                    control.querySelectorAll('input, textarea, select').forEach((element) => { element.disabled = !checkbox.checked; });
+                    control.querySelectorAll('input, textarea, select').forEach((element) => setControlDisabled(element, !checkbox.checked));
                 });
                 row.append(enable, control); section.appendChild(row);
             });
@@ -212,6 +293,7 @@
     }
     function showError(error) { status(error.message || String(error), true); }
     function init() {
+        enhanceSelect(byId('profile-form').elements.slot);
         byId('close-button').addEventListener('click', () => command('close'));
         document.querySelectorAll('.top-tab').forEach((button) => button.addEventListener('click', () => switchPage(button.dataset.page)));
         byId('globals-form').addEventListener('submit', (event) => saveGlobals(event).catch(showError));
@@ -220,6 +302,7 @@
         byId('delete-profile').addEventListener('click', () => deleteProfile().catch(showError));
         document.addEventListener('focusin', (event) => { if (event.target.matches('input, textarea, select')) command('input_capture|on'); });
         document.addEventListener('focusout', () => command('input_capture|off'));
+        document.addEventListener('click', (event) => { if (!event.target.closest('.settings-tile-selector')) closeTileSelectors(); });
         document.addEventListener('keydown', (event) => { if (event.key === 'Escape') command('close'); });
         command('dom_ready');
     }
