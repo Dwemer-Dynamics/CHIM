@@ -738,7 +738,7 @@ function TravelToTargetEnd(Actor npc) global
 					;Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
 					;ActorUtil.AddPackageOverride(npc, doNothing,99)
 					;npc.EvaluatePackage()
-					Sandbox(npc,""); doNothing moves the NPC
+					Sandbox(npc,"",destination); doNothing moves the NPC
 					
 				else
 					; If NPC present, issue a low priority donothing
