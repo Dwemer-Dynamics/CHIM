@@ -108,6 +108,8 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .connector-selection-grid > .settings-section h2, .profile-settings-columns > .settings-section h2 { color: #f3bd7e; font-size: .9rem; }
 .copy-button { float: right; min-height: 24px; margin: -2px 0 3px 7px; padding: 2px 7px; font-size: .66rem; }
 .profile-overrides { display: grid; gap: 9px; }
+.profile-overrides summary { cursor: pointer; color: var(--accent); font-size: 1rem; font-weight: 700; }
+.profile-overrides:not([open]) > :not(summary) { display: none; }
 .profile-overrides > .settings-grid { align-items: stretch; }
 .override-field { display: grid; grid-template-columns: minmax(170px,.7fr) minmax(0,1.3fr); gap: 10px; align-items: start; padding: 8px; border: 1px solid #3a3a40; border-radius: 6px; background: #1e1e22; }
 .override-enable { display: grid; grid-template-columns: auto 1fr; gap: 7px; align-items: center; color: #e7dfd5; font-size: .78rem; }
