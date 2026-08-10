@@ -139,7 +139,7 @@ textarea { resize: vertical; line-height: 1.35; }
 .editor-header { justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid #4b321f; }
 .editor-identity { display: flex; align-items: center; gap: 10px; }
 .editor-identity img { width: 48px; height: 48px; object-fit: cover; border: 1px solid #555; border-radius: 4px; }
-.editor-tabs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; padding: 8px 10px; border-bottom: 1px solid #3b3b40; }
+.editor-tabs { display: grid; grid-template-columns: repeat(7, 1fr); gap: 7px; padding: 8px 10px; border-bottom: 1px solid #3b3b40; }
 .editor-tab { padding: 8px; border: 1px solid var(--line); border-radius: 4px; background: #2d2d32; cursor: pointer; }
 .editor-tab.active { border-color: var(--accent); background: #49301c; color: #fff; }
 #npc-form { min-height: 0; display: grid; grid-template-rows: 1fr auto; }

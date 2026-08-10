@@ -247,6 +247,8 @@
         byId('bgl-inception-idea').value = '';
         byId('action-status').textContent = '';
         byId('action-status').classList.remove('error');
+        byId('bgl-action-status').textContent = '';
+        byId('bgl-action-status').classList.remove('error');
         resetNpcHistory(detail.card);
         switchEditorTab('general');
         byId('save-status').textContent = '';
@@ -659,7 +661,7 @@
     async function runNpcAction(action, button) {
         if (!currentDetail) return;
         const idea = action === 'bgl_inception' ? byId('bgl-inception-idea').value.trim() : '';
-        const status = byId('action-status');
+        const status = byId(action === 'bgl_inception' ? 'bgl-action-status' : 'action-status');
         if (action === 'bgl_inception' && !idea) {
             status.textContent = 'Enter a thought before setting Background Life inception.';
             status.classList.add('error');

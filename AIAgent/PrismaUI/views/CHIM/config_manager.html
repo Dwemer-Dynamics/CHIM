@@ -133,9 +133,10 @@
                 <button type="button" class="editor-tab active" data-tab="general">⚙ General</button>
                 <button type="button" class="editor-tab" data-tab="roleplay">🎭 Roleplay</button>
                 <button type="button" class="editor-tab" data-tab="relationships">🤝 Relationships</button>
-                <button type="button" class="editor-tab" data-tab="history">📜 History</button>
                 <button type="button" class="editor-tab" data-tab="info">ℹ Info</button>
                 <button type="button" class="editor-tab" data-tab="actions">⚡ Actions</button>
+                <button type="button" class="editor-tab" data-tab="background-life">🌍 Background Life</button>
+                <button type="button" class="editor-tab" data-tab="history">📜 History</button>
             </nav>
 
             <form id="npc-form" autocomplete="off">
@@ -242,6 +243,12 @@
                                 </div>
                                 <button id="teleport-action" class="button secondary" type="button" data-action="teleport">Teleport</button>
                             </article>
+                        </div>
+                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                    </section>
+
+                    <section class="tab-panel" data-panel="background-life" hidden>
+                        <div class="npc-action-list">
                             <article class="npc-action-card inception-card">
                                 <div class="npc-action-copy">
                                     <h3>Background Life Inception</h3>
@@ -251,7 +258,7 @@
                                 <button id="bgl-inception-action" class="button secondary" type="button">Set Thought</button>
                             </article>
                         </div>
-                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                        <p id="bgl-action-status" class="action-status" role="status" aria-live="polite"></p>
                     </section>
                 </div>
 
