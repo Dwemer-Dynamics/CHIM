@@ -4012,6 +4012,7 @@ RE::TESObjectREFR* Papyrus::loadReference(RE::BSScript::Internal::VirtualMachine
 }
   
 
+
 int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObjectCELL* referenceCell) {
     
 
@@ -4056,7 +4057,10 @@ int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObject
     if (currParent) {
         currParent2 = currParent->parentLoc;
     }
-
+    if (a_loc->GetFormID() == 0x0005F428) {
+        logger::debug("sendLocationFast: Debug line");
+        
+    }
     RE::TESObjectREFR* locationCenterMarkerRef = getLocationCenterMarkerImpl(a_loc, 0);
     RE::TESObjectREFR* insideEntranceMarkerRef = getLocationCenterMarkerImpl(a_loc, 1);
     RE::TESObjectREFR* outsideEntranceMarkerRef = getLocationCenterMarkerImpl(a_loc, 3);
@@ -4159,9 +4163,52 @@ int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObject
     types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared+"/"+worldspaceName,"util_location_name")
     * */
 
+    // When dealing with coordinates, we must send global world coordinates
+    // Check mapMarkerRefType, and world is 0x3c,01x1a26f,1691d,0x037edf,0x16bb4,0x016d71
+    // Check rawLocationMarker, and world is 0x3c,01x1a26f,1691d,0x037edf,0x16bb4,0x016d71
+    // I so, send coords.
+    auto isValidWorldMarker = [&](RE::TESObjectREFR* ref) -> bool {
+        if (!ref) {
+            return false;
+        }
 
-    float x = destMarker->GetPositionX();
-    float y = destMarker->GetPositionY();
+        auto* worldspace = ref->GetWorldspace();
+        if (!worldspace) {
+            return false;
+        }
+
+        constexpr std::array<RE::FormID, 6> allowedWorldspaces = {0x3C, 0x1A26F, 0x1691D, 0x037EDF, 0x016BB4, 0x016D71};
+
+        return std::find(allowedWorldspaces.begin(), allowedWorldspaces.end(), worldspace->GetFormID()) !=
+               allowedWorldspaces.end();
+    };
+
+    RE::TESObjectREFR* destMarkerWorld = nullptr;
+
+    if (isValidWorldMarker(mapMarkerRefType)) {
+        destMarkerWorld = mapMarkerRefType;
+    } else if (isValidWorldMarker(rawLocationMarker)) {
+        destMarkerWorld = rawLocationMarker;
+    }
+    
+    if (!destMarkerWorld) {
+        // We don't have coords. Case, Silver-Blood Inn. Interior location, no world marker. We will send 0,0 coords.
+        // Let's check parent location for coords.
+        if (currParent) {
+            RE::TESObjectREFR* parentMarker = getWorldLocationMarkerForImpl(currParent);
+            if (parentMarker && isValidWorldMarker(parentMarker)) {
+                destMarkerWorld = parentMarker;
+                logger::debug("sendLocationFast: Using parent location marker for world coordinates for location {},{:08X}",
+                              a_loc->GetName(), a_loc->GetFormID());
+            }
+        } else {
+            logger::warn("sendLocationFast: No valid world marker found for location {},{:08X}", a_loc->GetName(),
+                         a_loc->GetFormID());
+        }
+    }
+    float x = destMarkerWorld ? destMarkerWorld->GetPositionX() : 0.0f;
+    float y = destMarkerWorld ? destMarkerWorld->GetPositionY() : 0.0f;
+
     std::string locName = a_loc->GetName();
 
     HTTPManager::log(std::format("util_location_name|{}|{}|{}/{}/{}/{}/{}/{}//{}/{}/{}/{}/{}", getCurrentTimeMillis(), GetGameTimeStamp(), 

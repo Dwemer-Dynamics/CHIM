@@ -3,6 +3,7 @@ Scriptname AIAgentFunctions
 ;Main Functions
 int function sendMessage(String a_msg,String a_type) Global Native		; Send message as user input and expects an IA response
 int function sendMessageToActor(String a_msg,String a_type,Actor targetActor) Global Native	; Send targeted user input
+
 int function commandEnded(String command)  Global Native
 int function commandEndedForActor(String command,string npc)  Global Native
 
