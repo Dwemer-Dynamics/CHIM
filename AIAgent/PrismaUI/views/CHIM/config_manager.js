@@ -285,11 +285,13 @@
         selectedProfileId = 0; await loadProfiles();
     }
     function switchPage(page) {
-        if (page === 'npcs') { command('tab_npcs'); return; }
+        if (!['globals', 'profiles', 'npcs'].includes(page)) page = 'globals';
         document.querySelectorAll('.top-tab').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
         document.querySelectorAll('.page').forEach((element) => { const active = element.id === `${page}-page`; element.hidden = !active; element.classList.toggle('active', active); });
+        byId('status-line').hidden = page === 'npcs';
         if (page === 'globals' && !globalData) loadGlobals().catch(showError);
         if (page === 'profiles' && !profileData) loadProfiles().catch(showError);
+        if (page === 'npcs' && window.onNpcManagerShown) window.onNpcManagerShown();
     }
     function showError(error) { status(error.message || String(error), true); }
     function init() {
@@ -308,11 +310,17 @@
     }
     window.setConfigManagerServerUrl = (value) => {
         serverBaseUrl = normalizeBaseUrl(value);
+        if (window.setNpcManagerServerUrl) window.setNpcManagerServerUrl(value);
         if (!globalData && document.querySelector('.top-tab.active').dataset.page === 'globals') {
             loadGlobals().catch(showError);
         }
     };
-    window.setConfigManagerTab = (tab) => switchPage(tab === 'profiles' ? 'profiles' : 'globals');
-    window.onConfigManagerShown = () => { if (document.querySelector('.top-tab.active').dataset.page === 'profiles') loadProfiles(selectedProfileId).catch(showError); else loadGlobals().catch(showError); };
+    window.setConfigManagerTab = (tab) => switchPage(['globals', 'profiles', 'npcs'].includes(tab) ? tab : 'globals');
+    window.onConfigManagerShown = () => {
+        const page = document.querySelector('.top-tab.active').dataset.page;
+        if (page === 'profiles') loadProfiles(selectedProfileId).catch(showError);
+        else if (page === 'npcs' && window.onNpcManagerShown) window.onNpcManagerShown();
+        else loadGlobals().catch(showError);
+    };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

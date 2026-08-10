@@ -33,6 +33,9 @@ h2 { color: var(--accent); font-size: 1rem; margin-bottom: 9px; }
 .status-line.error { color: #ff9ca4; }
 .page { min-height: 0; overflow: auto; padding: 12px 14px 18px; }
 .page[hidden] { display: none; }
+#npcs-page { overflow: hidden; padding: 0; }
+#npcs-page.active { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+#npcs-page .npc-status-line { display: flex; justify-content: space-between; }
 .settings-content-panel, .settings-section { min-width: 0; border: 1px solid #404040; border-radius: 9px; background: var(--panel-soft); padding: 13px; }
 .settings-content-panel > .settings-grid { margin: 0; }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }

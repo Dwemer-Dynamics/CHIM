@@ -1,12 +1,12 @@
 :root {
-    --panel: rgba(20, 20, 24, .98);
-    --panel-soft: #25252a;
-    --panel-raised: #2e2e34;
-    --line: #45454c;
+    --panel: rgba(20, 20, 22, .98);
+    --panel-soft: #232323;
+    --panel-raised: #303030;
+    --line: #414141;
     --accent: #f27c11;
     --accent-soft: #7a3b0d;
-    --text: #f4f1ec;
-    --muted: #aaa7a3;
+    --text: #f5f1e8;
+    --muted: #a7afbb;
     --good: #4fb875;
     --danger: #c94e58;
 }
@@ -27,20 +27,20 @@ button { color: var(--text); }
 
 .manager-shell {
     width: min(1500px, 95vw);
-    height: min(900px, 92vh);
+    height: min(920px, 94vh);
     display: grid;
     grid-template-rows: auto auto auto auto 1fr auto;
     overflow: hidden;
     border: 1px solid var(--accent-soft);
-    border-radius: 8px;
+    border-radius: 9px;
     background: var(--panel);
-    box-shadow: 0 18px 60px rgba(0, 0, 0, .7);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, .72);
 }
 .panel-header, .editor-header, .toolbar, .editor-actions, .pagination-bar {
     display: flex;
     align-items: center;
 }
-.panel-header { justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--accent-soft); }
+.panel-header { justify-content: space-between; padding: 13px 18px; border-bottom: 1px solid var(--accent-soft); }
 .top-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 9px 13px 0; padding: 8px; border: 1px solid #3a3a3a; border-radius: 9px; background: rgba(30,30,30,.92); }
 .top-tab { min-height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; background: var(--panel-raised); cursor: pointer; }
 .top-tab:hover { border-color: rgba(242,124,17,.65); background: #39312b; }

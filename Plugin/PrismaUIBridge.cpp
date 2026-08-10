@@ -3638,9 +3638,8 @@ R"CHIM(
 
     // ===== CHIM NPC Manager Functions =====
 
-    static void SetNpcManagerServerUrl() {
-        if (!g_prismaUI || !g_npcManagerCreated.load() ||
-            g_npcManagerView == 0 || !g_prismaUI->IsValid(g_npcManagerView)) {
+    static void SetNpcManagerServerUrl(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
             return;
         }
 
@@ -3648,12 +3647,16 @@ R"CHIM(
             "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
         const std::string call =
             "window.setNpcManagerServerUrl('" + EscapeForJS(serverUrl) + "')";
-        g_prismaUI->Invoke(g_npcManagerView, call.c_str(), nullptr);
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
     }
 
-    static void UpdateNpcManagerTargets() {
-        if (!g_prismaUI || !g_npcManagerCreated.load() ||
-            g_npcManagerView == 0 || !g_prismaUI->IsValid(g_npcManagerView)) {
+    static void SetNpcManagerServerUrl() {
+        if (!g_npcManagerCreated.load()) return;
+        SetNpcManagerServerUrl(g_npcManagerView);
+    }
+
+    static void UpdateNpcManagerTargets(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
             return;
         }
 
@@ -3670,7 +3673,12 @@ R"CHIM(
 
         const std::string call =
             "window.updateNpcManagerTargets('" + EscapeForJS(payload.dump()) + "')";
-        g_prismaUI->Invoke(g_npcManagerView, call.c_str(), nullptr);
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    static void UpdateNpcManagerTargets() {
+        if (!g_npcManagerCreated.load()) return;
+        UpdateNpcManagerTargets(g_npcManagerView);
     }
 
     static void OnNpcManagerDomReady(PrismaView view) {
@@ -3727,74 +3735,12 @@ R"CHIM(
     }
 
     void ToggleNpcManagerPanel() {
-        if (!g_prismaUI) {
-            return;
-        }
-
-        const bool needsCreation =
-            !g_npcManagerCreated.load() ||
-            g_npcManagerView == 0 ||
-            !g_prismaUI->IsValid(g_npcManagerView);
-        if (needsCreation) {
-            CreateNpcManagerPanel();
-        }
-        if (!g_npcManagerCreated.load()) {
-            return;
-        }
-        if (needsCreation) {
-            ShowNpcManagerPanel();
-            return;
-        }
-
-        if (g_prismaUI->IsHidden(g_npcManagerView)) {
-            ShowNpcManagerPanel();
-        } else {
-            HideNpcManagerPanel();
-        }
+        if (IsConfigManagerPanelVisible()) HideConfigManagerPanel();
+        else ShowConfigManagerPanel("npcs");
     }
 
     void ShowNpcManagerPanel() {
-        if (!g_prismaUI || !g_npcManagerCreated.load()) {
-            CreateNpcManagerPanel();
-        }
-        if (!g_prismaUI || !g_npcManagerCreated.load() ||
-            !g_prismaUI->IsValid(g_npcManagerView)) {
-            return;
-        }
-
-        if (g_panelCreated.load() && !g_prismaUI->IsHidden(g_historyView)) {
-            HideHistoryPanel();
-        }
-        if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
-            HideDiariesPanel();
-        }
-        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
-            HideBackgroundLifePanel();
-        }
-        if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
-            HideBrowserPanel();
-        }
-        if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
-            HideQuestManagerPanel();
-        }
-
-        if (g_configManagerCreated.load() && !g_prismaUI->IsHidden(g_configManagerView)) {
-            HideConfigManagerPanel();
-        }
-
-        g_prismaUI->Show(g_npcManagerView);
-        SetNpcManagerServerUrl();
-        UpdateNpcManagerTargets();
-        const bool focused = g_prismaUI->Focus(g_npcManagerView, true, false);
-        logger::info(
-            "[PrismaUIBridge] CHIM NPC manager focus: {}",
-            focused ? "SUCCESS" : "FAILED");
-        if (g_npcManagerDomReady.load()) {
-            g_prismaUI->Invoke(
-                g_npcManagerView,
-                "window.onNpcManagerShown && window.onNpcManagerShown()",
-                nullptr);
-        }
+        ShowConfigManagerPanel("npcs");
     }
 
     void HideNpcManagerPanel() {
@@ -3832,6 +3778,7 @@ R"CHIM(
         (void)view;
         g_configManagerDomReady.store(true);
         SetConfigManagerServerUrl();
+        SetNpcManagerServerUrl(g_configManagerView);
     }
 
     static void OnConfigManagerCommand(const char* argument) {
@@ -3843,8 +3790,21 @@ R"CHIM(
             g_configManagerDomReady.store(true);
             SetConfigManagerServerUrl();
         } else if (command == "tab_npcs") {
-            HideConfigManagerPanel();
-            ShowNpcManagerPanel();
+            ShowConfigManagerPanel("npcs");
+        } else if (command.starts_with("npc|")) {
+            const std::string npcCommand = command.substr(4);
+            if (npcCommand == "close") {
+                HideConfigManagerPanel();
+            } else if (npcCommand == "dom_ready") {
+                SetNpcManagerServerUrl(g_configManagerView);
+                UpdateNpcManagerTargets(g_configManagerView);
+            } else if (npcCommand == "targets_refresh") {
+                UpdateNpcManagerTargets(g_configManagerView);
+            } else if (npcCommand == "input_capture|on" || npcCommand == "input_capture|off") {
+                SetChatboxGameplayInputSuppressed(npcCommand == "input_capture|on");
+            } else {
+                logger::warn("[PrismaUIBridge] Unknown embedded NPC manager command: {}", npcCommand);
+            }
         } else if (command == "input_capture|on" || command == "input_capture|off") {
             SetChatboxGameplayInputSuppressed(command == "input_capture|on");
         } else {
@@ -3889,7 +3849,7 @@ R"CHIM(
         if (g_settingsMenuCreated.load() && !g_prismaUI->IsHidden(g_settingsMenuView)) HideSettingsMenu();
         g_prismaUI->Show(g_configManagerView);
         SetConfigManagerServerUrl();
-        const std::string normalizedTab = tab == "profiles" ? "profiles" : "globals";
+        const std::string normalizedTab = tab == "profiles" || tab == "npcs" ? tab : "globals";
         const std::string call = "window.setConfigManagerTab && window.setConfigManagerTab('" + normalizedTab + "')";
         g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
         const bool focused = g_prismaUI->Focus(g_configManagerView, true, false);
