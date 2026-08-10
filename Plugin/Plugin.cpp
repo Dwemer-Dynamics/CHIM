@@ -2337,6 +2337,7 @@ private:
 
                     if (!newResponse.text.empty()) {
                         ScriptLine l = ScriptLine::parse(newResponse.text, newResponse.actor.c_str());
+                        l.rechatGenerated = newResponse.rechatGenerated;
 
                         if (IsPlayerActorName(l.actor)) {  // Player has talk. Remove NPC speech.
                             SpeakManager::getInstance().deleteQueue();
