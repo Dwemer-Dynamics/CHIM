@@ -28,6 +28,9 @@
     let currentDetail = null;
     let loadingGeneration = 0;
     let searchTimer = null;
+    let historyRecipientSearchTimer = null;
+    let historySearchGeneration = 0;
+    const historyRecipients = new Map();
     const embeddedInSettings = !!byId('npcs-page');
 
     function sendCommand(command) {
@@ -206,7 +209,6 @@
         byId('editor-backdrop').classList.remove('hidden');
         byId('editor-title').textContent = 'Loading NPC...';
         byId('save-status').textContent = '';
-        sendCommand('input_capture|on');
         try {
             currentDetail = await parseResponse(await fetch(
                 `${serverBaseUrl}/ui/api/chim_npc_manager.php?operation=detail&id=${encodeURIComponent(id)}`,
@@ -244,9 +246,219 @@
         byId('bgl-inception-idea').value = '';
         byId('action-status').textContent = '';
         byId('action-status').classList.remove('error');
+        resetNpcHistory(detail.card);
         switchEditorTab('general');
         byId('save-status').textContent = '';
         byId('save-status').classList.remove('error');
+    }
+
+    function setHistoryStatus(message, error) {
+        const status = byId('history-status');
+        status.textContent = message || '';
+        status.classList.toggle('error', !!error);
+    }
+
+    function resetNpcHistory(card) {
+        historyRecipients.clear();
+        historyRecipients.set(Number(card.id), String(card.name || 'NPC'));
+        historySearchGeneration += 1;
+        clearTimeout(historyRecipientSearchTimer);
+        byId('history-recipient-search').value = '';
+        byId('history-recipient-results').hidden = true;
+        byId('history-recipient-results').replaceChildren();
+        byId('history-event-text').value = '';
+        byId('history-list').replaceChildren(historyEmpty('Open this tab to load recent events.'));
+        setHistoryStatus('', false);
+        renderHistoryRecipients();
+    }
+
+    function historyEmpty(message, error) {
+        const empty = document.createElement('p');
+        empty.className = `history-empty${error ? ' error' : ''}`;
+        empty.textContent = message;
+        return empty;
+    }
+
+    function renderHistoryRecipients() {
+        const container = byId('history-recipients');
+        const currentNpcId = Number(byId('npc-id').value || 0);
+        container.replaceChildren();
+        historyRecipients.forEach((name, id) => {
+            const chip = document.createElement('span');
+            chip.className = 'history-recipient-chip';
+            const label = document.createElement('span');
+            label.textContent = name;
+            chip.appendChild(label);
+            if (Number(id) !== currentNpcId) {
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.textContent = 'x';
+                remove.setAttribute('aria-label', `Remove ${name}`);
+                remove.addEventListener('click', () => {
+                    historyRecipients.delete(id);
+                    renderHistoryRecipients();
+                });
+                chip.appendChild(remove);
+            }
+            container.appendChild(chip);
+        });
+    }
+
+    function renderHistorySearchResults(npcs) {
+        const container = byId('history-recipient-results');
+        container.replaceChildren();
+        const available = npcs.filter((npc) => !historyRecipients.has(Number(npc.id)));
+        if (!available.length) {
+            container.hidden = true;
+            return;
+        }
+        available.forEach((npc) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'history-search-result';
+            button.textContent = npc.name || 'Unknown NPC';
+            button.addEventListener('click', () => {
+                historyRecipients.set(Number(npc.id), String(npc.name || 'Unknown NPC'));
+                byId('history-recipient-search').value = '';
+                container.hidden = true;
+                renderHistoryRecipients();
+            });
+            container.appendChild(button);
+        });
+        container.hidden = false;
+    }
+
+    async function searchHistoryRecipients() {
+        const search = byId('history-recipient-search').value.trim();
+        if (search.length < 2) {
+            byId('history-recipient-results').hidden = true;
+            return;
+        }
+        const generation = ++historySearchGeneration;
+        const query = new URLSearchParams({ operation: 'list', search, page: '1', limit: '10' });
+        try {
+            const data = await parseResponse(await fetch(
+                `${serverBaseUrl}/ui/api/chim_npc_manager.php?${query.toString()}`,
+                { cache: 'no-store' }
+            ));
+            if (generation === historySearchGeneration) {
+                renderHistorySearchResults(Array.isArray(data.npcs) ? data.npcs : []);
+            }
+        } catch (_error) {
+            if (generation === historySearchGeneration) byId('history-recipient-results').hidden = true;
+        }
+    }
+
+    function renderNpcHistory(events) {
+        const container = byId('history-list');
+        container.replaceChildren();
+        if (!events.length) {
+            container.appendChild(historyEmpty('No events are recorded for this NPC yet.'));
+            return;
+        }
+        events.forEach((historyEvent) => {
+            const card = document.createElement('article');
+            card.className = 'history-card';
+            const header = document.createElement('div');
+            header.className = 'history-card-header';
+            const heading = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = historyEvent.manual_injection ? 'Injected Event' : (historyEvent.type || 'Event');
+            const timestamp = document.createElement('span');
+            timestamp.textContent = historyEvent.tamrielic_time || historyEvent.local_time || 'Unknown time';
+            heading.append(title, timestamp);
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'history-delete';
+            deleteButton.textContent = 'Delete';
+            deleteButton.addEventListener('click', async () => {
+                const shared = Array.isArray(historyEvent.recipients) && historyEvent.recipients.length > 1;
+                const warning = shared ? ' This removes it from every listed NPC history.' : '';
+                if (!window.confirm(`Delete this event?${warning}`)) return;
+                deleteButton.disabled = true;
+                try {
+                    await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            operation: 'delete_event',
+                            id: Number(byId('npc-id').value),
+                            rowid: Number(historyEvent.rowid)
+                        })
+                    }));
+                    setHistoryStatus('Event deleted.', false);
+                    await loadNpcHistory();
+                } catch (error) {
+                    setHistoryStatus(`Delete failed: ${error.message || error}`, true);
+                    deleteButton.disabled = false;
+                }
+            });
+            header.append(heading, deleteButton);
+            const data = document.createElement('p');
+            data.className = 'history-data';
+            data.textContent = historyEvent.data || '';
+            card.append(header, data);
+            if (Array.isArray(historyEvent.recipients) && historyEvent.recipients.length) {
+                const audience = document.createElement('p');
+                audience.className = 'history-audience';
+                audience.textContent = `NPCs: ${historyEvent.recipients.join(', ')}`;
+                card.appendChild(audience);
+            }
+            container.appendChild(card);
+        });
+    }
+
+    async function loadNpcHistory() {
+        const npcId = Number(byId('npc-id').value || 0);
+        if (!npcId || !currentDetail) return;
+        const refreshButton = byId('history-refresh');
+        refreshButton.disabled = true;
+        byId('history-list').replaceChildren(historyEmpty('Loading recent events...'));
+        try {
+            const query = new URLSearchParams({ operation: 'history', id: String(npcId), limit: '50' });
+            const data = await parseResponse(await fetch(
+                `${serverBaseUrl}/ui/api/chim_npc_manager.php?${query.toString()}`,
+                { cache: 'no-store' }
+            ));
+            if (Number(byId('npc-id').value || 0) === npcId) {
+                renderNpcHistory(Array.isArray(data.events) ? data.events : []);
+            }
+        } catch (error) {
+            byId('history-list').replaceChildren(historyEmpty(`History failed to load: ${error.message || error}`, true));
+        } finally {
+            refreshButton.disabled = false;
+        }
+    }
+
+    async function injectNpcHistoryEvent() {
+        const text = byId('history-event-text').value.trim();
+        if (!text) {
+            setHistoryStatus('Enter an event before injecting it.', true);
+            byId('history-event-text').focus();
+            return;
+        }
+        const injectButton = byId('history-inject');
+        injectButton.disabled = true;
+        setHistoryStatus('Injecting event...', false);
+        try {
+            const data = await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    operation: 'inject_event',
+                    id: Number(byId('npc-id').value),
+                    event: text,
+                    recipient_ids: Array.from(historyRecipients.keys())
+                })
+            }));
+            byId('history-event-text').value = '';
+            setHistoryStatus(data.message || 'Event injected.', false);
+            await loadNpcHistory();
+        } catch (error) {
+            setHistoryStatus(`Injection failed: ${error.message || error}`, true);
+        } finally {
+            injectButton.disabled = false;
+        }
     }
 
     // Keep the reversible teleport control aligned with the return point stored by HerikaServer.
@@ -465,6 +677,7 @@
             panel.classList.toggle('active', active);
             panel.hidden = !active;
         });
+        if (tabName === 'history') loadNpcHistory();
     }
 
     window.setNpcManagerServerUrl = function (value) {
@@ -512,6 +725,12 @@
         runNpcAction(event.currentTarget.dataset.action || 'teleport', event.currentTarget);
     });
     byId('bgl-inception-action').addEventListener('click', (event) => runNpcAction('bgl_inception', event.currentTarget));
+    byId('history-refresh').addEventListener('click', loadNpcHistory);
+    byId('history-inject').addEventListener('click', injectNpcHistoryEvent);
+    byId('history-recipient-search').addEventListener('input', () => {
+        clearTimeout(historyRecipientSearchTimer);
+        historyRecipientSearchTimer = setTimeout(searchHistoryRecipients, 250);
+    });
     byId('add-relationship').addEventListener('click', () => addRelationshipRow('', { aff: 0, type: 'neutral' }));
     form.addEventListener('submit', saveNpc);
     document.addEventListener('keydown', (event) => {
