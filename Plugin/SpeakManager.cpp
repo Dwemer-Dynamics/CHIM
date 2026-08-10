@@ -124,6 +124,7 @@ static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::P
     toSay.speaker = player->GetHandle();
     toSay.subtitle = subtitleText;
     toSay.pad04 = 0xabcd;
+    SpeakManager::getInstance().registerAiSubtitle(player->GetFormID(), subtitleText);
 
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
@@ -186,6 +187,10 @@ static void PushForcedActorSubtitle(RE::SubtitleManager* subtitleManager, RE::Ac
     }
     toSay.subtitle = subtitleText;
     toSay.pad04 = 0xabcd;
+    auto* registeredSpeaker = toSay.speaker.get().get();
+    if (registeredSpeaker) {
+        SpeakManager::getInstance().registerAiSubtitle(registeredSpeaker->GetFormID(), subtitleText);
+    }
 
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
@@ -212,6 +217,36 @@ void SpeakManager::setNarratorDisplayName(const std::string& displayName) {
                      normalizedName);
         narratorDisplayName = std::move(normalizedName);
     }
+}
+
+void SpeakManager::registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText) {
+    const std::string normalizedText = TrimSubtitleLogText(subtitleText);
+    if (speakerFormId == 0 || normalizedText.empty()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(recentAiSubtitleMutex);
+    std::erase_if(recentAiSubtitles, [now](const RecentAiSubtitle& subtitle) { return subtitle.expiresAt <= now; });
+    recentAiSubtitles.push_back({speakerFormId, normalizedText, now + std::chrono::seconds(90)});
+    while (recentAiSubtitles.size() > 128) {
+        recentAiSubtitles.pop_front();
+    }
+}
+
+bool SpeakManager::isRecentAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText) {
+    const std::string normalizedText = TrimSubtitleLogText(subtitleText);
+    if (speakerFormId == 0 || normalizedText.empty()) {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(recentAiSubtitleMutex);
+    std::erase_if(recentAiSubtitles, [now](const RecentAiSubtitle& subtitle) { return subtitle.expiresAt <= now; });
+    return std::any_of(recentAiSubtitles.begin(), recentAiSubtitles.end(),
+                       [speakerFormId, &normalizedText](const RecentAiSubtitle& subtitle) {
+                           return subtitle.speakerFormId == speakerFormId && subtitle.text == normalizedText;
+                       });
 }
 
 std::string SpeakManager::getNarratorDisplayName() {
