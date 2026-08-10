@@ -3861,6 +3861,8 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				akTarget.EvaluatePackage();
 			
 			else
+				; Just Sandbox
+				Sandbox(akTarget,"")
 				Debug.Trace("[CHIM] StayAtPlace. NO linked reference found for: "+DecToHex(akTarget.getFormId()))
 			endif
 		
@@ -3956,7 +3958,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				realCoordsUsed="1";
 			endif			
 			
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed,"util_location_npc")
+			float realCoordsX=akTarget.GetPositionX();
+			float realCoordsY=akTarget.GetPositionY();
+			float realCoordsZ=akTarget.GetPositionZ();
+			
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
