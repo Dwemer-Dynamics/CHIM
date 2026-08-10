@@ -30,6 +30,7 @@
     let searchTimer = null;
     let historyRecipientSearchTimer = null;
     let historySearchGeneration = 0;
+    let historyEventType = '';
     const historyRecipients = new Map();
     const embeddedInSettings = !!byId('npcs-page');
 
@@ -267,6 +268,9 @@
         byId('history-recipient-results').hidden = true;
         byId('history-recipient-results').replaceChildren();
         byId('history-event-text').value = '';
+        historyEventType = '';
+        byId('history-event-type').value = '';
+        byId('history-filter-note').textContent = 'Using Event Log visibility filters.';
         byId('history-list').replaceChildren(historyEmpty('Open this tab to load recent events.'));
         setHistoryStatus('', false);
         renderHistoryRecipients();
@@ -349,6 +353,24 @@
         }
     }
 
+    function renderNpcHistoryFilters(filters) {
+        const select = byId('history-event-type');
+        const types = Array.isArray(filters.event_types) ? filters.event_types : [];
+        const hiddenTypes = Array.isArray(filters.hidden_event_types) ? filters.hidden_event_types : [];
+        const selected = String(filters.selected_event_type || historyEventType);
+        select.replaceChildren(new Option('All visible events', ''));
+        types.forEach((entry) => {
+            const type = String(entry.type || '');
+            if (!type) return;
+            select.appendChild(new Option(`${type} (${Number(entry.total || 0)})`, type));
+        });
+        select.value = selected;
+        historyEventType = select.value;
+        byId('history-filter-note').textContent = hiddenTypes.length
+            ? `Hidden by Event Log: ${hiddenTypes.join(', ')}`
+            : 'Using Event Log visibility filters.';
+    }
+
     function renderNpcHistory(events) {
         const container = byId('history-list');
         container.replaceChildren();
@@ -356,17 +378,36 @@
             container.appendChild(historyEmpty('No events are recorded for this NPC yet.'));
             return;
         }
+        const tableWrap = document.createElement('div');
+        tableWrap.className = 'history-table-wrap';
+        const table = document.createElement('table');
+        table.className = 'history-table';
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        ['Event', 'Events', 'People Present', 'Tamrielic Time', 'Time (UTC)', ''].forEach((label) => {
+            const heading = document.createElement('th');
+            heading.textContent = label;
+            headerRow.appendChild(heading);
+        });
+        thead.appendChild(headerRow);
+        const tbody = document.createElement('tbody');
         events.forEach((historyEvent) => {
-            const card = document.createElement('article');
-            card.className = 'history-card';
-            const header = document.createElement('div');
-            header.className = 'history-card-header';
-            const heading = document.createElement('div');
-            const title = document.createElement('strong');
-            title.textContent = historyEvent.manual_injection ? 'Injected Event' : (historyEvent.type || 'Event');
-            const timestamp = document.createElement('span');
-            timestamp.textContent = historyEvent.tamrielic_time || historyEvent.local_time || 'Unknown time';
-            heading.append(title, timestamp);
+            const row = document.createElement('tr');
+            const values = [
+                historyEvent.type || 'Event',
+                historyEvent.data || '',
+                Array.isArray(historyEvent.recipients) ? historyEvent.recipients.join(', ') : '',
+                historyEvent.tamrielic_time || '',
+                historyEvent.local_time || ''
+            ];
+            values.forEach((value, index) => {
+                const cell = document.createElement('td');
+                if (index === 0) cell.className = 'history-event-type';
+                if (index === 1) cell.className = 'history-data';
+                if (index === 2) cell.className = 'history-audience';
+                cell.textContent = value;
+                row.appendChild(cell);
+            });
             const deleteButton = document.createElement('button');
             deleteButton.type = 'button';
             deleteButton.className = 'history-delete';
@@ -393,19 +434,14 @@
                     deleteButton.disabled = false;
                 }
             });
-            header.append(heading, deleteButton);
-            const data = document.createElement('p');
-            data.className = 'history-data';
-            data.textContent = historyEvent.data || '';
-            card.append(header, data);
-            if (Array.isArray(historyEvent.recipients) && historyEvent.recipients.length) {
-                const audience = document.createElement('p');
-                audience.className = 'history-audience';
-                audience.textContent = `NPCs: ${historyEvent.recipients.join(', ')}`;
-                card.appendChild(audience);
-            }
-            container.appendChild(card);
+            const actions = document.createElement('td');
+            actions.appendChild(deleteButton);
+            row.appendChild(actions);
+            tbody.appendChild(row);
         });
+        table.append(thead, tbody);
+        tableWrap.appendChild(table);
+        container.appendChild(tableWrap);
     }
 
     async function loadNpcHistory() {
@@ -415,12 +451,14 @@
         refreshButton.disabled = true;
         byId('history-list').replaceChildren(historyEmpty('Loading recent events...'));
         try {
-            const query = new URLSearchParams({ operation: 'history', id: String(npcId), limit: '50' });
+            const query = new URLSearchParams({ operation: 'history', id: String(npcId), limit: '100' });
+            if (historyEventType) query.set('event_type', historyEventType);
             const data = await parseResponse(await fetch(
                 `${serverBaseUrl}/ui/api/chim_npc_manager.php?${query.toString()}`,
                 { cache: 'no-store' }
             ));
             if (Number(byId('npc-id').value || 0) === npcId) {
+                renderNpcHistoryFilters(data.filters || {});
                 renderNpcHistory(Array.isArray(data.events) ? data.events : []);
             }
         } catch (error) {
@@ -726,6 +764,10 @@
     });
     byId('bgl-inception-action').addEventListener('click', (event) => runNpcAction('bgl_inception', event.currentTarget));
     byId('history-refresh').addEventListener('click', loadNpcHistory);
+    byId('history-event-type').addEventListener('change', (event) => {
+        historyEventType = event.currentTarget.value;
+        loadNpcHistory();
+    });
     byId('history-inject').addEventListener('click', injectNpcHistoryEvent);
     byId('history-recipient-search').addEventListener('input', () => {
         clearTimeout(historyRecipientSearchTimer);

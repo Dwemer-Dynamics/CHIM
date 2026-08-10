@@ -132,6 +132,12 @@
                                 <div><h3>Recent Events</h3><p>The latest events routed to this NPC. Deleting a shared event removes it for every listed recipient.</p></div>
                                 <button id="history-refresh" class="button secondary compact" type="button">Refresh</button>
                             </div>
+                            <div class="history-filterbar">
+                                <label>Event type
+                                    <select id="history-event-type"><option value="">All visible events</option></select>
+                                </label>
+                                <span id="history-filter-note" class="history-filter-note">Using Event Log visibility filters.</span>
+                            </div>
                             <div id="history-list" class="history-list"><p class="history-empty">Open this tab to load recent events.</p></div>
                         </article>
                     </section>
