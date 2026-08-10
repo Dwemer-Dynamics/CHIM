@@ -18,9 +18,14 @@
 
         <!-- Content Area -->
         <div class="modal-content">
-            <!-- Prisma UI Panels -->
+            <!-- Menu Select -->
             <div class="settings-group">
-                <h2 class="group-title">Prisma UI Panels</h2>
+                <div class="group-title-row">
+                    <h2 class="group-title">Menu Select</h2>
+                    <button class="menu-settings-btn" onclick="selectPanel('settings')"
+                            onmouseenter="showDescription('Manage Global Settings, Profiles, and CHIM NPCs')"
+                            onmouseleave="clearDescription()"><span aria-hidden="true">&#9881;</span> Settings</button>
+                </div>
                 <div class="prisma-panels-layout">
                     <div class="primary-actions-row">
                         <button class="setting-btn primary-panel-btn" onclick="selectPanel('textchat')"
@@ -32,9 +37,6 @@
                         <button class="setting-btn primary-panel-btn" onclick="selectPanel('actions')"
                                 onmouseenter="showDescription('Open CHIM Actions menu - centralized actions interface')"
                                 onmouseleave="clearDescription()">CHIM Actions</button>
-                        <button class="setting-btn primary-panel-btn" onclick="selectPanel('settings')"
-                                onmouseenter="showDescription('Manage Global Settings, Profiles, and CHIM NPCs')"
-                                onmouseleave="clearDescription()">Settings</button>
                     </div>
 
                     <div class="secondary-actions-row">
