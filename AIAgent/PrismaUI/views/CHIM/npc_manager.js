@@ -28,10 +28,23 @@
     let currentDetail = null;
     let loadingGeneration = 0;
     let searchTimer = null;
+    const embeddedInSettings = !!byId('npcs-page');
 
     function sendCommand(command) {
+        if (embeddedInSettings && window.chimConfigManagerCommand) {
+            window.chimConfigManagerCommand(`npc|${command}`);
+            return;
+        }
         if (window.chimNpcManagerCommand) window.chimNpcManagerCommand(command);
     }
+
+    document.querySelectorAll('[data-settings-page]').forEach((button) => {
+        button.addEventListener('click', () => {
+            if (button.dataset.settingsPage !== 'npcs') {
+                sendCommand(`tab_${button.dataset.settingsPage}`);
+            }
+        });
+    });
 
     function normalizeBaseUrl(value) {
         let base = String(value || '').trim().replace(/\/+$/, '');
@@ -491,7 +504,7 @@
     byId('refresh-button').addEventListener('click', () => sendCommand('targets_refresh'));
     byId('previous-page').addEventListener('click', () => { if (page > 1) { page -= 1; loadNpcs(); } });
     byId('next-page').addEventListener('click', () => { if (page < pages) { page += 1; loadNpcs(); } });
-    byId('close-button').addEventListener('click', () => sendCommand('close'));
+    if (!embeddedInSettings) byId('close-button').addEventListener('click', () => sendCommand('close'));
     byId('editor-close').addEventListener('click', closeEditor);
     byId('cancel-button').addEventListener('click', closeEditor);
     byId('visit-action').addEventListener('click', (event) => runNpcAction('visit', event.currentTarget));
@@ -503,18 +516,24 @@
     form.addEventListener('submit', saveNpc);
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape') return;
-        if (!byId('editor-backdrop').classList.contains('hidden')) closeEditor();
-        else sendCommand('close');
+        if (!byId('editor-backdrop').classList.contains('hidden')) {
+            event.stopImmediatePropagation();
+            closeEditor();
+        } else if (!embeddedInSettings) {
+            sendCommand('close');
+        }
     });
-    document.addEventListener('focusin', (event) => {
-        if (event.target.matches('input, textarea, select')) sendCommand('input_capture|on');
-    });
-    document.addEventListener('focusout', () => {
-        window.setTimeout(() => {
-            if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) {
-                sendCommand('input_capture|off');
-            }
-        }, 0);
-    });
+    if (!embeddedInSettings) {
+        document.addEventListener('focusin', (event) => {
+            if (event.target.matches('input, textarea, select')) sendCommand('input_capture|on');
+        });
+        document.addEventListener('focusout', () => {
+            window.setTimeout(() => {
+                if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) {
+                    sendCommand('input_capture|off');
+                }
+            }, 0);
+        });
+    }
     window.addEventListener('DOMContentLoaded', () => sendCommand('dom_ready'));
 }());

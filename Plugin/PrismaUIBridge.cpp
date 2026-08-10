@@ -47,12 +47,14 @@ namespace PrismaUIBridge {
     static PrismaView g_diariesView = 0;
     static PrismaView g_backgroundLifeView = 0;
     static PrismaView g_npcManagerView = 0;
+    static PrismaView g_configManagerView = 0;
     static std::atomic<bool> g_enabled{false};
     static std::atomic<bool> g_panelCreated{false};
     static std::atomic<bool> g_overlayCreated{false};
     static std::atomic<bool> g_diariesCreated{false};
     static std::atomic<bool> g_backgroundLifeCreated{false};
     static std::atomic<bool> g_npcManagerCreated{false};
+    static std::atomic<bool> g_configManagerCreated{false};
     static std::atomic<bool> g_domReady{false};
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
@@ -62,6 +64,7 @@ namespace PrismaUIBridge {
     static std::unique_ptr<AudioManager> g_diaryAudioPlayer;
     static std::atomic<bool> g_backgroundLifeDomReady{false};
     static std::atomic<bool> g_npcManagerDomReady{false};
+    static std::atomic<bool> g_configManagerDomReady{false};
     static uint32_t g_backgroundLifeSelectedFormId = 0;
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
@@ -290,6 +293,8 @@ namespace PrismaUIBridge {
     static void OnNpcManagerDomReady(PrismaView view);
     static void OnNpcManagerCommand(const char* argument);
     static void UpdateNpcManagerTargets();
+    static void OnConfigManagerDomReady(PrismaView view);
+    static void OnConfigManagerCommand(const char* argument);
     static void OnSettingsMenuDomReady(PrismaView view);
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
@@ -3633,9 +3638,8 @@ R"CHIM(
 
     // ===== CHIM NPC Manager Functions =====
 
-    static void SetNpcManagerServerUrl() {
-        if (!g_prismaUI || !g_npcManagerCreated.load() ||
-            g_npcManagerView == 0 || !g_prismaUI->IsValid(g_npcManagerView)) {
+    static void SetNpcManagerServerUrl(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
             return;
         }
 
@@ -3643,12 +3647,16 @@ R"CHIM(
             "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
         const std::string call =
             "window.setNpcManagerServerUrl('" + EscapeForJS(serverUrl) + "')";
-        g_prismaUI->Invoke(g_npcManagerView, call.c_str(), nullptr);
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
     }
 
-    static void UpdateNpcManagerTargets() {
-        if (!g_prismaUI || !g_npcManagerCreated.load() ||
-            g_npcManagerView == 0 || !g_prismaUI->IsValid(g_npcManagerView)) {
+    static void SetNpcManagerServerUrl() {
+        if (!g_npcManagerCreated.load()) return;
+        SetNpcManagerServerUrl(g_npcManagerView);
+    }
+
+    static void UpdateNpcManagerTargets(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
             return;
         }
 
@@ -3665,7 +3673,12 @@ R"CHIM(
 
         const std::string call =
             "window.updateNpcManagerTargets('" + EscapeForJS(payload.dump()) + "')";
-        g_prismaUI->Invoke(g_npcManagerView, call.c_str(), nullptr);
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    static void UpdateNpcManagerTargets() {
+        if (!g_npcManagerCreated.load()) return;
+        UpdateNpcManagerTargets(g_npcManagerView);
     }
 
     static void OnNpcManagerDomReady(PrismaView view) {
@@ -3689,6 +3702,9 @@ R"CHIM(
             UpdateNpcManagerTargets();
         } else if (command == "targets_refresh") {
             UpdateNpcManagerTargets();
+        } else if (command == "tab_globals" || command == "tab_profiles") {
+            HideNpcManagerPanel();
+            ShowConfigManagerPanel(command == "tab_profiles" ? "profiles" : "globals");
         } else if (command == "input_capture|on" || command == "input_capture|off") {
             SetChatboxGameplayInputSuppressed(command == "input_capture|on");
         } else {
@@ -3719,70 +3735,12 @@ R"CHIM(
     }
 
     void ToggleNpcManagerPanel() {
-        if (!g_prismaUI) {
-            return;
-        }
-
-        const bool needsCreation =
-            !g_npcManagerCreated.load() ||
-            g_npcManagerView == 0 ||
-            !g_prismaUI->IsValid(g_npcManagerView);
-        if (needsCreation) {
-            CreateNpcManagerPanel();
-        }
-        if (!g_npcManagerCreated.load()) {
-            return;
-        }
-        if (needsCreation) {
-            ShowNpcManagerPanel();
-            return;
-        }
-
-        if (g_prismaUI->IsHidden(g_npcManagerView)) {
-            ShowNpcManagerPanel();
-        } else {
-            HideNpcManagerPanel();
-        }
+        if (IsConfigManagerPanelVisible()) HideConfigManagerPanel();
+        else ShowConfigManagerPanel("npcs");
     }
 
     void ShowNpcManagerPanel() {
-        if (!g_prismaUI || !g_npcManagerCreated.load()) {
-            CreateNpcManagerPanel();
-        }
-        if (!g_prismaUI || !g_npcManagerCreated.load() ||
-            !g_prismaUI->IsValid(g_npcManagerView)) {
-            return;
-        }
-
-        if (g_panelCreated.load() && !g_prismaUI->IsHidden(g_historyView)) {
-            HideHistoryPanel();
-        }
-        if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
-            HideDiariesPanel();
-        }
-        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
-            HideBackgroundLifePanel();
-        }
-        if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
-            HideBrowserPanel();
-        }
-        if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
-            HideQuestManagerPanel();
-        }
-
-        g_prismaUI->Show(g_npcManagerView);
-        SetNpcManagerServerUrl();
-        UpdateNpcManagerTargets();
-        const bool focused = g_prismaUI->Focus(g_npcManagerView, true, false);
-        logger::info(
-            "[PrismaUIBridge] CHIM NPC manager focus: {}",
-            focused ? "SUCCESS" : "FAILED");
-        if (g_npcManagerDomReady.load()) {
-            g_prismaUI->Invoke(
-                g_npcManagerView,
-                "window.onNpcManagerShown && window.onNpcManagerShown()",
-                nullptr);
-        }
+        ShowConfigManagerPanel("npcs");
     }
 
     void HideNpcManagerPanel() {
@@ -3800,6 +3758,117 @@ R"CHIM(
     bool IsNpcManagerPanelVisible() {
         return g_prismaUI && g_npcManagerCreated.load() && g_npcManagerView != 0 &&
                g_prismaUI->IsValid(g_npcManagerView) && !g_prismaUI->IsHidden(g_npcManagerView);
+    }
+
+    // ===== CHIM Settings Hub Functions =====
+
+    static void SetConfigManagerServerUrl() {
+        if (!g_prismaUI || !g_configManagerCreated.load() || g_configManagerView == 0 ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setConfigManagerServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+    }
+
+    static void OnConfigManagerDomReady(PrismaView view) {
+        (void)view;
+        g_configManagerDomReady.store(true);
+        SetConfigManagerServerUrl();
+        SetNpcManagerServerUrl(g_configManagerView);
+    }
+
+    static void OnConfigManagerCommand(const char* argument) {
+        if (!argument) return;
+        const std::string command(argument);
+        if (command == "close") {
+            HideConfigManagerPanel();
+        } else if (command == "dom_ready") {
+            g_configManagerDomReady.store(true);
+            SetConfigManagerServerUrl();
+        } else if (command == "tab_npcs") {
+            ShowConfigManagerPanel("npcs");
+        } else if (command.starts_with("npc|")) {
+            const std::string npcCommand = command.substr(4);
+            if (npcCommand == "close") {
+                HideConfigManagerPanel();
+            } else if (npcCommand == "dom_ready") {
+                SetNpcManagerServerUrl(g_configManagerView);
+                UpdateNpcManagerTargets(g_configManagerView);
+            } else if (npcCommand == "targets_refresh") {
+                UpdateNpcManagerTargets(g_configManagerView);
+            } else if (npcCommand == "input_capture|on" || npcCommand == "input_capture|off") {
+                SetChatboxGameplayInputSuppressed(npcCommand == "input_capture|on");
+            } else {
+                logger::warn("[PrismaUIBridge] Unknown embedded NPC manager command: {}", npcCommand);
+            }
+        } else if (command == "input_capture|on" || command == "input_capture|off") {
+            SetChatboxGameplayInputSuppressed(command == "input_capture|on");
+        } else {
+            logger::warn("[PrismaUIBridge] Unknown config manager command: {}", command);
+        }
+    }
+
+    void CreateConfigManagerPanel() {
+        if (!g_prismaUI) return;
+        if (g_configManagerCreated.load() && g_configManagerView != 0 &&
+            g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        logger::info("[PrismaUIBridge] Creating CHIM Settings hub");
+        g_configManagerView = g_prismaUI->CreateView("CHIM/config_manager.html", OnConfigManagerDomReady);
+        if (g_configManagerView == 0) {
+            g_lastError = "Failed to create CHIM Settings hub view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+        g_prismaUI->SetOrder(g_configManagerView, 114);
+        g_prismaUI->RegisterJSListener(g_configManagerView, "chimConfigManagerCommand", OnConfigManagerCommand);
+        g_configManagerCreated.store(true);
+    }
+
+    void ToggleConfigManagerPanel() {
+        if (!g_prismaUI) return;
+        if (!g_configManagerCreated.load() || g_configManagerView == 0 ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            CreateConfigManagerPanel();
+        }
+        if (!g_configManagerCreated.load()) return;
+        if (g_prismaUI->IsHidden(g_configManagerView)) ShowConfigManagerPanel();
+        else HideConfigManagerPanel();
+    }
+
+    void ShowConfigManagerPanel(const std::string& tab) {
+        if (!g_prismaUI || !g_configManagerCreated.load()) CreateConfigManagerPanel();
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_prismaUI->IsValid(g_configManagerView)) return;
+
+        if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) HideNpcManagerPanel();
+        if (g_settingsMenuCreated.load() && !g_prismaUI->IsHidden(g_settingsMenuView)) HideSettingsMenu();
+        g_prismaUI->Show(g_configManagerView);
+        SetConfigManagerServerUrl();
+        const std::string normalizedTab = tab == "profiles" || tab == "npcs" ? tab : "globals";
+        const std::string call = "window.setConfigManagerTab && window.setConfigManagerTab('" + normalizedTab + "')";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+        const bool focused = g_prismaUI->Focus(g_configManagerView, true, false);
+        logger::info("[PrismaUIBridge] CHIM Settings hub focus: {}", focused ? "SUCCESS" : "FAILED");
+        if (g_configManagerDomReady.load()) {
+            g_prismaUI->Invoke(g_configManagerView, "window.onConfigManagerShown && window.onConfigManagerShown()", nullptr);
+        }
+    }
+
+    void HideConfigManagerPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_prismaUI->IsValid(g_configManagerView)) return;
+        if (g_prismaUI->HasFocus(g_configManagerView)) g_prismaUI->Unfocus(g_configManagerView);
+        g_prismaUI->Hide(g_configManagerView);
+    }
+
+    bool IsConfigManagerPanelVisible() {
+        return g_prismaUI && g_configManagerCreated.load() && g_configManagerView != 0 &&
+               g_prismaUI->IsValid(g_configManagerView) && !g_prismaUI->IsHidden(g_configManagerView);
     }
 
     // ===== CHIM Browser Functions =====
@@ -5415,6 +5484,13 @@ R"CHIM(
                 g_npcManagerCreated.store(false);
                 g_npcManagerDomReady.store(false);
             }
+
+            if (g_configManagerCreated.load()) {
+                g_prismaUI->Destroy(g_configManagerView);
+                g_configManagerView = 0;
+                g_configManagerCreated.store(false);
+                g_configManagerDomReady.store(false);
+            }
             
             if (g_browserCreated.load()) {
                 g_prismaUI->Destroy(g_browserView);
@@ -5859,6 +5935,7 @@ R"CHIM(
         UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
         UnfocusPrismaViewIfFocused(g_backgroundLifeView, g_backgroundLifeCreated.load());
         UnfocusPrismaViewIfFocused(g_npcManagerView, g_npcManagerCreated.load());
+        UnfocusPrismaViewIfFocused(g_configManagerView, g_configManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
         UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
@@ -7867,6 +7944,7 @@ R"CHIM(
             cmd == "debugger" ||
             cmd == "chatbox" ||
             cmd == "settings" ||
+            cmd == "actions" ||
             cmd == "questmanager" ||
             cmd == "tools_sync_factions_locations" ||
             cmd == "tools_send_all_voice_samples";
@@ -7901,6 +7979,8 @@ R"CHIM(
         } else if (cmd == "chatbox") {
             ToggleChatboxPanel();
         } else if (cmd == "settings") {
+            ToggleConfigManagerPanel();
+        } else if (cmd == "actions") {
             ToggleSettingsMenu();
         } else if (cmd == "questmanager") {
             ToggleQuestManagerPanel();
@@ -7962,6 +8042,9 @@ R"CHIM(
         }
         if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) {
             HideNpcManagerPanel();
+        }
+        if (g_configManagerCreated.load() && !g_prismaUI->IsHidden(g_configManagerView)) {
+            HideConfigManagerPanel();
         }
 
         // Reassert menu order in case another panel changed stacking.
