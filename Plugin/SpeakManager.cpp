@@ -1887,6 +1887,10 @@ void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
         trimmedLine.actor.erase(0, trimmedLine.actor.find_first_not_of(" \t\n\r"));
         trimmedLine.actor.erase(trimmedLine.actor.find_last_not_of(" \t\n\r") + 1);
     }
+    if (trimmedLine.rechatGenerated && rechatChainHardCancelled) {
+        logger::info("[SpeakManager] Dropping rechat line received after chain cancellation for {}", trimmedLine.actor);
+        return;
+    }
     logger::debug("[SpeakManager] Queueing new line - Actor: {}, Text: '{}', Expression: '{}', Action: '{}', Animation: '{}', Phonetic: '{}'", 
                   trimmedLine.actor, trimmedLine.subtitle, trimmedLine.expression, trimmedLine.action, trimmedLine.animation, trimmedLine.phonetic);
     if (IsPlayerActorAlias(trimmedLine.actor, aiam)) {
@@ -2085,6 +2089,26 @@ void SpeakManager::abortPendingUtterances(const std::string& reason, bool includ
     abortData["utterance_ids"] = utteranceIds;
     abortData["reason"] = reason;
     HTTPManager::log(std::format("_speech_abort|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), abortData.dump()));
+}
+
+bool SpeakManager::cancelRechatSpeech() {
+    std::lock_guard<std::mutex> lock(mtx);
+    const bool interruptCurrentPlayback = isProcessing && currentPlaybackRechatGenerated;
+    if (interruptCurrentPlayback) {
+        interrupt = true;
+        forceInterruptCurrentPlayback = true;
+    }
+
+    std::queue<ScriptLine> preservedLines;
+    while (!scriptQueue.empty()) {
+        ScriptLine currentItem = std::move(scriptQueue.front());
+        scriptQueue.pop();
+        if (!currentItem.rechatGenerated) {
+            preservedLines.push(std::move(currentItem));
+        }
+    }
+    scriptQueue = std::move(preservedLines);
+    return interruptCurrentPlayback;
 }
 
 void SpeakManager::deleteQueue(bool isActionCommand) {
@@ -2673,6 +2697,7 @@ void SpeakManager::process(AIAgent *agent) {
             currentPlaybackUtteranceId = scriptLine.utteranceId;
             currentPlaybackActor = scriptLine.actor;
             currentPlaybackUtteranceConfirmed = false;
+            currentPlaybackRechatGenerated = scriptLine.rechatGenerated;
         }
 
         // Reset bored
@@ -2716,6 +2741,7 @@ void SpeakManager::process(AIAgent *agent) {
                     currentPlaybackUtteranceId.clear();
                     currentPlaybackActor.clear();
                     currentPlaybackUtteranceConfirmed = false;
+                    currentPlaybackRechatGenerated = false;
                 }
                 setProcessing(false);
                 endDialogue(npc, "");
@@ -2729,6 +2755,7 @@ void SpeakManager::process(AIAgent *agent) {
                     currentPlaybackUtteranceId.clear();
                     currentPlaybackActor.clear();
                     currentPlaybackUtteranceConfirmed = false;
+                    currentPlaybackRechatGenerated = false;
                 }
                 setProcessing(false);
                 endDialogue(npc, "");
@@ -3357,6 +3384,7 @@ void SpeakManager::process(AIAgent *agent) {
                 currentPlaybackUtteranceId.clear();
                 currentPlaybackActor.clear();
                 currentPlaybackUtteranceConfirmed = false;
+                currentPlaybackRechatGenerated = false;
             }
         }
 

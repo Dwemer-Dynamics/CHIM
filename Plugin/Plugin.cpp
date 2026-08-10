@@ -8225,19 +8225,14 @@ EventHandlers {
                 ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
 
                 SpeakManager& speakManager = SpeakManager::getInstance();
-                speakManager.abortPendingUtterances("cell_change");
                 speakManager.cancelRechatChain();
-                speakManager.deleteQueue();
-                if (speakManager.getProcessing()) {
-                    speakManager.abortPlay(true);
+                SPGResponse::getInstance().clearRechatItems();
+                if (speakManager.cancelRechatSpeech()) {
                     AudioManagerController::GetInstance().Stop();
                 }
                 speakManager.stopRechatForNseconds(3);
 
-                SPGResponse::getInstance().clearAllQueues();
-                SPGResponse::getInstance().markUnFinished(false);
                 BackGroundDialogueQueue.clear();
-                AudioFilesBufferManager::clear();
             }
         }
 

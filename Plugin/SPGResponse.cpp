@@ -238,3 +238,10 @@ void SPGResponse::clearAllQueues() {
     m_responses.clear();
     logger::info("All queues cleared");
 }
+
+void SPGResponse::clearRechatItems() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (auto& response : m_responses) {
+        std::erase_if(response.second, [](const ResponseItem& item) { return item.rechatGenerated; });
+    }
+}
