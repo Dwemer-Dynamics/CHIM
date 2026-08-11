@@ -183,6 +183,24 @@
 
                     <section class="tab-panel" data-panel="background-life" hidden>
                         <div class="npc-action-list">
+                            <article class="npc-action-card bgl-settings-card">
+                                <div class="section-heading">
+                                    <div class="npc-action-copy">
+                                        <h3>Background Life Rules</h3>
+                                        <p>Per-NPC controls. Combat options are off until explicitly enabled.</p>
+                                    </div>
+                                    <button id="bgl-enrollment-action" class="button secondary" type="button">Loading...</button>
+                                </div>
+                                <div class="bgl-settings-grid">
+                                    <label class="check-field"><input id="bgl-auto-actions" data-bgl-setting="auto_actions" type="checkbox" disabled><span>Auto Actions</span></label>
+                                    <label class="check-field"><input id="bgl-send-letters" data-bgl-setting="send_letters" type="checkbox" disabled><span>Send Letters</span></label>
+                                    <label class="check-field"><input id="bgl-hourly-tracking" data-bgl-setting="hourly_tracking" type="checkbox" disabled><span>Hourly Tracking</span></label>
+                                    <label class="check-field"><input id="bgl-combat-participation" data-bgl-setting="combat_participation" type="checkbox" disabled><span>Combat Participation</span></label>
+                                    <label class="check-field"><input id="bgl-combat-initiate" data-bgl-setting="combat_initiate" type="checkbox" disabled><span>Initiate Combat</span></label>
+                                    <label class="check-field"><input id="bgl-combat-lethal" data-bgl-setting="combat_lethal" type="checkbox" disabled><span>Lethal Outcomes</span></label>
+                                    <label class="check-field"><input id="bgl-combat-loot" data-bgl-setting="combat_loot" type="checkbox" disabled><span>Loot Encounters</span></label>
+                                </div>
+                            </article>
                             <article class="npc-action-card inception-card">
                                 <div class="npc-action-copy">
                                     <h3>Background Life Inception</h3>

@@ -6031,6 +6031,8 @@ struct InventoryItemSnapshot
     json keywords = json::array();
     std::string hashEntry;
     int gold = 0;
+    bool equipped = false;
+    bool isQuestItem = false;
 };
 
 struct ModdedEquipmentSlot
@@ -6549,6 +6551,8 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         // Get baseid (FormID in hex format)
         std::string baseID = std::format("{:08X}", boundObject->GetFormID());
         json itemKeywords = CollectItemKeywords(boundObject);
+        const bool equipped = entryData && entryData->IsWorn();
+        const bool isQuestItem = entryData && entryData->IsQuestObject();
 
         //  Check for custom name in InventoryEntryData and ExtraDataList
         if (entryData) {
@@ -6579,7 +6583,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
             inventoryItems.push_back(
-                {itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump(), boundObject->GetGoldValue()});
+                {itemName, baseID, count, itemKeywords,
+                 itemEntry + "^" + itemKeywords.dump() + "^" + (equipped ? "1" : "0") + "^" + (isQuestItem ? "1" : "0"),
+                 boundObject->GetGoldValue(), equipped, isQuestItem});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6625,7 +6631,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
                                               {"baseid", item.baseid},
                                               {"count", item.count},
                                               {"keywords", item.keywords.is_array() ? item.keywords : json::array()}, 
-                                              {"goldvalue", item.gold}
+                                              {"goldvalue", item.gold},
+                                              {"equipped", item.equipped},
+                                              {"is_quest_item", item.isQuestItem}
             });
     }
 
@@ -6819,8 +6827,13 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
    
 
     // Create hash for comparison (round to nearest 1 to avoid float precision spam, scale to 2 decimals)
-    std::string statsHash = std::format("{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.2f}", level, health,
-                                        healthMax, magicka, magickaMax, stamina, staminaMax, scale);
+    auto* actorBase = npc->GetActorBase();
+    const bool isEssential = actorBase && actorBase->IsEssential();
+    const bool isProtected = actorBase && actorBase->IsProtected();
+    const bool isDead = npc->IsDead();
+    std::string statsHash = std::format("{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.2f}|{}|{}|{}", level, health,
+                                        healthMax, magicka, magickaMax, stamina, staminaMax, scale,
+                                        isEssential, isProtected, isDead);
 
     auto formID = npc->GetFormID();
     
@@ -6850,7 +6863,10 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         {"magicka_max", magickaMax},
         {"stamina", stamina},
         {"stamina_max", staminaMax},
-        {"scale", scale}
+        {"scale", scale},
+        {"is_essential", isEssential},
+        {"is_protected", isProtected},
+        {"is_dead", isDead}
     };
     
     HTTPManager::postGameData("gamedata.php", statsDataJson);
