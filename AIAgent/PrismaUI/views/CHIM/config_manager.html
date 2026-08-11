@@ -135,6 +135,8 @@
                 <button type="button" class="editor-tab" data-tab="relationships">🤝 Relationships</button>
                 <button type="button" class="editor-tab" data-tab="info">ℹ Info</button>
                 <button type="button" class="editor-tab" data-tab="actions">⚡ Actions</button>
+                <button type="button" class="editor-tab" data-tab="background-life">🌍 Background Life</button>
+                <button type="button" class="editor-tab" data-tab="history">📜 History</button>
             </nav>
 
             <form id="npc-form" autocomplete="off">
@@ -178,6 +180,35 @@
                         <label class="form-field"><span>Recent Middle Term Memory</span><textarea name="middle_term_latest" rows="8"></textarea></label>
                     </section>
 
+                    <section class="tab-panel history-panel" data-panel="history" hidden>
+                        <article class="history-section">
+                            <div class="section-heading">
+                                <div><h3>Inject Event</h3><p>Add roleplay context directly to this NPC, even while they are outside the current scene.</p></div>
+                            </div>
+                            <div id="history-recipients" class="history-recipient-row"></div>
+                            <label class="form-field"><span>Also include another NPC</span><input id="history-recipient-search" type="search" placeholder="Search NPC profiles"></label>
+                            <div id="history-recipient-results" class="history-search-results" hidden></div>
+                            <label class="form-field"><span>Event</span><textarea id="history-event-text" rows="5" maxlength="4000" placeholder="A gave B a sweetroll."></textarea></label>
+                            <div class="history-actions">
+                                <span id="history-status" class="history-status" role="status" aria-live="polite"></span>
+                                <button id="history-inject" class="button primary" type="button">Inject Event</button>
+                            </div>
+                        </article>
+                        <article class="history-section">
+                            <div class="section-heading">
+                                <div><h3>Recent Events</h3><p>The latest events routed to this NPC. Deleting a shared event removes it for every listed recipient.</p></div>
+                                <button id="history-refresh" class="button secondary compact" type="button">Refresh</button>
+                            </div>
+                            <div class="history-filterbar">
+                                <label>Event type
+                                    <select id="history-event-type"><option value="">All visible events</option></select>
+                                </label>
+                                <span id="history-filter-note" class="history-filter-note">Using Event Log visibility filters.</span>
+                            </div>
+                            <div id="history-list" class="history-list"><p class="history-empty">Open this tab to load recent events.</p></div>
+                        </article>
+                    </section>
+
                     <section class="tab-panel" data-panel="info" hidden>
                         <div class="form-grid two-columns">
                             <label class="form-field"><span>Gender</span><input name="gender"></label>
@@ -212,6 +243,12 @@
                                 </div>
                                 <button id="teleport-action" class="button secondary" type="button" data-action="teleport">Teleport</button>
                             </article>
+                        </div>
+                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                    </section>
+
+                    <section class="tab-panel" data-panel="background-life" hidden>
+                        <div class="npc-action-list">
                             <article class="npc-action-card inception-card">
                                 <div class="npc-action-copy">
                                     <h3>Background Life Inception</h3>
@@ -221,7 +258,7 @@
                                 <button id="bgl-inception-action" class="button secondary" type="button">Set Thought</button>
                             </article>
                         </div>
-                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                        <p id="bgl-action-status" class="action-status" role="status" aria-live="polite"></p>
                     </section>
                 </div>
 
