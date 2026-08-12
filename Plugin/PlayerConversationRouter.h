@@ -29,6 +29,7 @@ struct PlayerConversationRoutingContext
     PlayerConversationSpeechMode mode = PlayerConversationSpeechMode::Standard;
     RE::FormID explicitTargetFormId = 0;
     std::string explicitTargetName;
+    std::string executionMode;
     bool everyoneMode = false;
     bool narratorMode = false;
 };
