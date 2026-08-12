@@ -54,7 +54,25 @@
                             </div>
 
                             <div class="chatbox-control-block selector-stack">
-                                <div class="chatbox-control-label">Mode</div>
+                                <div class="chatbox-control-label chatbox-mode-label">
+                                    <span>Mode</span>
+                                    <span class="chatbox-mode-help" tabindex="0" aria-label="Chat mode shortcut help" aria-describedby="chatbox-mode-shortcuts">?</span>
+                                    <div id="chatbox-mode-shortcuts" class="chatbox-mode-shortcuts" role="tooltip">
+                                        <div class="chatbox-mode-shortcuts-title">One-shot mode shortcuts</div>
+                                        <div class="chatbox-mode-shortcuts-copy">Start a message with a symbol. Your saved mode will not change.</div>
+                                        <div class="chatbox-mode-shortcuts-grid">
+                                            <code>~</code><span>Whisper</span>
+                                            <code>~~</code><span>Close</span>
+                                            <code>!!</code><span>Shout</span>
+                                            <code>@</code><span>Narrator</span>
+                                            <code>&gt;</code><span>Director</span>
+                                            <code>#</code><span>Cheat Mode</span>
+                                            <code>**</code><span>Auto Chat</span>
+                                            <code>((...))</code><span>Event Inject</span>
+                                            <code>(...)</code><span>Inject &amp; Chat</span>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div class="chatbox-control-value">
                                     <div class="chatbox-tile-selector">
                                         <button id="chatbox-mode-menu-toggle" class="chatbox-tile-trigger" type="button" aria-expanded="false" aria-controls="chatbox-mode-options" title="Switch mode">
