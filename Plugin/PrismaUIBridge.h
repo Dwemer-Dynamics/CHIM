@@ -133,6 +133,14 @@ namespace PrismaUIBridge {
     void HideNpcManagerPanel();
     bool IsNpcManagerPanelVisible();
 
+    // ===== CHIM Settings Hub Functions =====
+
+    void CreateConfigManagerPanel();
+    void ToggleConfigManagerPanel();
+    void ShowConfigManagerPanel(const std::string& tab = "globals");
+    void HideConfigManagerPanel();
+    bool IsConfigManagerPanelVisible();
+
     // ===== CHIM Browser Functions =====
 
     // Create the CHIM browser panel

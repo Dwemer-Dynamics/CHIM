@@ -29,6 +29,7 @@ function ResetPackages(Actor npc) global
 	Package MoveToPackage = Game.GetFormFromFile(0x01C6E8, "AIAgent.esp") as Package ; Package MoveToTarget
 	Package WaitPackage = Game.GetFormFromFile(0x02021F, "AIAgent.esp") as Package ; Package MoveToTarget
 	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package		; FollowPlayerPackage
+	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
 	Package SandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
 	Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
 	Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
@@ -44,12 +45,14 @@ function ResetPackages(Actor npc) global
 	ActorUtil.RemovePackageOverride(npc, MoveToPackage)
 	ActorUtil.RemovePackageOverride(npc, WaitPackage)
 	ActorUtil.RemovePackageOverride(npc, FollowPlayerPackage)
+	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
 	ActorUtil.RemovePackageOverride(npc, SandboxPackage)
 	ActorUtil.RemovePackageOverride(npc, doNothing)
 	ActorUtil.RemovePackageOverride(npc, SandboxWorkPackage)
 	;ActorUtil.ClearPackageOverride(npc)
 	
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	
 	npc.EvaluatePackage()
 	
@@ -526,6 +529,40 @@ function FollowSoft(Actor npc, ObjectReference akTarget) global
 	
 endFunction
 
+; Lets a temporary close-distance move finish without cancelling an active player-follow command.
+function ComeCloser(Actor npc, ObjectReference akTarget) global
+
+	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
+	FollowSoft(npc, akTarget)
+
+	if (restorePlayerFollow == 0)
+		return
+	endif
+
+	float startedAt = Utility.GetCurrentRealTime()
+	while (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) == 1 && npc.GetDistance(akTarget) > 300.0 && (Utility.GetCurrentRealTime() - startedAt) < 20.0)
+		Utility.Wait(0.5)
+	endwhile
+
+	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1)
+		Debug.Trace("[CHIM] ComeCloser did not restore player follow for "+npc.GetDisplayName()+" because another action replaced it")
+		return
+	endif
+
+	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
+	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
+	Faction FollowFaction = Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction
+	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword
+
+	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
+	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+	npc.SetFactionRank(FollowFaction,1)
+	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
+	npc.EvaluatePackage()
+	Debug.Trace("[CHIM] ComeCloser restored player follow for "+npc.GetDisplayName()+" after "+(Utility.GetCurrentRealTime() - startedAt)+" seconds at distance "+npc.GetDistance(akTarget))
+
+endFunction
+
 function MakeFollower(Actor npc) global
 	
 	ResetPackages(npc);
@@ -738,7 +775,7 @@ function TravelToTargetEnd(Actor npc) global
 					;Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
 					;ActorUtil.AddPackageOverride(npc, doNothing,99)
 					;npc.EvaluatePackage()
-					Sandbox(npc,""); doNothing moves the NPC
+					Sandbox(npc,"",destination); doNothing moves the NPC
 					
 				else
 					; If NPC present, issue a low priority donothing
@@ -876,6 +913,7 @@ int Function stayAtPlace(Actor npc,int followPlayer,String taskid = "") global
 			
 		npc.SetFactionRank(FollowFaction,1)
 		ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100,0)
+		StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 1)
 		npc.EvaluatePackage();
 	endif
 	
@@ -2409,7 +2447,7 @@ int Function SpawnItem(string itemname,int itembase,int locationMarker ,String t
 EndFunction
 
 
-int Function Sandbox(Actor npc,String taskid) global
+int Function SandboxOld(Actor npc,String taskid) global
 
 	if (npc.Is3DLoaded())
 		
@@ -2833,9 +2871,12 @@ Function ConfirmMoveInventoryItem(Actor source, Actor target, Form akItemToRemov
 	Debug.Trace("ConfirmMoveInventoryItem end");
 EndFunction
 
-Function RentRoom(Actor player, Actor innkeeper, int cost) global
+Function RentRoom(Actor player, Actor innkeeper, int cost, String playerName) global
 	if (!player || !innkeeper)
 		return
+	endif
+	if (playerName == "")
+		playerName = "Player"
 	endif
 
 	Form goldForm = Game.GetForm(0x0000000F)
@@ -2845,7 +2886,7 @@ Function RentRoom(Actor player, Actor innkeeper, int cost) global
 	endif
 
 	if (player.GetItemCount(goldForm) < cost)
-		AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" does not have enough gold to rent a room.","itemfound",innkeeper.GetDisplayName())
+		AIAgentFunctions.logMessageForActor(playerName+" does not have enough gold to rent a room.","itemfound",innkeeper.GetDisplayName())
 		return
 	endif
 
@@ -2858,7 +2899,7 @@ Function RentRoom(Actor player, Actor innkeeper, int cost) global
 
 	player.RemoveItem(goldForm, cost)
 	innkeeper.AddItem(goldForm, cost)
-	AIAgentFunctions.logMessageForActor(player.GetDisplayName()+" paid "+cost+" gold to "+innkeeper.GetDisplayName()+" to rent a room.","itemfound",innkeeper.GetDisplayName())
+	AIAgentFunctions.logMessageForActor(playerName+" paid "+cost+" gold to "+innkeeper.GetDisplayName()+" to rent a room.","itemfound",innkeeper.GetDisplayName())
 EndFunction
 
 Function HireCarriage(Actor player, Actor driver, ObjectReference destination, String destinationName, int cost) global
@@ -3861,6 +3902,8 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				akTarget.EvaluatePackage();
 			
 			else
+				; Just Sandbox
+				Sandbox(akTarget,"")
 				Debug.Trace("[CHIM] StayAtPlace. NO linked reference found for: "+DecToHex(akTarget.getFormId()))
 			endif
 		
@@ -3956,7 +3999,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				realCoordsUsed="1";
 			endif			
 			
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed,"util_location_npc")
+			float realCoordsX=akTarget.GetPositionX();
+			float realCoordsY=akTarget.GetPositionY();
+			float realCoordsZ=akTarget.GetPositionZ();
+			
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -4311,3 +4358,115 @@ function CameraFollow(Actor npc, ObjectReference akTarget) global
 	npc.EvaluatePackage()
 	
 endFunction
+
+
+
+function sendCustomLocation(string name) global
+	
+	Debug.Trace("[CHIM] DevScanForStatics")
+	ObjectReference[] staticsArr = PO3_SKSEFunctions.FindAllReferencesOfFormType(Game.GetPlayer(),34,1000)	
+	int statics = staticsArr.length
+	int j = 0
+	while j < statics
+		;Debug.Trace("[CHIM] [SPAWN_ITEM] container check "+j);
+		ObjectReference localStatic = staticsArr[j]
+		if (localStatic)
+			if (!localStatic.isDisabled() && !localStatic.isDeleted())
+				
+				;Debug.Trace("[CHIM] [SPAWN_ITEM] Found Static "+DecToHex(localStatic.GetFormId())+" "+localStatic.GetType()+" "+localStatic.GetName());
+				Form base = localStatic.GetBaseObject()
+				if (base && (base.GetFormId() == 0x34 || base.GetFormId() == 0x3b ) &&    localStatic.GetFormID() < 0x04FFFFFF); XMarkerHeading, XMarker
+					string baseFormEditorId = PO3_SKSEFunctions.GetFormEditorID(localStatic)
+					Debug.Trace("[CHIM] [SPAWN_ITEM] Found XMarkerHeading Static <"+baseFormEditorId+">, base:"+DecToHex(base.GetFormId())+" "+base.GetType()+" "+base.GetName() + "/ ref: "+DecToHex(localStatic.GetFormId())+" "+localStatic.GetType()+" "+localStatic.GetName());
+				
+					Cell localCell = Game.GetPlayer().getParentCell()
+					Location curr = Game.GetPlayer().GetCurrentLocation()
+					Location currParent = PO3_SKSEFunctions.GetParentLocation(curr)
+					Location currParent2 = PO3_SKSEFunctions.GetParentLocation(currParent)
+					
+					int flags = 0
+					
+					if (localStatic)
+						if (localStatic.IsInInterior())
+							flags += 1 * 4 ; 01 << 2
+						endif
+					else
+						flags += 2 * 4 ; 10 << 2
+					endif
+
+					int isInterior = flags
+					
+					string parName =""
+					string parName2 =""
+					if (currParent)
+						parName= currParent.GetName()
+					endif
+					if (currParent2)
+						parName2= currParent2.GetName()
+					endif
+					
+					Debug.Trace("[CHIM] SendLocation Sending location: "+(curr.GetFormID())+","+curr.GetName()+"  Pos:"+localStatic.GetPositionX()+","+localStatic.GetPositionY()+","+localStatic.GetPositionZ())
+					
+					; InterestingReferences
+					string specialRefs="0x0001bdf1:0x"+DecToHex(localStatic.GetFormID())
+					
+					
+					Worldspace cws= Game.GetPlayer().GetWorldSpace()
+					
+					string worldspaceName=""
+				
+					if (cws)
+						worldspaceName = cws.GetName()
+					endif
+					int result = AIAgentFunctions.logMessage(name + "/" + (localStatic.GetFormID()) + "/" + parName + "/" + parName2 + "/CUSTOM/"+isInterior+"//"+localStatic.GetPositionX()+"/"+localStatic.GetPositionY()+"/"+specialRefs+"//"+worldspaceName,"util_location_name")
+					
+					j =	statics;breaks loop
+				endif
+			endif
+		endif
+		j = j +1 
+	endwhile
+	
+endFunction
+
+
+
+int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) global
+
+	if (npc.Is3DLoaded())
+		
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+		Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+		
+		npc.SetFactionRank(sandboxFaction,1)
+
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
+		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+				
+		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
+		npc.EvaluatePackage();
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
+				
+	else 
+		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
+		Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
+		
+		npc.SetFactionRank(sandboxFaction,1)
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+		
+		if (nearHere)
+			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" should sandbox near "+DecToHex(nearHere.GetFormID()))
+			PO3_SKSEFunctions.SetLinkedRef(npc,nearHere)
+		endif;
+		
+		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100,0)
+		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
+		npc.EvaluatePackage();
+	
+	endif
+	;AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" talks to "+(Game.GetPlayer().GetDisplayName())+" about the topic he/she knows","instruction",npc.GetDisplayName())
+endFunction
+

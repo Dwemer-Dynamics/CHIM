@@ -3156,8 +3156,10 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                         npc);
 
         auto player = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+        auto playerName = getPreferredActorDisplayName(player, "Player");
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(amount));
+        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(amount),
+                                              std::move(playerName));
 
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "RentRoom", args,
                                                                                    callback);
@@ -3292,8 +3294,12 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         auto args = RE::MakeFunctionArguments(std::move(npc), std::move(1), std::move(taskid));
 
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "stayAtPlace", args,
-                                                                                   callback);
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm || !vm->DispatchStaticCall("AIAgentAIMind", "stayAtPlace", args, callback)) {
+            logger::error("[FollowPlayer] Failed to dispatch player follow for {}", agentPtr->getActorName());
+        } else {
+            logger::info("[FollowPlayer] Dispatched player follow for {}", agentPtr->getActorName());
+        }
 
     } else if (command.contains("MakeFollower")) {
         responsePop("command");
@@ -3342,8 +3348,12 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         auto args = RE::MakeFunctionArguments(std::move(npc), std::move(player));
 
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "FollowSoft", args,
-                                                                                   callback);
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm || !vm->DispatchStaticCall("AIAgentAIMind", "ComeCloser", args, callback)) {
+            logger::error("[ComeCloser] Failed to dispatch temporary approach for {}", agentPtr->getActorName());
+        } else {
+            logger::info("[ComeCloser] Dispatched temporary approach for {}", agentPtr->getActorName());
+        }
 
     } else if (command.contains("EndConversation")) {
         responsePop("command");

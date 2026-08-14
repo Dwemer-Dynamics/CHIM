@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.2.3"
-#define PLUGIN_RELEASE_DATE "2026-08-06"
+#define PLUGIN_VERSION "3.2.4"
+#define PLUGIN_RELEASE_DATE "2026-08-13"
 
 const char* GetPluginVersion()
 {
@@ -1544,8 +1544,9 @@ void ProcedureListenToScene() {
             // AI AGent chat
             auto localactor = agent->getActorByFormId();
             if (localactor) {
-                if (localactor->GetFormID() == actor->GetFormID() && s.pad04 == 0xabcd) {
-                    logger::info("[ProcedureListenToScene] Skipped. AI dialogue (has mark 0xabcd) ,actor:{},text:{}", localactor->GetDisplayFullName(),
+                if (localactor->GetFormID() == actor->GetFormID() &&
+                    (s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), s.subtitle.c_str()))) {
+                    logger::info("[ProcedureListenToScene] Skipped recognized AI dialogue, actor:{},text:{}", localactor->GetDisplayFullName(),
                         s.subtitle);
                     skipThisSubtitle = true;
                     break;
@@ -1623,7 +1624,8 @@ void MonitorAllSubtitlesForChatbox() {
         
         std::string subtitle(s.subtitle);
         if (subtitle.empty()) continue;
-        const bool aiGeneratedSubtitle = s.pad04 == 0xabcd;
+        const bool aiGeneratedSubtitle =
+            s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), subtitle);
         const std::string source = aiGeneratedSubtitle ? "llm" : "subtitle";
         
         // Create unique key to prevent duplicate pushes
@@ -2335,6 +2337,7 @@ private:
 
                     if (!newResponse.text.empty()) {
                         ScriptLine l = ScriptLine::parse(newResponse.text, newResponse.actor.c_str());
+                        l.rechatGenerated = newResponse.rechatGenerated;
 
                         if (IsPlayerActorName(l.actor)) {  // Player has talk. Remove NPC speech.
                             SpeakManager::getInstance().deleteQueue();
