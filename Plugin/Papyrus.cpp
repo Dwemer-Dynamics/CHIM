@@ -19,7 +19,6 @@
 #pragma comment(lib, "winmm.lib")
 
 #include "AudioManager.h"
-#include "ComeCloserRestoreScheduler.h"
 #include "Commands.h"
 #include "Conf.h"
 #include "Globals.h"
@@ -2932,13 +2931,6 @@ int Papyrus::setNewActionMode(RE::BSScript::Internal::VirtualMachine* a_vm, RE::
     return 0;
 }
 
-int Papyrus::scheduleComeCloserRestore(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                       RE::StaticFunctionTag*, RE::Actor* actor, RE::TESObjectREFR* target,
-                                       std::int32_t generation) {
-    ScopedPapyrusLock lock("scheduleComeCloserRestore");
-    return ComeCloserRestoreScheduler::Schedule(actor, target, generation) ? 1 : 0;
-}
-
 RE::Actor* Papyrus::getClosestAgent(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                     RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("getClosestAgent");
@@ -5275,7 +5267,6 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("setDrivenByAIA", "AIAgentFunctions", setDrivenByAIA, false);
     a_vm->RegisterFunction("addBasicProfile", "AIAgentFunctions", addBasicProfile, false);
     a_vm->RegisterFunction("setNewActionMode", "AIAgentFunctions", setNewActionMode, false);
-    a_vm->RegisterFunction("scheduleComeCloserRestore", "AIAgentFunctions", scheduleComeCloserRestore, false);
     a_vm->RegisterFunction("getClosestAgent", "AIAgentFunctions", getClosestAgent, false);
     a_vm->RegisterFunction("getAgentByName", "AIAgentFunctions", getAgentByName, false);
     a_vm->RegisterFunction("getLocationMarkerFor", "AIAgentFunctions", getLocationMarkerFor, false);

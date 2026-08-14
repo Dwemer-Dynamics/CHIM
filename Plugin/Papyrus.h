@@ -152,10 +152,6 @@ namespace Papyrus {
     int setNewActionMode(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                          int mode);
 
-    int scheduleComeCloserRestore(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                  RE::StaticFunctionTag*, RE::Actor* actor, RE::TESObjectREFR* target,
-                                  std::int32_t generation);
-
     RE::Actor* getClosestAgent(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                RE::StaticFunctionTag*);
 

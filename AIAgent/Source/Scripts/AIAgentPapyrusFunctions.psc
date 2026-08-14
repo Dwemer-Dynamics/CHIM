@@ -537,6 +537,8 @@ Event OnKeyDown(int keyCode)
 EndEvent
 
 Event OnUpdate()
+	AIAgentAIMind.ProcessComeCloserRestore()
+
 	; Check for pending settings menu actions
 	String pendingAction = AIAgentFunctions.getSettingsMenuPendingAction()
 	
