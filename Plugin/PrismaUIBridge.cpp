@@ -7457,7 +7457,16 @@ R"CHIM(
             return;
         }
 
-        logger::info("[PrismaUIBridge] Sending chatbox message: {}", message);
+        const auto submission = ChatboxModePolicy::ParseSubmission(message, g_chatboxCurrentMode);
+        if (submission.message.empty()) {
+            RE::DebugNotification("[CHIM] Enter a message after the chat mode symbol.");
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Sending chatbox message in {} mode{}: {}",
+                     submission.mode,
+                     submission.symbolOverride ? " via symbol" : "",
+                     submission.message);
         const std::string submittedMode = g_chatboxCurrentMode;
 
         // Get player name
@@ -7472,15 +7481,18 @@ R"CHIM(
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
         PlayerConversationRoutingContext routingContext{};
         routingContext.source = PlayerConversationInputSource::PrismaText;
-        routingContext.mode = PlayerConversationRouter::ParseSpeechMode(g_chatboxCurrentMode);
+        routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        if (submission.symbolOverride) {
+            routingContext.executionMode = submission.mode;
+        }
         routingContext.everyoneMode =
             routingContext.mode != PlayerConversationSpeechMode::Whisper &&
             routingContext.mode != PlayerConversationSpeechMode::Close &&
             IsChatboxEveryoneTargetOverrideActive();
-        routingContext.narratorMode = IsNarratorChatModeEnabled();
+        routingContext.narratorMode = submission.mode == "NARRATOR";
         GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
 
-        sendMessageReal(message, "", routingContext);
+        sendMessageReal(submission.message, "", routingContext);
 
         const std::string_view nextMode = ChatboxModePolicy::ModeAfterSubmission(submittedMode);
         if (nextMode != submittedMode &&
