@@ -21,6 +21,7 @@
 #include <vector>
 #include "ThreadPool.h"
 
+#include "ComeCloserRestoreScheduler.h"
 #include "Commands.h"
 #include "DynamicDiaryBook.h"
 #include "Globals.h"
@@ -2268,6 +2269,7 @@ private:
                 if (!game->GameIsPaused()) {
                     if (!RE::UI::GetSingleton()->IsApplicationMenuOpen()) {
                         // logger::debug("[ManagerMainQueue] Processing cycle starting - Game active and menu closed");
+                        ComeCloserRestoreScheduler::QueuePoll();
                         VRItemAwareness::Tick();
                         PollPlayerGaze();
                         
@@ -4333,6 +4335,7 @@ namespace ProcessorSerialization {
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
+        ComeCloserRestoreScheduler::Clear();
 
         
     }

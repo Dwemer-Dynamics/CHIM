@@ -18,9 +18,22 @@ endFunction
 
 
 
+; Advances the per-actor token used to reject stale ComeCloser restore callbacks.
+int function AdvanceComeCloserGeneration(Actor npc) global
+	int nextGeneration = StorageUtil.GetIntValue(npc, "CHIM_ComeCloserGeneration", 0) + 1
+	if (nextGeneration < 1)
+		nextGeneration = 1
+	endif
+	StorageUtil.SetIntValue(npc, "CHIM_ComeCloserGeneration", nextGeneration)
+	return nextGeneration
+endFunction
+
+
 function ResetPackages(Actor npc) global
 
 	;npc.EnableAI(false) 
+	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
+	AdvanceComeCloserGeneration(npc)
 
 	Package TraveltoPackage = Game.GetFormFromFile(0x01ABFE, "AIAgent.esp") as Package ; Package Travelto
 	Package AttackPackage = Game.GetFormFromFile(0x01B6C2 , "AIAgent.esp") as Package ; Package AttackPackage
@@ -52,7 +65,6 @@ function ResetPackages(Actor npc) global
 	;ActorUtil.ClearPackageOverride(npc)
 	
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
-	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	
 	npc.EvaluatePackage()
 	
@@ -533,21 +545,27 @@ endFunction
 function ComeCloser(Actor npc, ObjectReference akTarget) global
 
 	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
+	int generation = AdvanceComeCloserGeneration(npc)
 	FollowSoft(npc, akTarget)
 
 	if (restorePlayerFollow == 0)
 		return
 	endif
 
-	float startedAt = Utility.GetCurrentRealTime()
-	while (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) == 1 && npc.GetDistance(akTarget) > 300.0 && (Utility.GetCurrentRealTime() - startedAt) < 20.0)
-		Utility.Wait(0.5)
-	endwhile
+	if (AIAgentFunctions.scheduleComeCloserRestore(npc, akTarget, generation) == 0)
+		Debug.Trace("[CHIM] ComeCloser could not schedule player follow restore for "+npc.GetDisplayName())
+	endif
 
-	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1)
+endFunction
+
+; Restores player follow only when the native scheduler is completing the latest approach operation.
+function RestorePlayerFollowAfterComeCloser(Actor npc, int generation, float elapsedSeconds, float distance) global
+
+	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1 || StorageUtil.GetIntValue(npc, "CHIM_ComeCloserGeneration", 0) != generation)
 		Debug.Trace("[CHIM] ComeCloser did not restore player follow for "+npc.GetDisplayName()+" because another action replaced it")
 		return
 	endif
+	AdvanceComeCloserGeneration(npc)
 
 	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
 	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
@@ -559,7 +577,7 @@ function ComeCloser(Actor npc, ObjectReference akTarget) global
 	npc.SetFactionRank(FollowFaction,1)
 	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
 	npc.EvaluatePackage()
-	Debug.Trace("[CHIM] ComeCloser restored player follow for "+npc.GetDisplayName()+" after "+(Utility.GetCurrentRealTime() - startedAt)+" seconds at distance "+npc.GetDistance(akTarget))
+	Debug.Trace("[CHIM] ComeCloser restored player follow for "+npc.GetDisplayName()+" after "+elapsedSeconds+" seconds at distance "+distance)
 
 endFunction
 
