@@ -2155,8 +2155,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     if (unifiedPlayerRouting) {
                         audienceSnapshot["routing_reason"] = playerRoute.reason;
                         audienceSnapshot["speech_mode"] = playerRoute.modeName;
-                        if (!routingContext->executionMode.empty()) {
-                            audienceSnapshot["execution_mode"] = routingContext->executionMode;
+                        if (!routingContext->symbolRoutingMode.empty()) {
+                            audienceSnapshot["chat_shortcut_routed"] = true;
                         }
                         audienceSnapshot["listener_radius_units"] = playerRoute.listenerRadiusUnits;
                         audienceSnapshot["audience_radius_units"] = playerRoute.audienceRadiusUnits;
@@ -2164,10 +2164,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     const std::string snapshotDump = audienceSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
-                } else if (unifiedPlayerRouting && !routingContext->executionMode.empty()) {
+                } else if (unifiedPlayerRouting && !routingContext->symbolRoutingMode.empty()) {
                     json requestModeSnapshot;
                     requestModeSnapshot["source"] = "plugin_player_routing_v2";
-                    requestModeSnapshot["execution_mode"] = routingContext->executionMode;
+                    requestModeSnapshot["chat_shortcut_routed"] = true;
                     const std::string snapshotDump = requestModeSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));

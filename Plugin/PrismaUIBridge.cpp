@@ -7463,7 +7463,7 @@ R"CHIM(
             return;
         }
 
-        logger::info("[PrismaUIBridge] Sending chatbox message in {} mode{}: {}",
+        logger::info("[PrismaUIBridge] Sending chatbox message with {} routing{}: {}",
                      submission.mode,
                      submission.symbolOverride ? " via symbol" : "",
                      submission.message);
@@ -7483,7 +7483,8 @@ R"CHIM(
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
         if (submission.symbolOverride) {
-            routingContext.executionMode = submission.mode;
+            routingContext.symbolRoutingMode = submission.mode;
+            routingContext.routingMessage = submission.message;
         }
         routingContext.everyoneMode =
             routingContext.mode != PlayerConversationSpeechMode::Whisper &&
@@ -7492,7 +7493,7 @@ R"CHIM(
         routingContext.narratorMode = submission.mode == "NARRATOR";
         GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
 
-        sendMessageReal(submission.message, "", routingContext);
+        sendMessageReal(message, "", routingContext);
 
         const std::string_view nextMode = ChatboxModePolicy::ModeAfterSubmission(submittedMode);
         if (nextMode != submittedMode &&
