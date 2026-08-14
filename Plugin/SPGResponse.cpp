@@ -27,7 +27,7 @@ SPGResponse& SPGResponse::getInstance() {
     return instance;
 }
 
-void SPGResponse::decodeAndEnqueue(const std::string& data) {
+void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated) {
     std::stringstream ss(data);
     std::string line;
     while (std::getline(ss, line)) {
@@ -48,7 +48,7 @@ void SPGResponse::decodeAndEnqueue(const std::string& data) {
         auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
         auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 
-        ResponseItem fitem = {message, nanos,actorname};
+        ResponseItem fitem = {message, nanos, actorname, rechatGenerated};
         
         this->enqueue(action, fitem);
         

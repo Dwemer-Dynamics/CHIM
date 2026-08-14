@@ -354,8 +354,17 @@ Event OnKeyDown(int keyCode)
 			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
 			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
 			inputType = "inputtext_i"
+			SendLegacyTextMessage(messageText,inputType,selectedActor)
+			
+		elseif (Input.IsKeyPressed(42))	; Left Shift
+			
+			AIAgentAIMind.sendCustomLocation(messageText)
+			
+		else
+			;AIAgentFunctions.sendMessage(messageText,inputType)
+			SendLegacyTextMessage(messageText,inputType,selectedActor)
 		endif;
-		SendLegacyTextMessage(messageText,inputType,selectedActor)
+		
 		
 		
     EndIf
