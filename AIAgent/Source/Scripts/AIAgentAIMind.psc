@@ -36,7 +36,7 @@ function ResetPackages(Actor npc) global
 	
 	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
 
-	
+	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	
 	ActorUtil.RemovePackageOverride(npc, TraveltoPackage)
 	ActorUtil.RemovePackageOverride(npc, AttackPackage)
@@ -52,7 +52,6 @@ function ResetPackages(Actor npc) global
 	;ActorUtil.ClearPackageOverride(npc)
 	
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
-	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	
 	npc.EvaluatePackage()
 	
@@ -529,23 +528,10 @@ function FollowSoft(Actor npc, ObjectReference akTarget) global
 	
 endFunction
 
-; Lets a temporary close-distance move finish without cancelling an active player-follow command.
-function ComeCloser(Actor npc, ObjectReference akTarget) global
-
-	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
-	FollowSoft(npc, akTarget)
-
-	if (restorePlayerFollow == 0)
-		return
-	endif
-
-	float startedAt = Utility.GetCurrentRealTime()
-	while (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) == 1 && npc.GetDistance(akTarget) > 300.0 && (Utility.GetCurrentRealTime() - startedAt) < 20.0)
-		Utility.Wait(0.5)
-	endwhile
+; Restores persistent player follow after the temporary FollowSoft package finishes.
+function EndFollowSoft(Actor npc) global
 
 	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1)
-		Debug.Trace("[CHIM] ComeCloser did not restore player follow for "+npc.GetDisplayName()+" because another action replaced it")
 		return
 	endif
 
@@ -559,7 +545,14 @@ function ComeCloser(Actor npc, ObjectReference akTarget) global
 	npc.SetFactionRank(FollowFaction,1)
 	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
 	npc.EvaluatePackage()
-	Debug.Trace("[CHIM] ComeCloser restored player follow for "+npc.GetDisplayName()+" after "+(Utility.GetCurrentRealTime() - startedAt)+" seconds at distance "+npc.GetDistance(akTarget))
+	Debug.Trace("[CHIM] FollowSoft restored player follow for "+npc.GetDisplayName())
+
+endFunction
+
+; Starts a temporary close-distance move without cancelling active player-follow intent.
+function ComeCloser(Actor npc, ObjectReference akTarget) global
+
+	FollowSoft(npc, akTarget)
 
 endFunction
 
