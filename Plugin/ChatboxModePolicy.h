@@ -45,7 +45,7 @@ namespace ChatboxModePolicy
         return value;
     }
 
-    // Resolve a leading chat symbol without changing the user's persistent mode selection.
+    // Parse a leading symbol for local routing; HerikaServer remains the execution authority.
     inline ParsedSubmission ParseSubmission(std::string_view message, std::string_view selectedMode)
     {
         ParsedSubmission result{ std::string(message), std::string(selectedMode), {}, false };

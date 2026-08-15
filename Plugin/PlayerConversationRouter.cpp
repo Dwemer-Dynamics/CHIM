@@ -482,7 +482,9 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     }
 
     PlayerConversationRoutingPolicy::Request policyRequest{};
-    policyRequest.utterance = PlayerConversationRoutingPolicy::ExtractUtterance(wireMessage);
+    policyRequest.utterance = context.routingMessage.empty()
+        ? PlayerConversationRoutingPolicy::ExtractUtterance(wireMessage)
+        : PlayerConversationRoutingPolicy::Normalize(context.routingMessage);
     policyRequest.explicitTargetFormId = context.explicitTargetFormId;
     policyRequest.explicitTargetName = context.explicitTargetName;
     policyRequest.directAddressRadius = directAddressRadius;
