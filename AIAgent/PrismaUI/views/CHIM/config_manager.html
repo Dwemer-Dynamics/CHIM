@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CHIM Settings</title>
+    <link rel="stylesheet" href="npc_manager.css">
+    <link rel="stylesheet" href="config_manager.css">
+</head>
+<body>
+    <main class="settings-shell" aria-label="CHIM settings">
+        <header class="panel-header">
+            <div><h1>Settings</h1><p>Manage CHIM without leaving the game.</p></div>
+            <button id="close-button" class="icon-button" type="button" aria-label="Close">&times;</button>
+        </header>
+        <nav class="top-tabs" aria-label="Settings pages">
+            <button class="top-tab active" data-page="globals" type="button">🌐 Global Settings</button>
+            <button class="top-tab" data-page="profiles" type="button">📁 Profiles</button>
+            <button class="top-tab" data-page="npcs" type="button">🧑 CHIM NPCs</button>
+        </nav>
+        <div id="status-line" class="status-line">Loading settings...</div>
+
+        <section id="globals-page" class="page active">
+            <div id="global-tabs" class="sub-tabs"></div>
+            <form id="globals-form">
+                <div class="settings-content-panel">
+                    <div id="global-sections" class="settings-grid"></div>
+                </div>
+                <section class="settings-section context-options-section settings-content-panel">
+                    <h2>🧩 Prompt Context Selections</h2>
+                    <div id="prompt-context-options" class="context-options-grid"></div>
+                </section>
+                <footer class="action-bar"><button class="button primary" type="submit">Save Global Settings</button></footer>
+            </form>
+        </section>
+
+        <section id="profiles-page" class="page" hidden>
+            <div class="profiles-layout">
+                <aside class="profile-sidebar">
+                    <div class="sidebar-actions">
+                        <button id="new-profile" class="button primary" type="button">New</button>
+                        <button id="delete-profile" class="button danger" type="button">Delete</button>
+                    </div>
+                    <section class="profile-slot-panel">
+                        <h2>Profile Slots</h2>
+                        <div id="profile-slot-summary" class="profile-slot-summary"></div>
+                    </section>
+                    <div id="profile-list" class="profile-list"></div>
+                </aside>
+                <form id="profile-form" class="profile-editor">
+                    <header class="profile-editor-toolbar">
+                        <div>
+                            <span>Editing Profile</span>
+                            <strong id="profile-editor-name">Select a profile</strong>
+                        </div>
+                        <button class="button primary" type="submit">Save Profile</button>
+                    </header>
+                    <section class="settings-section">
+                        <h2>⚙ Profile Core</h2>
+                        <div class="profile-core-grid">
+                            <label class="field"><span>Name</span><input name="label" required></label>
+                            <label class="field"><span>Slot</span><select name="slot"><option value="">No slot</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+                            <label class="toggle-field profile-default-card"><input name="default_npc" type="checkbox"><span>Default NPC Profile</span></label>
+                        </div>
+                        <label class="field"><span>Prompt</span><textarea name="prompt" rows="7"></textarea></label>
+                    </section>
+                    <section class="settings-section grouped-section">
+                        <h2>🧠 Connector Selection</h2>
+                        <p>Choose the services used by this profile.</p>
+                        <div id="profile-connectors" class="connector-selection-grid"></div>
+                    </section>
+                    <section class="settings-section grouped-section">
+                        <h2>🗂 Profile Settings</h2>
+                        <div id="profile-metadata-sections" class="profile-settings-columns"></div>
+                    </section>
+                    <details class="settings-section profile-overrides">
+                        <summary>🌐 Global Settings Overrides</summary>
+                        <p>Enable only the settings this profile should override.</p>
+                        <div id="profile-override-sections" class="settings-grid"></div>
+                    </details>
+                    <details class="settings-section advanced-metadata">
+                        <summary>Advanced Metadata JSON</summary>
+                        <p>Unknown plugin metadata is preserved. Edit only when needed.</p>
+                        <textarea id="profile-metadata-json" rows="12" spellcheck="false"></textarea>
+                    </details>
+                </form>
+            </div>
+        </section>
+
+        <section id="npcs-page" class="page" hidden>
+        <section class="toolbar" aria-label="NPC filters">
+            <div class="scope-switch" role="group" aria-label="NPC scope">
+                <button type="button" class="scope-button active" data-scope="nearby">Nearby</button>
+                <button type="button" class="scope-button" data-scope="all">All NPCs</button>
+            </div>
+            <label class="filter-field search-field">
+                <span>Search</span>
+                <input id="search-input" type="search" placeholder="Name, race, or RefID">
+            </label>
+            <label class="filter-field">
+                <span>Profile</span>
+                <select id="profile-filter"><option value="">All profiles</option></select>
+            </label>
+            <button id="refresh-button" class="button secondary" type="button">Refresh</button>
+        </section>
+
+        <div class="status-line npc-status-line">
+            <span id="status-text">Loading nearby NPCs...</span>
+            <span id="result-count"></span>
+        </div>
+        <section id="npc-grid" class="npc-grid" aria-live="polite"></section>
+        <footer class="pagination-bar">
+            <button id="previous-page" class="button secondary compact" type="button">Previous</button>
+            <span id="page-label">Page 1</span>
+            <button id="next-page" class="button secondary compact" type="button">Next</button>
+        </footer>
+        </section>
+    </main>
+    <div id="editor-backdrop" class="editor-backdrop hidden" role="presentation">
+        <section class="editor-modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+            <header class="editor-header">
+                <div class="editor-identity">
+                    <img id="editor-portrait" alt="NPC portrait">
+                    <div>
+                        <h2 id="editor-title">NPC Profile</h2>
+                        <p id="editor-subtitle"></p>
+                    </div>
+                </div>
+                <button id="editor-close" class="icon-button" type="button" aria-label="Close editor">×</button>
+            </header>
+
+            <nav class="editor-tabs" aria-label="NPC editor sections">
+                <button type="button" class="editor-tab active" data-tab="general">⚙ General</button>
+                <button type="button" class="editor-tab" data-tab="roleplay">🎭 Roleplay</button>
+                <button type="button" class="editor-tab" data-tab="relationships">🤝 Relationships</button>
+                <button type="button" class="editor-tab" data-tab="info">ℹ Info</button>
+                <button type="button" class="editor-tab" data-tab="actions">⚡ Actions</button>
+                <button type="button" class="editor-tab" data-tab="background-life">🌍 Background Life</button>
+                <button type="button" class="editor-tab" data-tab="history">📜 History</button>
+            </nav>
+
+            <form id="npc-form" autocomplete="off">
+                <input id="npc-id" type="hidden">
+                <div class="editor-content">
+                    <section class="tab-panel active" data-panel="general">
+                        <div class="form-grid two-columns">
+                            <label class="form-field"><span>Name</span><input name="npc_name" required></label>
+                            <label class="form-field"><span>Profile</span><select name="profile_id" required></select></label>
+                        </div>
+                        <div class="flag-row">
+                            <label class="check-field"><input name="npc_favorite" type="checkbox"><span>Favorite NPC</span></label>
+                            <label class="check-field"><input name="lock_profile" type="checkbox"><span>Lock Profile</span></label>
+                        </div>
+                        <h3>Profile Features</h3>
+                        <div id="feature-toggles" class="toggle-grid"></div>
+                        <label class="form-field"><span>Prompt Head Override</span><textarea name="prompt_head" rows="7"></textarea></label>
+                    </section>
+
+                    <section class="tab-panel" data-panel="roleplay" hidden>
+                        <label class="form-field"><span>Core Identity</span><textarea name="core" rows="4"></textarea></label>
+                        <label class="form-field"><span>Static Biography</span><textarea name="npc_static_bio" rows="5"></textarea></label>
+                        <label class="form-field"><span>Appearance</span><textarea name="appearance" rows="4"></textarea></label>
+                        <label class="form-field"><span>Personality</span><textarea name="personality" rows="4"></textarea></label>
+                        <label class="form-field"><span>Occupation</span><textarea name="occupation" rows="3"></textarea></label>
+                        <label class="form-field"><span>Skills</span><textarea name="skills" rows="3"></textarea></label>
+                        <label class="form-field"><span>Speech Style</span><textarea name="speechstyle" rows="4"></textarea></label>
+                        <label class="form-field"><span>Goals</span><textarea name="goals" rows="4"></textarea></label>
+                    </section>
+
+                    <section class="tab-panel" data-panel="relationships" hidden>
+                        <div class="section-heading">
+                            <div>
+                                <h3>Relationships</h3>
+                                <p>Affinity ranges from -100 to 100.</p>
+                            </div>
+                            <button id="add-relationship" class="button secondary compact" type="button">Add</button>
+                        </div>
+                        <label class="check-field relationship-lock"><input id="relationships-locked" type="checkbox"><span>Lock relationship updates</span></label>
+                        <div id="relationship-list" class="relationship-list"></div>
+                        <label class="form-field"><span>Recent Middle Term Memory</span><textarea name="middle_term_latest" rows="8"></textarea></label>
+                    </section>
+
+                    <section class="tab-panel history-panel" data-panel="history" hidden>
+                        <article class="history-section">
+                            <div class="section-heading">
+                                <div><h3>Inject Event</h3><p>Add roleplay context directly to this NPC, even while they are outside the current scene.</p></div>
+                            </div>
+                            <div id="history-recipients" class="history-recipient-row"></div>
+                            <label class="form-field"><span>Also include another NPC</span><input id="history-recipient-search" type="search" placeholder="Search NPC profiles"></label>
+                            <div id="history-recipient-results" class="history-search-results" hidden></div>
+                            <label class="form-field"><span>Event</span><textarea id="history-event-text" rows="5" maxlength="4000" placeholder="A gave B a sweetroll."></textarea></label>
+                            <div class="history-actions">
+                                <span id="history-status" class="history-status" role="status" aria-live="polite"></span>
+                                <button id="history-inject" class="button primary" type="button">Inject Event</button>
+                            </div>
+                        </article>
+                        <article class="history-section">
+                            <div class="section-heading">
+                                <div><h3>Recent Events</h3><p>The latest events routed to this NPC. Deleting a shared event removes it for every listed recipient.</p></div>
+                                <button id="history-refresh" class="button secondary compact" type="button">Refresh</button>
+                            </div>
+                            <div class="history-filterbar">
+                                <label>Event type
+                                    <select id="history-event-type"><option value="">All visible events</option></select>
+                                </label>
+                                <span id="history-filter-note" class="history-filter-note">Using Event Log visibility filters.</span>
+                            </div>
+                            <div id="history-list" class="history-list"><p class="history-empty">Open this tab to load recent events.</p></div>
+                        </article>
+                    </section>
+
+                    <section class="tab-panel" data-panel="info" hidden>
+                        <div class="form-grid two-columns">
+                            <label class="form-field"><span>Gender</span><input name="gender"></label>
+                            <label class="form-field"><span>Race</span><input name="race"></label>
+                            <label class="form-field"><span>Base ID</span><input name="base"></label>
+                            <label class="form-field"><span>Reference ID</span><input name="refid"></label>
+                            <label class="form-field"><span>Voice Type</span><input name="voiceid"></label>
+                            <label class="form-field"><span>Tags</span><input name="tags"></label>
+                        </div>
+                        <label class="form-field"><span>Oghma Knowledge Tags</span><textarea name="oghma_knowledge_tags" rows="3"></textarea></label>
+                        <label class="form-field"><span>Emote Moods</span><textarea name="emote_moods" rows="3"></textarea></label>
+                        <details class="metadata-readonly">
+                            <summary>Read-only game metadata</summary>
+                            <pre id="metadata-output">{}</pre>
+                        </details>
+                    </section>
+
+                    <section class="tab-panel" data-panel="actions" hidden>
+                        <p class="action-note">The game must be running and unpaused for Visit, Teleport, and Return NPC.</p>
+                        <div class="npc-action-list">
+                            <article class="npc-action-card">
+                                <div class="npc-action-copy">
+                                    <h3>Visit</h3>
+                                    <p>Move the player to this NPC's current position.</p>
+                                </div>
+                                <button id="visit-action" class="button secondary" type="button">Visit</button>
+                            </article>
+                            <article class="npc-action-card">
+                                <div class="npc-action-copy">
+                                    <h3 id="teleport-action-title">Teleport</h3>
+                                    <p id="teleport-action-description">Move this NPC to the player's current position and save their previous location.</p>
+                                </div>
+                                <button id="teleport-action" class="button secondary" type="button" data-action="teleport">Teleport</button>
+                            </article>
+                        </div>
+                        <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+                    </section>
+
+                    <section class="tab-panel" data-panel="background-life" hidden>
+                        <div class="npc-action-list">
+                            <article class="npc-action-card inception-card">
+                                <div class="npc-action-copy">
+                                    <h3>Background Life Inception</h3>
+                                    <p>Give this NPC a one-time thought for their next Background Life decision.</p>
+                                </div>
+                                <textarea id="bgl-inception-idea" rows="4" placeholder="Enter the thought to influence their next decision"></textarea>
+                                <button id="bgl-inception-action" class="button secondary" type="button">Set Thought</button>
+                            </article>
+                        </div>
+                        <p id="bgl-action-status" class="action-status" role="status" aria-live="polite"></p>
+                    </section>
+                </div>
+
+                <footer class="editor-actions">
+                    <span id="save-status"></span>
+                    <button id="cancel-button" class="button secondary" type="button">Close</button>
+                    <button id="save-button" class="button primary" type="submit">Save NPC</button>
+                </footer>
+            </form>
+        </section>
+    </div>
+
+    <script src="npc_manager.js"></script>
+    <script src="config_manager.js"></script>
+</body>
+</html>

@@ -5,7 +5,7 @@
     <title>CHIM Actions</title>
     <link rel="stylesheet" href="settings_menu.css">
 </head>
-<body>
+<body data-chim-menu-scale-target="#settings-modal">
     <div id="settings-modal" class="modal-container">
         <!-- Header -->
         <div class="modal-header">
@@ -24,9 +24,9 @@
                     <button class="setting-btn" onclick="selectOption('open_ai_quest_manager')"
                             onmouseenter="showDescription('Open AI Quest Manager V1 with SNQE fields and controls')"
                             onmouseleave="clearDescription()">AI Quest Manager</button>
-                    <button class="setting-btn" onclick="selectOption('open_create_rumor')"
-                            onmouseenter="showDescription('Create a manual rumor and save it directly into the Background Life rumors table')"
-                            onmouseleave="clearDescription()">Create Rumor</button>
+                    <button class="setting-btn" onclick="selectOption('open_background_life')"
+                            onmouseenter="showDescription('Manage Background Life NPCs, settings, history, and rumors')"
+                            onmouseleave="clearDescription()">Background Life</button>
                 </div>
             </div>
             <!-- Mode Options -->
@@ -48,21 +48,12 @@
                     <button class="setting-btn" data-option="mode_director" onclick="selectOption('mode_director')"
                             onmouseenter="showDescription('Give direct instructions to NPCs as game director')"
                             onmouseleave="clearDescription()">Director Mode</button>
-                    <button class="setting-btn" data-option="mode_spawn" onclick="selectOption('mode_spawn')"
-                            onmouseenter="showDescription('Spawn new characters by describing them')"
-                            onmouseleave="clearDescription()">Spawn NPC</button>
                     <button class="setting-btn" data-option="mode_cheat" onclick="selectOption('mode_cheat')"
                             onmouseenter="showDescription('All input processed as cheat commands - NPCs will execute any request')"
                             onmouseleave="clearDescription()">Cheat Mode</button>
                     <button class="setting-btn" data-option="mode_autochat" onclick="selectOption('mode_autochat')"
                             onmouseenter="showDescription('Speaks for you using your Player Bio and Speech Style. Makes 2 LLM calls: first rewrites your input into in-character dialogue (fast model), then the NPC responds.')"
                             onmouseleave="clearDescription()">Auto Chat</button>
-                    <button class="setting-btn" data-option="mode_inject_log" onclick="selectOption('mode_inject_log')"
-                            onmouseenter="showDescription('Add events to NPC memory without triggering responses')"
-                            onmouseleave="clearDescription()">Inject Event</button>
-                    <button class="setting-btn" data-option="mode_inject_chat" onclick="selectOption('mode_inject_chat')"
-                            onmouseenter="showDescription('Add events to NPC memory and get a response')"
-                            onmouseleave="clearDescription()">Inject & Chat</button>
                 </div>
             </div>
 
@@ -83,8 +74,8 @@
                             onmouseenter="showDescription('Experimental features and cutting-edge models')"
                             onmouseleave="clearDescription()">Experimental LLM</button>
                     <button class="setting-btn" onclick="selectOption('llm_focus')"
-                            onmouseenter="showDescription('Limit context to current conversation only')"
-                            onmouseleave="clearDescription()">Focus Chat</button>
+                            onmouseenter="showDescription('Use compact conversation history in the prompt')"
+                            onmouseleave="clearDescription()">Compact Chat</button>
                 </div>
             </div>
 
@@ -159,9 +150,6 @@
                     <button class="setting-btn" onclick="selectOption('rp_follow')"
                             onmouseenter="showDescription('Command this NPC to follow you')"
                             onmouseleave="clearDescription()">Follow Me</button>
-                    <button class="setting-btn" onclick="selectOption('rp_rename')"
-                            onmouseenter="showDescription('Add this NPC to Background Life')"
-                            onmouseleave="clearDescription()">Add to Background Life</button>
                     <button class="setting-btn" onclick="selectOption('continue_chat')"
                             onmouseenter="showDescription('Ask this NPC to continue speaking naturally')"
                             onmouseleave="clearDescription()">Continue Speaking</button>
@@ -191,62 +179,13 @@
             </div>
         </div>
 
-        <div id="rumor-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeRumorModal()">
-            <div class="rumor-modal-panel" role="dialog" aria-modal="true" aria-labelledby="rumor-modal-title">
-                <div class="rumor-modal-header">
-                    <div class="rumor-modal-title-wrap">
-                        <h3 id="rumor-modal-title" class="rumor-modal-title">Create Rumor</h3>
-                        <p class="rumor-modal-subtitle">Add a rumor directly to Background Life without leaving Prisma.</p>
-                    </div>
-                    <button class="rumor-modal-close" type="button" onclick="closeRumorModal()" aria-label="Close create rumor modal">&times;</button>
-                </div>
-                <form id="rumor-create-form" class="rumor-form" onsubmit="submitRumorForm(event)">
-                    <div class="rumor-form-row">
-                        <div class="rumor-field">
-                            <label for="rumor-hold-select">Hold</label>
-                            <select id="rumor-hold-select" name="rumor_hold" required>
-                                <option value="">Select hold</option>
-                                <option value="Skyrim">Skyrim</option>
-                                <option value="Whiterun">Whiterun</option>
-                                <option value="Eastmarch">Eastmarch</option>
-                                <option value="Haafingar">Haafingar</option>
-                                <option value="The Reach">The Reach</option>
-                                <option value="Hjaalmarch">Hjaalmarch</option>
-                                <option value="The Pale">The Pale</option>
-                                <option value="Falkreath">Falkreath</option>
-                                <option value="The Rift">The Rift</option>
-                                <option value="Winterhold">Winterhold</option>
-                                <option value="Solstheim">Solstheim</option>
-                            </select>
-                        </div>
-                        <div class="rumor-field">
-                            <label for="rumor-type-input">Type</label>
-                            <input id="rumor-type-input" name="rumor_type" type="text" placeholder="General">
-                        </div>
-                        <div class="rumor-field">
-                            <label for="rumor-length-days-input">Rumor Length (Days)</label>
-                            <input id="rumor-length-days-input" name="rumor_length_days" type="number" min="1" step="1" value="7" placeholder="7">
-                        </div>
-                    </div>
-                    <div class="rumor-field">
-                        <label for="rumor-content-input">Content</label>
-                        <textarea id="rumor-content-input" name="rumor_content" rows="5" required placeholder="Write the rumor text here..."></textarea>
-                    </div>
-                    <div id="rumor-form-status" class="rumor-form-status" aria-live="polite"></div>
-                    <div class="rumor-form-actions">
-                        <button class="setting-btn rumor-cancel-btn" type="button" onclick="closeRumorModal()">Cancel</button>
-                        <button id="rumor-submit-btn" class="setting-btn rumor-submit-btn" type="submit">Create Rumor</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
         <div class="menu-footer">
             <div class="hint-text" id="hover-description">Hover over any option to see details</div>
         </div>
     </div>
     
     <script src="layout.js"></script>
+    <script src="ui_scale.js"></script>
     <script src="settings_menu.js"></script>
 </body>
 </html>

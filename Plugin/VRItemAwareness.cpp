@@ -14,6 +14,7 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -62,6 +63,19 @@ namespace
     RE::FormID g_flatHeldRefFormId = 0;
     std::string g_flatHeldItemName;
     std::chrono::steady_clock::time_point g_lastFlatPoll{};
+
+    struct PendingHeldItemHandoff
+    {
+        RE::ObjectRefHandle recipient;
+        RE::ObjectRefHandle item;
+        RE::FormID itemRefId = 0;
+        std::string itemName;
+        std::string slot;
+        std::chrono::steady_clock::time_point expiresAt{};
+    };
+
+    std::mutex g_handoffMutex;
+    std::optional<PendingHeldItemHandoff> g_pendingHandoff;
 
     constexpr const char* kVrItemEventName = "ext_vr_item_raw";
     // Plain name per upstream review (tyler.maister 2026-07-09): DLL-emitted events are not ext_*.
@@ -360,6 +374,110 @@ namespace
         g_heldItems.Clear(slot);
     }
 
+    std::pair<RE::FormID, std::string> GetFlatHeldState();
+
+    std::optional<std::string> FindHeldItemSlot(RE::FormID refId)
+    {
+        if (refId == 0) {
+            return std::nullopt;
+        }
+
+        if (g_flatPollingEnabled.load(std::memory_order_acquire)) {
+            const auto [flatRefId, flatName] = GetFlatHeldState();
+            return flatRefId == refId ? std::optional<std::string>("both") : std::nullopt;
+        }
+
+        std::lock_guard<std::mutex> lock(g_heldItemMutex);
+        for (const auto* slot : { "left", "right" }) {
+            if (g_heldItems.Get(slot).refId == refId) {
+                return std::string(slot);
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    void CancelPendingHandoffForSlot(const std::string& slot, RE::FormID replacementRefId, const char* reason)
+    {
+        std::lock_guard<std::mutex> lock(g_handoffMutex);
+        if (g_pendingHandoff && g_pendingHandoff->slot == slot &&
+            g_pendingHandoff->itemRefId != replacementRefId) {
+            logger::info("[HELD_ITEM_HANDOFF] Cancelled {}: {}", g_pendingHandoff->itemName, reason);
+            g_pendingHandoff.reset();
+        }
+    }
+
+    void CancelPendingHandoffForItem(RE::FormID itemRefId, const char* reason)
+    {
+        std::lock_guard<std::mutex> lock(g_handoffMutex);
+        if (g_pendingHandoff && g_pendingHandoff->itemRefId == itemRefId) {
+            logger::info("[HELD_ITEM_HANDOFF] Cancelled {}: {}", g_pendingHandoff->itemName, reason);
+            g_pendingHandoff.reset();
+        }
+    }
+
+    void CompletePendingHandoff(RE::FormID releasedRefId)
+    {
+        PendingHeldItemHandoff handoff;
+        {
+            std::lock_guard<std::mutex> lock(g_handoffMutex);
+            if (!g_pendingHandoff || g_pendingHandoff->itemRefId != releasedRefId) {
+                return;
+            }
+
+            handoff = *g_pendingHandoff;
+            g_pendingHandoff.reset();
+        }
+
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            logger::warn("[HELD_ITEM_HANDOFF] Task interface unavailable for {}", handoff.itemName);
+            return;
+        }
+
+        taskInterface->AddTask([handoff = std::move(handoff)]() mutable {
+            auto recipientRef = handoff.recipient.get();
+            auto itemRef = handoff.item.get();
+            auto* recipient = recipientRef ? recipientRef->As<RE::Actor>() : nullptr;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!recipient || !itemRef || !player || recipient->IsDead()) {
+                logger::info("[HELD_ITEM_HANDOFF] Cancelled {}: recipient or item is no longer available", handoff.itemName);
+                return;
+            }
+
+            if (recipient->GetParentCell() != player->GetParentCell() ||
+                recipient->GetPosition().GetDistance(player->GetPosition()) > 256.0f ||
+                itemRef->GetPosition().GetDistance(player->GetPosition()) > 256.0f) {
+                logger::info("[HELD_ITEM_HANDOFF] Cancelled {}: recipient or item moved out of handoff range", handoff.itemName);
+                return;
+            }
+
+            auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+            if (!vm) {
+                logger::warn("[HELD_ITEM_HANDOFF] Papyrus VM unavailable for {}", handoff.itemName);
+                return;
+            }
+
+            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+            auto args = RE::MakeFunctionArguments(std::move(recipient), itemRef.get(), std::move(handoff.itemName));
+            if (!vm->DispatchStaticCall("AIAgentAIMind", "AcceptHeldItemFromPlayer", args, callback)) {
+                logger::warn("[HELD_ITEM_HANDOFF] Failed to dispatch transfer for RefID 0x{:08X}", handoff.itemRefId);
+                return;
+            }
+
+            logger::info("[HELD_ITEM_HANDOFF] Released RefID 0x{:08X} queued for recipient", handoff.itemRefId);
+        });
+    }
+
+    void ExpirePendingHandoff()
+    {
+        std::lock_guard<std::mutex> lock(g_handoffMutex);
+        if (g_pendingHandoff && std::chrono::steady_clock::now() >= g_pendingHandoff->expiresAt) {
+            logger::info("[HELD_ITEM_HANDOFF] Timed out waiting for release of {}", g_pendingHandoff->itemName);
+            g_pendingHandoff.reset();
+        }
+    }
+
     void SendHeldItemEvent(const std::string& slot, const std::string& action, std::string itemName,
                            RE::FormID refId)
     {
@@ -423,6 +541,7 @@ namespace
         }
 
         if (heldFormId != formId) {
+            CancelPendingHandoffForSlot("both", formId, "player grabbed a different item");
             SendHeldItemEvent("both", "pickup", itemName, formId);
             SetFlatHeldState(formId, itemName);
         }
@@ -437,6 +556,7 @@ namespace
 
         SendHeldItemEvent("both", "drop", heldItemName, heldFormId);
         ClearFlatHeldState();
+        CompletePendingHandoff(heldFormId);
     }
 
     void OnHiggsGrabbed(bool isLeft, RE::TESObjectREFR* grabbedRef)
@@ -448,6 +568,7 @@ namespace
         const std::string slot = isLeft ? "left" : "right";
         const auto refId = grabbedRef->GetFormID();
         const auto itemName = ResolveItemName(grabbedRef);
+        CancelPendingHandoffForSlot(slot, refId, "player grabbed a different item in that hand");
         SendHeldItemEvent(slot, "pickup", itemName, refId);
         SetHeldItemState(slot, refId, itemName);
     }
@@ -467,6 +588,7 @@ namespace
         }
         SendHeldItemEvent(slot, "drop", itemName, refId);
         ClearHeldItemState(slot);
+        CompletePendingHandoff(refId);
     }
 
     void OnHiggsStashed(bool isLeft, RE::TESForm* stashedForm)
@@ -478,6 +600,7 @@ namespace
         const auto refId = state.refId;
         SendHeldItemEvent(slot, "drop", itemName, refId);
         ClearHeldItemState(slot);
+        CancelPendingHandoffForItem(refId, "item was stashed");
     }
 
     void OnHiggsConsumed(bool isLeft, RE::TESForm* consumedForm)
@@ -489,11 +612,19 @@ namespace
         const auto refId = state.refId;
         SendHeldItemEvent(slot, "drop", itemName, refId);
         ClearHeldItemState(slot);
+        CancelPendingHandoffForItem(refId, "item was consumed");
     }
 
     void TickBodyImpactAwareness()
     {
         if (!REL::Module::IsVR()) {
+            return;
+        }
+
+        // No body-contact turns while the player is in a scripted conversation - same
+        // quest-breaking hazard as gaze: the spoken reaction stomps the vanilla dialogue
+        // state and the NPC can wedge "busy" mid-quest.
+        if (auto* ui = RE::UI::GetSingleton(); ui && ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
             return;
         }
 
@@ -645,6 +776,7 @@ namespace VRItemAwareness
     void Tick()
     {
         TickBodyImpactAwareness();
+        ExpirePendingHandoff();
 
         if (!g_flatPollingEnabled.load(std::memory_order_acquire)) {
             return;
@@ -681,5 +813,59 @@ namespace VRItemAwareness
         } else {
             SendFlatDrop();
         }
+    }
+
+    std::string BeginHeldItemHandoff(RE::Actor* recipient, RE::FormID itemRefId, const std::string& itemName)
+    {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!recipient || !player || recipient->IsDead()) {
+            return "recipient is not available";
+        }
+
+        const auto slot = FindHeldItemSlot(itemRefId);
+        if (!slot) {
+            return "item is no longer held";
+        }
+
+        auto* itemRef = RE::TESForm::LookupByID<RE::TESObjectREFR>(itemRefId);
+        if (!itemRef || ShouldSkipReference(itemRef)) {
+            return "held reference is not transferable";
+        }
+
+        if (recipient->GetParentCell() != player->GetParentCell() ||
+            recipient->GetPosition().GetDistance(player->GetPosition()) > 256.0f) {
+            return "recipient is too far away";
+        }
+
+        PendingHeldItemHandoff handoff;
+        handoff.recipient = recipient->GetHandle();
+        handoff.item = itemRef->GetHandle();
+        handoff.itemRefId = itemRefId;
+        handoff.itemName = itemName.empty() ? ResolveItemName(itemRef) : CleanRawField(itemName);
+        handoff.slot = *slot;
+        handoff.expiresAt = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+
+        {
+            std::lock_guard<std::mutex> lock(g_handoffMutex);
+            g_pendingHandoff = handoff;
+        }
+
+        logger::info("[HELD_ITEM_HANDOFF] Waiting for release of {} (RefID 0x{:08X}) to {}",
+                     handoff.itemName, handoff.itemRefId, recipient->GetDisplayFullName());
+        RE::DebugNotification(std::format("[CHIM] Release {} for {}.", handoff.itemName,
+                                          recipient->GetDisplayFullName()).c_str());
+        return "";
+    }
+
+    void CancelPendingHandoff(const char* reason)
+    {
+        std::lock_guard<std::mutex> lock(g_handoffMutex);
+        if (!g_pendingHandoff) {
+            return;
+        }
+
+        logger::info("[HELD_ITEM_HANDOFF] Cancelled {}: {}", g_pendingHandoff->itemName,
+                     reason ? reason : "cancelled");
+        g_pendingHandoff.reset();
     }
 }

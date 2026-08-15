@@ -1,30 +1,41 @@
 #include "PrismaUIBridge.h"
+#include "ChatboxModePolicy.h"
 #include "Conf.h"
 #include "Misc.h"
 #include "ThreadPool.h"
 #include "Papyrus.h"
 #include "HTTPManager.h"
+#include "AudioManager.h"
 #include "Globals.h"
 #include "SpeakManager.h"
 #include "SPGResponse.h"
 #include "SpatialSnapshotManager.h"
+#include "PlayerConversationRouter.h"
+#include "SpatialAwareness.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <winhttp.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <limits>
 #include <list>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 #include <thread>
 #include <unordered_map>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winhttp.lib")
 
 namespace logger = SKSE::log;
+
+extern RE::TESFaction* AIAgentRoleMasterFaction;
+extern void ScriptProxyRun(const std::string& jsonStr);
 
 namespace PrismaUIBridge {
 
@@ -34,13 +45,27 @@ namespace PrismaUIBridge {
     static PrismaView g_historyView = 0;
     static PrismaView g_overlayView = 0;
     static PrismaView g_diariesView = 0;
+    static PrismaView g_backgroundLifeView = 0;
+    static PrismaView g_npcManagerView = 0;
+    static PrismaView g_configManagerView = 0;
     static std::atomic<bool> g_enabled{false};
     static std::atomic<bool> g_panelCreated{false};
     static std::atomic<bool> g_overlayCreated{false};
     static std::atomic<bool> g_diariesCreated{false};
+    static std::atomic<bool> g_backgroundLifeCreated{false};
+    static std::atomic<bool> g_npcManagerCreated{false};
+    static std::atomic<bool> g_configManagerCreated{false};
     static std::atomic<bool> g_domReady{false};
     static std::atomic<bool> g_overlayDomReady{false};
     static std::atomic<bool> g_diariesDomReady{false};
+    static std::atomic<std::uint64_t> g_diaryAudioGeneration{0};
+    static std::atomic<bool> g_diaryAudioPlaying{false};
+    static std::mutex g_diaryAudioPlayerMutex;
+    static std::unique_ptr<AudioManager> g_diaryAudioPlayer;
+    static std::atomic<bool> g_backgroundLifeDomReady{false};
+    static std::atomic<bool> g_npcManagerDomReady{false};
+    static std::atomic<bool> g_configManagerDomReady{false};
+    static uint32_t g_backgroundLifeSelectedFormId = 0;
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
     static std::mutex g_mutex;
@@ -49,6 +74,23 @@ namespace PrismaUIBridge {
     static bool g_overlayFetchInFlight = false;
     constexpr auto kOverlayFetchMinInterval = std::chrono::seconds(8);
     constexpr auto kChatboxControlsMinInterval = std::chrono::milliseconds(250);
+    constexpr auto kChatboxStorySyncMinInterval = std::chrono::milliseconds(1500);
+
+    // WinHTTP accepts UTF-16 host and path values while CHIM configuration is UTF-8.
+    static std::wstring Utf8ToWide(const std::string& value) {
+        if (value.empty()) {
+            return {};
+        }
+
+        const int size = MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+        if (size <= 0) {
+            return {};
+        }
+
+        std::wstring result(static_cast<std::size_t>(size), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size);
+        return result;
+    }
     
     // Crosshair target state (for overlay)
     static std::string g_lastCrosshairTarget = "";
@@ -79,7 +121,10 @@ namespace PrismaUIBridge {
     static std::string g_lastChatboxTargetsPayload = "";
     static std::chrono::steady_clock::time_point g_lastChatboxControlsCheck;
     static std::chrono::steady_clock::time_point g_lastChatboxStatusSync;
+    static std::chrono::steady_clock::time_point g_lastChatboxStorySync;
     static std::atomic<bool> g_chatboxStatusFetchInProgress{false};
+    static std::atomic<bool> g_chatboxStoryFetchInProgress{false};
+    static std::atomic<int> g_chatboxStoryLastRowId{0};
     static std::atomic<bool> g_chatboxFocusChatEnabled{false};
     static std::atomic<bool> g_chatboxFocusChatInitialized{false};
     static bool g_chatboxFocusChatSentInitialized = false;
@@ -241,6 +286,15 @@ namespace PrismaUIBridge {
     static void OnOverlayCommand(const char* argument);
     static void OnDiariesDomReady(PrismaView view);
     static void OnDiariesCommand(const char* argument);
+    static void OnBackgroundLifeDomReady(PrismaView view);
+    static void OnBackgroundLifeCommand(const char* argument);
+    static void UpdateBackgroundLifeTargetUI();
+    static bool SetBackgroundLifeEnrollment(bool enabled);
+    static void OnNpcManagerDomReady(PrismaView view);
+    static void OnNpcManagerCommand(const char* argument);
+    static void UpdateNpcManagerTargets();
+    static void OnConfigManagerDomReady(PrismaView view);
+    static void OnConfigManagerCommand(const char* argument);
     static void OnSettingsMenuDomReady(PrismaView view);
     static void OnSettingsMenuCommand(const char* argument);
     static void OnMasterMenuDomReady(PrismaView view);
@@ -259,11 +313,20 @@ namespace PrismaUIBridge {
     void HideDebuggerPanel();
     static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
-    static std::string FetchDiariesFromServer(const std::string& url);
+    static std::string RequestJsonFromServer(
+        const std::string& method,
+        const std::string& url,
+        const std::string& requestBody,
+        int timeoutSeconds);
+    static std::string FetchJsonFromServer(const std::string& url);
+    static void PlayDiaryAudio(const std::string& entryId);
+    static void StopDiaryAudio();
     static void UpdateCrosshairTargetUI(const std::string& name, float distance, const std::string& status = "",
                                         bool targetable = true);
     static void UpdateOverlayAgentsUI(const std::vector<PlayerSpatialCandidate>& candidates, uint32_t activeFormId);
     static std::string EscapeForJS(const std::string& raw);
+    static void SetEventLogViewServerUrl(PrismaView view, const char* setterName);
+    static void FetchAndUpdateChatboxStory(bool replaceExisting);
     static bool ApplyModeSelection(const std::string& actionId, const char* sourceTag, bool showNotification);
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification);
     static void UpdateChatboxTargetUI(const std::string& name, float distance);
@@ -1029,6 +1092,7 @@ R"CHIM(
     static void OnHistoryDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] History panel DOM ready - view can now be shown/hidden");
         g_domReady.store(true);
+        SetEventLogViewServerUrl(view, "setHistoryServerUrl");
 
         // Initial fetch of conversation history
         FetchAndUpdateHistory();
@@ -1047,6 +1111,8 @@ R"CHIM(
             }
             HideHistoryPanel();
         } else if (cmd == "refresh") {
+            FetchAndUpdateHistory();
+        } else if (cmd.starts_with("event_deleted|")) {
             FetchAndUpdateHistory();
         } else if (cmd == "unfocus") {
             // Allow JS to request unfocus (e.g., after completing an action)
@@ -1113,6 +1179,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing history panel (view ID: {})", g_historyView);
         g_prismaUI->Show(g_historyView);
         
@@ -1712,14 +1781,67 @@ R"CHIM(
         return escaped;
     }
 
+    static void SetEventLogViewServerUrl(PrismaView view, const char* setterName) {
+        if (!g_prismaUI || view == 0 || !setterName || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort() + "/HerikaServer";
+        const std::string call =
+            "window." + std::string(setterName) + " && window." + setterName + "('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag, bool showNotification) {
+        std::string normalizedMode = mode;
+        std::transform(normalizedMode.begin(), normalizedMode.end(), normalizedMode.begin(),
+            [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
+
+        static const std::vector<std::string> validModes{
+            "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
+            "DIRECTOR", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
+        };
+        if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
+            logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
+            return false;
+        }
+
+        const std::string previousMode = g_chatboxCurrentMode;
+        g_chatboxCurrentMode = normalizedMode;
+        if ((normalizedMode == "WHISPER" || normalizedMode == "CLOSE") &&
+            g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            g_chatboxTargetMode = ChatboxTargetMode::Auto;
+            g_chatboxTargetOverrideFormId = 0;
+            g_chatboxTargetOverrideName.clear();
+            logger::info("[{}] Cleared Everyone target for private {} mode",
+                         sourceTag, normalizedMode);
+        }
+        logger::info("[{}] Set mode to: {}", sourceTag, normalizedMode);
+
+        if (showNotification) {
+            RE::DebugNotification(("[CHIM] Chat mode: " + normalizedMode).c_str());
+        }
+
+        if (previousMode != normalizedMode) {
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+            g_lastOverlayAgentsPayload.clear();
+            g_lastChatboxTargetsPayload.clear();
+            g_prismaDisplayStatusCache.clear();
+            logger::info("[{}] Player conversation mode changed from {} to {}",
+                         sourceTag, previousMode, normalizedMode);
+        }
+
+        return true;
+    }
+
     static bool ApplyModeSelection(const std::string& actionId, const char* sourceTag, bool showNotification) {
         std::string modeStr;
         if (actionId == "mode_standard") modeStr = "STANDARD";
         else if (actionId == "mode_shout") modeStr = "SHOUT";
         else if (actionId == "mode_whisper") modeStr = "WHISPER";
+        else if (actionId == "mode_close") modeStr = "CLOSE";
         else if (actionId == "mode_narrator") modeStr = "NARRATOR";
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
-        else if (actionId == "mode_spawn") modeStr = "SPAWN";
         else if (actionId == "mode_cheat") modeStr = "CHEATMODE";
         else if (actionId == "mode_autochat") modeStr = "AUTOCHAT";
         else if (actionId == "mode_inject_log") modeStr = "INJECTION_LOG";
@@ -1732,28 +1854,7 @@ R"CHIM(
         HTTPManager::log(std::format("setconf|{}|{}|chim_mode@{}",
             getCurrentTimeMillis(), GetGameTimeStamp(), modeStr));
 
-        const std::string previousMode = g_chatboxCurrentMode;
-        g_chatboxCurrentMode = modeStr;
-        logger::info("[{}] Set mode to: {}", sourceTag, modeStr);
-
-        if (showNotification) {
-            RE::DebugNotification(("[CHIM] Chat mode: " + modeStr).c_str());
-        }
-
-        if (previousMode != modeStr) {
-            // Voice mode changes should affect player speech reach without rewriting
-            // the user's MCM auto-activation distances. Clear dynamic spatial state so
-            // listener routing and Prisma UI immediately use the new runtime multiplier
-            // without treating the mode change as a fresh cell-entry settle window.
-            SpatialSnapshotManager::InvalidateDynamicSpatialState();
-            g_lastOverlayAgentsPayload.clear();
-            g_lastChatboxTargetsPayload.clear();
-            g_prismaDisplayStatusCache.clear();
-            logger::info("[{}] Player speech spatial multiplier now {:.2f}", sourceTag,
-                         GetPlayerSpeechDistanceMultiplier());
-        }
-
-        return true;
+        return SetCurrentChatboxMode(modeStr, sourceTag, showNotification);
     }
 
     // ===== CHIM Overlay Functions =====
@@ -2217,6 +2318,8 @@ R"CHIM(
 
         logger::info("[PrismaUIBridge] Creating CHIM diaries panel from CHIM/diaries.html...");
 
+        g_diariesDomReady.store(false);
+
         // Create the view - path is relative to Data/PrismaUI/views/
         g_diariesView = g_prismaUI->CreateView("CHIM/diaries.html", OnDiariesDomReady);
 
@@ -2239,11 +2342,180 @@ R"CHIM(
     }
 
     static void OnDiariesDomReady(PrismaView view) {
+        (void)view;
         logger::info("[PrismaUIBridge] Diaries panel DOM ready, triggering initial fetch");
         g_diariesDomReady.store(true);
-        
-        // Trigger initial people list fetch
         FetchDiariesData("people", "");
+    }
+
+    static void UpdateDiaryAudioUI(const std::string& state, const std::string& status) {
+        if (!g_prismaUI || !g_diariesCreated.load() || !g_prismaUI->IsValid(g_diariesView)) {
+            return;
+        }
+
+        const std::string script = "window.updateDiaryAudioState && window.updateDiaryAudioState('" +
+                                   EscapeForJS(state) + "','" + EscapeForJS(status) + "')";
+        g_prismaUI->Invoke(g_diariesView, script.c_str(), nullptr);
+    }
+
+    // Downloads a generated diary WAV from HerikaServer for native in-game playback.
+    static std::vector<BYTE> FetchDiaryAudio(const std::string& entryId, DWORD& statusCode) {
+        std::vector<BYTE> result;
+        statusCode = 0;
+
+        HINTERNET session = WinHttpOpen(L"CHIM Diary Audio/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session) {
+            logger::error("[PrismaUIBridge] Diary audio WinHttpOpen failed: {}", GetLastError());
+            return result;
+        }
+
+        WinHttpSetTimeouts(session, 5000, 5000, 120000, 120000);
+        const std::wstring server = Utf8ToWide(Conf::getInstance().getServer());
+        const INTERNET_PORT port = static_cast<INTERNET_PORT>(std::stoi(Conf::getInstance().getPort()));
+        HINTERNET connection = WinHttpConnect(session, server.c_str(), port, 0);
+        if (!connection) {
+            logger::error("[PrismaUIBridge] Diary audio WinHttpConnect failed: {}", GetLastError());
+            WinHttpCloseHandle(session);
+            return result;
+        }
+
+        const std::wstring path =
+            Utf8ToWide("/HerikaServer/ui/api/chim_diary_audio.php?entry=" + entryId + "&raw=1");
+        HINTERNET request = WinHttpOpenRequest(connection, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                               WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
+        if (!request ||
+            !WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+            !WinHttpReceiveResponse(request, nullptr)) {
+            logger::error("[PrismaUIBridge] Diary audio request failed: {}", GetLastError());
+            if (request) WinHttpCloseHandle(request);
+            WinHttpCloseHandle(connection);
+            WinHttpCloseHandle(session);
+            return result;
+        }
+
+        DWORD statusSize = sizeof(statusCode);
+        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+
+        constexpr std::size_t kMaxDiaryAudioBytes = 64 * 1024 * 1024;
+        DWORD available = 0;
+        while (WinHttpQueryDataAvailable(request, &available) && available > 0) {
+            if (result.size() + available > kMaxDiaryAudioBytes) {
+                logger::error("[PrismaUIBridge] Diary audio exceeded {} bytes", kMaxDiaryAudioBytes);
+                result.clear();
+                break;
+            }
+
+            const std::size_t offset = result.size();
+            result.resize(offset + available);
+            DWORD bytesRead = 0;
+            if (!WinHttpReadData(request, result.data() + offset, available, &bytesRead) || bytesRead == 0) {
+                result.resize(offset);
+                break;
+            }
+            result.resize(offset + bytesRead);
+        }
+
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return result;
+    }
+
+    static void StopDiaryAudio() {
+        g_diaryAudioGeneration.fetch_add(1);
+        std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+        if (g_diaryAudioPlayer && g_diaryAudioPlaying.exchange(false)) {
+            g_diaryAudioPlayer->Stop();
+        }
+    }
+
+    static void PlayDiaryAudio(const std::string& entryId) {
+        const std::uint64_t generation = g_diaryAudioGeneration.fetch_add(1) + 1;
+        UpdateDiaryAudioUI("loading", "Generating audio with the NPC voice...");
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIDiaryAudio",
+            [entryId, generation]() {
+                DWORD statusCode = 0;
+                std::vector<BYTE> audio = FetchDiaryAudio(entryId, statusCode);
+                if (generation != g_diaryAudioGeneration.load()) {
+                    return;
+                }
+
+                if (statusCode != 200 || audio.size() < 12 ||
+                    std::memcmp(audio.data(), "RIFF", 4) != 0 || std::memcmp(audio.data() + 8, "WAVE", 4) != 0) {
+                    std::string error = "Diary audio could not be generated.";
+                    if (!audio.empty() && audio.size() < 4096) {
+                        try {
+                            const auto response = json::parse(std::string(audio.begin(), audio.end()));
+                            error = response.value("error", error);
+                        } catch (...) {
+                        }
+                    }
+                    logger::error("[PrismaUIBridge] Diary audio failed for entry {} (HTTP {}, {} bytes): {}",
+                                  entryId, statusCode, audio.size(), error);
+                    UpdateDiaryAudioUI("error", error);
+                    return;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+                    if (!g_diaryAudioPlayer) {
+                        auto player = std::make_unique<AudioManager>();
+                        if (!player->Initialize()) {
+                            logger::error("[PrismaUIBridge] Failed to initialize diary audio playback");
+                            UpdateDiaryAudioUI("error", "CHIM could not initialize audio playback.");
+                            return;
+                        }
+                        g_diaryAudioPlayer = std::move(player);
+                    }
+
+                    g_diaryAudioPlayer->Stop();
+                    g_diaryAudioPlayer->setSpatialUpdatesEnabled(false);
+                    g_diaryAudioPlayer->setVolume(100.0f);
+                    if (!g_diaryAudioPlayer->LoadWAV(audio.data(), audio.size())) {
+                        logger::error("[PrismaUIBridge] Diary audio WAV load failed for entry {}", entryId);
+                        UpdateDiaryAudioUI("error", "The generated diary audio was not a playable WAV file.");
+                        return;
+                    }
+
+                    const X3DAUDIO_VECTOR centered{0.0f, 0.0f, 0.0f};
+                    g_diaryAudioPlayer->Update(centered, centered, 0.0f);
+                    if (!g_diaryAudioPlayer->Play()) {
+                        logger::error("[PrismaUIBridge] Diary audio playback failed for entry {}", entryId);
+                        UpdateDiaryAudioUI("error", "CHIM could not start diary audio playback.");
+                        return;
+                    }
+                    g_diaryAudioPlaying.store(true);
+                }
+
+                logger::info("[PrismaUIBridge] Playing diary audio for entry {} ({} bytes)", entryId, audio.size());
+                UpdateDiaryAudioUI("playing", "Playing diary audio");
+
+                while (generation == g_diaryAudioGeneration.load()) {
+                    bool playing = false;
+                    {
+                        std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+                        if (g_diaryAudioPlayer) {
+                            const X3DAUDIO_VECTOR centered{0.0f, 0.0f, 0.0f};
+                            g_diaryAudioPlayer->Update(centered, centered, 0.0f);
+                            playing = g_diaryAudioPlayer->isPlaying();
+                        }
+                    }
+                    if (!playing) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+
+                if (generation == g_diaryAudioGeneration.load()) {
+                    std::lock_guard<std::mutex> lock(g_diaryAudioPlayerMutex);
+                    if (g_diaryAudioPlayer) g_diaryAudioPlayer->Stop();
+                    g_diaryAudioPlaying.store(false);
+                    UpdateDiaryAudioUI("idle", "");
+                }
+            },
+            entryId, std::chrono::seconds(180));
     }
 
     static void OnDiariesCommand(const char* argument) {
@@ -2258,7 +2530,7 @@ R"CHIM(
         if (cmd == "close") {
             HideDiariesPanel();
         } else if (cmd == "dom_ready") {
-            logger::info("[PrismaUIBridge] Diaries DOM ready signal received");
+            logger::info("[PrismaUIBridge] Diaries JavaScript ready");
             g_diariesDomReady.store(true);
         } else if (cmd.substr(0, 9) == "js_debug|") {
             // Debug messages from JavaScript
@@ -2275,6 +2547,17 @@ R"CHIM(
             // Extract entry ID
             std::string entryId = cmd.substr(12);
             FetchDiariesData("entry", entryId);
+        } else if (cmd.substr(0, 11) == "play_audio|") {
+            const std::string entryId = cmd.substr(11);
+            if (!entryId.empty() && std::all_of(entryId.begin(), entryId.end(), [](unsigned char value) {
+                    return std::isdigit(value) != 0;
+                })) {
+                PlayDiaryAudio(entryId);
+            } else {
+                UpdateDiaryAudioUI("error", "The selected diary entry is invalid.");
+            }
+        } else if (cmd == "stop_audio") {
+            StopDiaryAudio();
         } else if (cmd == "navigate_back") {
             logger::debug("[PrismaUIBridge] Navigation back in diaries");
         }
@@ -2335,6 +2618,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing diaries panel");
         
         // Unfocus other views first to avoid focus conflicts
@@ -2375,6 +2661,10 @@ R"CHIM(
         }
 
         logger::info("[PrismaUIBridge] Hiding diaries panel");
+
+        StopDiaryAudio();
+        g_prismaUI->Invoke(g_diariesView,
+                           "window.updateDiaryAudioState && window.updateDiaryAudioState('idle','')", nullptr);
         
         // Remove focus first
         g_prismaUI->Unfocus(g_diariesView);
@@ -2420,7 +2710,7 @@ R"CHIM(
                     logger::info("[PrismaUIBridge] Fetching diaries data: mode={}, url={}", mode, url);
 
                     // Fetch from server using HTTP helper
-                    std::string response = FetchDiariesFromServer(url);
+                    std::string response = FetchJsonFromServer(url);
 
                     if (response.empty()) {
                         logger::warn("[PrismaUIBridge] Empty diaries response from server for mode: {}", mode);
@@ -2501,9 +2791,80 @@ R"CHIM(
         );
     }
 
-    static std::string FetchDiariesFromServer(const std::string& url) {
+    static bool DecodeChunkedHttpBody(
+        const std::string& encodedBody,
+        std::string& decodedBody,
+        std::string& error) {
+        decodedBody.clear();
+        size_t cursor = 0;
+
+        while (cursor < encodedBody.size()) {
+            const size_t sizeLineEnd = encodedBody.find("\r\n", cursor);
+            if (sizeLineEnd == std::string::npos) {
+                error = "Chunk size line is incomplete";
+                return false;
+            }
+
+            std::string sizeText = encodedBody.substr(cursor, sizeLineEnd - cursor);
+            const size_t extensionStart = sizeText.find(';');
+            if (extensionStart != std::string::npos) {
+                sizeText.resize(extensionStart);
+            }
+
+            const size_t firstDigit = sizeText.find_first_not_of(" \t");
+            const size_t lastDigit = sizeText.find_last_not_of(" \t");
+            if (firstDigit == std::string::npos) {
+                error = "Chunk size is empty";
+                return false;
+            }
+            sizeText = sizeText.substr(firstDigit, lastDigit - firstDigit + 1);
+
+            size_t parsedLength = 0;
+            unsigned long long chunkSize = 0;
+            try {
+                chunkSize = std::stoull(sizeText, &parsedLength, 16);
+            } catch (const std::exception&) {
+                error = "Chunk size is invalid";
+                return false;
+            }
+            if (parsedLength != sizeText.size()) {
+                error = "Chunk size contains invalid characters";
+                return false;
+            }
+
+            cursor = sizeLineEnd + 2;
+            if (chunkSize == 0) {
+                return true;
+            }
+            if (chunkSize > encodedBody.size() - cursor) {
+                error = "Chunk data is incomplete";
+                return false;
+            }
+
+            decodedBody.append(
+                encodedBody,
+                cursor,
+                static_cast<size_t>(chunkSize));
+            cursor += static_cast<size_t>(chunkSize);
+
+            if (cursor + 2 > encodedBody.size() ||
+                encodedBody.compare(cursor, 2, "\r\n") != 0) {
+                error = "Chunk terminator is missing";
+                return false;
+            }
+            cursor += 2;
+        }
+
+        error = "Final chunk is missing";
+        return false;
+    }
+
+    static std::string RequestJsonFromServer(
+        const std::string& method,
+        const std::string& url,
+        const std::string& requestBody,
+        int timeoutSeconds) {
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
-        constexpr int TIMEOUT_SECONDS = 10;
 
         WSADATA wsaData;
         int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -2530,7 +2891,7 @@ R"CHIM(
         inet_pton(AF_INET, host.c_str(), &serverAddr.sin_addr);
 
         // Set timeout
-        DWORD timeout = TIMEOUT_SECONDS * 1000;
+        DWORD timeout = static_cast<DWORD>(timeoutSeconds * 1000);
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
@@ -2544,18 +2905,32 @@ R"CHIM(
         }
 
         // Build HTTP request
-        std::string request = "GET " + url + " HTTP/1.1\r\n";
-        request += "Host: " + host + "\r\n";
+        std::string request = method + " " + url + " HTTP/1.1\r\n";
+        request += "Host: " + host + ":" + portStr + "\r\n";
+        request += "Accept: application/json\r\n";
+        if (method == "POST") {
+            request += "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
+            request += "Content-Length: " + std::to_string(requestBody.size()) + "\r\n";
+        }
         request += "Connection: close\r\n";
         request += "\r\n";
+        request += requestBody;
 
         // Send request
-        iResult = send(rawSocket, request.c_str(), static_cast<int>(request.length()), 0);
-        if (iResult == SOCKET_ERROR) {
-            logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
-            closesocket(rawSocket);
-            WSACleanup();
-            return "";
+        size_t bytesSent = 0;
+        while (bytesSent < request.size()) {
+            iResult = send(
+                rawSocket,
+                request.data() + bytesSent,
+                static_cast<int>(request.size() - bytesSent),
+                0);
+            if (iResult == SOCKET_ERROR || iResult == 0) {
+                logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
+                closesocket(rawSocket);
+                WSACleanup();
+                return "";
+            }
+            bytesSent += static_cast<size_t>(iResult);
         }
 
         // Receive response
@@ -2581,13 +2956,919 @@ R"CHIM(
         closesocket(rawSocket);
         WSACleanup();
 
-        // Extract body from HTTP response
-        size_t headerEnd = response.find("\r\n\r\n");
-        if (headerEnd != std::string::npos) {
-            response = response.substr(headerEnd + 4);
+        const size_t headerEnd = response.find("\r\n\r\n");
+        if (headerEnd == std::string::npos) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP response");
+            return "";
         }
 
-        return response;
+        const std::string headers = response.substr(0, headerEnd);
+        std::string body = response.substr(headerEnd + 4);
+
+        const size_t statusStart = headers.find(' ');
+        if (statusStart == std::string::npos || statusStart + 4 > headers.size()) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP status line");
+            return "";
+        }
+
+        int statusCode = 0;
+        try {
+            statusCode = std::stoi(headers.substr(statusStart + 1, 3));
+        } catch (const std::exception&) {
+            logger::error("[PrismaUIBridge] Server returned an invalid HTTP status code");
+            return "";
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            logger::error("[PrismaUIBridge] JSON request failed with HTTP {}", statusCode);
+            return "";
+        }
+
+        std::string lowercaseHeaders = headers;
+        std::transform(
+            lowercaseHeaders.begin(),
+            lowercaseHeaders.end(),
+            lowercaseHeaders.begin(),
+            [](unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+
+        const size_t transferEncoding =
+            lowercaseHeaders.find("transfer-encoding:");
+        if (transferEncoding != std::string::npos) {
+            const size_t transferEncodingEnd =
+                lowercaseHeaders.find("\r\n", transferEncoding);
+            const std::string encodingValue = lowercaseHeaders.substr(
+                transferEncoding,
+                transferEncodingEnd == std::string::npos
+                    ? std::string::npos
+                    : transferEncodingEnd - transferEncoding);
+            if (encodingValue.find("chunked") != std::string::npos) {
+                std::string decodedBody;
+                std::string decodeError;
+                if (!DecodeChunkedHttpBody(body, decodedBody, decodeError)) {
+                    logger::error(
+                        "[PrismaUIBridge] Failed to decode chunked JSON response: {}",
+                        decodeError);
+                    return "";
+                }
+                body = std::move(decodedBody);
+            }
+        }
+
+        return body;
+    }
+
+    static std::string FetchJsonFromServer(const std::string& url) {
+        return RequestJsonFromServer("GET", url, "", 10);
+    }
+
+    // ===== Background Life Functions =====
+
+    void CreateBackgroundLifePanel() {
+        if (!g_prismaUI) {
+            logger::error("[PrismaUIBridge] Cannot create Background Life panel - Prisma UI not initialized");
+            return;
+        }
+
+        if (g_backgroundLifeCreated.load() &&
+            g_backgroundLifeView != 0 &&
+            g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating Background Life panel from CHIM/background_life.html");
+        g_backgroundLifeView = g_prismaUI->CreateView(
+            "CHIM/background_life.html",
+            OnBackgroundLifeDomReady);
+        if (g_backgroundLifeView == 0) {
+            g_lastError = "Failed to create Background Life view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_backgroundLifeView, 112);
+        g_prismaUI->RegisterJSListener(
+            g_backgroundLifeView,
+            "chimBackgroundLifeCommand",
+            OnBackgroundLifeCommand);
+        g_backgroundLifeCreated.store(true);
+    }
+
+    static void SetBackgroundLifeServerUrl(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setBackgroundLifeServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+        g_prismaUI->Invoke(
+            view,
+            "window.setBackgroundLifeNativePostAvailable && window.setBackgroundLifeNativePostAvailable(true)",
+            nullptr);
+    }
+
+    static void OnBackgroundLifeDomReady(PrismaView view) {
+        g_backgroundLifeDomReady.store(true);
+        SetBackgroundLifeServerUrl(view);
+        UpdateBackgroundLifeTargetUI();
+        g_prismaUI->Invoke(
+            view,
+            "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+            nullptr);
+    }
+
+    static std::vector<PlayerSpatialCandidate> CollectBackgroundLifeTargets() {
+        auto targets = SpatialSnapshotManager::GetPlayerConversationTargets(
+            "prismaui_background_life_targets", true);
+        std::erase_if(targets, [](const PlayerSpatialCandidate& candidate) {
+            return !candidate.agent ||
+                   candidate.narrator ||
+                   candidate.agent->isNarrator() ||
+                   !candidate.actor ||
+                   candidate.formId == 0;
+        });
+        std::sort(targets.begin(), targets.end(),
+            [](const PlayerSpatialCandidate& lhs, const PlayerSpatialCandidate& rhs) {
+                if (std::abs(lhs.distanceMeters - rhs.distanceMeters) > 0.001f) {
+                    return lhs.distanceMeters < rhs.distanceMeters;
+                }
+                return lhs.name < rhs.name;
+            });
+        return targets;
+    }
+
+    static PlayerSpatialTargetStatus ResolveBackgroundLifeTarget(
+        const std::vector<PlayerSpatialCandidate>& candidates) {
+        PlayerSpatialTargetStatus resolved{};
+        auto selected = std::find_if(candidates.begin(), candidates.end(),
+            [](const PlayerSpatialCandidate& candidate) {
+                return candidate.formId == g_backgroundLifeSelectedFormId;
+            });
+
+        if (selected == candidates.end()) {
+            const auto primary = ResolvePrimaryPrismaTarget(candidates);
+            if (primary.hasTarget) {
+                g_backgroundLifeSelectedFormId = primary.formId;
+                selected = std::find_if(candidates.begin(), candidates.end(),
+                    [&primary](const PlayerSpatialCandidate& candidate) {
+                        return candidate.formId == primary.formId;
+                    });
+            }
+        }
+
+        if (selected == candidates.end()) {
+            g_backgroundLifeSelectedFormId = 0;
+            resolved.status = "No activated NPCs nearby";
+            return resolved;
+        }
+
+        resolved.hasTarget = true;
+        resolved.name = selected->name;
+        resolved.formId = selected->formId;
+        resolved.distanceMeters = selected->distanceMeters;
+        resolved.source = selected->source;
+        resolved.reason = selected->reason;
+        resolved.status = GetPrismaDisplayStatus(*selected);
+        resolved.targetable = selected->targetable;
+        return resolved;
+    }
+
+    static void UpdateBackgroundLifeTargetUI() {
+        if (!g_prismaUI ||
+            !g_backgroundLifeCreated.load() ||
+            g_backgroundLifeView == 0 ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        const auto candidates = CollectBackgroundLifeTargets();
+        const auto target = ResolveBackgroundLifeTarget(candidates);
+        json payload;
+        payload["has_target"] = target.hasTarget;
+        payload["name"] = target.hasTarget ? target.name : "";
+        payload["refid"] = target.hasTarget ? std::format("{:08X}", target.formId) : "";
+        payload["selected_form_id"] = target.hasTarget ? target.formId : 0;
+        payload["game_enrolled"] = false;
+        payload["targets"] = json::array();
+        payload["player_location_formid"] = 0;
+        payload["player_location_name"] = "";
+
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            if (auto* location = player->GetCurrentLocation()) {
+                payload["player_location_formid"] = location->GetFormID();
+                const char* locationName = location->GetFullName();
+                payload["player_location_name"] = locationName ? locationName : "";
+            }
+        }
+
+        if (target.hasTarget) {
+            auto* form = RE::TESForm::LookupByID(target.formId);
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            payload["game_enrolled"] =
+                actor &&
+                AIAgentRoleMasterFaction &&
+                actor->IsInFaction(AIAgentRoleMasterFaction);
+        }
+
+        for (const auto& candidate : candidates) {
+            const bool enrolled =
+                candidate.actor &&
+                AIAgentRoleMasterFaction &&
+                candidate.actor->IsInFaction(AIAgentRoleMasterFaction);
+            payload["targets"].push_back({
+                {"form_id", candidate.formId},
+                {"name", candidate.name},
+                {"refid", std::format("{:08X}", candidate.formId)},
+                {"distance", candidate.distanceMeters},
+                {"status", GetPrismaDisplayStatus(candidate)},
+                {"game_enrolled", enrolled}
+            });
+        }
+
+        const std::string call =
+            "window.updateBackgroundLifeTarget('" +
+            EscapeForJS(payload.dump()) +
+            "')";
+        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+    }
+
+    static bool SetBackgroundLifeEnrollment(bool enabled) {
+        const auto target = ResolveBackgroundLifeTarget(CollectBackgroundLifeTargets());
+        if (!target.hasTarget || target.formId == 0) {
+            RE::DebugNotification("[CHIM] No activated NPC is nearby.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+
+        auto* form = RE::TESForm::LookupByID(target.formId);
+        auto* actor = form ? form->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            RE::DebugNotification("[CHIM] The selected target is not an NPC.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+        if (!AIAgentRoleMasterFaction) {
+            logger::error("[PrismaUIBridge] Cannot change Background Life enrollment - rolemaster faction unavailable");
+            RE::DebugNotification("[CHIM] Background Life faction is unavailable.");
+            UpdateBackgroundLifeTargetUI();
+            return false;
+        }
+
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : target.name;
+        if (enabled) {
+            actor->AddToFaction(AIAgentRoleMasterFaction, 1);
+        } else {
+            const json command = {
+                {"cmdID", 25},
+                {"targetObjectFormId", target.formId},
+                {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+            };
+            ScriptProxyRun(command.dump());
+        }
+
+        HTTPManager::log(std::format(
+            "{}|{}|{}|{}/{:08X}",
+            enabled ? "enable_bg" : "disable_bg",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            target.formId));
+        logger::info(
+            "[PrismaUIBridge] {} Background Life for {} ({:08X})",
+            enabled ? "Enabled" : "Disabled",
+            npcName,
+            target.formId);
+        RE::DebugNotification(std::format(
+            "[CHIM] Background Life {} for {}.",
+            enabled ? "enabled" : "disabled",
+            npcName).c_str());
+        UpdateBackgroundLifeTargetUI();
+        return true;
+    }
+
+    static void RemoveBackgroundLifeRosterActor(uint32_t formId) {
+        if (formId == 0 || !AIAgentRoleMasterFaction) {
+            return;
+        }
+
+        auto* form = RE::TESForm::LookupByID(formId);
+        auto* actor = form ? form->As<RE::Actor>() : nullptr;
+        if (!actor) {
+            logger::info(
+                "[PrismaUIBridge] Background Life roster removal saved on server; actor {:08X} is not currently available",
+                formId);
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : "Unknown NPC";
+        const json command = {
+            {"cmdID", 25},
+            {"targetObjectFormId", formId},
+            {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+        };
+        ScriptProxyRun(command.dump());
+        HTTPManager::log(std::format(
+            "disable_bg|{}|{}|{}/{:08X}",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            formId));
+        logger::info(
+            "[PrismaUIBridge] Removed Background Life roster NPC {} ({:08X})",
+            npcName,
+            formId);
+        UpdateBackgroundLifeTargetUI();
+    }
+
+    static bool IsSafeBackgroundLifeQuery(const std::string& query) {
+        if (query.empty() || query.size() > 1024) {
+            return false;
+        }
+
+        return std::all_of(query.begin(), query.end(), [](unsigned char value) {
+            return std::isalnum(value) ||
+                   value == '%' || value == '&' || value == '=' || value == '+' ||
+                   value == '.' || value == '_' || value == '-';
+        });
+    }
+
+    static bool IsSafeBackgroundLifePostValue(const std::string& value, size_t maxLength) {
+        if (value.empty() || value.size() > maxLength) {
+            return false;
+        }
+
+        return std::all_of(value.begin(), value.end(), [](unsigned char character) {
+            return std::isalnum(character) ||
+                   character == '%' || character == '&' || character == '=' || character == '+' ||
+                   character == '*' || character == '.' || character == '_' || character == '-';
+        });
+    }
+
+    static void PostBackgroundLifeData(
+        const std::string& requestId,
+        const std::string& endpoint,
+        const std::string& body) {
+        static const std::unordered_map<std::string, std::string> endpoints = {
+            {"dashboard", "/HerikaServer/ui/api/background_life_dashboard.php"},
+            {"npc", "/HerikaServer/ui/api/background_life_npc.php"},
+            {"npc_create", "/HerikaServer/ui/api/background_life_npc_create.php"},
+            {"request", "/HerikaServer/ui/api/background_life_request.php"},
+            {"rumors", "/HerikaServer/ui/api/background_life_rumors.php"}
+        };
+        const auto endpointEntry = endpoints.find(endpoint);
+        if (endpointEntry == endpoints.end() ||
+            !IsSafeBackgroundLifePostValue(requestId, 64) ||
+            !IsSafeBackgroundLifePostValue(body, 32768)) {
+            logger::warn("[PrismaUIBridge] Rejected invalid Background Life POST request");
+            return;
+        }
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIBackgroundLifePost",
+            [requestId, url = endpointEntry->second, body]() {
+                try {
+                    const std::string response = RequestJsonFromServer("POST", url, body, 60);
+                    if (response.empty()) {
+                        throw std::runtime_error("No data received from server");
+                    }
+
+                    const json payload = json::parse(response, nullptr, false);
+                    if (payload.is_discarded()) {
+                        throw std::runtime_error("Server returned invalid JSON");
+                    }
+
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.resolveBackgroundLifePost('" + EscapeForJS(requestId) +
+                            "','" + EscapeForJS(response) + "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                } catch (const std::exception& error) {
+                    logger::error(
+                        "[PrismaUIBridge] Background Life POST failed: {}",
+                        error.what());
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.rejectBackgroundLifePost('" + EscapeForJS(requestId) +
+                            "','" + EscapeForJS(error.what()) + "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                }
+            });
+    }
+
+    static void OnBackgroundLifeCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        const std::string command(argument);
+        if (command == "close") {
+            HideBackgroundLifePanel();
+            return;
+        }
+        if (command == "dom_ready") {
+            g_backgroundLifeDomReady.store(true);
+            SetBackgroundLifeServerUrl(g_backgroundLifeView);
+            UpdateBackgroundLifeTargetUI();
+            g_prismaUI->Invoke(
+                g_backgroundLifeView,
+                "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+                nullptr);
+            return;
+        }
+        if (command == "target_refresh") {
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+        if (command == "input_capture|on" || command == "input_capture|off") {
+            SetChatboxGameplayInputSuppressed(command == "input_capture|on");
+            return;
+        }
+
+        constexpr std::string_view targetSelectPrefix = "target_select|";
+        if (command.starts_with(targetSelectPrefix)) {
+            const std::string formIdText = command.substr(targetSelectPrefix.size());
+            try {
+                std::size_t parsedLength = 0;
+                const auto parsedFormId =
+                    static_cast<uint32_t>(std::stoul(formIdText, &parsedLength, 10));
+                const auto candidates = CollectBackgroundLifeTargets();
+                const bool validSelection =
+                    parsedLength == formIdText.size() &&
+                    std::any_of(candidates.begin(), candidates.end(),
+                        [parsedFormId](const PlayerSpatialCandidate& candidate) {
+                            return candidate.formId == parsedFormId;
+                        });
+                if (validSelection) {
+                    g_backgroundLifeSelectedFormId = parsedFormId;
+                } else {
+                    logger::warn(
+                        "[PrismaUIBridge] Rejected unavailable Background Life target {}",
+                        formIdText);
+                }
+            } catch (const std::exception&) {
+                logger::warn(
+                    "[PrismaUIBridge] Rejected invalid Background Life target {}",
+                    formIdText);
+            }
+            UpdateBackgroundLifeTargetUI();
+            return;
+        }
+
+        constexpr std::string_view enrollmentPrefix = "enrollment|";
+        if (command.starts_with(enrollmentPrefix)) {
+            const std::string operation = command.substr(enrollmentPrefix.size());
+            if (operation == "enable" || operation == "disable") {
+                SetBackgroundLifeEnrollment(operation == "enable");
+            } else {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life enrollment command");
+            }
+            return;
+        }
+
+        constexpr std::string_view rosterRemovePrefix = "roster_remove|";
+        if (command.starts_with(rosterRemovePrefix)) {
+            const std::string formIdText = command.substr(rosterRemovePrefix.size());
+            try {
+                std::size_t parsedLength = 0;
+                const auto parsedFormId =
+                    static_cast<uint32_t>(std::stoul(formIdText, &parsedLength, 10));
+                if (parsedLength == formIdText.size() && parsedFormId != 0) {
+                    RemoveBackgroundLifeRosterActor(parsedFormId);
+                } else {
+                    logger::warn(
+                        "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
+                        formIdText);
+                }
+            } catch (const std::exception&) {
+                logger::warn(
+                    "[PrismaUIBridge] Rejected invalid Background Life roster target {}",
+                    formIdText);
+            }
+            return;
+        }
+
+        constexpr std::string_view postPrefix = "post|";
+        if (command.starts_with(postPrefix)) {
+            const size_t requestIdEnd = command.find('|', postPrefix.size());
+            const size_t endpointEnd = requestIdEnd == std::string::npos
+                ? std::string::npos
+                : command.find('|', requestIdEnd + 1);
+            if (requestIdEnd == std::string::npos || endpointEnd == std::string::npos) {
+                logger::warn("[PrismaUIBridge] Rejected malformed Background Life POST command");
+                return;
+            }
+            PostBackgroundLifeData(
+                command.substr(postPrefix.size(), requestIdEnd - postPrefix.size()),
+                command.substr(requestIdEnd + 1, endpointEnd - requestIdEnd - 1),
+                command.substr(endpointEnd + 1));
+            return;
+        }
+
+        constexpr std::string_view prefix = "fetch|";
+        if (command.starts_with(prefix)) {
+            const std::string query = command.substr(prefix.size());
+            if (!IsSafeBackgroundLifeQuery(query)) {
+                logger::warn("[PrismaUIBridge] Rejected invalid Background Life query");
+                return;
+            }
+            FetchBackgroundLifeData(query);
+        }
+    }
+
+    void ToggleBackgroundLifePanel() {
+        if (!g_prismaUI) {
+            return;
+        }
+
+        const bool needsCreation =
+            !g_backgroundLifeCreated.load() ||
+            g_backgroundLifeView == 0 ||
+            !g_prismaUI->IsValid(g_backgroundLifeView);
+        if (needsCreation) {
+            CreateBackgroundLifePanel();
+        }
+        if (!g_backgroundLifeCreated.load()) {
+            return;
+        }
+        if (needsCreation) {
+            ShowBackgroundLifePanel();
+            return;
+        }
+
+        if (g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            ShowBackgroundLifePanel();
+        } else {
+            HideBackgroundLifePanel();
+        }
+    }
+
+    void ShowBackgroundLifePanel() {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load()) {
+            CreateBackgroundLifePanel();
+        }
+        if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        if (g_panelCreated.load() && !g_prismaUI->IsHidden(g_historyView)) {
+            HideHistoryPanel();
+        }
+        if (g_overlayCreated.load() && !g_prismaUI->IsHidden(g_overlayView)) {
+            HideOverlayPanel();
+        }
+        if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
+            HideDiariesPanel();
+        }
+        if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) {
+            HideNpcManagerPanel();
+        }
+        if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
+            HideBrowserPanel();
+        }
+        if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
+            HideQuestManagerPanel();
+        }
+
+        g_prismaUI->Show(g_backgroundLifeView);
+        SetBackgroundLifeServerUrl(g_backgroundLifeView);
+        UpdateBackgroundLifeTargetUI();
+        const bool focused = g_prismaUI->Focus(g_backgroundLifeView, true, false);
+        logger::info(
+            "[PrismaUIBridge] Background Life panel focus: {}",
+            focused ? "SUCCESS" : "FAILED");
+
+        if (g_backgroundLifeDomReady.load()) {
+            g_prismaUI->Invoke(
+                g_backgroundLifeView,
+                "window.onBackgroundLifeShown && window.onBackgroundLifeShown()",
+                nullptr);
+        }
+    }
+
+    void HideBackgroundLifePanel() {
+        SetChatboxGameplayInputSuppressed(false);
+
+        if (!g_prismaUI || !g_backgroundLifeCreated.load() ||
+            !g_prismaUI->IsValid(g_backgroundLifeView)) {
+            return;
+        }
+
+        if (g_prismaUI->HasFocus(g_backgroundLifeView)) {
+            g_prismaUI->Unfocus(g_backgroundLifeView);
+        }
+        g_prismaUI->Hide(g_backgroundLifeView);
+    }
+
+    bool IsBackgroundLifePanelVisible() {
+        return g_prismaUI &&
+               g_backgroundLifeCreated.load() &&
+               g_backgroundLifeView != 0 &&
+               g_prismaUI->IsValid(g_backgroundLifeView) &&
+               !g_prismaUI->IsHidden(g_backgroundLifeView);
+    }
+
+    void FetchBackgroundLifeData(const std::string& queryString) {
+        if (!g_prismaUI || !g_backgroundLifeCreated.load()) {
+            return;
+        }
+
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIBackgroundLifeFetch",
+            [queryString]() {
+                try {
+                    const std::string url =
+                        "/HerikaServer/ui/api/background_life_history.php?" + queryString;
+                    const std::string response = FetchJsonFromServer(url);
+                    if (response.empty()) {
+                        throw std::runtime_error("No data received from server");
+                    }
+
+                    const json payload = json::parse(response, nullptr, false);
+                    if (payload.is_discarded()) {
+                        throw std::runtime_error("Server returned invalid JSON");
+                    }
+                    if (!payload.value("success", false)) {
+                        throw std::runtime_error(payload.value(
+                            "error",
+                            "Unable to load Background Life history"));
+                    }
+
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.updateBackgroundLifeHistory('" +
+                            EscapeForJS(response) +
+                            "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                } catch (const std::exception& error) {
+                    logger::error(
+                        "[PrismaUIBridge] Background Life fetch failed: {}",
+                        error.what());
+                    if (g_prismaUI &&
+                        g_backgroundLifeCreated.load() &&
+                        g_prismaUI->IsValid(g_backgroundLifeView)) {
+                        const std::string call =
+                            "window.showBackgroundLifeError('" +
+                            EscapeForJS(error.what()) +
+                            "')";
+                        g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
+                    }
+                }
+            });
+    }
+
+    // ===== CHIM NPC Manager Functions =====
+
+    static void SetNpcManagerServerUrl(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setNpcManagerServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    static void SetNpcManagerServerUrl() {
+        if (!g_npcManagerCreated.load()) return;
+        SetNpcManagerServerUrl(g_npcManagerView);
+    }
+
+    static void UpdateNpcManagerTargets(PrismaView view) {
+        if (!g_prismaUI || view == 0 || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        json payload;
+        payload["targets"] = json::array();
+        for (const auto& candidate : CollectBackgroundLifeTargets()) {
+            payload["targets"].push_back({
+                {"form_id", candidate.formId},
+                {"name", candidate.name},
+                {"refid", std::format("{:08X}", candidate.formId)},
+                {"distance", candidate.distanceMeters}
+            });
+        }
+
+        const std::string call =
+            "window.updateNpcManagerTargets('" + EscapeForJS(payload.dump()) + "')";
+        g_prismaUI->Invoke(view, call.c_str(), nullptr);
+    }
+
+    static void UpdateNpcManagerTargets() {
+        if (!g_npcManagerCreated.load()) return;
+        UpdateNpcManagerTargets(g_npcManagerView);
+    }
+
+    static void OnNpcManagerDomReady(PrismaView view) {
+        (void)view;
+        g_npcManagerDomReady.store(true);
+        SetNpcManagerServerUrl();
+        UpdateNpcManagerTargets();
+    }
+
+    static void OnNpcManagerCommand(const char* argument) {
+        if (!argument) {
+            return;
+        }
+
+        const std::string command(argument);
+        if (command == "close") {
+            HideNpcManagerPanel();
+        } else if (command == "dom_ready") {
+            g_npcManagerDomReady.store(true);
+            SetNpcManagerServerUrl();
+            UpdateNpcManagerTargets();
+        } else if (command == "targets_refresh") {
+            UpdateNpcManagerTargets();
+        } else if (command == "tab_globals" || command == "tab_profiles") {
+            HideNpcManagerPanel();
+            ShowConfigManagerPanel(command == "tab_profiles" ? "profiles" : "globals");
+        } else if (command == "input_capture|on" || command == "input_capture|off") {
+            SetChatboxGameplayInputSuppressed(command == "input_capture|on");
+        } else {
+            logger::warn("[PrismaUIBridge] Unknown NPC manager command: {}", command);
+        }
+    }
+
+    void CreateNpcManagerPanel() {
+        if (!g_prismaUI) {
+            return;
+        }
+        if (g_npcManagerCreated.load() && g_npcManagerView != 0 &&
+            g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Creating CHIM NPC manager panel");
+        g_npcManagerView = g_prismaUI->CreateView("CHIM/npc_manager.html", OnNpcManagerDomReady);
+        if (g_npcManagerView == 0) {
+            g_lastError = "Failed to create CHIM NPC manager view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+
+        g_prismaUI->SetOrder(g_npcManagerView, 113);
+        g_prismaUI->RegisterJSListener(g_npcManagerView, "chimNpcManagerCommand", OnNpcManagerCommand);
+        g_npcManagerCreated.store(true);
+    }
+
+    void ToggleNpcManagerPanel() {
+        if (IsConfigManagerPanelVisible()) HideConfigManagerPanel();
+        else ShowConfigManagerPanel("npcs");
+    }
+
+    void ShowNpcManagerPanel() {
+        ShowConfigManagerPanel("npcs");
+    }
+
+    void HideNpcManagerPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+        if (!g_prismaUI || !g_npcManagerCreated.load() ||
+            !g_prismaUI->IsValid(g_npcManagerView)) {
+            return;
+        }
+        if (g_prismaUI->HasFocus(g_npcManagerView)) {
+            g_prismaUI->Unfocus(g_npcManagerView);
+        }
+        g_prismaUI->Hide(g_npcManagerView);
+    }
+
+    bool IsNpcManagerPanelVisible() {
+        return g_prismaUI && g_npcManagerCreated.load() && g_npcManagerView != 0 &&
+               g_prismaUI->IsValid(g_npcManagerView) && !g_prismaUI->IsHidden(g_npcManagerView);
+    }
+
+    // ===== CHIM Settings Hub Functions =====
+
+    static void SetConfigManagerServerUrl() {
+        if (!g_prismaUI || !g_configManagerCreated.load() || g_configManagerView == 0 ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        const std::string serverUrl =
+            "http://" + Conf::getInstance().getServer() + ":" + Conf::getInstance().getPort();
+        const std::string call =
+            "window.setConfigManagerServerUrl('" + EscapeForJS(serverUrl) + "')";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+    }
+
+    static void OnConfigManagerDomReady(PrismaView view) {
+        (void)view;
+        g_configManagerDomReady.store(true);
+        SetConfigManagerServerUrl();
+        SetNpcManagerServerUrl(g_configManagerView);
+    }
+
+    static void OnConfigManagerCommand(const char* argument) {
+        if (!argument) return;
+        const std::string command(argument);
+        if (command == "close") {
+            HideConfigManagerPanel();
+        } else if (command == "dom_ready") {
+            g_configManagerDomReady.store(true);
+            SetConfigManagerServerUrl();
+        } else if (command == "tab_npcs") {
+            ShowConfigManagerPanel("npcs");
+        } else if (command.starts_with("npc|")) {
+            const std::string npcCommand = command.substr(4);
+            if (npcCommand == "close") {
+                HideConfigManagerPanel();
+            } else if (npcCommand == "dom_ready") {
+                SetNpcManagerServerUrl(g_configManagerView);
+                UpdateNpcManagerTargets(g_configManagerView);
+            } else if (npcCommand == "targets_refresh") {
+                UpdateNpcManagerTargets(g_configManagerView);
+            } else if (npcCommand == "input_capture|on" || npcCommand == "input_capture|off") {
+                SetChatboxGameplayInputSuppressed(npcCommand == "input_capture|on");
+            } else {
+                logger::warn("[PrismaUIBridge] Unknown embedded NPC manager command: {}", npcCommand);
+            }
+        } else if (command == "input_capture|on" || command == "input_capture|off") {
+            SetChatboxGameplayInputSuppressed(command == "input_capture|on");
+        } else {
+            logger::warn("[PrismaUIBridge] Unknown config manager command: {}", command);
+        }
+    }
+
+    void CreateConfigManagerPanel() {
+        if (!g_prismaUI) return;
+        if (g_configManagerCreated.load() && g_configManagerView != 0 &&
+            g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        logger::info("[PrismaUIBridge] Creating CHIM Settings hub");
+        g_configManagerView = g_prismaUI->CreateView("CHIM/config_manager.html", OnConfigManagerDomReady);
+        if (g_configManagerView == 0) {
+            g_lastError = "Failed to create CHIM Settings hub view";
+            logger::error("[PrismaUIBridge] {}", g_lastError);
+            return;
+        }
+        g_prismaUI->SetOrder(g_configManagerView, 114);
+        g_prismaUI->RegisterJSListener(g_configManagerView, "chimConfigManagerCommand", OnConfigManagerCommand);
+        g_configManagerCreated.store(true);
+    }
+
+    void ToggleConfigManagerPanel() {
+        if (!g_prismaUI) return;
+        if (!g_configManagerCreated.load() || g_configManagerView == 0 ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            CreateConfigManagerPanel();
+        }
+        if (!g_configManagerCreated.load()) return;
+        if (g_prismaUI->IsHidden(g_configManagerView)) ShowConfigManagerPanel();
+        else HideConfigManagerPanel();
+    }
+
+    void ShowConfigManagerPanel(const std::string& tab) {
+        if (!g_prismaUI || !g_configManagerCreated.load()) CreateConfigManagerPanel();
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_prismaUI->IsValid(g_configManagerView)) return;
+
+        if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) HideNpcManagerPanel();
+        if (g_settingsMenuCreated.load() && !g_prismaUI->IsHidden(g_settingsMenuView)) HideSettingsMenu();
+        g_prismaUI->Show(g_configManagerView);
+        SetConfigManagerServerUrl();
+        const std::string normalizedTab = tab == "profiles" || tab == "npcs" ? tab : "globals";
+        const std::string call = "window.setConfigManagerTab && window.setConfigManagerTab('" + normalizedTab + "')";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+        const bool focused = g_prismaUI->Focus(g_configManagerView, true, false);
+        logger::info("[PrismaUIBridge] CHIM Settings hub focus: {}", focused ? "SUCCESS" : "FAILED");
+        if (g_configManagerDomReady.load()) {
+            g_prismaUI->Invoke(g_configManagerView, "window.onConfigManagerShown && window.onConfigManagerShown()", nullptr);
+        }
+    }
+
+    void HideConfigManagerPanel() {
+        SetChatboxGameplayInputSuppressed(false);
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_prismaUI->IsValid(g_configManagerView)) return;
+        if (g_prismaUI->HasFocus(g_configManagerView)) g_prismaUI->Unfocus(g_configManagerView);
+        g_prismaUI->Hide(g_configManagerView);
+    }
+
+    bool IsConfigManagerPanelVisible() {
+        return g_prismaUI && g_configManagerCreated.load() && g_configManagerView != 0 &&
+               g_prismaUI->IsValid(g_configManagerView) && !g_prismaUI->IsHidden(g_configManagerView);
     }
 
     // ===== CHIM Browser Functions =====
@@ -2778,6 +4059,22 @@ R"CHIM(
             }
             if (!g_prismaUI->IsHidden(g_diariesView)) {
                 g_prismaUI->Hide(g_diariesView);
+            }
+        }
+        if (g_backgroundLifeCreated.load()) {
+            if (g_prismaUI->HasFocus(g_backgroundLifeView)) {
+                g_prismaUI->Unfocus(g_backgroundLifeView);
+            }
+            if (!g_prismaUI->IsHidden(g_backgroundLifeView)) {
+                g_prismaUI->Hide(g_backgroundLifeView);
+            }
+        }
+        if (g_npcManagerCreated.load()) {
+            if (g_prismaUI->HasFocus(g_npcManagerView)) {
+                g_prismaUI->Unfocus(g_npcManagerView);
+            }
+            if (!g_prismaUI->IsHidden(g_npcManagerView)) {
+                g_prismaUI->Hide(g_npcManagerView);
             }
         }
         if (g_questManagerCreated.load() && !g_prismaUI->IsHidden(g_questManagerView)) {
@@ -2980,6 +4277,9 @@ R"CHIM(
         }
         if (g_diariesCreated.load() && !g_prismaUI->IsHidden(g_diariesView)) {
             HideDiariesPanel();
+        }
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
         }
         if (g_browserCreated.load() && !g_prismaUI->IsHidden(g_browserView)) {
             HideBrowserPanel();
@@ -3793,6 +5093,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing debugger panel");
         g_prismaUI->Show(g_debuggerView);
         g_prismaUI->Focus(g_debuggerView, false, false);
@@ -4167,6 +5470,27 @@ R"CHIM(
                 g_diariesView = 0;
                 g_diariesCreated.store(false);
             }
+
+            if (g_backgroundLifeCreated.load()) {
+                g_prismaUI->Destroy(g_backgroundLifeView);
+                g_backgroundLifeView = 0;
+                g_backgroundLifeCreated.store(false);
+                g_backgroundLifeDomReady.store(false);
+            }
+
+            if (g_npcManagerCreated.load()) {
+                g_prismaUI->Destroy(g_npcManagerView);
+                g_npcManagerView = 0;
+                g_npcManagerCreated.store(false);
+                g_npcManagerDomReady.store(false);
+            }
+
+            if (g_configManagerCreated.load()) {
+                g_prismaUI->Destroy(g_configManagerView);
+                g_configManagerView = 0;
+                g_configManagerCreated.store(false);
+                g_configManagerDomReady.store(false);
+            }
             
             if (g_browserCreated.load()) {
                 g_prismaUI->Destroy(g_browserView);
@@ -4297,13 +5621,12 @@ R"CHIM(
         if (sinceRowId > 0) {
             requestPath += "&since_rowid=" + std::to_string(sinceRowId);
         }
-
         // Remove leading slash if present (we add it in the GET line)
         if (!requestPath.empty() && requestPath[0] == '/') {
             requestPath = requestPath.substr(1);
         }
 
-        logger::info("[PrismaUIBridge] Fetching from: http://{}:{}/{}", server, port, requestPath);
+        logger::debug("[PrismaUIBridge] Fetching from: http://{}:{}/{}", server, port, requestPath);
 
         // Build HTTP request
         std::string httpRequest = "GET /" + requestPath + " HTTP/1.1\r\n";
@@ -4610,6 +5933,9 @@ R"CHIM(
         UnfocusPrismaViewIfFocused(g_historyView, g_panelCreated.load());
         UnfocusPrismaViewIfFocused(g_overlayView, g_overlayCreated.load());
         UnfocusPrismaViewIfFocused(g_diariesView, g_diariesCreated.load());
+        UnfocusPrismaViewIfFocused(g_backgroundLifeView, g_backgroundLifeCreated.load());
+        UnfocusPrismaViewIfFocused(g_npcManagerView, g_npcManagerCreated.load());
+        UnfocusPrismaViewIfFocused(g_configManagerView, g_configManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_browserView, g_browserCreated.load());
         UnfocusPrismaViewIfFocused(g_questManagerView, g_questManagerCreated.load());
         UnfocusPrismaViewIfFocused(g_aiviewView, g_aiviewCreated.load());
@@ -4779,11 +6105,6 @@ R"CHIM(
         bool autoEligible = true;
     };
 
-    static bool IsChatboxSpawnMode()
-    {
-        return g_chatboxCurrentMode == "SPAWN";
-    }
-
     static bool IsChatboxNarratorOnlyMode()
     {
         return g_chatboxCurrentMode == "NARRATOR";
@@ -4792,6 +6113,16 @@ R"CHIM(
     static bool IsChatboxDirectorMode()
     {
         return g_chatboxCurrentMode == "DIRECTOR";
+    }
+
+    static bool IsChatboxCloseMode()
+    {
+        return g_chatboxCurrentMode == "CLOSE";
+    }
+
+    static bool IsChatboxWhisperMode()
+    {
+        return g_chatboxCurrentMode == "WHISPER";
     }
 
     static std::shared_ptr<AIAgent> FindChatboxAgentByFormIdOrName(uint32_t formId, const std::string& name)
@@ -4874,7 +6205,7 @@ R"CHIM(
             return nearbyAgents;
         }
 
-        if (IsChatboxSpawnMode() || IsChatboxDirectorMode()) {
+        if (IsChatboxDirectorMode()) {
             return nearbyAgents;
         }
 
@@ -4897,12 +6228,21 @@ R"CHIM(
         }
 
         const bool whisperTargetCapActive = g_chatboxCurrentMode == "WHISPER";
+        const bool closeTargetCapActive = IsChatboxCloseMode();
+        const float closeTargetMaxMeters =
+            PlayerConversationRouter::GetCloseRadiusUnits(player->IsSneaking()) /
+            SpatialAwareness::kSkyrimUnitsPerMeter;
         const auto candidates = SpatialSnapshotManager::GetValidPlayerSpeechTargets(
             "chatbox_targets", true, PlayerSpeechTargetMode::Manual);
         for (const auto& candidate : candidates) {
             if (whisperTargetCapActive &&
                 (!std::isfinite(candidate.distanceMeters) ||
                  candidate.distanceMeters > kChatboxWhisperTargetMaxMeters)) {
+                continue;
+            }
+            if (closeTargetCapActive &&
+                (!std::isfinite(candidate.distanceMeters) ||
+                 candidate.distanceMeters > closeTargetMaxMeters)) {
                 continue;
             }
 
@@ -5106,7 +6446,8 @@ R"CHIM(
                         parsed.contains("data") && parsed["data"].is_object()) {
                         const auto& data = parsed["data"];
                         if (data.contains("mode") && data["mode"].is_string()) {
-                            g_chatboxCurrentMode = data["mode"].get<std::string>();
+                            SetCurrentChatboxMode(
+                                data["mode"].get<std::string>(), "Chatbox Status Sync", false);
                         }
                         if (data.contains("active_model_label") && data["active_model_label"].is_string()) {
                             g_chatboxCurrentModelLabel = data["active_model_label"].get<std::string>();
@@ -5152,6 +6493,96 @@ R"CHIM(
         );
     }
 
+    static void FetchAndUpdateChatboxStory(bool replaceExisting) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+            (!replaceExisting && g_chatboxState.load() == 0)) {
+            return;
+        }
+
+        bool expected = false;
+        if (!g_chatboxStoryFetchInProgress.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        const int sinceRowId = replaceExisting ? 0 : g_chatboxStoryLastRowId.load();
+        const int limit = replaceExisting ? 120 : 50;
+        ThreadPool::getInstance().enqueue(
+            "PrismaUIChatboxStoryFetch",
+            [replaceExisting, sinceRowId, limit]() {
+                bool updateUnavailableState = false;
+                try {
+                    do {
+                        std::string response = FetchEventlogFromServer(limit, sinceRowId);
+                        if (response.empty()) {
+                            updateUnavailableState = replaceExisting;
+                            break;
+                        }
+
+                        const size_t jsonStart = response.find('{');
+                        const size_t jsonEnd = response.rfind('}');
+                        if (jsonStart == std::string::npos || jsonEnd == std::string::npos || jsonEnd < jsonStart) {
+                            updateUnavailableState = replaceExisting;
+                            break;
+                        }
+
+                        const std::string jsonBody = response.substr(jsonStart, jsonEnd - jsonStart + 1);
+                        const json parsed = json::parse(jsonBody, nullptr, false);
+                        if (parsed.is_discarded() || !parsed.value("success", false) ||
+                            !parsed.contains("data") || !parsed["data"].is_array()) {
+                            updateUnavailableState = replaceExisting;
+                            break;
+                        }
+
+                        int maxRowId = sinceRowId;
+                        for (const auto& entry : parsed["data"]) {
+                            if (!entry.contains("ROWID")) {
+                                continue;
+                            }
+
+                            try {
+                                if (entry["ROWID"].is_string()) {
+                                    maxRowId = std::max(maxRowId, std::stoi(entry["ROWID"].get<std::string>()));
+                                } else if (entry["ROWID"].is_number_integer()) {
+                                    maxRowId = std::max(maxRowId, entry["ROWID"].get<int>());
+                                }
+                            } catch (...) {
+                                // Ignore malformed row IDs while preserving the rest of the feed.
+                            }
+                        }
+                        g_chatboxStoryLastRowId.store(maxRowId);
+
+                        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+                            (!replaceExisting && g_chatboxState.load() == 0)) {
+                            break;
+                        }
+
+                        const std::string jsCall =
+                            "window.updateStoryLog(" + json(jsonBody).dump() + "," +
+                            (replaceExisting ? "true" : "false") + ")";
+                        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+                    } while (false);
+                } catch (const std::exception& error) {
+                    logger::warn("[PrismaUIBridge] Story log refresh failed: {}", error.what());
+                    updateUnavailableState = replaceExisting;
+                } catch (...) {
+                    logger::warn("[PrismaUIBridge] Story log refresh failed");
+                    updateUnavailableState = replaceExisting;
+                }
+
+                if (updateUnavailableState && g_prismaUI && g_chatboxCreated.load() &&
+                    g_chatboxDomReady.load() && g_chatboxState.load() != 0) {
+                    g_prismaUI->Invoke(
+                        g_chatboxView,
+                        "window.setStoryLogUnavailable && window.setStoryLogUnavailable()",
+                        nullptr);
+                }
+                g_chatboxStoryFetchInProgress.store(false);
+            },
+            "ChatboxStoryFetch",
+            std::chrono::seconds(15)
+        );
+    }
+
     void CheckAndUpdateChatboxControls(bool force) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
             return;
@@ -5169,6 +6600,11 @@ R"CHIM(
         }
         g_lastChatboxControlsCheck = now;
 
+        if (now - g_lastChatboxStorySync >= kChatboxStorySyncMinInterval) {
+            g_lastChatboxStorySync = now;
+            FetchAndUpdateChatboxStory(false);
+        }
+
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastChatboxStatusSync).count() >= 5000) {
             g_lastChatboxStatusSync = now;
             SyncChatboxStatusFromServerAsync();
@@ -5177,8 +6613,12 @@ R"CHIM(
         auto nearbyAgents = CollectChatboxNearbyAgents();
         const bool narratorOnlyMode = IsChatboxNarratorOnlyMode();
         const bool directorMode = IsChatboxDirectorMode();
-        const bool overrideSupported = !narratorOnlyMode && !directorMode && !IsChatboxSpawnMode();
-        const bool everyoneSupported = overrideSupported;
+        const bool overrideSupported = !narratorOnlyMode && !directorMode;
+        const bool everyoneSupported =
+            overrideSupported && !IsChatboxWhisperMode() && !IsChatboxCloseMode();
+        if (!everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            ClearChatboxTargetOverride();
+        }
 
         ChatboxNearbyAgent autoTarget{};
         bool hasAutoTarget = false;
@@ -5230,26 +6670,42 @@ R"CHIM(
         }
 
         const ChatboxNearbyAgent* overrideTarget = nullptr;
-        if (overrideSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+        if (everyoneSupported && g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
             everyoneActive = true;
             selectedName = "Everyone";
             selectedDistance = 0.0f;
         } else if (overrideSupported && g_chatboxTargetMode == ChatboxTargetMode::NPC &&
                    (g_chatboxTargetOverrideFormId != 0 || !g_chatboxTargetOverrideName.empty())) {
-            for (const auto& nearbyAgent : nearbyAgents) {
-                const bool formMatch = g_chatboxTargetOverrideFormId != 0 &&
-                    nearbyAgent.formId == g_chatboxTargetOverrideFormId;
-                const bool nameMatch = !g_chatboxTargetOverrideName.empty() &&
-                    nearbyAgent.name == g_chatboxTargetOverrideName;
-                if (formMatch || nameMatch) {
-                    overrideTarget = &nearbyAgent;
-                    if (g_chatboxTargetOverrideFormId == 0 && nearbyAgent.formId != 0) {
-                        g_chatboxTargetOverrideFormId = nearbyAgent.formId;
-                    }
-                    if (g_chatboxTargetOverrideName.empty()) {
-                        g_chatboxTargetOverrideName = nearbyAgent.name;
-                    }
-                    break;
+            if (g_chatboxTargetOverrideFormId != 0) {
+                const auto formMatch = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.formId == g_chatboxTargetOverrideFormId;
+                    });
+                if (formMatch != nearbyAgents.end()) {
+                    overrideTarget = &*formMatch;
+                }
+            }
+
+            if (!overrideTarget && !g_chatboxTargetOverrideName.empty()) {
+                const auto nameMatch = std::find_if(
+                    nearbyAgents.begin(),
+                    nearbyAgents.end(),
+                    [](const ChatboxNearbyAgent& nearbyAgent) {
+                        return nearbyAgent.name == g_chatboxTargetOverrideName;
+                    });
+                if (nameMatch != nearbyAgents.end()) {
+                    overrideTarget = &*nameMatch;
+                }
+            }
+
+            if (overrideTarget) {
+                if (g_chatboxTargetOverrideFormId == 0 && overrideTarget->formId != 0) {
+                    g_chatboxTargetOverrideFormId = overrideTarget->formId;
+                }
+                if (g_chatboxTargetOverrideName.empty()) {
+                    g_chatboxTargetOverrideName = overrideTarget->name;
                 }
             }
         } else if (!overrideSupported && (g_chatboxTargetMode != ChatboxTargetMode::Auto ||
@@ -5302,11 +6758,10 @@ R"CHIM(
         targetsPayload["auto_active"] = !everyoneActive && !overrideTarget && hasAutoTarget;
         targetsPayload["show_everyone"] = everyoneSupported;
         targetsPayload["everyone_active"] = everyoneActive;
-        targetsPayload["empty_message"] = IsChatboxSpawnMode()
-            ? "Target override is unavailable in Spawn mode."
-            : (directorMode ? "No direct speaker targets are available in Director mode."
-                : (narratorOnlyMode ? "Only The Narrator is available in Narrator mode."
-                    : "No spatially available targets right now."));
+        targetsPayload["empty_message"] = directorMode
+            ? "No direct speaker targets are available in Director mode."
+            : (narratorOnlyMode ? "Only The Narrator is available in Narrator mode."
+                : "No spatially available targets right now.");
 
         json targetItems = json::array();
         for (const auto& nearbyAgent : nearbyAgents) {
@@ -5316,11 +6771,13 @@ R"CHIM(
             target["distance"] = nearbyAgent.distanceMeters;
             target["status"] = nearbyAgent.status;
             target["targetable"] = nearbyAgent.targetable;
-            target["active"] = (selectedFormId != 0 && nearbyAgent.formId == selectedFormId) ||
-                (!selectedName.empty() && nearbyAgent.name == selectedName);
+            target["active"] = selectedFormId != 0
+                ? nearbyAgent.formId == selectedFormId
+                : (!selectedName.empty() && nearbyAgent.name == selectedName);
             target["override"] = overrideTarget &&
-                ((overrideTarget->formId != 0 && nearbyAgent.formId == overrideTarget->formId) ||
-                 (!overrideTarget->name.empty() && nearbyAgent.name == overrideTarget->name));
+                (overrideTarget->formId != 0
+                    ? nearbyAgent.formId == overrideTarget->formId
+                    : (!overrideTarget->name.empty() && nearbyAgent.name == overrideTarget->name));
             target["narrator"] = nearbyAgent.isNarrator;
             targetItems.push_back(target);
         }
@@ -5411,6 +6868,7 @@ R"CHIM(
     static void OnChatboxDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Chatbox panel DOM ready");
         g_chatboxDomReady.store(true);
+        SetEventLogViewServerUrl(view, "setChatboxServerUrl");
         g_lastChatboxTargetsPayload.clear();
         g_prismaDisplayStatusCache.clear();
         
@@ -5428,6 +6886,7 @@ R"CHIM(
         PushSystemLogEntry("info", welcomeMsg, std::string(timeDateString));
         UpdateChatboxModeUI(g_chatboxCurrentMode);
         SyncChatboxStatusFromServerAsync();
+        FetchAndUpdateChatboxStory(true);
         logger::info("[PrismaUIBridge] Pushed welcome message to chatbox");
     }
 
@@ -5443,6 +6902,12 @@ R"CHIM(
                 g_prismaUI->Unfocus(g_chatboxView);
             }
             HideChatboxPanel();
+        } else if (cmd == "story_refresh") {
+            g_lastChatboxStorySync = std::chrono::steady_clock::now();
+            FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("event_deleted|")) {
+            g_lastChatboxStorySync = std::chrono::steady_clock::now();
+            FetchAndUpdateChatboxStory(true);
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
@@ -5462,9 +6927,30 @@ R"CHIM(
             }
         } else if (cmd.starts_with("llm_")) {
             ApplyLLMProfileSelection(cmd, "Chatbox", true);
+        } else if (cmd.starts_with("profile_")) {
+            const auto separator = cmd.find('|');
+            const std::string profileNum = separator == std::string::npos
+                ? cmd.substr(8)
+                : cmd.substr(8, separator - 8);
+            const std::string npcName = separator == std::string::npos
+                ? ""
+                : cmd.substr(separator + 1);
+
+            if ((profileNum == "1" || profileNum == "2" || profileNum == "3" || profileNum == "4") &&
+                !npcName.empty()) {
+                HTTPManager::log(std::format(
+                    "core_profile_assign|{}|{}|{}",
+                    getCurrentTimeMillis(),
+                    GetGameTimeStamp(),
+                    profileNum), npcName);
+                logger::info("[Chatbox] Requested Profile {} assignment for {}", profileNum, npcName);
+            } else {
+                logger::warn("[Chatbox] Invalid profile assignment command: {}", cmd);
+            }
         } else if (cmd == "continue_chat") {
             CheckAndUpdateChatboxControls(true);
-            if (g_chatboxTargetMode == ChatboxTargetMode::Everyone) {
+            if (g_chatboxTargetMode == ChatboxTargetMode::Everyone &&
+                !IsChatboxWhisperMode() && !IsChatboxCloseMode()) {
                 TriggerContinueConversationForEveryone("Chatbox", false);
             } else {
                 TriggerContinueConversationForNpc(g_lastChatboxTarget, "Chatbox", true);
@@ -5490,7 +6976,8 @@ R"CHIM(
             ClearChatboxTargetOverride();
             CheckAndUpdateChatboxControls(true);
         } else if (cmd == "target_override_everyone") {
-            if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() || IsChatboxSpawnMode()) {
+            if (IsChatboxNarratorOnlyMode() || IsChatboxDirectorMode() ||
+                IsChatboxWhisperMode() || IsChatboxCloseMode()) {
                 ClearChatboxTargetOverride();
                 CheckAndUpdateChatboxControls(true);
                 return;
@@ -5556,7 +7043,7 @@ R"CHIM(
             UpdateChatboxFocusUI(newFocusChatState);
             g_lastChatboxFocusChatSent = newFocusChatState;
             g_chatboxFocusChatSentInitialized = true;
-            RE::DebugNotification(newFocusChatState ? "[CHIM] Focus Chat enabled." : "[CHIM] Focus Chat disabled.");
+            RE::DebugNotification(newFocusChatState ? "[CHIM] Compact Chat enabled." : "[CHIM] Compact Chat disabled.");
         }
     }
 
@@ -5616,10 +7103,17 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing chatbox panel (no auto-focus)");
         g_chatboxQuickFocusActive.store(false);
         g_prismaUI->Show(g_chatboxView);
         g_chatboxState.store(1);
+        g_prismaUI->Invoke(
+            g_chatboxView,
+            "window.onChatboxShown && window.onChatboxShown()",
+            nullptr);
         CheckAndUpdateChatboxControls(true);
         
         // No auto-focus - player retains control until they press Enter
@@ -5702,7 +7196,6 @@ R"CHIM(
             logger::debug("[PrismaUIBridge] Chatbox DOM ready after {} ms", waitedMs);
         }
 
-        // Already focused - skip (check using HasFocus instead of keyboard active flag)
         if (g_prismaUI->HasFocus(g_chatboxView)) {
             SetChatboxGameplayInputSuppressed(true);
             logger::debug("[PrismaUIBridge] Chatbox already focused, skipping");
@@ -5748,6 +7241,8 @@ R"CHIM(
             SetChatboxGameplayInputSuppressed(true);
             g_chatboxQuickFocusActive.store(!wasVisibleAtStart);
             logger::info("[PrismaUIBridge] Chatbox focused - game paused (quickFocus={})", !wasVisibleAtStart);
+            g_lastChatboxStorySync = std::chrono::steady_clock::now();
+            FetchAndUpdateChatboxStory(true);
             CheckAndUpdateChatboxControls(true);
             g_prismaUI->Invoke(
                 g_chatboxView,
@@ -5806,6 +7301,8 @@ R"CHIM(
 
         return isFocused(g_historyView, g_panelCreated.load()) ||
                isFocused(g_diariesView, g_diariesCreated.load()) ||
+               isFocused(g_backgroundLifeView, g_backgroundLifeCreated.load()) ||
+               isFocused(g_npcManagerView, g_npcManagerCreated.load()) ||
                isFocused(g_browserView, g_browserCreated.load()) ||
                isFocused(g_debuggerView, g_debuggerCreated.load()) ||
                isFocused(g_chatboxView, g_chatboxCreated.load()) ||
@@ -5960,7 +7457,17 @@ R"CHIM(
             return;
         }
 
-        logger::info("[PrismaUIBridge] Sending chatbox message: {}", message);
+        const auto submission = ChatboxModePolicy::ParseSubmission(message, g_chatboxCurrentMode);
+        if (submission.message.empty()) {
+            RE::DebugNotification("[CHIM] Enter a message after the chat mode symbol.");
+            return;
+        }
+
+        logger::info("[PrismaUIBridge] Sending chatbox message with {} routing{}: {}",
+                     submission.mode,
+                     submission.symbolOverride ? " via symbol" : "",
+                     submission.message);
+        const std::string submittedMode = g_chatboxCurrentMode;
 
         // Get player name
         auto player = RE::PlayerCharacter::GetSingleton();
@@ -5972,7 +7479,31 @@ R"CHIM(
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
-        sendMessageReal(message, "");
+        PlayerConversationRoutingContext routingContext{};
+        routingContext.source = PlayerConversationInputSource::PrismaText;
+        routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        if (submission.symbolOverride) {
+            routingContext.symbolRoutingMode = submission.mode;
+            routingContext.routingMessage = submission.message;
+        }
+        routingContext.everyoneMode =
+            routingContext.mode != PlayerConversationSpeechMode::Whisper &&
+            routingContext.mode != PlayerConversationSpeechMode::Close &&
+            IsChatboxEveryoneTargetOverrideActive();
+        routingContext.narratorMode = submission.mode == "NARRATOR";
+        GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
+
+        sendMessageReal(message, "", routingContext);
+
+        const std::string_view nextMode = ChatboxModePolicy::ModeAfterSubmission(submittedMode);
+        if (nextMode != submittedMode &&
+            SetCurrentChatboxMode(std::string(nextMode), "Chatbox One-Shot Mode", false)) {
+            UpdateChatboxModeUI(g_chatboxCurrentMode);
+            g_lastChatboxMode = g_chatboxCurrentMode;
+            g_chatboxModeInitialized = true;
+            logger::info("[PrismaUIBridge] Reset one-shot {} mode to STANDARD after submission",
+                         submittedMode);
+        }
     }
 
     static void StopAllDialogueNow(const char* sourceTag) {
@@ -6081,8 +7612,8 @@ R"CHIM(
                 // Use HTTPManager::log like the original wheel menus
                 HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@1", 
                     getCurrentTimeMillis(), GetGameTimeStamp()));
-                logger::info("[Settings Menu] Enabled Focus Chat");
-                RE::DebugNotification("[CHIM] Focus Chat enabled.");
+                logger::info("[Settings Menu] Enabled Compact Chat");
+                RE::DebugNotification("[CHIM] Compact Chat enabled.");
                 HideSettingsMenu();
                 return;
             }
@@ -6094,6 +7625,12 @@ R"CHIM(
         if (actionId == "open_ai_quest_manager") {
             HideSettingsMenu();
             ShowQuestManagerPanel();
+            return;
+        }
+
+        if (actionId == "open_background_life") {
+            HideSettingsMenu();
+            ShowBackgroundLifePanel();
             return;
         }
 
@@ -6195,6 +7732,9 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
         logger::info("[PrismaUIBridge] Showing settings menu panel");
         g_prismaUI->Show(g_settingsMenuView);
 
@@ -6350,9 +7890,20 @@ R"CHIM(
         logger::info("[PrismaUIBridge] Master menu created successfully");
     }
 
+    static void UpdateMasterMenuVersion(PrismaView view) {
+        if (!g_prismaUI || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        const std::string jsCall = "window.setPluginVersion && window.setPluginVersion('" +
+                                   EscapeForJS(GetPluginVersion()) + "')";
+        g_prismaUI->Invoke(view, jsCall.c_str(), nullptr);
+    }
+
     static void OnMasterMenuDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Master menu DOM ready");
         g_masterMenuDomReady.store(true);
+        UpdateMasterMenuVersion(view);
     }
 
     static void OnMasterMenuCommand(const char* argument) {
@@ -6365,6 +7916,31 @@ R"CHIM(
         if (cmd == "close" || cmd == "dom_ready") {
             if (cmd == "close") {
                 HideMasterMenu();
+            } else {
+                UpdateMasterMenuVersion(g_masterMenuView);
+            }
+            return;
+        }
+
+        constexpr std::string_view kContextScrollPrefix = "context_scroll|";
+        if (cmd.starts_with(kContextScrollPrefix)) {
+            if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+                !g_prismaUI->IsValid(g_chatboxView) || g_prismaUI->IsHidden(g_chatboxView)) {
+                return;
+            }
+
+            try {
+                double delta = std::stod(cmd.substr(kContextScrollPrefix.size()));
+                if (!std::isfinite(delta)) {
+                    return;
+                }
+                delta = std::clamp(delta, -1200.0, 1200.0);
+                const std::string jsCall = std::format(
+                    "window.scrollStandaloneContext && window.scrollStandaloneContext({})",
+                    delta);
+                g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+            } catch (const std::exception&) {
+                logger::debug("[PrismaUIBridge] Ignoring invalid Context Window scroll command");
             }
             return;
         }
@@ -6372,6 +7948,8 @@ R"CHIM(
         const bool shouldCloseFirst =
             cmd == "history" ||
             cmd == "diaries" ||
+            cmd == "backgroundlife" ||
+            cmd == "npcmanager" ||
             cmd == "overlay" ||
             cmd == "statushud" ||
             cmd == "aiview" ||
@@ -6379,6 +7957,7 @@ R"CHIM(
             cmd == "debugger" ||
             cmd == "chatbox" ||
             cmd == "settings" ||
+            cmd == "actions" ||
             cmd == "questmanager" ||
             cmd == "tools_sync_factions_locations" ||
             cmd == "tools_send_all_voice_samples";
@@ -6396,6 +7975,10 @@ R"CHIM(
             ToggleHistoryPanel();
         } else if (cmd == "diaries") {
             ToggleDiariesPanel();
+        } else if (cmd == "backgroundlife") {
+            ToggleBackgroundLifePanel();
+        } else if (cmd == "npcmanager") {
+            ToggleNpcManagerPanel();
         } else if (cmd == "overlay") {
             ToggleOverlayPanel();
         } else if (cmd == "statushud") {
@@ -6409,6 +7992,8 @@ R"CHIM(
         } else if (cmd == "chatbox") {
             ToggleChatboxPanel();
         } else if (cmd == "settings") {
+            ToggleConfigManagerPanel();
+        } else if (cmd == "actions") {
             ToggleSettingsMenu();
         } else if (cmd == "questmanager") {
             ToggleQuestManagerPanel();
@@ -6465,6 +8050,16 @@ R"CHIM(
             return;
         }
 
+        if (g_backgroundLifeCreated.load() && !g_prismaUI->IsHidden(g_backgroundLifeView)) {
+            HideBackgroundLifePanel();
+        }
+        if (g_npcManagerCreated.load() && !g_prismaUI->IsHidden(g_npcManagerView)) {
+            HideNpcManagerPanel();
+        }
+        if (g_configManagerCreated.load() && !g_prismaUI->IsHidden(g_configManagerView)) {
+            HideConfigManagerPanel();
+        }
+
         // Reassert menu order in case another panel changed stacking.
         g_prismaUI->SetOrder(g_masterMenuView, 140);
         logger::info("[PrismaUIBridge] Showing master menu panel");
@@ -6503,6 +8098,17 @@ R"CHIM(
         
         // Mark as visible
         g_masterMenuVisible.store(true);
+        if (g_masterMenuDomReady.load()) {
+            const bool contextWindowVisible =
+                g_chatboxCreated.load() &&
+                g_prismaUI->IsValid(g_chatboxView) &&
+                !g_prismaUI->IsHidden(g_chatboxView) &&
+                !g_prismaUI->HasFocus(g_chatboxView);
+            const std::string jsCall = std::format(
+                "window.setContextWindowVisible && window.setContextWindowVisible({})",
+                contextWindowVisible ? "true" : "false");
+            g_prismaUI->Invoke(g_masterMenuView, jsCall.c_str(), nullptr);
+        }
     }
 
     void HideMasterMenu() {

@@ -32,6 +32,7 @@
 #include "ThreadPool.h"
 #include "Voicerec.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "MusicManager.h"
 #include "RE/D/DialogueMenu.h"
 #include "RE/G/GFxValue.h"
@@ -697,25 +698,20 @@ static bool sendAllVoice(const std::chrono::steady_clock::time_point& deadline, 
         }
         audioData.assign("Sound\\Voice\\" + filename);
 
-        RE::BSResourceNiBinaryStream finaudioFileDetected(audioData);
-        if (finaudioFileDetected.good()) {
-            auto size = finaudioFileDetected.stream->totalSize;
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-
-            std::string finalData(buffer.get(), size);
-
-            if (size > 0) {
-                if (VoiceUploadBatchTimedOut(deadline)) {
-                    timedOut = true;
-                    break;
-                }
-
-                logger::info("Uploading {} {}", pair.first, audioData);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                std::string uploadResponse = uploader.UploadVoiceSample(finalData, pair.first, audioData);
+        std::string finalData;
+        std::string readFailure;
+        if (ResourceFileReader::Read(audioData, finalData, readFailure)) {
+            if (VoiceUploadBatchTimedOut(deadline)) {
+                timedOut = true;
+                break;
             }
+
+            logger::info("Uploading {} {}", pair.first, audioData);
+            HTTPUploader& uploader = HTTPUploader::getInstance();
+            std::string uploadResponse = uploader.UploadVoiceSample(finalData, pair.first, audioData);
             // At this point. the voice should be cloned
+        } else {
+            logger::warn("[VOICE] Could not read bundled sample {}: {}", audioData, readFailure);
         }
     }
 
@@ -1065,23 +1061,15 @@ static bool sendAllVoiceLongestSamples(const std::chrono::steady_clock::time_poi
             continue;
         }
 
-        RE::BSResourceNiBinaryStream stream(sample.path);
-        if (!stream.good() || !stream.stream) {
-            missedVoiceTypes[voiceTypeKey] = std::format("candidate stream open failed: {}", sample.path);
+        std::string finalData;
+        std::string readFailure;
+        if (!ResourceFileReader::Read(sample.path, finalData, readFailure)) {
+            missedVoiceTypes[voiceTypeKey] = std::format("candidate read failed: {} ({})", sample.path, readFailure);
             continue;
         }
 
-        const auto size = stream.stream->totalSize;
-        if (size <= 0) {
-            missedVoiceTypes[voiceTypeKey] = std::format("candidate stream size is zero: {}", sample.path);
-            continue;
-        }
-
-        auto buffer = std::make_unique<char[]>(size);
-        stream.read(buffer.get(), size);
-
-        std::string finalData(buffer.get(), size);
-        logger::info("[VOICE] Uploading longest sample for {} -> {} ({} bytes)", voiceTypeKey, sample.path, size);
+        logger::info("[VOICE] Uploading longest sample for {} -> {} ({} bytes)", voiceTypeKey, sample.path,
+                     finalData.size());
         uploader.UploadVoiceSample(finalData, voiceTypeKey, sample.path);
         missedVoiceTypes.erase(voiceTypeKey);
         uploadedCount++;
@@ -1361,44 +1349,26 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     /* Try to generate voice*/
 
                     auto audiofile = AudioFilesBufferManager::findAudioFile(agent->getActor());
-                    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-                    if (finaudioFileDetected.good()) {
-                        auto size = finaudioFileDetected.stream->totalSize;
-                        auto buffer = std::make_unique<char[]>(size);
-                        finaudioFileDetected.read(buffer.get(), size);
+                    std::string finalData;
+                    std::string readFailure;
+                    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+                        logger::info("Uploading voice sample {}, size {}", audiofile, finalData.size());
 
-                        std::string finalData(buffer.get(), size);
+                        HTTPUploader& uploader = HTTPUploader::getInstance();
 
-                        if (size > 0) {
-                            logger::info("Uploading voice sample {}, size {}", audiofile, size);
+                        std::string uploadResponse =
+                            uploader.UploadVoiceSample(finalData, agent->getActorName(), audiofile);
+                        logger::info("Sending addnpc signal for {}@{}", targetActor->GetDisplayFullName(), category);
+                        HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
+                                                     GetGameTimeStamp(), targetActor->GetDisplayFullName(), category));
 
-                            HTTPUploader& uploader = HTTPUploader::getInstance();
-
-                            std::string uploadResponse =
-                                uploader.UploadVoiceSample(finalData, agent->getActorName(), audiofile);
-                            logger::info("Sending addnpc signal for {}@{}", targetActor->GetDisplayFullName(),
-                                         category);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(),
-                                                         category));
-                            
-                            // Voice sample uploaded successfully
-                            agent->setNeedsVoiceSample(false);
-                            agent->setVoiceSamplePath(audiofile);
-                        } else {
-                            // File found but empty - mark for deferred upload
-                            logger::warn("[VOICE] Voice file found but empty for {} - will capture from dialogue", 
-                                        targetActor->GetDisplayFullName());
-                            agent->setNeedsVoiceSample(true);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(),
-                                                         category));
-                        }
+                        // Voice sample uploaded successfully
+                        agent->setNeedsVoiceSample(false);
+                        agent->setVoiceSamplePath(audiofile);
                         // At this point. the voice should be cloned
                     } else {
-                        // No audio file found - mark for deferred upload when NPC speaks
-                        logger::warn("[VOICE] No voice sample found for {} - will capture from dialogue events", 
-                                    targetActor->GetDisplayFullName());
+                        logger::warn("[VOICE] Could not read voice sample for {} from {}: {}; will capture from dialogue events",
+                                     targetActor->GetDisplayFullName(), audiofile, readFailure);
                         agent->setNeedsVoiceSample(true);
                         HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), targetActor->GetDisplayFullName(),
@@ -1486,7 +1456,10 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
     return 0;
 }
 
-int sendMessageReal(std::string msg, std::string type) {
+int sendMessageReal(
+    std::string msg,
+    std::string type,
+    const PlayerConversationRoutingContext& routingContext) {
     logger::info("Call from papyrus: sendMessage");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     PrismaUIBridge::BumpDialogueStopGeneration();
@@ -1543,14 +1516,28 @@ int sendMessageReal(std::string msg, std::string type) {
         }
     }
 
+    PlayerConversationRoutingContext effectiveRoutingContext = routingContext;
     std::string typeRevised;
 
-    if (type.empty())
+    if (type == "inputtext_i") {
+        typeRevised.assign("inputtext_s");
+        effectiveRoutingContext.mode = PlayerConversationSpeechMode::Close;
+    } else {
+        const std::string currentConversationMode = effectiveRoutingContext.symbolRoutingMode.empty()
+            ? PrismaUIBridge::GetCurrentChatboxMode()
+            : effectiveRoutingContext.symbolRoutingMode;
+        effectiveRoutingContext.mode =
+            PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
+        effectiveRoutingContext.narratorMode =
+            effectiveRoutingContext.narratorMode || currentConversationMode == "NARRATOR";
+    }
+
+    if (type != "inputtext_i" && type.empty())
         if (player->IsSneaking())
             typeRevised.assign("inputtext_s");
         else
             typeRevised.assign("inputtext");
-    else
+    else if (type != "inputtext_i")
         typeRevised.assign(type);
 
     /* If not is animation busy, some plugin said shen can't call functions atm. To be revised*/
@@ -1747,6 +1734,7 @@ int sendMessageReal(std::string msg, std::string type) {
             ThreadPool::getInstance().cancelTasksByType("HTTPStream");
             ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
             SPGResponse::getInstance().clearAllQueues();
+            SpeakManager::getInstance().startRechatChainForPlayerInput();
         }
 
         SpeakManager::getInstance().deleteQueue();
@@ -1755,8 +1743,10 @@ int sendMessageReal(std::string msg, std::string type) {
 
         SpeakManager::getInstance().stopRechatForNseconds(3);  // To avoid rechat if any rechat is pending
 
-        HTTPManager::stream(std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
-                                        RE::PlayerCharacter::GetSingleton()->GetName(), msg));
+        HTTPManager::streamPlayer(
+            std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
+                        RE::PlayerCharacter::GetSingleton()->GetName(), msg),
+            effectiveRoutingContext);
     }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -1925,6 +1915,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
     if (code == "_sound_volume") {
         AudioManagerController::GetInstance().setVolume(f_Value);
         logger::info("Setting volume to {}/100", f_Value);
+
+    } else if (code == "_head_voice_volume") {
+        SpeakManager::getInstance().setHeadVoiceVolumePercent(f_Value);
+        logger::info("Setting narrator/player TTS volume to {}/100", f_Value);
 
     } else if (code == "_sound_preclip") {
         SpeakManager::getInstance().setPreclip(f_Value);
@@ -2189,13 +2183,29 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
     return 0;
 }
-    int Papyrus::sendMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+
+int Papyrus::sendMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                          std::string msg, std::string type) {
     ScopedPapyrusLock lock("sendMessage");
 
 
     auto result = sendMessageReal(msg, type);
     return result;
+}
+
+int Papyrus::sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                RE::StaticFunctionTag*, std::string msg, std::string type, RE::Actor* targetActor) {
+    ScopedPapyrusLock lock("sendMessageToActor");
+
+    PlayerConversationRoutingContext routingContext{};
+    if (targetActor) {
+        routingContext.explicitTargetFormId = targetActor->GetFormID();
+        if (const auto* targetName = targetActor->GetDisplayFullName()) {
+            routingContext.explicitTargetName = targetName;
+        }
+    }
+
+    return sendMessageReal(msg, type, routingContext);
 }
 
 int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
@@ -2207,7 +2217,11 @@ int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
 
     if (type == "setconf" || (type == "setConf")) {
-
+        constexpr std::string_view modePrefix = "chim_mode@";
+        if (msg.starts_with(modePrefix)) {
+            PrismaUIBridge::SetCurrentChatboxMode(
+                msg.substr(modePrefix.size()), "Papyrus Mode Selection", false);
+        }
     } else {
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "(beings in range:" + result + ")"));
@@ -2276,6 +2290,11 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+    const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
+    const auto requestText = isAutonomousDirective
+        ? msg
+        : std::format("{}:{}", RE::PlayerCharacter::GetSingleton()->GetName(), msg);
+
     if (actorPtr) {
         auto player = RE::PlayerCharacter::GetSingleton();
         RE::TESObjectCELL* cell = player->GetParentCell();
@@ -2286,14 +2305,13 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                      "(beings in range:" + result + ")"));
 
         HTTPManager::stream(
-            std::format("{}|{}|{}|(Context location: {}){}:{}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
-                        GetPlayerLocation(), RE::PlayerCharacter::GetSingleton()->GetName(), msg),
+            std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
+                        GetPlayerLocation(), requestText),
             actorPtr->getActor());
     } else {
         // Fallback
-        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}:{}", type, getCurrentTimeMillis(),
-                                        GetGameTimeStamp(), GetPlayerLocation(),
-                                        RE::PlayerCharacter::GetSingleton()->GetName(), msg));
+        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(),
+                                        GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
     return 0;
@@ -2700,6 +2718,75 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     return 0;
 }
 
+std::string GetLocationSpecialRefsStringImpl(RE::FormID a_locationFormID) {
+    std::ostringstream ss;
+
+    auto locationForm = RE::TESForm::LookupByID(a_locationFormID);
+    if (!locationForm) {
+        return "";
+    }
+
+    auto location = locationForm->As<RE::BGSLocation>();
+    if (!location) {
+        return "";
+    }
+
+    // Lookup the ref types once
+    auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
+    auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
+    auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
+    auto outsideEntranceMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fb);
+    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x00010f63c);
+
+    RE::TESObjectREFR* stdMarker = nullptr;
+
+    if (location->worldLocMarker) {
+        if (location->worldLocMarker.get()) stdMarker = location->worldLocMarker.get().get();
+    }
+
+    if (!insideMarkerRefType && !bossTreasureMarkerRefType && !locationCenterRefType && !outsideEntranceMarkerRefType &&
+        !mapMarkerRefType && !stdMarker) {
+        return "";
+    }
+
+    bool first = true;
+
+    for (auto& refData : location->specialRefs) {
+        if (!refData.refData.refID || !refData.type) {
+            continue;
+        }
+
+        auto typeID = refData.type->GetFormID();
+        auto refID = refData.refData.refID;
+
+        // Only include the three types we care about
+        if (refData.type != insideMarkerRefType && refData.type != bossTreasureMarkerRefType &&
+            refData.type != locationCenterRefType && refData.type != outsideEntranceMarkerRefType &&
+            refData.type != mapMarkerRefType) {
+            continue;
+        }
+
+        if (!first) {
+            ss << ";";
+        }
+
+        ss << "0x" << std::hex << std::setw(8) << std::setfill('0') << typeID << ":0x" << std::hex << std::setw(8)
+           << std::setfill('0') << refID;
+
+        first = false;
+    }
+    if (stdMarker) {
+        if (!first) {
+            ss << ";";
+        }
+
+        ss << "0x" << std::hex << std::setw(8) << std::setfill('0') << mapMarkerRefType->GetFormID() << ":0x"
+           << std::hex << std::setw(8) << std::setfill('0') << stdMarker->GetFormID();
+    }
+
+    return ss.str();
+}
+
 int Papyrus::setDrivenByAIA(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                             RE::StaticFunctionTag*, RE::Actor* forcedActor, bool salutation) {
     ScopedPapyrusLock lock("setDrivenByAIA");
@@ -3075,6 +3162,13 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
     return ref;
 }
 
+RE::TESObjectREFR* getLocationMarkerForImpl(RE::BGSLocation* a_loc) {
+
+    auto marker = a_loc->worldLocMarker.get();
+    auto result = marker ? marker.get() : nullptr;
+    return result;
+}
+
 RE::TESObjectREFR* Papyrus::getLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                                  RE::StaticFunctionTag*, RE::BGSLocation* a_loc) {
     ScopedPapyrusLock lock("getLocationMarkerFor");
@@ -3083,25 +3177,18 @@ RE::TESObjectREFR* Papyrus::getLocationMarkerFor(RE::BSScript::IVirtualMachine* 
         return nullptr;
     }
 
-    auto marker = a_loc->worldLocMarker.get();
-    auto result = marker ? marker.get() : nullptr;
-    return result;
+    
+    return getLocationMarkerForImpl(a_loc);
 }
 
-RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                                 RE::StaticFunctionTag*, RE::BGSLocation* a_loc) {
-    ScopedPapyrusLock lock("getWorldLocationMarkerFor");
-    if (!a_loc) {
-        a_vm->TraceStack("Location is None", a_stackID);
-        logger::error("getWorldLocationMarkerFor: Location is None");
-        return nullptr;
-    }
-    logger::info("getWorldLocationMarkerFor: Location is {},{:08X}", a_loc->GetName(),a_loc->GetFormID());
+
+RE::TESObjectREFR* getWorldLocationMarkerForImpl(RE::BGSLocation* a_loc) {
+    
+    logger::info("getWorldLocationMarkerFor: Location is {},{:08X}", a_loc->GetName(), a_loc->GetFormID());
     auto marker = a_loc->worldLocMarker.get();
     if (!marker) {
         logger::info("getWorldLocationMarkerFor: Location has no world marker, using horseLocMarker");
         marker = a_loc->horseLocMarker.get();
-
     }
 
     /*
@@ -3112,10 +3199,9 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
     }
     */
     if (marker && marker.get()) {
-
         auto worldMarker = marker.get();
         if (worldMarker->GetParentCell()) {
-            if (!worldMarker->GetParentCell()->IsExteriorCell() ) {
+            if (!worldMarker->GetParentCell()->IsExteriorCell()) {
                 auto currentLocation = worldMarker->GetCurrentLocation();
                 if (currentLocation && currentLocation->parentLoc) {
                     auto parentLoc = currentLocation->parentLoc;
@@ -3128,19 +3214,20 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
                         marker = nullptr;
                     }
                 } else {
-                    logger::error("getWorldLocationMarkerFor: world marker is in interior cell with no parent location");
+                    logger::error(
+                        "getWorldLocationMarkerFor: world marker is in interior cell with no parent location");
                     marker = nullptr;
                 }
             } else {
                 logger::info("getWorldLocationMarkerFor: world marker is in exterior cell, returning it");
-                //marker = marker;
+                // marker = marker;
             }
         } else {
             logger::info("getWorldLocationMarkerFor: world marker has no parent cell, returning it");
-           // marker = nullptr;
+            // marker = nullptr;
         }
     }
-    
+
     auto result = marker ? marker.get() : nullptr;
 
     // Use LocationCenterMarker if no world marker found
@@ -3148,7 +3235,7 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
     if (!result) {
         logger::info("getWorldLocationMarkerFor: Location has no world marker");
         RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
-        
+
         // Iterate over specialRefs using begin()/end()
         for (auto it = refs->begin(); it != refs->end(); ++it) {
             const auto& refData = *it;
@@ -3201,41 +3288,47 @@ RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMach
                     result = localresult;
                     break;
                 }
-                // If no parent cell, maybe is an interior 
+                // If no parent cell, maybe is an interior
                 // Watch this for issues it can generate
                 // result = localresult; // Thhis breaks GPS coords
             }
         }
     }
 
-    
     if (!result)
         logger::debug("getWorldLocationMarkerFor: returning EMPTY world marker");
-    else 
-        logger::debug("getWorldLocationMarkerFor: marker {:08X}",result->GetFormID());
+    else
+        logger::debug("getWorldLocationMarkerFor: marker {:08X}", result->GetFormID());
     return result;
 }
 
-
-RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier) {
-    ScopedPapyrusLock lock("getLocationCenterMarker");
+RE::TESObjectREFR* Papyrus::getWorldLocationMarkerFor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                                 RE::StaticFunctionTag*, RE::BGSLocation* a_loc) {
+    ScopedPapyrusLock lock("getWorldLocationMarkerFor");
     if (!a_loc) {
         a_vm->TraceStack("Location is None", a_stackID);
-        logger::error("getLocationCenterMarker: Location is None");
+        logger::error("getWorldLocationMarkerFor: Location is None");
         return nullptr;
     }
-    logger::info("getLocationCenterMarker: Location is {},{:08X}", a_loc->GetName(), a_loc->GetFormID());
+    return getWorldLocationMarkerForImpl(a_loc);
     
+}
+
+// This method have been expanded to return more than one type of marker, depending on the modifier parameter:
+
+RE::TESObjectREFR* getLocationCenterMarkerImpl( RE::BGSLocation* a_loc, int modifier) {
+    
+    logger::info("getLocationCenterMarker: Location is {},{:08X}", a_loc->GetName(), a_loc->GetFormID());
+
     RE::TESObjectREFR* result = nullptr;
 
-    logger::info("getLocationCenterMarker: Location has no world marker");
     RE::BSTArray<RE::SpecialRefData>* refs = &a_loc->specialRefs;
 
-    
     auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
     auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);  // BossTreasureMarker
     auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
+    auto outsideEntranceMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fb);
+    auto mapMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0010f63c);
 
     // Iterate over specialRefs using begin()/end()
     for (auto it = refs->begin(); it != refs->end(); ++it) {
@@ -3243,7 +3336,7 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
         if (refData.type) {
             if (refData.type->formType == RE::FormType::LocationRefType) {
                 if (modifier == 0) {
-                    if (refData.type->GetFormID() == 0x1bdf1) {  // LocationCenterMarker
+                    if (refData.type == locationCenterRefType) {  // LocationCenterMarker
                         RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
 
                         logger::info("getLocationCenterMarker: Found special ref LocationCenterMarker {:08X}",
@@ -3254,7 +3347,7 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
                         }
                     }
                 } else if (modifier == 1) {
-                    if (refData.type->GetFormID() == 0x000130fc) {  // insideMarkerRefType
+                    if (refData.type == insideMarkerRefType) {  // insideMarkerRefType
                         RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
                         logger::info("getLocationCenterMarker: Found special ref insideMarkerRefType {:08X}",
                                      refData.refData.refID);
@@ -3264,9 +3357,29 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
                         }
                     }
                 } else if (modifier == 2) {
-                    if (refData.type->GetFormID() == 0x000130f9) {  // bossTreasureMarkerRefType
+                    if (refData.type == bossTreasureMarkerRefType) {  // bossTreasureMarkerRefType
                         RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
                         logger::info("getLocationCenterMarker: Found special ref bossTreasureMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 3) {
+                    if (refData.type == outsideEntranceMarkerRefType) {  // Outside entrance marker
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref outsideEntranceMarkerRefType {:08X}",
+                                     refData.refData.refID);
+                        if (t) {
+                            result = t->AsReference();
+                            break;
+                        }
+                    }
+                } else if (modifier == 4) {
+                    if (refData.type == mapMarkerRefType) {  // MapMarker ref type
+                        RE::TESForm* t = RE::TESForm::LookupByID(refData.refData.refID);
+                        logger::info("getLocationCenterMarker: Found special ref MapMarkerReftType  {:08X}",
                                      refData.refData.refID);
                         if (t) {
                             result = t->AsReference();
@@ -3277,7 +3390,6 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
             }
         }
     }
-    
 
     if (!result)
         logger::debug("getLocationCenterMarker: returning EMPTY world marker");
@@ -3285,6 +3397,19 @@ RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachin
         logger::debug("getLocationCenterMarker: marker {:08X}", result->GetFormID());
 
     return result;
+}
+
+RE::TESObjectREFR* Papyrus::getLocationCenterMarker(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                                      RE::StaticFunctionTag*, RE::BGSLocation* a_loc, int modifier) {
+    ScopedPapyrusLock lock("getLocationCenterMarker");
+    if (!a_loc) {
+        a_vm->TraceStack("Location is None", a_stackID);
+        logger::error("getLocationCenterMarker: Location is None");
+        return nullptr;
+    }
+    return getLocationCenterMarkerImpl(a_loc, modifier);
+    
+    
 }
 
 RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
@@ -3345,6 +3470,8 @@ RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, 
 
     return buffer;
 }
+
+
 
 int Papyrus::sendAllVoices(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("sendAllVoices");
@@ -3885,7 +4012,281 @@ RE::TESObjectREFR* Papyrus::loadReference(RE::BSScript::Internal::VirtualMachine
       
     return nullptr;
 }
-  // Prisma UI History Panel functions
+  
+
+
+int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObjectCELL* referenceCell) {
+    
+
+    RE::TESObjectREFR* destMarker = getWorldLocationMarkerForImpl(a_loc);
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 0);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 1);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 3);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationCenterMarkerImpl(a_loc, 4);
+    }
+
+    if (!destMarker) {
+        destMarker = getLocationMarkerForImpl(a_loc);
+    }
+
+    if (!destMarker) {
+        logger::error("sendLocationFast: No destination marker found for location {},{:08X}", a_loc->GetName(),
+                      a_loc->GetFormID());
+        return 0;
+    }
+
+    if (destMarker->IsDisabled()) {
+        logger::error("sendLocationFast: Destination marker is disabled for location {},{:08X}", a_loc->GetName(),
+                      a_loc->GetFormID());
+        return 0;
+    }
+
+    RE::BGSLocation* currParent = nullptr;
+    RE::BGSLocation* currParent2 = nullptr;
+    RE::TESFaction* factionOwner = nullptr;
+
+    currParent = a_loc->parentLoc;
+    if (currParent) {
+        currParent2 = currParent->parentLoc;
+    }
+    if (a_loc->GetFormID() == 0x0005F428) {
+        logger::debug("sendLocationFast: Debug line");
+        
+    }
+    RE::TESObjectREFR* locationCenterMarkerRef = getLocationCenterMarkerImpl(a_loc, 0);
+    RE::TESObjectREFR* insideEntranceMarkerRef = getLocationCenterMarkerImpl(a_loc, 1);
+    RE::TESObjectREFR* outsideEntranceMarkerRef = getLocationCenterMarkerImpl(a_loc, 3);
+    RE::TESObjectREFR* mapMarkerRefType = getLocationCenterMarkerImpl(a_loc, 4);
+    RE::TESObjectREFR* rawLocationMarker = getLocationMarkerForImpl(a_loc);
+
+    RE::TESObjectCELL* localCell = nullptr;
+    localCell = destMarker->GetParentCell();
+    if (referenceCell) {
+        localCell = referenceCell;
+        logger::debug("sendLocationFast: Using reference cell {:08X} for location {},{:08X}", localCell->GetFormID(),
+                      a_loc->GetName(), a_loc->GetFormID());
+    }
+
+    if (locationCenterMarkerRef && locationCenterMarkerRef->GetParentCell()) {
+        localCell = locationCenterMarkerRef->GetParentCell();
+        logger::debug("sendLocationFast: Using location center marker cell {:08X} for location {},{:08X}",
+                      localCell->GetFormID(), a_loc->GetName(), a_loc->GetFormID());
+    }
+
+    int flags = 0;
+
+    if (insideEntranceMarkerRef) {
+        if (insideEntranceMarkerRef->GetParentCell() && insideEntranceMarkerRef->GetParentCell()->IsInteriorCell()) {
+            flags += 1;  // 01
+        }
+    } else {
+        flags += 2;  // 10
+    }
+
+    if (locationCenterMarkerRef) {
+        if (locationCenterMarkerRef->GetParentCell() && locationCenterMarkerRef->GetParentCell()->IsInteriorCell()) {
+            flags += 1 * 4;  // 01 << 2
+        }
+    } else {
+        flags += 2 * 4;  // 10 << 2
+    }
+
+    if (rawLocationMarker) {
+        if (rawLocationMarker->GetParentCell() && rawLocationMarker->GetParentCell()->IsInteriorCell()) {
+            flags += 1 * 16;  // 01 << 4
+        }
+    } else {
+        flags += 2 * 16;  // 10 << 4
+    }
+
+    if (outsideEntranceMarkerRef) {
+        if (outsideEntranceMarkerRef->GetParentCell() && outsideEntranceMarkerRef->GetParentCell()->IsInteriorCell()) {
+            flags += 1 * 64;  // 01 << 6
+        }
+    } else {
+        flags += 2 * 64;  // 10 << 6
+    }
+
+    std::string parName = "";
+    std::string parName2 = "";
+    std::string types = tags;
+
+    auto keyword = a_loc->GetKeywords();
+    for (const auto& kw : keyword) {
+        if (kw) {
+            auto tag=GetLocationTag(kw->GetFormID());       
+            if (!tag.empty()) {
+                types.append(tag).append(",");
+            }
+        }
+    }
+
+    if (currParent) {
+        parName = currParent->GetName();
+    }
+    if (currParent2) {
+        parName2 = currParent2->GetName();
+    }
+
+    logger::debug(
+        "sendLocationFast: Sending location {},{:08X} with flags {:02X}, parent {}, parent2 {}, cell {:08X}, tags {}",
+        a_loc->GetName(), a_loc->GetFormID(), flags, parName, parName2, localCell ? localCell->GetFormID() : 0, tags);
+
+    std::string specialRefs = "";
+
+    specialRefs = GetLocationSpecialRefsStringImpl(a_loc->GetFormID());
+
+    std::string isCleared = "0";
+    if (a_loc->IsCleared()) {
+        isCleared = "1";
+    }
+
+    RE::TESWorldSpace* cws = nullptr;
+    std::string worldspaceName = "";
+    cws = locationCenterMarkerRef ? locationCenterMarkerRef->GetWorldspace() : nullptr;
+    if (!cws) cws = insideEntranceMarkerRef ? insideEntranceMarkerRef->GetWorldspace() : nullptr;
+    if (!cws) cws = outsideEntranceMarkerRef ? outsideEntranceMarkerRef->GetWorldspace() : nullptr;
+    if (!cws) cws = mapMarkerRefType ? mapMarkerRefType->GetWorldspace() : nullptr;
+
+    if (cws) worldspaceName = cws->GetFullName();
+
+    /* 
+    * int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" +
+    types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared+"/"+worldspaceName,"util_location_name")
+    * */
+
+    // When dealing with coordinates, we must send global world coordinates
+    // Check mapMarkerRefType, and world is 0x3c,01x1a26f,1691d,0x037edf,0x16bb4,0x016d71
+    // Check rawLocationMarker, and world is 0x3c,01x1a26f,1691d,0x037edf,0x16bb4,0x016d71
+    // I so, send coords.
+    auto isValidWorldMarker = [&](RE::TESObjectREFR* ref) -> bool {
+        if (!ref) {
+            return false;
+        }
+
+        auto* worldspace = ref->GetWorldspace();
+        if (!worldspace) {
+            return false;
+        }
+
+        constexpr std::array<RE::FormID, 6> allowedWorldspaces = {0x3C, 0x1A26F, 0x1691D, 0x037EDF, 0x016BB4, 0x016D71};
+
+        return std::find(allowedWorldspaces.begin(), allowedWorldspaces.end(), worldspace->GetFormID()) !=
+               allowedWorldspaces.end();
+    };
+
+    RE::TESObjectREFR* destMarkerWorld = nullptr;
+
+    if (isValidWorldMarker(mapMarkerRefType)) {
+        destMarkerWorld = mapMarkerRefType;
+    } else if (isValidWorldMarker(rawLocationMarker)) {
+        destMarkerWorld = rawLocationMarker;
+    }
+    
+    if (!destMarkerWorld) {
+        // We don't have coords. Case, Silver-Blood Inn. Interior location, no world marker. We will send 0,0 coords.
+        // Let's check parent location for coords.
+        if (currParent) {
+            RE::TESObjectREFR* parentMarker = getWorldLocationMarkerForImpl(currParent);
+            if (parentMarker && isValidWorldMarker(parentMarker)) {
+                destMarkerWorld = parentMarker;
+                logger::debug("sendLocationFast: Using parent location marker for world coordinates for location {},{:08X}",
+                              a_loc->GetName(), a_loc->GetFormID());
+            }
+        } else {
+            logger::warn("sendLocationFast: No valid world marker found for location {},{:08X}", a_loc->GetName(),
+                         a_loc->GetFormID());
+        }
+    }
+    float x = destMarkerWorld ? destMarkerWorld->GetPositionX() : 0.0f;
+    float y = destMarkerWorld ? destMarkerWorld->GetPositionY() : 0.0f;
+
+    std::string locName = a_loc->GetName();
+
+    HTTPManager::log(std::format("util_location_name|{}|{}|{}/{}/{}/{}/{}/{}//{}/{}/{}/{}/{}", getCurrentTimeMillis(), GetGameTimeStamp(), 
+        locName, a_loc->GetFormID(), parName,parName2, types,
+                      flags, x, y, specialRefs, isCleared, worldspaceName));
+
+
+    return 1;
+}
+
+int Papyrus::sendLocationFast(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                              RE::StaticFunctionTag*, RE::BGSLocation* a_loc, std::string tags,
+                              RE::TESObjectCELL* referenceCell) {
+    ScopedPapyrusLock lock("sendLocationFast");
+    if (!a_loc) {
+        a_vm->TraceStack("Location is None", a_stackID);
+        logger::error("getLocationCenterMarker: Location is None");
+        return -1;
+    }
+
+    return sendLocationFastImpl(a_loc, tags, referenceCell);
+}
+
+int Papyrus::sendFactionFast(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                      RE::StaticFunctionTag*, RE::TESFaction *faction,std::string name) {
+
+    
+    ScopedPapyrusLock lock("sendFactionFast");
+    if (!faction) {
+        a_vm->TraceStack("faction is None", a_stackID);
+        logger::error("sendFactionFast: faction is None");
+        return 0;
+    }
+    
+    
+    logger::info("sendFactionsFast: Sending faction {},{:08X} with name '{}'", name, faction->GetFormID(),
+                    name);
+
+    std::string vendorRef = "";
+    if (name.empty()) {
+        name = faction->GetFullName();
+    }
+
+    if (name.empty()) {
+        name = faction->GetFormEditorID();
+    }
+
+    if (name.empty()) {
+        name = faction->GetFormID() ? std::format("{:08X}", faction->GetFormID()) : "UnknownFaction";
+    }
+
+    if (name.empty()) {
+        auto fDescription = faction->As<RE::TESDescription>();
+        RE::BSString description;
+        fDescription->GetDescription(description, nullptr);
+        name.assign(description.c_str());
+        name = trim(name);
+    }
+
+    if (!name.empty()) {
+        std::replace(name.begin(), name.end(), '/', '_');
+    }
+
+    if (faction->vendorData.merchantContainer) {
+        vendorRef = std::format("{:08X}", faction->vendorData.merchantContainer->GetFormID());
+    }
+    HTTPManager::log(std::format("util_faction_name|{}|{}|{:08X}/{}/{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                    faction->GetFormID(), name,vendorRef));
+    
+    
+    return 1;
+}
+
+
+
+// Prisma UI History Panel functions
 int Papyrus::toggleHistoryPanel(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("toggleHistoryPanel");
     
@@ -4364,55 +4765,10 @@ int Papyrus::stopMusicScene(RE::BSScript::Internal::VirtualMachine * a_vm, RE::V
 }
 
 
+
 std::string Papyrus::GetLocationSpecialRefsString(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                                   RE::StaticFunctionTag*, RE::FormID a_locationFormID) {
-    std::ostringstream ss;
-
-    auto locationForm = RE::TESForm::LookupByID(a_locationFormID);
-    if (!locationForm) {
-        return "";
-    }
-
-    auto location = locationForm->As<RE::BGSLocation>();
-    if (!location) {
-        return "";
-    }
-
-    // Lookup the ref types once
-    auto insideMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130fc);
-    auto bossTreasureMarkerRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x000130f9);//BossTreasureMarker
-    auto locationCenterRefType = RE::TESForm::LookupByID<RE::BGSLocationRefType>(0x0001bdf1);
-
-    if (!insideMarkerRefType && !bossTreasureMarkerRefType && !locationCenterRefType) {
-        return "";
-    }
-
-    bool first = true;
-
-    for (auto& refData : location->specialRefs) {
-        if (!refData.refData.refID || !refData.type) {
-            continue;
-        }
-
-        auto typeID = refData.type->GetFormID();
-        auto refID = refData.refData.refID;
-
-        // Only include the three types we care about
-        if (refData.type != insideMarkerRefType && refData.type != bossTreasureMarkerRefType && refData.type != locationCenterRefType) {
-            continue;
-        }
-
-        if (!first) {
-            ss << ";";
-        }
-
-        ss << "0x" << std::hex << std::setw(8) << std::setfill('0') << typeID << ":0x" << std::hex << std::setw(8)
-           << std::setfill('0') << refID;
-
-        first = false;
-    }
-
-    return ss.str();
+    return GetLocationSpecialRefsStringImpl(a_locationFormID);
 }
 
 int Papyrus::PostGameData(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
@@ -4819,8 +5175,68 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
      return 0;
 }
 
+
+ int Papyrus::sendNPCFast(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                         RE::Actor* actor) {
+
+    ScopedPapyrusLock lock("sendNPCFast");
+    
+    if (!actor) {
+        a_vm->TraceStack("actor is Empty", a_stackID);
+        logger::error("sendNPCFast: actor is Empty");
+        return -1;
+    }
+    int i = 1;
+    //for (const auto& actor : actorList) {
+        RE::Actor* actorPtr = actor ? actor->As<RE::Actor>() : nullptr;
+        
+        // Avoid sending too many actors at once to prevent potential performance issues
+        // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        if (i % 500 == 0) {
+            logger::info("sendNPCFast: Processed {} actors", i);
+        }
+
+        if (!actorPtr) {
+            logger::warn("sendNPCFast: Encountered a null actor in the list");
+            return 0;
+        }
+
+        if (actorPtr->GetFormType() != RE::FormType::ActorCharacter) {
+            logger::warn("sendNPCFast: Actor {} (0x{:08X}) is not an ActorCharacter, skipping",
+                         actorPtr->GetDisplayFullName(), actorPtr->GetFormID());
+            return 0;
+        }
+
+        if (actorPtr->IsDisabled()) {
+            logger::warn("sendNPCFast: Actor {} (0x{:08X}) is disabled, skipping", actorPtr->GetDisplayFullName(),
+                         actorPtr->GetFormID());
+            return 0;
+        }
+
+        
+        
+        if (actorPtr->GetActorBase() && actorPtr->GetActorBase()->IsUnique()) {
+            
+            addBasicProfileReal(actorPtr->GetHandle());
+                  
+            RE::TESObjectCELL* cell = actorPtr->GetParentCell();
+            RE::BGSLocation* loc = actorPtr->GetCurrentLocation();
+            if (loc)
+                sendLocationFastImpl(loc, "", cell);
+
+            return i;
+        }
+
+        return 0;
+    //}
+
+    
+}
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
+    a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
     a_vm->RegisterFunction("commandEndedForActor", "AIAgentFunctions", commandEndedForActor, false);
     a_vm->RegisterFunction("getHerikaFormId", "AIAgentFunctions", getHerikaFormId, false);
@@ -4941,5 +5357,9 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
 
     a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
     a_vm->RegisterFunction("updateRemoteInventory", "AIAgentFunctions", updateRemoteInventory, false);
+
+    a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);
+    a_vm->RegisterFunction("sendFactionFast", "AIAgentFunctions", sendFactionFast, false);
+    a_vm->RegisterFunction("sendNPCFast", "AIAgentFunctions", sendNPCFast, false);
     return true;
 }

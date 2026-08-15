@@ -1,8 +1,47 @@
 #pragma once
 
+#include "PlayerConversationRouter.h"
+
 extern bool sttBindedKey;
 
-int sendMessageReal(std::string msg, std::string type);
+struct LocationKeywordInfo {
+    RE::FormID formID;
+    std::string_view tag;
+};
+
+#ifndef LOCATION_KEYWORDS_H
+#define LOCATION_KEYWORDS_H
+
+constexpr std::array<LocationKeywordInfo, 36> kLocationKeywords{
+    {{0x000130EF, "Cave"},          {0x000130DB, "Dungeon"},       {0x0001CB87, "Inn"},
+     {0x00013166, "Town"},          {0x00013168, "City"},          {0x00016771, "Hold"},
+     {0x00018EF0, "Farm"},          {0x00018EF1, "Mine"},          {0x0001CD59, "Jail"},
+     {0x0001CD5B, "Ship"},          {0x0001CB85, "House"},         {0x0001CB86, "Store"},
+     {0x0001CD5A, "Guild"},         {0x0001CD56, "Temple"},        {0x0001CD57, "Castle"},
+     {0x000130F2, "Nordic Ruin"},   {0x000130DC, "Dwelling"},      {0x000130DF, "Bandit Camp"},
+     {0x000130E0, "Dragon Lair"},   {0x000130E4, "Falmer Hive"},   {0x000130F0, "Dwarven Ruin"},
+     {0x00013167, "Settlement"},    {0x00018EF2, "Lumber Mill"},   {0x00039793, "Habitation"},
+     {0x000130E2, "Draugr Crypt"},  {0x000130EB, "Vampire Lair"},  {0x000130EC, "Warlock Lair"},
+     {0x000130E7, "Military Fort"}, {0x000130E8, "Military Camp"}, {0x000130ED, "Werewolf Lair"},
+     {0x000130EE, "Forsworn Camp"}, {0x000130E5, "Giant Camp"},    {0x000130DE, "Animal Den"},
+     {0x0001CD58, "Cemetery"},      {0x0001929F, "Shipwreck"},     {0x000FC1A3, "Player House"}}};
+
+inline std::string_view GetLocationTag(RE::FormID formID) {
+    for (const auto& e : kLocationKeywords) {
+        if (e.formID == formID) {
+            return e.tag;
+        }
+    }
+
+    return {};
+}
+
+#endif  // LOCATION_KEYWORDS_H
+		
+int sendMessageReal(
+    std::string msg,
+    std::string type,
+    const PlayerConversationRoutingContext& routingContext = {});
 
 // Open mic helper functions
 void triggerOpenMicRecording();
@@ -33,6 +72,9 @@ namespace Papyrus {
 
     int sendMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                     std::string msg, std::string type);
+
+    int sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                           RE::StaticFunctionTag*, std::string msg, std::string type, RE::Actor* targetActor);
 
     int commandEnded(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                      std::string commmand);
@@ -123,6 +165,13 @@ namespace Papyrus {
     std::vector<RE::Actor*> findAllNearbyActors(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                                 RE::StaticFunctionTag*, bool onlyBgL);
 
+
+    int sendFactionFast(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                        RE::TESFaction* faction, std::string name);
+
+    int sendNPCFast(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                         RE::Actor* ActorList);
+
     RE::TESObjectREFR* findLocationsToSafeSpawn(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                                 RE::StaticFunctionTag*, float distance, bool restriction);
 
@@ -209,6 +258,10 @@ namespace Papyrus {
 
     int PostGameData(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                      RE::StaticFunctionTag*, std::string jsondata);
+
+
+    int sendLocationFast(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+                         RE::BGSLocation* a_loc, std::string tags, RE::TESObjectCELL *referenceCell);
 
     // Prisma UI History Panel functions
     int toggleHistoryPanel(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);

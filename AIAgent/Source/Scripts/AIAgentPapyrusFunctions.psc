@@ -343,17 +343,28 @@ Event OnKeyDown(int keyCode)
 	If !SafeProcess()
       Return
     EndIf
+	Actor selectedActor = Game.GetCurrentCrosshairRef() as Actor
 	AIAgentAIMind.resetCam()
     UIExtensions.OpenMenu("UITextEntryMenu")
     string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 	
 	If messageText != ""
-		if (Input.IsKeyPressed(29))	; Left Shift
-			Debug.Trace("[CHIM] Shift modifier, will cast intimacy bubble");
-			IntimacySpell.cast(Game.GetPlayer())
+		string inputType = ""
+		if (Input.IsKeyPressed(29))	; Left Ctrl
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
+			inputType = "inputtext_i"
+			SendLegacyTextMessage(messageText,inputType,selectedActor)
 			
+		elseif (Input.IsKeyPressed(42))	; Left Shift
+			
+			AIAgentAIMind.sendCustomLocation(messageText)
+			
+		else
+			;AIAgentFunctions.sendMessage(messageText,inputType)
+			SendLegacyTextMessage(messageText,inputType,selectedActor)
 		endif;
-		AIAgentFunctions.sendMessage(messageText,"")
+		
 		
 		
     EndIf
@@ -542,17 +553,28 @@ Function TriggerTextChatAction()
 		Return
 	EndIf
 
+	Actor selectedActor = Game.GetCurrentCrosshairRef() as Actor
 	AIAgentAIMind.resetCam()
 	UIExtensions.OpenMenu("UITextEntryMenu")
 	string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
 
 	If messageText != ""
-		if (Input.IsKeyPressed(29)) ; Left Shift
-			Debug.Trace("[CHIM] Shift modifier, will cast intimacy bubble")
-			IntimacySpell.cast(Game.GetPlayer())
+		string inputType = ""
+		if (Input.IsKeyPressed(29)) ; Left Ctrl
+			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
+			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
+			inputType = "inputtext_i"
 		endif
-		AIAgentFunctions.sendMessage(messageText,"")
+		SendLegacyTextMessage(messageText,inputType,selectedActor)
 	EndIf
+EndFunction
+
+Function SendLegacyTextMessage(String messageText, String inputType, Actor selectedActor)
+	if selectedActor != None
+		AIAgentFunctions.sendMessageToActor(messageText,inputType,selectedActor)
+	else
+		AIAgentFunctions.sendMessage(messageText,inputType)
+	endif
 EndFunction
 
 Function TriggerVoiceChatAction()
@@ -962,7 +984,9 @@ Bool Function SafeProcess(bool allowMenuMode = false)
 EndFunction
 
 Function RunToolsSendFactionLocationInfo() global
+	Debug.Trace("[CHIM] AUDIT sendAllLocations START");
 	sendAllLocations()
+	Debug.Trace("[CHIM] AUDIT sendAllLocations END");
 EndFunction
 
 int Function RunToolsSendAllVoiceSamples() global
@@ -1231,7 +1255,7 @@ Function OpenSettingsWheel()
 		_label[1] = "Fast LLM"
 		_label[2] = "Powerful LLM"
 		_label[3] = "Experimental LLM"
-		_label[4] = "Focus Chat"
+		_label[4] = "Compact Chat"
 		
 		UIExtensions.InitMenu("UIWheelMenu")
 		int j = 0
@@ -1261,25 +1285,23 @@ Function OpenSettingsWheel()
 EndFunction
 
 Function OpenModeWheel()
-	String[] _modes = new String[8]
+	String[] _modes = new String[7]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
-	_modes[3] = "SPAWN"
-	_modes[4] = "CHEATMODE"
-	_modes[5] = "AUTOCHAT"
-	_modes[6] = "INJECTION_LOG"
-	_modes[7] = "INJECTION_CHAT"
+	_modes[3] = "CHEATMODE"
+	_modes[4] = "AUTOCHAT"
+	_modes[5] = "INJECTION_LOG"
+	_modes[6] = "INJECTION_CHAT"
 	
-	String[] _label = new String[8]
+	String[] _label = new String[7]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
-	_label[3] = "Spawn NPC"
-	_label[4] = "Cheat Mode"
-	_label[5] = "Auto Chat"
-	_label[6] = "Inject Event"
-	_label[7] = "Inject & Chat"
+	_label[3] = "Cheat Mode"
+	_label[4] = "Auto Chat"
+	_label[5] = "Inject Event"
+	_label[6] = "Inject & Chat"
 		
 	int j=0
 	UIExtensions.InitMenu("UIWheelMenu")
@@ -1295,16 +1317,6 @@ Function OpenModeWheel()
 	_currentModeIndex = ret
 	StorageUtil.SetIntValue(None, "AIAgent_CurrentModeIndex", _currentModeIndex)
 	AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
-	
-	if (_currentModeIndex==1)
-		Debug.Trace("[CHIM] Enabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",200,200,200)
-		AIAgentFunctions.setConf("_max_distance_outside",200,200,200)
-	else
-		Debug.Trace("[CHIM] Disabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",mdi,mdi as int,mdi as string)
-		AIAgentFunctions.setConf("_max_distance_outside",mdo,mdo as int,mdo as string)
-	endif
 EndFunction
 
 Function OpenSoulgazeWheel()
@@ -1397,6 +1409,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 			destMarker = AIAgentFunctions.getLocationCenterMarker(curr,0); Will search for Location Center Marker.
 		endif
 		
+		
 		if (!destMarker)
 			Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor/getLocationCenterMarker: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 		elseif (destMarker.isDisabled())
@@ -1405,7 +1418,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 			if destMarker
 				String types = ""
 				if (tags == "")
-					Debug.Trace("[CHIM] Loading tags from caller: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+					Debug.Trace("[CHIM] Loading tags: "+DecToHex(curr.GetFormID())+","+curr.GetName())
 					; -------------------------------
 					;  CLASSIFY THIS LOCATION, no tags provided
 					; -------------------------------
@@ -1567,22 +1580,63 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				Location currParent2 = PO3_SKSEFunctions.GetParentLocation(currParent)
 				Faction factionOwner = None;
 				
+				ObjectReference locationCenterMarkerRef = AIAgentFunctions.getLocationCenterMarker(curr,0)
+				ObjectReference insideEntranceMarkerRef = AIAgentFunctions.getLocationCenterMarker(curr,1)
+				ObjectReference outsideEntranceMarkerRef = AIAgentFunctions.getLocationCenterMarker(curr,3)
+				ObjectReference mapMarkerRefType = AIAgentFunctions.getLocationCenterMarker(curr,4)
+				ObjectReference rawLocationMarker = AIAgentFunctions.getLocationMarkerFor(curr)
+				
 				Cell localCell = destMarker.getParentCell()
 				if (referenceCell)
 					localCell = referenceCell
 					Debug.Trace("[CHIM] SendLocation Using reference cell from caller: "+DecToHex(referenceCell.GetFormID())+","+referenceCell.GetName())
 				endif
-				int isInterior = 0 
-				if (localCell)
-					;AIAgentPlayerScript.sendCellInfo(localCell,curr,false)
-					factionOwner = localCell.GetFactionOwner()
-					if (localCell.isInterior())
-						isInterior = 1
+				
+				if (locationCenterMarkerRef.getParentCell())
+					localCell = locationCenterMarkerRef.getParentCell()
+					Debug.Trace("[CHIM] SendLocation Using reference cell from locationCenterMarkerRef: "+DecToHex(localCell.GetFormID())+","+localCell.GetName())
+				endif
+				
+				int flags = 0
+				
+				; insideEntranceMarkerRef (bits 0-1)
+				if (insideEntranceMarkerRef)
+					if (insideEntranceMarkerRef.IsInInterior())
+						flags += 1 ; 01
 					endif
+				else
+					flags += 2 ; 10
 				endif
-				if destMarker.isInInterior()
-					isInterior = 1
+
+				; locationCenterMarkerRef (bits 2-3)
+				if (locationCenterMarkerRef)
+					if (locationCenterMarkerRef.IsInInterior())
+						flags += 1 * 4 ; 01 << 2
+					endif
+				else
+					flags += 2 * 4 ; 10 << 2
 				endif
+
+				; rawLocationMarker (bits 4-5)
+				if (rawLocationMarker)
+					if (rawLocationMarker.IsInInterior())
+						flags += 1 * 16 ; 01 << 4
+					endif
+				else
+					flags += 2 * 16 ; 10 << 4
+				endif
+
+				; outsideEntranceMarkerRef (bits 6-7)
+				if (outsideEntranceMarkerRef)
+					if (outsideEntranceMarkerRef.IsInInterior())
+						flags += 1 * 64 ; 01 << 6
+					endif
+				else
+					flags += 2 * 64 ; 10 << 6
+				endif
+
+				int isInterior = flags
+				
 				string parName =""
 				string parName2 =""
 				if (currParent)
@@ -1600,11 +1654,44 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				if (curr.IsCleared())
 					isCleared="1";
 				endif;
+				
+				
+				
+				Worldspace cws= locationCenterMarkerRef.GetWorldSpace()
+				if (!cws)
+					cws= insideEntranceMarkerRef.GetWorldSpace()
+				endif
+				if (!cws)
+					cws= outsideEntranceMarkerRef.GetWorldSpace()
+				endif
+				if (!cws)
+					cws = mapMarkerRefType.GetWorldSpace()
+				endif
+				string worldspaceName=""
+			
+				if (cws)
+					worldspaceName = cws.GetName()
+				endif
+				;int doors= localCell.getNumRefs(29); Get doors
+				;if (doors > 0 )
+				;	Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", Cell has "+doors+" doors")
+				;	int ndoors = 0
+				;	while ndoors < doors
+				;		ObjectReference doorRef = localCell.GetNthRef(ndoors,29);
+				;		if (doorRef.isLocked())
+				;			Debug.Trace("[CHIM] SendLocation "+curr.GetName()+", has doors locked ")
+				;			isInterior=2
+				;		endif
+				;		
+				;		ndoors = ndoors +1
+				;	endwhile
+				;endif
+			
 				if (factionOwner)
 					Debug.Trace("[CHIM] SendLocation Sending Faction too: "+DecToHex(curr.GetFormID())+","+curr.GetName())
-					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"/"+DecToHex(factionOwner.GetFormId())+"/"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared+"/"+worldspaceName,"util_location_name")
 				else
-					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared,"util_location_name")
+					int result = AIAgentFunctions.logMessage(curr.GetName() + "/" + curr.GetFormID() + "/" + parName + "/" + parName2 + "/" + types+"/"+isInterior+"//"+destMarker.GetPositionX()+"/"+destMarker.GetPositionY()+"/"+specialRefs+"/"+isCleared+"/"+worldspaceName,"util_location_name")
 				endif
 				
 			endif
@@ -1612,203 +1699,6 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 	endif
 EndFunction
 
-Function sendAllLocations() global
-
-	sendAllfactions();
-	
-	; --- Load all location keywords we care about ---
-	Keyword isCave         = Game.GetForm(0x000130ef) as Keyword
-	Keyword isDungeon      = Game.GetForm(0x000130db) as Keyword
-	Keyword isInn          = Game.GetForm(0x0001cb87) as Keyword
-	Keyword isTown         = Game.GetForm(0x00013166) as Keyword
-	Keyword isCity         = Game.GetForm(0x00013168) as Keyword
-	Keyword isHold         = Game.GetForm(0x00016771) as Keyword
-	Keyword isFarm         = Game.GetForm(0x00018ef0) as Keyword
-	Keyword isMine         = Game.GetForm(0x00018ef1) as Keyword
-	Keyword isJail         = Game.GetForm(0x0001cd59) as Keyword
-	Keyword isShip         = Game.GetForm(0x0001cd5b) as Keyword
-	Keyword isHouse        = Game.GetForm(0x0001cb85) as Keyword
-	Keyword isStore        = Game.GetForm(0x0001cb86) as Keyword
-	Keyword isGuild        = Game.GetForm(0x0001cd5a) as Keyword
-	Keyword isTemple       = Game.GetForm(0x0001cd56) as Keyword
-	Keyword isCastle       = Game.GetForm(0x0001cd57) as Keyword
-	Keyword isNordicRuin   = Game.GetForm(0x000130f2) as Keyword
-	Keyword isDwelling     = Game.GetForm(0x000130dc) as Keyword
-	Keyword isBanditCamp   = Game.GetForm(0x000130df) as Keyword
-	Keyword isDragonLair   = Game.GetForm(0x000130e0) as Keyword
-	Keyword isFalmerHive   = Game.GetForm(0x000130e4) as Keyword
-	Keyword isDwarvenRuin  = Game.GetForm(0x000130f0) as Keyword
-	Keyword isSettlement   = Game.GetForm(0x00013167) as Keyword
-	Keyword isLumberMill   = Game.GetForm(0x00018ef2) as Keyword
-	Keyword isHabitation   = Game.GetForm(0x00039793) as Keyword
-	Keyword isDraugrCrypt  = Game.GetForm(0x000130e2) as Keyword
-	Keyword isVampireLair  = Game.GetForm(0x000130eb) as Keyword
-	Keyword isWarlockLair  = Game.GetForm(0x000130ec) as Keyword
-	Keyword isMilitaryFort = Game.GetForm(0x000130e7) as Keyword
-	Keyword isMilitaryCamp = Game.GetForm(0x000130e8) as Keyword
-	Keyword isWerewolfLair = Game.GetForm(0x000130ed) as Keyword
-	Keyword isForswornCamp = Game.GetForm(0x000130ee) as Keyword
-	Keyword isGiantCamp    = Game.GetForm(0x000130e5) as Keyword
-	Keyword isAnimalDen    = Game.GetForm(0x000130de) as Keyword
-	Keyword isCemetery     = Game.GetForm(0x0001cd58) as Keyword
-	Keyword isShipwreck    = Game.GetForm(0x0001929f) as Keyword
-	Keyword isPlayerHouse  = Game.GetForm(0x000fc1a3) as Keyword
-	; ---------------------------------------------------------------------------------------------
-
-
-	; --- Get all locations ---
-	Form[] allLocations = PO3_SKSEFunctions.GetAllForms(104)
-	Debug.Trace("[CHIM] Total locations: " + allLocations.Length)
-
-	int lengthA = allLocations.Length
-	int i = 0
-	int result = 0
-	
-	result = AIAgentFunctions.logMessage("__CLEAR_ALL__////","util_location_name"); Clear before insert
-	
-	while i < lengthA
-		Location curr = allLocations[i] as Location
-		
-		Debug.Trace("[CHIM] Location: "+DecToHex(curr.GetFormID())+","+curr.GetName())
-		
-		if curr
-			ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
-			if (!destMarker)
-				i = i + 1
-				Debug.Trace("[CHIM] Bypassing because no getWorldLocationMarkerFor: "+DecToHex(curr.GetFormID())+","+curr.GetName())
-			elseif (destMarker.isDisabled())
-				i = i + 1
-				Debug.Trace("[CHIM] Bypassing because world location marker is disabled: "+DecToHex(curr.GetFormID())+","+curr.GetName())
-
-			else
-				if destMarker
-					; -------------------------------
-					;  CLASSIFY THIS LOCATION
-					; -------------------------------
-					String types = ""
-
-					; Start checking all keywords (multiple allowed)
-					if curr.HasKeyword(isCity)
-						types += "City,"
-					endif
-					if curr.HasKeyword(isTown)
-						types += "Town,"
-					endif
-					if curr.HasKeyword(isHold)
-						types += "Hold,"
-					endif
-					if curr.HasKeyword(isInn)
-						types += "Inn,"
-					endif
-					if curr.HasKeyword(isStore)
-						types += "Store,"
-					endif
-					if curr.HasKeyword(isHouse)
-						types += "House,"
-					endif
-					if curr.HasKeyword(isPlayerHouse)
-						types += "Player House,"
-					endif
-					if curr.HasKeyword(isFarm)
-						types += "Farm,"
-					endif
-					if curr.HasKeyword(isMine)
-						types += "Mine,"
-					endif
-					if curr.HasKeyword(isJail)
-						types += "Jail,"
-					endif
-					if curr.HasKeyword(isTemple)
-						types += "Temple,"
-					endif
-					if curr.HasKeyword(isCastle)
-						types += "Castle,"
-					endif
-					if curr.HasKeyword(isGuild)
-						types += "Guild,"
-					endif
-					if curr.HasKeyword(isSettlement)
-						types += "Settlement,"
-					endif
-					if curr.HasKeyword(isHabitation)
-						types += "Habitation,"
-					endif
-					if curr.HasKeyword(isLumberMill)
-						types += "Lumber Mill,"
-					endif
-
-					; --- Dungeons & Wilderness ---
-					if curr.HasKeyword(isDungeon)
-						types += "Dungeon,"
-					endif
-					if curr.HasKeyword(isCave)
-						types += "Cave,"
-					endif
-					if curr.HasKeyword(isNordicRuin)
-						types += "Nordic Ruin,"
-					endif
-					if curr.HasKeyword(isDwarvenRuin)
-						types += "Dwarven Ruin,"
-					endif
-					if curr.HasKeyword(isDraugrCrypt)
-						types += "Draugr Crypt,"
-					endif
-					if curr.HasKeyword(isFalmerHive)
-						types += "Falmer Hive,"
-					endif
-					if curr.HasKeyword(isDragonLair)
-						types += "Dragon Lair,"
-					endif
-					if curr.HasKeyword(isVampireLair)
-						types += "Vampire Lair,"
-					endif
-					if curr.HasKeyword(isWarlockLair)
-						types += "Warlock Lair,"
-					endif
-					if curr.HasKeyword(isWerewolfLair)
-						types += "Werewolf Lair,"
-					endif
-					if curr.HasKeyword(isBanditCamp)
-						types += "Bandit Camp,"
-					endif
-					if curr.HasKeyword(isForswornCamp)
-						types += "Forsworn Camp,"
-					endif
-					if curr.HasKeyword(isGiantCamp)
-						types += "Giant Camp,"
-					endif
-					if curr.HasKeyword(isAnimalDen)
-						types += "Animal Den,"
-					endif
-					if curr.HasKeyword(isMilitaryFort)
-						types += "Military Fort,"
-					endif
-					if curr.HasKeyword(isMilitaryCamp)
-						types += "Military Camp,"
-					endif
-
-					; --- Misc ---
-					if curr.HasKeyword(isShip)
-						types += "Ship,"
-					endif
-					if curr.HasKeyword(isShipwreck)
-						types += "Shipwreck,"
-					endif
-					if curr.HasKeyword(isCemetery)
-						types += "Cemetery,"
-					endif
-
-					sendLocation(curr,types)
-				endif
-			endif
-		endif
-
-		i += 1
-	endwhile
-
-	sendAllNpcs();
-
-EndFunction
 
 ; Global wrapper function for spell access to Master Wheel
 ; Allows AIAgent-Spells submod to call Master Wheel without duplicating logic
@@ -1894,25 +1784,23 @@ Function OpenModeToggleWheel(float holdTime)
 		Return
 	EndIf
 	
-	String[] _modes = new String[8]
+	String[] _modes = new String[7]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
-	_modes[3] = "SPAWN"
-	_modes[4] = "CHEATMODE"
-	_modes[5] = "AUTOCHAT"
-	_modes[6] = "INJECTION_LOG"
-	_modes[7] = "INJECTION_CHAT"
+	_modes[3] = "CHEATMODE"
+	_modes[4] = "AUTOCHAT"
+	_modes[5] = "INJECTION_LOG"
+	_modes[6] = "INJECTION_CHAT"
 	
-	String[] _label = new String[8]
+	String[] _label = new String[7]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
-	_label[3] = "Spawn NPC"
-	_label[4] = "Cheat Mode"
-	_label[5] = "Auto Chat"
-	_label[6] = "Inject Event"
-	_label[7] = "Inject & Chat"
+	_label[3] = "Cheat Mode"
+	_label[4] = "Auto Chat"
+	_label[5] = "Inject Event"
+	_label[6] = "Inject & Chat"
 	
 	If (holdTime < 0.5) 
 		; Quick press - Open wheel menu
@@ -1946,16 +1834,6 @@ Function OpenModeToggleWheel(float holdTime)
 		Debug.Notification("[CHIM] Chat mode: "+currentMode)
 		AIAgentFunctions.logMessage("chim_mode@"+currentMode,"setconf")
 	endif
-	
-	if (_currentModeIndex == 1)
-		Debug.Trace("[CHIM] Enabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",200,200,200)
-		AIAgentFunctions.setConf("_max_distance_outside",200,200,200)
-	else
-		Debug.Trace("[CHIM] Disabling intimacy bubble effect: saving settings: "+mdi+","+mdo)
-		AIAgentFunctions.setConf("_max_distance_inside",mdi,mdi as int,mdi as string)
-		AIAgentFunctions.setConf("_max_distance_outside",mdo,mdo as int,mdo as string)
-	endif
 EndFunction
 
 ; Global wrapper for spell access to halt all nearby agents
@@ -1988,32 +1866,46 @@ EndFunction
 ;Send all factions names
 Function sendAllfactions() global
 
-	Form[] allLocations=PO3_SKSEFunctions.GetAllForms(11);Factinos
-	Debug.Trace("[CHIM] [FACTION] Total "+allLocations.Length);
+	Form[] allFactions=PO3_SKSEFunctions.GetAllForms(11);Factinos
+	;Faction[] allFactions=PO3_SKSEFunctions.GetAllForms(11) as Faction[];
+	Debug.Trace("[CHIM] [FACTION] Total "+allFactions.Length);
+	
+	
 	int retFnc = AIAgentFunctions.logMessage("__CLEAR_ALL__/","util_faction_name"); Clear before insert
-	int lengthA=allLocations.Length
+	
 	int i=0;
-	while i < lengthA
-		Faction afFaction=allLocations[i] as Faction
+	int done=0;
+	int lengthA=allFactions.Length
 		
-		if afFaction
-			string name = afFaction.GetName()
-			if (!name)
-				name = PO3_SKSEFunctions.GetFormEditorID(afFaction)
+	if (true)
+		
+		
+		while i < lengthA
+			if ( i % 500 ) == 0
+				ConsoleUtil.PrintMessage("  [CHIM] sendAllfactions: "+i+"/"+lengthA+ " sent, added: "+done)
 			endif
-			if (!name)
-				name = PO3_SKSEFunctions.GetDescription(afFaction)
+			Faction afFaction=allFactions[i] as Faction
+			
+			if afFaction
+				; this code runs slow, were gonna rely on faction_vanilla table for missing names
+				;string name = afFaction.GetName()
+				;if (!name)
+				;	name = PO3_SKSEFunctions.GetFormEditorID(afFaction)
+				;endif
+				;if (!name)
+				;	name = PO3_SKSEFunctions.GetDescription(afFaction)
+				;endif
+				;if (!name)
+				;	name = DecToHex(afFaction.GetFormId())
+				;endif
+				
+				done=done + AIAgentFunctions.sendFactionFast(afFaction,"");DLL will take care of name
 			endif
-			if (!name)
-				name = DecToHex(afFaction.GetFormId())
-			endif
-			ObjectReference cont=PO3_SKSEFunctions.GetVendorFactionContainer(afFaction)
-			string vendorRef=DecToHex(cont.GetFormId())
-			Debug.Trace("[CHIM] [FACTION] Adding faction "+name + " / "+DecToHex(afFaction.GetFormId()));
-			retFnc=AIAgentFunctions.logMessage(DecToHex(afFaction.GetFormId())+"/"+name+"/"+vendorRef,"util_faction_name")
-		endif
-		i=i+1
-	endwhile
+			i=i+1
+		endwhile
+	endif
+	ConsoleUtil.PrintMessage("  [CHIM] sendAllfactions: "+i+"/"+lengthA+ " sent, added: "+done)
+	retFnc = AIAgentFunctions.logMessage("__VANILLA_SYNC__/","util_faction_name"); Populate missing names via vanilla_faction
 	return
 EndFunction
 
@@ -2023,26 +1915,102 @@ Function sendAllNpcs() global
 	Actor[] allNpcs=PO3_SKSEFunctions.GetActorsByProcessingLevel(3);Actors not in high process
 	Debug.Trace("[CHIM] [ACTORS] Total "+allNpcs.Length);
 	
-	int lengthA=allNpcs.Length
+	;int done=AIAgentFunctions.sendNPCFast(allNpcs);
+	
+	Debug.Trace("[CHIM] [ACTORS] End, sent actors: "+done);
+	int lengthAll = allNpcs.Length
 	int i=0;
-	while i < lengthA
-		Actor akActor=allNpcs[i] as Actor
-		if (!akActor.isEnabled())
-			Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
-			
-		elseif (akActor.GetActorBase().isUnique())
-			Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
-			int retFnc=AIAgentFunctions.addBasicProfile(akActor)
-			; Also, send location where this NPC is located at.
-			Cell currCell = akActor.GetParentCell()
-			Location currLoc = akActor.GetCurrentLocation()
-			
-			AIAgentPapyrusFunctions.sendLocation(currLoc,"",currCell);
-			
+	int j = 0;
+	int done = 0
+	while i < lengthAll
+		if ( i % 500 ) == 0
+			ConsoleUtil.PrintMessage("  [CHIM] sendAllNpcs: "+i+"/"+lengthAll+ " sent, added:"+done)
 		endif
 		
-		i=i+1
+		done = done + AIAgentFunctions.sendNPCFast(allNpcs[i]);
+		i = i +1 ;
+	endWhile
+	ConsoleUtil.PrintMessage("  [CHIM] sendAllNpcs: "+i+"/"+lengthAll+ " sent, added:"+done)
+	
+	; old implementation
+	if (false)
+		int lengthA=allNpcs.Length
+		i=0;
+		done = 0
+		while i < lengthA
+			if ( i % 500 ) == 0
+				ConsoleUtil.PrintMessage("  [CHIM] sendAllNpcs: "+i+"/"+lengthA+ " sent")
+			endif
+			Actor akActor=allNpcs[i] as Actor
+			if (akActor && akActor.GetType() == 62 )
+				;Debug.Trace("[CHIM] [ACTORS] Checking "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+				if (!akActor.isEnabled())
+					;Debug.Trace("[CHIM] [ACTORS] Bypassing "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+					
+				elseif (akActor.GetActorBase())
+					if (akActor.GetActorBase().isUnique())
+						;Debug.Trace("[CHIM] [ACTORS] Adding basic info for "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+						int retFnc=AIAgentFunctions.addBasicProfile(akActor)
+						done = done + 1
+						; Also, send location where this NPC is located at.
+						Cell currCell = akActor.GetParentCell()
+						Location currLoc = akActor.GetCurrentLocation()
+						
+						AIAgentFunctions.sendLocationFast(currLoc,"",currCell);
+					else
+						;Debug.Trace("[CHIM] [ACTORS] Bypassing (not unique)  "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+					endif
+				else 
+					;Debug.Trace("[CHIM] [ACTORS] Bypassing (not actor base)  "+akActor.GetDisplayName() + " / "+DecToHex(akActor.GetFormId()));
+				endif
+			endif
+			
+			i=i+1
+			
+		endwhile
+		ConsoleUtil.PrintMessage("  [CHIM] sendAllNpcs: "+i+"/"+lengthA+ " sent")
+		return
+	endif
+EndFunction
+
+Function sendAllLocations() global
+
+	float startTime=Utility.GetCurrentRealTime();
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: START")
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 1/3 sending factions")
+	sendAllfactions();
+	
+	
+	if (true)
+
+		ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 2/3 sending main locations")
+		; --- Get all locations ---
+		Form[] allLocations = PO3_SKSEFunctions.GetAllForms(104)
+		Debug.Trace("[CHIM] Total locations: " + allLocations.Length)
+
+		int i = 0
+		int result = 0
+		int done =0 
+		int lengthA = allLocations.Length
+		result = AIAgentFunctions.logMessage("__CLEAR_ALL__////","util_location_name"); Clear before insert
 		
-	endwhile
-	return
+		while i < lengthA
+			Location curr = allLocations[i] as Location
+			if ( i % 500 ) == 0
+				ConsoleUtil.PrintMessage("  [CHIM] sendAllLocations: "+i+"/"+lengthA+ " sent, added:"+done)
+			endif
+			;Debug.Trace("[CHIM] Location: "+DecToHex(curr.GetFormID())+","+curr.GetName())
+
+			done = done + AIAgentFunctions.sendLocationFast(curr,"",None);
+			i = i + 1
+			
+		endwhile
+		ConsoleUtil.PrintMessage("  [CHIM] sendAllLocations: "+i+"/"+lengthA+ " sent, added:"+done)
+	endif
+	
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: 3/3 sending unique NPCs and its location")	
+	sendAllNpcs();
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: END")
+	float endTime=Utility.GetCurrentRealTime();
+	ConsoleUtil.PrintMessage("[CHIM] sendAllLocations: "+(endTime - startTime)+" secs");
 EndFunction

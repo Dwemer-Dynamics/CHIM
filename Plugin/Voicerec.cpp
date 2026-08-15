@@ -228,39 +228,26 @@ bool containsWord(const std::string& msg, const std::string& word) {
     return upperMsg.find(upperWord) != std::string::npos;
 }
 
-std::string makeSTT(std::string wavData) {
-    if (wavData.empty()) {
-        logger::error("makeSTT received empty wav data");
-        return "";
-    }
-
-    if (!Conf::getInstance().isOk()) {
-        logger::error("AIAgent.ini file not present or invalid");
-        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
-        return "";
-    }
-
-    logger::info("Sending audio to server (size: {} bytes)", wavData.size());
-    HTTPUploader &uploader = HTTPUploader::getInstance();
-
-    std::string buffer = uploader.UploadFile(wavData);
-
-    if (buffer.empty()) {
-        logger::error("No response received from server, empty audio or STT service error");
-        return "";
-    }
-
-    logger::info("Response received from STT service (size: {} bytes)", buffer.size());
-
+// Processes a completed transcript on Skyrim's game thread before starting the asynchronous LLM request.
+static void ProcessSTTResponseOnGameThread(std::string buffer) {
     ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
 
-    auto player = RE::PlayerCharacter::GetSingleton();
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        logger::error("Cannot process STT response because the player is unavailable");
+        return;
+    }
     logger::debug("Processing response and gathering context information...");
     
     auto result = InspectLocations(player->AsReference());
 
     char timeDateString[200];
-    RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, true);
+    auto* calendar = RE::Calendar::GetSingleton();
+    if (!calendar) {
+        logger::error("Cannot process STT response because the game calendar is unavailable");
+        return;
+    }
+    calendar->GetTimeDateString(timeDateString, 200, true);
 
     HTTPManager::log(std::format("infoloc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                  "(Context location: " + std::string(GetPlayerLocation()) + ", Buildings to go:" +
@@ -326,16 +313,23 @@ std::string makeSTT(std::string wavData) {
                 "AIAgentAIMind", "EquipSpellOnPlayer", args, callback);
 
         }
-        return "";
+        return;
     }
     
-     HTTPManager::stream(std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
-                                    RE::PlayerCharacter::GetSingleton()->GetName(), buffer));
+     PlayerConversationRoutingContext routingContext{};
+     routingContext.source = PlayerConversationInputSource::Voice;
+     const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
+     routingContext.mode = PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
+     routingContext.narratorMode = currentConversationMode == "NARRATOR";
+     HTTPManager::streamPlayer(
+         std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
+                     player->GetName(), buffer),
+         routingContext);
      SpeakManager::getInstance().deleteQueue();
 
      AIAgentManager& aiam = AIAgentManager::getInstance();
      json sData;
-     sData["speaker"] = RE::PlayerCharacter::GetSingleton()->GetName();
+     sData["speaker"] = player->GetName();
      sData["location"] = GetPlayerLocation();
      sData["speech"] = buffer;
      sData["listener"] = "#HERIKA_NPC1#";
@@ -347,10 +341,36 @@ std::string makeSTT(std::string wavData) {
     
     auto originalName = aiam.getPlayerName();
     if (originalName == "Prisoner") {
-        originalName = RE::PlayerCharacter::GetSingleton()->GetName();
+        originalName = player->GetName();
         aiam.setPlayerName(originalName);
     }
-    RE::PlayerCharacter::GetSingleton()->SetDisplayName(originalName.c_str(), true);
+    player->SetDisplayName(originalName.c_str(), true);
+}
+
+std::string makeSTT(std::string wavData) {
+    if (wavData.empty()) {
+        logger::error("makeSTT received empty wav data");
+        return "";
+    }
+
+    if (!Conf::getInstance().isOk()) {
+        logger::error("AIAgent.ini file not present or invalid");
+        RE::DebugNotification("[CHIM] AIAgent.ini is missing or invalid.");
+        return "";
+    }
+
+    logger::info("Sending audio to server (size: {} bytes)", wavData.size());
+    HTTPUploader &uploader = HTTPUploader::getInstance();
+
+    std::string buffer = uploader.UploadFile(wavData);
+
+    if (buffer.empty()) {
+        logger::error("No response received from server, empty audio or STT service error");
+        return "";
+    }
+
+    logger::info("Response received from STT service (size: {} bytes)", buffer.size());
+    SKSE::GetTaskInterface()->AddTask([buffer]() { ProcessSTTResponseOnGameThread(buffer); });
 
     return buffer;
 }

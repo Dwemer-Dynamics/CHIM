@@ -22,6 +22,7 @@
 #include "ThreadPool.h"
 
 #include "Commands.h"
+#include "DynamicDiaryBook.h"
 #include "Globals.h"
 #include "Conf.h"
 #include "Misc.h"
@@ -44,14 +45,21 @@
 #include "AudioManager.h"
 #include "md5.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "SpatialAwareness.h"
 #include "SpatialSnapshotManager.h"
 #include "VRItemAwareness.h"
+#include "ServerPluginSync.h"
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.1.4"
-#define PLUGIN_RELEASE_DATE "2026-07-15"
+#define PLUGIN_VERSION "3.2.4"
+#define PLUGIN_RELEASE_DATE "2026-08-13"
+
+const char* GetPluginVersion()
+{
+    return PLUGIN_VERSION;
+}
 
 static void AddCachedSpeechAudience(json& speechPayload, const std::string& reason);
 
@@ -1536,8 +1544,9 @@ void ProcedureListenToScene() {
             // AI AGent chat
             auto localactor = agent->getActorByFormId();
             if (localactor) {
-                if (localactor->GetFormID() == actor->GetFormID() && s.pad04 == 0xabcd) {
-                    logger::info("[ProcedureListenToScene] Skipped. AI dialogue (has mark 0xabcd) ,actor:{},text:{}", localactor->GetDisplayFullName(),
+                if (localactor->GetFormID() == actor->GetFormID() &&
+                    (s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), s.subtitle.c_str()))) {
+                    logger::info("[ProcedureListenToScene] Skipped recognized AI dialogue, actor:{},text:{}", localactor->GetDisplayFullName(),
                         s.subtitle);
                     skipThisSubtitle = true;
                     break;
@@ -1615,7 +1624,8 @@ void MonitorAllSubtitlesForChatbox() {
         
         std::string subtitle(s.subtitle);
         if (subtitle.empty()) continue;
-        const bool aiGeneratedSubtitle = s.pad04 == 0xabcd;
+        const bool aiGeneratedSubtitle =
+            s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), subtitle);
         const std::string source = aiGeneratedSubtitle ? "llm" : "subtitle";
         
         // Create unique key to prevent duplicate pushes
@@ -2156,6 +2166,7 @@ private:
         auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
+        auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
         std::size_t agentMaintenanceCursor = 0;
         int consecutiveErrors = 0;
         
@@ -2326,6 +2337,7 @@ private:
 
                     if (!newResponse.text.empty()) {
                         ScriptLine l = ScriptLine::parse(newResponse.text, newResponse.actor.c_str());
+                        l.rechatGenerated = newResponse.rechatGenerated;
 
                         if (IsPlayerActorName(l.actor)) {  // Player has talk. Remove NPC speech.
                             SpeakManager::getInstance().deleteQueue();
@@ -2479,10 +2491,14 @@ private:
                                 auto selectedActor = randomActor->getActor();
                                 randomActor->incBoredEventsFired();
                                 if (!SpeakManager::getInstance().hasItems() && selectedActor) {
-                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActor->GetDisplayFullName());
-                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor]() {
-                                        HTTPManager::stream(std::format("bored|{}|{}|{}", getCurrentTimeMillis(),
-                                                                        GetGameTimeStamp(), GetPlayerLocation()),
+                                    const char* displayName = selectedActor->GetDisplayFullName();
+                                    const std::string selectedActorName = displayName ? displayName : "";
+                                    logger::info("[BORED_TIMER] Event sent to {}", selectedActorName);
+                                    ThreadPool::getInstance().enqueue("BoredEvent", [selectedActor, selectedActorName]() {
+                                        SpeakManager::getInstance().startRechatChainForAutonomousEvent();
+                                        HTTPManager::stream(std::format("bored|{}|{}|{}|{}", getCurrentTimeMillis(),
+                                                                        GetGameTimeStamp(), GetPlayerLocation(),
+                                                                        selectedActorName),
                                                             selectedActor);
                                     });
                                 } else {
@@ -2493,9 +2509,12 @@ private:
                             }
                         }
                     } else if (avoidBored) {
-                         logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})", 
-                                      player->IsInCombat(), player->IsAttacking(), player->IsSneaking(), 
-                                      CheckScene(player->GetCurrentScene() ), playerInDialog); 
+                        if (now - lastBoredBusyLogAt >= std::chrono::seconds(30)) {
+                            lastBoredBusyLogAt = now;
+                            logger::debug("[BORED_TIMER] Skipped - player busy (combat:{} attack:{} sneak:{} scene:{} dialogue:{})",
+                                          player->IsInCombat(), player->IsAttacking(), player->IsSneaking(),
+                                          CheckScene(player->GetCurrentScene()), playerInDialog);
+                        }
                     }
 
                     // DYNAMIC PROFILE TIMER LOGIC
@@ -3697,7 +3716,8 @@ namespace ProcessorMenu {
             } else if (event->menuName == RE::BookMenu::MENU_NAME) {
                 if (event->opening) {
                     ;
-
+                } else {
+                    DynamicDiaryBook::OnBookMenuClosed();
                 }
             } else if (event->menuName == RE::BarterMenu::MENU_NAME) {
                 if (event->opening) {
@@ -6010,6 +6030,7 @@ struct InventoryItemSnapshot
     int count = 0;
     json keywords = json::array();
     std::string hashEntry;
+    int gold = 0;
 };
 
 struct ModdedEquipmentSlot
@@ -6557,7 +6578,8 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         // Skip items with missing or invalid names
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
-            inventoryItems.push_back({itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump()});
+            inventoryItems.push_back(
+                {itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump(), boundObject->GetGoldValue()});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6602,7 +6624,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         inventoryDataJson["items"].push_back({{"name", item.name},
                                               {"baseid", item.baseid},
                                               {"count", item.count},
-                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}});
+                                              {"keywords", item.keywords.is_array() ? item.keywords : json::array()}, 
+                                              {"goldvalue", item.gold}
+            });
     }
 
     if (synchronous) {
@@ -7832,6 +7856,7 @@ OnLoadedGame {
         // Detect and upload CSV import data files on first load (only once per session)
         if (!importDataDetectionDone) {
             DetectAndUploadImportDataFiles();
+            ScheduleServerPluginSync();
             importDataDetectionDone = true;
         }
 
@@ -8177,6 +8202,45 @@ EventHandlers {
         if (!pluginInited) {
             logger::trace("[TESCellFullyLoadedEvent] Cell loaded event bypassed");
             return;
+        }
+
+        auto* transitionPlayer = RE::PlayerCharacter::GetSingleton();
+        auto* playerCell = transitionPlayer ? transitionPlayer->GetParentCell() : nullptr;
+        if (!playerCell || !playerCell->IsAttached()) {
+            logger::trace("[TESCellFullyLoadedEvent] Player cell unavailable; skipping transition handling");
+        } else {
+            static RE::FormID staticLastPlayerCellFormId = 0;
+            const RE::FormID currentPlayerCellFormId = playerCell->GetFormID();
+            if (staticLastPlayerCellFormId == 0) {
+                staticLastPlayerCellFormId = currentPlayerCellFormId;
+            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId) {
+                const RE::FormID previousPlayerCellFormId = staticLastPlayerCellFormId;
+                staticLastPlayerCellFormId = currentPlayerCellFormId;
+
+                logger::info("[RECHAT_CELL_CANCEL] Player cell changed {:08X} -> {:08X}; cancelling autonomous dialogue",
+                             previousPlayerCellFormId, currentPlayerCellFormId);
+
+                VRItemAwareness::CancelPendingHandoff("player changed cells");
+
+                SpatialAwareness::InvalidateCache();
+                SpatialSnapshotManager::InvalidateForEnvironmentChange(std::chrono::milliseconds(2000));
+                ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
+
+                SpeakManager& speakManager = SpeakManager::getInstance();
+                speakManager.abortPendingUtterances("cell_change");
+                speakManager.cancelRechatChain();
+                speakManager.deleteQueue();
+                if (speakManager.getProcessing()) {
+                    speakManager.abortPlay(true);
+                    AudioManagerController::GetInstance().Stop();
+                }
+                speakManager.stopRechatForNseconds(3);
+
+                SPGResponse::getInstance().clearAllQueues();
+                SPGResponse::getInstance().markUnFinished(false);
+                BackGroundDialogueQueue.clear();
+                AudioFilesBufferManager::clear();
+            }
         }
 
         // Cell streaming can fire in bursts. Keep broad context scans out of
@@ -8610,7 +8674,8 @@ EventHandlers {
                     RE::TESForm* realObject = RE::TESForm::LookupByID(objectPointer->GetFormID());
                     std::string name(activated2->GetName());
                     if (realObject) {
-                        if (name == "Generic Note") {
+                        if (name == "Generic Note" &&
+                            !DynamicDiaryBook::IsPhysicalDiaryBook(activated2->As<RE::TESObjectBOOK>())) {
                             // AIAgent faction. is an ethereal note
                             std::string hashName = md5low(trim(activatedName), false);
                             std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName + ".png";
@@ -9174,9 +9239,15 @@ EventHandlers {
     });
 
     On<RE::TESTopicInfoEvent>([](const RE::TESTopicInfoEvent* event) {
+        if (!event) {
+            return;
+        }
 
         auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
-        RE::TESTopicInfo* source = topicForm ? topicForm->As<RE::TESTopicInfo>() : nullptr;
+        RE::TESTopicInfo* source =
+            topicForm && topicForm->GetFormType() == RE::FormType::Info
+                ? static_cast<RE::TESTopicInfo*>(topicForm)
+                : nullptr;
         
         if (source) {
             //logger::info("TESTopicInfoEvent {} {}", source->GetFormID(),event->topicInfoID);
@@ -9185,20 +9256,25 @@ EventHandlers {
         const auto* tm = RE::MenuTopicManager::GetSingleton();
         // Check if im involved
 
-        auto lastSpeaker = tm->speaker.get();
+        auto lastSpeaker = tm ? tm->speaker.get() : nullptr;
+        auto* topicActor = event->speaker;
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
          //if (event->speaker) {
-        if (event->unk04 && event->flag) {
+        if (topicActor && event->flag) {
             auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
             // DISABLED
             if (cameraObject && false ) {   // Will do the audio search in the other condition branch
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
-                    auto topicActor = reinterpret_cast<RE::Actor*>(event->unk04);
                     if (targetActor == topicActor) {
-                        auto debugMe = source->GetDialogueData(reinterpret_cast<RE::Actor*>(event->unk04));
+                        if (!source) {
+                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoID,
+                                         topicActor->GetDisplayFullName());
+                            return;
+                        }
+                        auto debugMe = source->GetDialogueData(topicActor);
                         logger::info("Trying to recover audio files...");
                         
                         if (debugMe.responses.empty()) {
@@ -9239,7 +9315,6 @@ EventHandlers {
                     }
                 }
             } else {
-                auto topicActor = reinterpret_cast<RE::Actor*>(event->unk04);
                 if (topicActor && false) {  // Not doing anything useful here
                     auto player = RE::PlayerCharacter::GetSingleton();
                     float minDistance = MIN_DISTANCE;
@@ -9299,8 +9374,7 @@ EventHandlers {
                 } else {
                 }
             }
-        } else  if (event->unk04 && !event->flag) {
-            auto topicActor = reinterpret_cast<RE::Actor*>(event->unk04);
+        } else  if (topicActor && !event->flag) {
             if (topicActor) {
                 std::string actorName(topicActor->GetDisplayFullName());
                 auto agentPtr = aiam.getAgentByName(actorName);
@@ -9331,13 +9405,12 @@ EventHandlers {
                 if (cameraObject) {
                     if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                         auto targetActor = cameraObject.get()->As<RE::Actor>();
-                        auto topicActor = reinterpret_cast<RE::Actor*>(event->unk04);
                         if (targetActor == topicActor) {
                             auto existingAgent = aiam.getAgentByName(targetActor->GetDisplayFullName());
                             if (existingAgent) {
                                 // Agent already in framework - check if we need to capture voice sample
-                                if (existingAgent->getNeedsVoiceSample()) {
-                                    auto debugMe = source->GetDialogueData(reinterpret_cast<RE::Actor*>(event->unk04));
+                                if (existingAgent->getNeedsVoiceSample() && source) {
+                                    auto debugMe = source->GetDialogueData(topicActor);
                                     if (!debugMe.responses.empty()) {
                                         auto response = debugMe.responses.front();
                                         if (response) {
@@ -9376,36 +9449,36 @@ EventHandlers {
                                             }
 
                                             if (!finalAudioPath.empty()) {
-                                                RE::BSResourceNiBinaryStream stream(finalAudioPath);
-                                                if (stream.good()) {
-                                                    auto size = stream.stream->totalSize;
-                                                    auto buffer = std::make_unique<char[]>(size);
-                                                    stream.read(buffer.get(), size);
-                                                    
-                                                    std::string finalData(buffer.get(), size);
-                                                    if (size > 0) {
-                                                        logger::info("[VOICE] Deferred voice sample captured for {} from dialogue: {}", 
-                                                                    existingAgent->getActorName(), finalAudioPath);
-                                                        
-                                                        HTTPUploader& uploader = HTTPUploader::getInstance();
-                                                        uploader.UploadVoiceSampleWithText(
-                                                            finalData, existingAgent->getActorName(), finalAudioPath,textSample);
-                                                        
-                                                        existingAgent->setNeedsVoiceSample(false);
-                                                        existingAgent->setVoiceSamplePath(finalAudioPath);
-                                                        
-                                                        // Also add to buffer for future use
-                                                        AudioFilesBufferManager::addAudioFile(targetActor, finalAudioPath, 
-                                                                                            strlen(textSample.c_str()));
-                                                    }
+                                                std::string finalData;
+                                                std::string readFailure;
+                                                if (ResourceFileReader::Read(finalAudioPath, finalData, readFailure)) {
+                                                    logger::info(
+                                                        "[VOICE] Deferred voice sample captured for {} from dialogue: {}",
+                                                        existingAgent->getActorName(), finalAudioPath);
+
+                                                    HTTPUploader& uploader = HTTPUploader::getInstance();
+                                                    uploader.UploadVoiceSampleWithText(
+                                                        finalData, existingAgent->getActorName(), finalAudioPath,
+                                                        textSample);
+
+                                                    existingAgent->setNeedsVoiceSample(false);
+                                                    existingAgent->setVoiceSamplePath(finalAudioPath);
+
+                                                    // Also add to buffer for future use
+                                                    AudioFilesBufferManager::addAudioFile(targetActor, finalAudioPath,
+                                                                                          textSample.size());
+                                                } else {
+                                                    logger::warn("[VOICE] Skipping unreadable dialogue sample for {} from {} (topic {:08X}): {}",
+                                                                 existingAgent->getActorName(), finalAudioPath,
+                                                                 event->topicInfoID, readFailure);
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            } else {
+                            } else if (source) {
                                 // Not in framework - capture audio for potential future use
-                                auto debugMe = source->GetDialogueData(reinterpret_cast<RE::Actor*>(event->unk04));
+                                auto debugMe = source->GetDialogueData(topicActor);
                                 logger::info("Trying to recover audio files...");
                                 if (debugMe.responses.empty()) {
                                     logger::info("No responses found in dialogue data");
@@ -9457,7 +9530,7 @@ EventHandlers {
         // Find EditorID for voiceline
         
 
-        if (!tm || !tm->currentTopicInfo) {
+        if (!tm || !tm->currentTopicInfo || !lastSpeaker) {
             ProcedureListenToScene();
             MonitorAllSubtitlesForChatbox();  // Monitor all subtitles for chatbox
         } else {
@@ -9553,14 +9626,23 @@ EventHandlers {
 
                         for (auto it = responses.begin(); it != responses.end(); ++it) {
                             RE::DialogueResponse* response = *it;
-                            fullResponse.append(response->text);
-                            BackGroundDialogueQueue.push_back(std::string(lastSpeaker->GetDisplayFullName()).append(response->text));
+                            if (!response) {
+                                logger::warn("[VOICE] Dialogue response was null for {} (topic {:08X})",
+                                             lastSpeaker->GetDisplayFullName(), event->topicInfoID);
+                                continue;
+                            }
+
+                            const std::string responseText(response->text.c_str() ? response->text.c_str() : "");
+                            const std::string responseVoice(response->voice.c_str() ? response->voice.c_str() : "");
+                            fullResponse.append(responseText);
+                            BackGroundDialogueQueue.push_back(
+                                std::string(lastSpeaker->GetDisplayFullName()).append(responseText));
                             if (!audioPaths.empty())
                                 audioPaths.append(",");
-                            audioPaths.append(response->voice);
+                            audioPaths.append(responseVoice);
 
 
-                            std::string audioFileDetected(response->voice);
+                            std::string audioFileDetected(responseVoice);
 
                             replaceAll(audioFileDetected, "Data\\", "");
 
@@ -9568,22 +9650,22 @@ EventHandlers {
                             RE::BSResourceNiBinaryStream finaudioFileDetected(audioFileDetected);
                             if (finaudioFileDetected.good()) {
                                 AudioFilesBufferManager::addAudioFile(lastSpeaker->As<RE::Actor>(), audioFileDetected,
-                                                                      strlen(response->text.c_str()));
+                                                                      responseText.size());
                             }
 
                             replaceAll(audioFileDetected, ".fuz", ".xwm");
                             RE::BSResourceNiBinaryStream finaudioFileDetected2(audioFileDetected);
                             if (finaudioFileDetected2.good()) {
                                 AudioFilesBufferManager::addAudioFile(lastSpeaker->As<RE::Actor>(), audioFileDetected,
-                                                                      strlen(response->text.c_str()));
+                                                                      responseText.size());
                             }
 
                             //logger::info("Added audiofile for {} lenth:{}, queue size: {}", lastSpeaker->As<RE::Actor>()->GetDisplayFullName(), strlen(response->text.c_str()),AudioFilesBufferManager::audioFilesBuffer.size());
 
                             // Check if this speaker is an AI agent that needs a voice sample
                             auto speakerAgent = aiam.getAgentByName(lastSpeaker->GetDisplayFullName());
-                            if (speakerAgent && speakerAgent->getNeedsVoiceSample()) {
-                                std::string voicePath(response->voice);
+                            if (speakerAgent && speakerAgent->getNeedsVoiceSample() && !responseVoice.empty()) {
+                                std::string voicePath(responseVoice);
                                 replaceAll(voicePath, "Data\\", "");
 
                                 // Try to find a valid audio file format
@@ -9609,23 +9691,23 @@ EventHandlers {
                                 }
 
                                 if (!finalPath.empty()) {
-                                    RE::BSResourceNiBinaryStream stream(finalPath);
-                                    if (stream.good()) {
-                                        auto size = stream.stream->totalSize;
-                                        auto buffer = std::make_unique<char[]>(size);
-                                        stream.read(buffer.get(), size);
+                                    std::string finalData;
+                                    std::string readFailure;
+                                    if (ResourceFileReader::Read(finalPath, finalData, readFailure)) {
+                                        logger::info(
+                                            "[VOICE] Deferred voice sample captured for {} from dialogue menu: {}",
+                                            speakerAgent->getActorName(), finalPath);
 
-                                        std::string finalData(buffer.get(), size);
-                                        if (size > 0) {
-                                            logger::info("[VOICE] Deferred voice sample captured for {} from dialogue menu: {}",
-                                                         speakerAgent->getActorName(), finalPath);
+                                        HTTPUploader& uploader = HTTPUploader::getInstance();
+                                        uploader.UploadVoiceSampleWithText(finalData, speakerAgent->getActorName(),
+                                                                           finalPath, responseText);
 
-                                            HTTPUploader& uploader = HTTPUploader::getInstance();
-                                            uploader.UploadVoiceSample(finalData, speakerAgent->getActorName(), finalPath);
-
-                                            speakerAgent->setNeedsVoiceSample(false);
-                                            speakerAgent->setVoiceSamplePath(finalPath);
-                                        }
+                                        speakerAgent->setNeedsVoiceSample(false);
+                                        speakerAgent->setVoiceSamplePath(finalPath);
+                                    } else {
+                                        logger::warn("[VOICE] Skipping unreadable dialogue-menu sample for {} from {} (topic {:08X}): {}",
+                                                     speakerAgent->getActorName(), finalPath, event->topicInfoID,
+                                                     readFailure);
                                     }
                                 }
                             }
@@ -9753,7 +9835,8 @@ EventHandlers {
                 RE::TESForm* realObject = RE::TESForm::LookupByID(event->originalRefr);
                 std::string name(object->GetName());
                 if (realObject) {
-                    if (name=="Generic Note") {
+                    if (name == "Generic Note" &&
+                        !DynamicDiaryBook::IsPhysicalDiaryBook(object->As<RE::TESObjectBOOK>())) {
                         // AIAgent faction. is an ethereal note
                         std::string hashName = md5low(trim(realObject->AsReference()->GetDisplayFullName()),false);
                         std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName + ".png";
@@ -9860,7 +9943,10 @@ EventHandlers {
             auto bookDescription = bookRef->As<RE::TESDescription>();
             std::string localName(bookForm->GetName());
 
-            if (localName=="Generic Note") {
+            if (DynamicDiaryBook::QueueReadableBook(
+                    bookRefPtr->AsReference(), bookRef->As<RE::TESObjectBOOK>(), fullName)) {
+                bypass = true;
+            } else if (localName=="Generic Note") {
                 // AIAgent faction. is an ethereal note
                 std::string hashName=md5low(trim(event->book.get()->GetDisplayFullName()),false);
                 std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName+".png";
@@ -10607,7 +10693,8 @@ EventHandlers {
              if (!aiam.getRenamedNpcNameByFormId(actor->GetFormID()).empty()  ) {
                  bool is3DLoaded = actor->Is3DLoaded();
                  bool inHigh = actor->GetActorRuntimeData().currentProcess->InHighProcess();
-                 if (!is3DLoaded || !inHigh) {
+                 if (!is3DLoaded || !inHigh ||
+                     true) {  // Let server decide if we must attend to this event or not, we will send it anyway
                      auto package = RE::TESForm::LookupByID(event->package);
                      auto package2 = static_cast<RE::TESPackage*>(RE::TESForm::LookupByID(event->package));
                      auto location = actor->GetCurrentLocation();

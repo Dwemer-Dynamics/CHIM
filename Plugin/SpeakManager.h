@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <cstdarg>
 #include <cstddef>
+#include <atomic>
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -12,6 +15,7 @@
 #include <thread>
 #include <vector>
 #include "Globals.h"
+#include "HeadVoiceVolumeUtils.h"
 
 // Track last event type for narration detection
 extern std::string lastEventType;
@@ -25,6 +29,7 @@ struct ScriptLine {
 	std::string phonetic;// text in the Latin alphabet to use with lip sync when using non-Latin languages
     std::string rechatTargetHint;
     std::string utteranceId;
+    bool rechatGenerated = false;
     float volumeBoost; // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
     float duration;      // Duration of the line in seconds, used for timing animations and lip sync
 
@@ -116,6 +121,7 @@ private:
 
     int resolution = 500 * 1;  // 10 def value
     float animIntensity = 1.0f;
+    std::atomic<float> headVoiceVolumeMultiplier{1.0f};
 
     bool interrupt = false;
     bool forceInterruptCurrentPlayback = false;
@@ -124,9 +130,17 @@ private:
     std::string rechatInFlightSpeaker = "";
     std::string currentRechatChainId = "";
     bool rechatChainClosed = false;
+    bool rechatChainHardCancelled = false;
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
+    struct RecentAiSubtitle {
+        RE::FormID speakerFormId;
+        std::string text;
+        std::chrono::steady_clock::time_point expiresAt;
+    };
+    std::mutex recentAiSubtitleMutex;
+    std::deque<RecentAiSubtitle> recentAiSubtitles;
     struct PendingRechatRetry {
         bool active = false;
         std::string speaker = "";
@@ -155,6 +169,14 @@ public:
 
     void setNarratorDisplayName(const std::string& displayName);
     std::string getNarratorDisplayName();
+
+    void setHeadVoiceVolumePercent(float percent) {
+        headVoiceVolumeMultiplier.store(HeadVoiceVolumeUtils::PercentToMultiplier(percent), std::memory_order_relaxed);
+    }
+
+    float getHeadVoiceVolumeMultiplier() const {
+        return headVoiceVolumeMultiplier.load(std::memory_order_relaxed);
+    }
 
     int getResolution() {
         std::lock_guard<std::mutex> lock(mtx);
@@ -189,6 +211,9 @@ public:
     }
 
     void resetRechatChainState();
+    void cancelRechatChain();
+    void startRechatChainForPlayerInput();
+    void startRechatChainForAutonomousEvent();
     bool isRechatChainClosed();
     std::string ensureRechatChainId(const std::string& speaker, const std::string& listenerHint,
                                     const std::string& explicitTarget);
@@ -273,6 +298,8 @@ public:
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);
     void clearPlayerPlaybackCompletedCallback();
     void recoverFromProcessingFailure(const std::string& actorName);
+    void registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
+    bool isRecentAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
 
     bool downloadFakeNote(std::string name);
     

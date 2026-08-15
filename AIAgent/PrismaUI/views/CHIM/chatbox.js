@@ -8,61 +8,135 @@
     'use strict';
 
     // DOM Elements
-    const chatMessages = document.getElementById('chat-messages');
     const chatboxRoot = document.getElementById('chim-chatbox');
+    const chatboxViewerElement = document.getElementById('chim-chatbox-viewer');
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabPanes = document.querySelectorAll('.tab-pane');
     const focusModal = document.getElementById('focus-chatbox-modal');
+    const focusShellElement = document.querySelector('.focus-chatbox-shell');
     const focusInput = document.getElementById('focus-chatbox-input');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
     const currentModeElement = document.getElementById('chatbox-current-mode');
-    const modeSelectElement = document.getElementById('chatbox-mode-select');
+    const modeMenuToggleButton = document.getElementById('chatbox-mode-menu-toggle');
+    const modeOptionsElement = document.getElementById('chatbox-mode-options');
+    const modeOptionButtons = document.querySelectorAll('#chatbox-mode-options .chatbox-option-tile');
     const currentModelElement = document.getElementById('chatbox-current-model');
+    const globalModelControlElement = document.getElementById('chatbox-global-model-control');
     const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
-    const modelSelectElement = document.getElementById('chatbox-model-select');
-    const rechatModeSelectElement = document.getElementById('chatbox-rechat-mode-select');
+    const modelMenuToggleButton = document.getElementById('chatbox-model-menu-toggle');
+    const modelOptionsElement = document.getElementById('chatbox-model-options');
+    const modelOptionButtons = document.querySelectorAll('#chatbox-model-options .chatbox-option-tile');
+    const profileMenuToggleButton = document.getElementById('chatbox-profile-menu-toggle');
+    const profileMenuElement = document.getElementById('chatbox-profile-menu');
+    const profileMenuCloseButton = document.getElementById('chatbox-profile-menu-close');
+    const profileNameElement = document.getElementById('chatbox-profile-name');
+    const profileModeElement = document.getElementById('chatbox-profile-mode');
+    const profileTargetElement = document.getElementById('chatbox-profile-target');
+    const profileSlotElement = document.getElementById('chatbox-profile-slot');
+    const profileSelectElement = document.getElementById('chatbox-profile-select');
+    const profileAssignmentHintElement = document.getElementById('chatbox-profile-assignment-hint');
+    const profileRandomToggleButton = document.getElementById('chatbox-profile-random-toggle');
+    const profileDefaultToggleButtons = document.querySelectorAll('.profile-default-toggle[data-profile-setting]');
+    const profileConnectorsElement = document.getElementById('chatbox-profile-connectors');
+    const rechatMenuToggleButton = document.getElementById('chatbox-rechat-menu-toggle');
+    const rechatOptionsElement = document.getElementById('chatbox-rechat-options');
+    const rechatOptionButtons = document.querySelectorAll('#chatbox-rechat-options .chatbox-option-tile');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
+    const storyLogElement = document.getElementById('focus-chatbox-story-log');
+    const storyEmptyElement = document.getElementById('focus-chatbox-story-empty');
+    const storyNewEventsButton = document.getElementById('focus-chatbox-story-new');
+    const contextPanelElement = chatboxRoot;
+    const contextToggleButton = document.getElementById('focus-chatbox-context-toggle');
 
     // State
     let currentTab = 'chat';
-    const maxMessages = 100;
+    const maxStoryEntries = 150;
+    const liveStoryDedupeWindowMs = 15000;
+    const recentStoryRetentionMs = 60000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
+    const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
     let quickChatMode = false;
     let isFocusChatEnabled = false;
+    let currentMode = 'STANDARD';
     let currentModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
+    let currentGlobalModelLabel = 'Standard';
+    let currentProfileLlmMode = 'fixed';
+    let currentProfileLlmInfo = null;
+    let profileLlmTargetKey = '';
+    let profileLlmRequestSequence = 0;
+    let profileLlmSaveInProgress = false;
+    let profileDefaultSaveInProgress = false;
+    let profileAssignmentInProgress = false;
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
     let currentFocusPosition = 'center';
     let currentTargetName = '';
     let currentTargetFormId = 0;
+    let currentTargetIsNarrator = false;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
     let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
     const targetRowsByKey = new Map();
+    const storyEntryKeys = new Set();
+    const recentStoryContent = new Map();
+    let narratorStoryName = 'The Narrator';
     
     // Server URL
-    const SERVER_URL = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
+    let serverUrl = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
 
     const modeConfig = {
         STANDARD: { label: 'Standard', class: 'standard', action: 'mode_standard' },
-        SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
         WHISPER: { label: 'Whisper', class: 'whisper', action: 'mode_whisper' },
+        CLOSE: { label: 'Close', class: 'close', action: 'mode_close' },
+        SHOUT: { label: 'Shout', class: 'shout', action: 'mode_shout' },
         NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' },
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
-        SPAWN: { label: 'Spawn', class: 'director', action: 'mode_spawn' },
         CHEATMODE: { label: 'Cheat Mode', class: 'cheatmode', action: 'mode_cheat' },
         AUTOCHAT: { label: 'Auto Chat', class: 'autochat', action: 'mode_autochat' },
         INJECTION_LOG: { label: 'Event Inject', class: 'director', action: 'mode_inject_log' },
         INJECTION_CHAT: { label: 'Inject & Chat', class: 'director', action: 'mode_inject_chat' }
     };
+
+    const symbolModeRules = [
+        { prefix: '((', mode: 'INJECTION_LOG', display: '(…)' },
+        { prefix: '~~', mode: 'CLOSE' },
+        { prefix: '!!', mode: 'SHOUT' },
+        { prefix: '**', mode: 'AUTOCHAT' },
+        { prefix: '~', mode: 'WHISPER' },
+        { prefix: '@', mode: 'NARRATOR' },
+        { prefix: '>', mode: 'DIRECTOR' },
+        { prefix: '#', mode: 'CHEATMODE' },
+        { prefix: '(', mode: 'INJECTION_CHAT', display: '…' }
+    ];
+
+    function detectSymbolMode(message) {
+        return symbolModeRules.find(function(rule) {
+            return String(message || '').startsWith(rule.prefix);
+        }) || null;
+    }
+
+    // Preview the request-local symbol mode while leaving the saved selector state unchanged.
+    function renderModeIndicator() {
+        if (!currentModeElement) return;
+        const symbolMode = detectSymbolMode(focusInput ? focusInput.value : '');
+        const effectiveMode = symbolMode ? symbolMode.mode : currentMode;
+        const config = modeConfig[effectiveMode] || modeConfig.STANDARD;
+        currentModeElement.className = 'mode-badge ' + config.class;
+        currentModeElement.textContent = symbolMode
+            ? `${config.label} (${symbolMode.display || symbolMode.prefix})`
+            : config.label;
+        currentModeElement.title = symbolMode
+            ? `One-shot ${config.label}; saved mode remains ${modeConfig[currentMode].label}.`
+            : (config.label === 'Close' ? 'Private, close-range conversation' : '');
+    }
 
     const modelConfig = {
         standard: { label: 'Standard', class: 'standard', action: 'llm_standard' },
@@ -77,6 +151,326 @@
         group: { label: 'Group', class: 'group' },
         random: { label: 'Random', class: 'random' }
     };
+
+    function decodeHtmlEntities(value) {
+        const decoder = document.createElement('textarea');
+        decoder.innerHTML = String(value || '');
+        return decoder.value;
+    }
+
+    function isStoryAtBottom() {
+        if (!storyLogElement) return true;
+        return storyLogElement.scrollHeight - storyLogElement.scrollTop - storyLogElement.clientHeight < 48;
+    }
+
+    function scrollStoryToBottom() {
+        if (!storyLogElement) return;
+        storyLogElement.scrollTop = storyLogElement.scrollHeight;
+        if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    function scrollStoryToBottomAfterLayout() {
+        const defer = typeof window.requestAnimationFrame === 'function'
+            ? window.requestAnimationFrame.bind(window)
+            : function(callback) { window.setTimeout(callback, 0); };
+        defer(function() {
+            defer(scrollStoryToBottom);
+        });
+    }
+
+    window.scrollStandaloneContext = function(deltaY) {
+        if (!storyLogElement || !contextPanelElement || !chatboxViewerElement) return;
+        if (contextPanelElement.parentElement !== chatboxViewerElement) return;
+
+        const delta = Number(deltaY);
+        if (!Number.isFinite(delta)) return;
+        storyLogElement.scrollTop += Math.max(-1200, Math.min(1200, delta));
+    };
+
+    function showStoryEmpty(message) {
+        if (!storyEmptyElement || !storyLogElement) return;
+        storyEmptyElement.textContent = message || 'No recent context.';
+        storyEmptyElement.classList.toggle('hidden', storyLogElement.children.length > 0);
+    }
+
+    function pruneRecentStoryContent(now) {
+        recentStoryContent.forEach(function(recent, key) {
+            if (!recent || now - recent.seenAt > recentStoryRetentionMs) {
+                recentStoryContent.delete(key);
+            }
+        });
+    }
+
+    function createStoryEntryElement(entry) {
+        const row = document.createElement('div');
+        row.className = 'story-entry ' + entry.kind + (entry.source === 'subtitle' ? ' non-llm' : '');
+        if (entry.rowId > 0) {
+            row.dataset.rowId = String(entry.rowId);
+            row.classList.add('has-delete');
+        }
+
+        const time = document.createElement('span');
+        time.className = 'story-entry-time';
+        time.textContent = entry.timestamp || '';
+
+        const line = document.createElement('div');
+        line.className = 'story-entry-line';
+
+        const speaker = document.createElement('span');
+        speaker.className = 'story-entry-speaker';
+        speaker.textContent = entry.speaker || '';
+
+        const text = document.createElement('span');
+        text.className = 'story-entry-text';
+        text.textContent = entry.text || '';
+
+        if (entry.speaker) line.appendChild(speaker);
+        line.appendChild(text);
+        row.appendChild(time);
+        row.appendChild(line);
+        if (entry.rowId > 0) {
+            row.appendChild(createStoryDeleteButton(entry.rowId));
+        }
+        return row;
+    }
+
+    function createStoryDeleteButton(rowId) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'story-entry-delete';
+        button.textContent = '\u{1F5D1}';
+        button.title = 'Delete this event';
+        button.setAttribute('aria-label', 'Delete this event');
+        button.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            confirmAndDeleteEvent(button, rowId);
+        });
+        return button;
+    }
+
+    async function confirmAndDeleteEvent(button, rowId) {
+        if (button.disabled) return;
+        if (!button.classList.contains('confirm-delete')) {
+            button.classList.add('confirm-delete');
+            button.title = 'Click again to delete';
+            setTimeout(function() {
+                button.classList.remove('confirm-delete');
+                button.title = 'Delete this event';
+            }, 3000);
+            return;
+        }
+
+        button.disabled = true;
+        try {
+            const formData = new FormData();
+            formData.append('rowid', String(rowId));
+            const response = await fetch(`${serverUrl}/ui/cmd/action_delete_event.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.message || 'Failed to delete event.');
+            }
+            window.removeEventLogEntry(rowId);
+            sendControlCommand('event_deleted|' + rowId);
+        } catch (error) {
+            button.disabled = false;
+            button.classList.remove('confirm-delete');
+            button.title = 'Delete this event';
+            pushChatboxSystemMessage(error.message || 'Failed to delete event.');
+        }
+    }
+
+    window.setChatboxServerUrl = function(url) {
+        const normalized = String(url || '').replace(/\/$/, '');
+        if (normalized) serverUrl = normalized;
+    };
+
+    window.removeEventLogEntry = function(rowId) {
+        const normalizedRowId = Number(rowId || 0);
+        if (!storyLogElement || normalizedRowId <= 0) return;
+        const rowKey = 'row:' + normalizedRowId;
+        const row = storyLogElement.querySelector(`[data-row-id="${normalizedRowId}"]`);
+        if (row) row.remove();
+        storyEntryKeys.delete(rowKey);
+        recentStoryContent.forEach(function(recent, key) {
+            if (recent && recent.entry && Number(recent.entry.rowId || 0) === normalizedRowId) {
+                recentStoryContent.delete(key);
+            }
+        });
+        showStoryEmpty();
+    };
+
+    function appendStoryEntry(entry, isLive) {
+        if (!storyLogElement || !entry) return false;
+
+        const rowKey = entry.rowId > 0 ? 'row:' + entry.rowId : '';
+        if (rowKey && storyEntryKeys.has(rowKey)) return false;
+
+        const now = Date.now();
+        pruneRecentStoryContent(now);
+        const recent = recentStoryContent.get(entry.contentKey);
+        if (!isLive && recent) {
+            const matchesLiveEntry = recent.isLive &&
+                now - recent.seenAt <= liveStoryDedupeWindowMs;
+            const matchesPersistedEntry = !recent.isLive &&
+                window.ChimStoryLog.isPersistedDuplicate(recent.entry, entry);
+            if (matchesLiveEntry || matchesPersistedEntry) {
+                if (rowKey) storyEntryKeys.add(rowKey);
+                return false;
+            }
+        }
+        recentStoryContent.set(entry.contentKey, {
+            entry: entry,
+            isLive: Boolean(isLive),
+            seenAt: now
+        });
+
+        const shouldFollow = isStoryAtBottom();
+        const row = createStoryEntryElement(entry);
+        if (rowKey) {
+            row.dataset.entryKey = rowKey;
+            storyEntryKeys.add(rowKey);
+        }
+        storyLogElement.appendChild(row);
+
+        while (storyLogElement.children.length > maxStoryEntries) {
+            const first = storyLogElement.firstElementChild;
+            if (first && first.dataset.entryKey) storyEntryKeys.delete(first.dataset.entryKey);
+            storyLogElement.removeChild(first);
+        }
+
+        showStoryEmpty();
+        if (shouldFollow) {
+            scrollStoryToBottom();
+        } else if (storyNewEventsButton) {
+            storyNewEventsButton.classList.remove('hidden');
+        }
+        return true;
+    }
+
+    function resetStoryLog() {
+        if (!storyLogElement) return;
+        storyLogElement.innerHTML = '';
+        storyEntryKeys.clear();
+        recentStoryContent.clear();
+        if (storyNewEventsButton) storyNewEventsButton.classList.add('hidden');
+    }
+
+    function loadContextCollapsed() {
+        try {
+            return localStorage.getItem(contextCollapsedStorageKey) === 'true';
+        } catch (_err) {
+            return false;
+        }
+    }
+
+    function applyContextCollapsed(collapsed) {
+        if (!contextPanelElement || !contextToggleButton) return;
+        contextPanelElement.classList.toggle('collapsed', collapsed);
+        contextToggleButton.textContent = collapsed ? '+' : '\u2212';
+        contextToggleButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        contextToggleButton.title = collapsed ? 'Expand recent context' : 'Minimize recent context';
+        try {
+            localStorage.setItem(contextCollapsedStorageKey, collapsed ? 'true' : 'false');
+        } catch (_err) {
+            // Keep the current session state when storage is unavailable.
+        }
+    }
+
+    function setContextPlacement(focused) {
+        if (!contextPanelElement || !chatboxViewerElement || !focusShellElement) return;
+
+        const destination = focused ? focusShellElement : chatboxViewerElement;
+        if (contextPanelElement.parentElement !== destination) {
+            destination.appendChild(contextPanelElement);
+        }
+        chatboxViewerElement.classList.toggle('context-attached', focused);
+        if (focused) {
+            applyContextCollapsed(loadContextCollapsed());
+        } else {
+            contextPanelElement.classList.remove('collapsed');
+        }
+    }
+
+    window.updateStoryLog = function(jsonString, replaceExisting) {
+        if (!window.ChimStoryLog || !storyLogElement) return;
+        try {
+            const payload = JSON.parse(jsonString);
+            if (!payload || payload.success !== true || !Array.isArray(payload.data)) {
+                showStoryEmpty('Recent context is unavailable.');
+                return;
+            }
+
+            narratorStoryName = decodeHtmlEntities(payload.narrator_name || narratorStoryName) || 'The Narrator';
+            const normalized = window.ChimStoryLog.normalizeEntries(
+                payload.data,
+                narratorStoryName,
+                decodeHtmlEntities
+            );
+
+            if (replaceExisting) resetStoryLog();
+            normalized.forEach(function(entry) {
+                appendStoryEntry(entry, false);
+            });
+
+            showStoryEmpty('No recent context.');
+            if (replaceExisting) scrollStoryToBottom();
+        } catch (error) {
+            console.error('[Chatbox] Failed to update story log:', error);
+            showStoryEmpty('Recent context is unavailable.');
+        }
+    };
+
+    window.setStoryLogUnavailable = function() {
+        showStoryEmpty('Recent context is unavailable.');
+    };
+
+    function setActiveTile(buttons, attribute, value) {
+        buttons.forEach(function(button) {
+            const active = button.dataset[attribute] === value;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+    }
+
+    function setTileSelectorDisabled(toggleButton, optionButtons, disabled, title) {
+        if (toggleButton) {
+            toggleButton.disabled = disabled;
+            if (title) toggleButton.title = title;
+        }
+        optionButtons.forEach(function(button) {
+            button.disabled = disabled;
+        });
+    }
+
+    function closeTileMenu(toggleButton, optionsElement) {
+        if (toggleButton) toggleButton.setAttribute('aria-expanded', 'false');
+        if (optionsElement) optionsElement.classList.add('hidden');
+    }
+
+    function closeAllTileMenus(exceptOptionsElement) {
+        [
+            [modeMenuToggleButton, modeOptionsElement],
+            [modelMenuToggleButton, modelOptionsElement],
+            [rechatMenuToggleButton, rechatOptionsElement]
+        ].forEach(function(selector) {
+            if (selector[1] !== exceptOptionsElement) {
+                closeTileMenu(selector[0], selector[1]);
+            }
+        });
+    }
+
+    function toggleTileMenu(toggleButton, optionsElement) {
+        if (!toggleButton || !optionsElement || toggleButton.disabled) return;
+        const opening = optionsElement.classList.contains('hidden');
+        closeAllTileMenus(opening ? optionsElement : null);
+        toggleButton.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        optionsElement.classList.toggle('hidden', !opening);
+    }
 
     /**
      * Switch between available chatbox tabs.
@@ -96,35 +490,12 @@
         source = source || 'llm';
         timestamp = timestamp || getCurrentTime();
 
-        var messageDiv = document.createElement('div');
-        messageDiv.className = 'message ' + type + (source === 'subtitle' ? ' non-llm' : '');
-
-        var headerDiv = document.createElement('div');
-        headerDiv.className = 'message-header';
-
-        var speakerSpan = document.createElement('span');
-        speakerSpan.className = 'message-speaker';
-        speakerSpan.textContent = speaker;
-
-        var timestampSpan = document.createElement('span');
-        timestampSpan.className = 'message-timestamp';
-        timestampSpan.textContent = timestamp;
-
-        headerDiv.appendChild(speakerSpan);
-        headerDiv.appendChild(timestampSpan);
-
-        var textDiv = document.createElement('div');
-        textDiv.className = 'message-text';
-        textDiv.textContent = text;
-
-        messageDiv.appendChild(headerDiv);
-        messageDiv.appendChild(textDiv);
-        chatMessages.appendChild(messageDiv);
-
-        while (chatMessages.children.length > maxMessages) {
-            chatMessages.removeChild(chatMessages.firstChild);
+        if (window.ChimStoryLog) {
+            appendStoryEntry(
+                window.ChimStoryLog.normalizeLiveMessage(speaker, text, timestamp, type, source),
+                true
+            );
         }
-        chatMessages.scrollTop = chatMessages.scrollHeight;
     };
 
     /**
@@ -268,7 +639,7 @@
         focusToggleButton.classList.add(enabled ? 'on' : 'off');
         focusToggleButton.textContent = enabled ? 'ON' : 'OFF';
         focusToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-        focusToggleButton.title = enabled ? 'Disable Focus Chat' : 'Enable Focus Chat';
+        focusToggleButton.title = enabled ? 'Disable Compact Chat' : 'Enable Compact Chat';
     }
 
     function updateFocusPositionButtons() {
@@ -388,7 +759,7 @@
     window.prepareQuickChatFocus = function() {
         quickChatMode = true;
         currentTab = 'chat';
-        setChatboxViewerVisible(false);
+        setContextPlacement(true);
         if (focusModal) {
             focusModal.classList.add('hidden');
             focusModal.setAttribute('aria-hidden', 'true');
@@ -396,6 +767,7 @@
         if (focusInput) {
             focusInput.value = '';
             focusInput.blur();
+            renderModeIndicator();
         }
         window.switchTab('chat');
     };
@@ -406,9 +778,15 @@
     window.openFocusChatbox = function() {
         if (!focusModal || !focusInput) return;
         applyFocusPosition(loadFocusPosition());
+        setContextPlacement(true);
         focusModal.classList.remove('hidden');
         focusModal.setAttribute('aria-hidden', 'false');
+        scrollStoryToBottomAfterLayout();
+        if (storyLogElement && storyLogElement.children.length === 0) {
+            showStoryEmpty('Loading recent context...');
+        }
         focusInput.value = '';
+        renderModeIndicator();
         setTimeout(function() {
             focusInput.focus();
             focusInput.selectionStart = focusInput.value.length;
@@ -425,7 +803,9 @@
         focusModal.classList.add('hidden');
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
+        renderModeIndicator();
         focusInput.blur();
+        setContextPlacement(false);
         if (shouldNotifyBridge && window.chimChatboxCommand) {
             if (quickChatMode) {
                 window.chimChatboxCommand('close');
@@ -444,12 +824,14 @@
         if (!message.trim()) return;
         sendMessageToBridge(message);
         focusInput.value = '';
+        renderModeIndicator();
         window.closeFocusChatbox(true);
     };
 
     window.clearFocusMessage = function() {
         if (!focusInput) return;
         focusInput.value = '';
+        renderModeIndicator();
         focusInput.focus();
     };
 
@@ -480,7 +862,7 @@
             const formData = new FormData();
             formData.append('count', String(deleteCount));
 
-            const response = await fetch(`${SERVER_URL}/ui/cmd/action_delete_recent_events.php`, {
+            const response = await fetch(`${serverUrl}/ui/cmd/action_delete_recent_events.php`, {
                 method: 'POST',
                 body: formData,
                 cache: 'no-store'
@@ -502,6 +884,7 @@
             const deletedCount = Number(result.deleted_count || 0);
             pushChatboxSystemMessage(`Deleted ${deletedCount} latest visible event${deletedCount === 1 ? '' : 's'}.`);
             showInGameDebugNotification(`Deleted last ${deletedCount} events`);
+            sendControlCommand('story_refresh');
         } catch (_err) {
             pushChatboxSystemMessage(`Failed to delete the last ${deleteCount} events.`);
         } finally {
@@ -511,19 +894,33 @@
     };
 
     if (focusInput) {
+        focusInput.addEventListener('input', renderModeIndicator);
         focusInput.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 e.preventDefault();
+                if (isProfileMenuOpen()) {
+                    closeProfileMenu();
+                    return;
+                }
                 window.closeFocusChatbox(true);
                 return;
             }
 
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
+                if (e.ctrlKey && currentModeAction !== 'mode_close') {
+                    resetTargetSelectionForModeChange();
+                    sendControlCommand('mode_close');
+                }
                 window.sendFocusMessage();
             }
         });
     }
+
+    window.onChatboxShown = function() {
+        setContextPlacement(false);
+        scrollStoryToBottomAfterLayout();
+    };
 
     /**
      * Called when chatbox gains focus from C++
@@ -531,7 +928,8 @@
     window.onChatboxFocused = function(quickChat) {
         isChatFocused = true;
         quickChatMode = !!quickChat;
-        setChatboxViewerVisible(!quickChatMode);
+        refreshProfileLlmMode(true);
+        setContextPlacement(true);
         window.openFocusChatbox();
     };
 
@@ -542,8 +940,10 @@
         const wasQuickChatMode = quickChatMode;
         isChatFocused = false;
         quickChatMode = false;
-        setChatboxViewerVisible(!wasQuickChatMode);
         window.closeFocusChatbox(false);
+        if (!wasQuickChatMode) {
+            setContextPlacement(false);
+        }
     };
 
     window.updateChatboxTarget = function(name, distance) {
@@ -631,37 +1031,428 @@
             syncTargetRows(specs);
             targetsListElement.scrollTop = previousScrollTop;
         }
-        const activeTarget = currentTargetOverrideMode === 'everyone' ? null : targets.find(function(target) {
-            return Number(target.form_id || 0) === currentTargetFormId || (target.name || '') === currentTargetName;
-        });
+        let activeTarget = null;
+        if (currentTargetOverrideMode !== 'everyone') {
+            if (currentTargetFormId) {
+                activeTarget = targets.find(function(target) {
+                    return Number(target.form_id || 0) === currentTargetFormId;
+                }) || null;
+            }
+            if (!activeTarget && currentTargetName) {
+                activeTarget = targets.find(function(target) {
+                    return (target.name || '') === currentTargetName;
+                }) || null;
+            }
+        }
+        currentTargetIsNarrator = !!(activeTarget && activeTarget.narrator);
         window.updateChatboxTarget(currentTargetName, Number(activeTarget ? activeTarget.distance || 0 : 0));
+        refreshProfileLlmMode();
     };
 
     window.updateChatboxMode = function(mode) {
         const modeUpper = mode ? mode.toUpperCase().trim() : 'STANDARD';
-        const config = modeConfig[modeUpper] || modeConfig.STANDARD;
+        currentMode = modeConfig[modeUpper] ? modeUpper : 'STANDARD';
+        const config = modeConfig[currentMode];
+
         currentModeAction = config.action;
-        if (currentModeElement) {
-            currentModeElement.className = 'mode-badge ' + config.class;
-            currentModeElement.textContent = config.label;
-        }
-        if (modeSelectElement) {
-            modeSelectElement.value = config.action;
-        }
+        renderModeIndicator();
+        setActiveTile(modeOptionButtons, 'action', config.action);
+        refreshProfileLlmMode();
     };
 
     window.updateChatboxModel = function(modelLabel) {
         const labelLower = modelLabel ? modelLabel.toLowerCase().trim() : 'standard';
         const config = modelConfig[labelLower] || modelConfig.standard;
-        currentModelAction = config.action;
-        if (currentModelElement) {
-            currentModelElement.className = 'mode-badge ' + config.class;
-            currentModelElement.textContent = config.label;
-        }
-        if (modelSelectElement) {
-            modelSelectElement.value = config.action;
-        }
+        currentGlobalModelLabel = config.label;
+        renderProfileLlmMode();
     };
+
+    function renderProfileLlmMode() {
+        const globalConfig = modelConfig[currentGlobalModelLabel.toLowerCase()] || modelConfig.standard;
+        currentModelAction = globalConfig.action;
+        if (currentModelElement) {
+            currentModelElement.className = 'mode-badge ' + globalConfig.class;
+            currentModelElement.textContent = globalConfig.label;
+        }
+        setActiveTile(modelOptionButtons, 'action', globalConfig.action);
+        const modelDisabled = profileLlmSaveInProgress ||
+            !!(currentProfileLlmInfo && currentProfileLlmMode === 'random');
+        setTileSelectorDisabled(
+            modelMenuToggleButton,
+            modelOptionButtons,
+            modelDisabled,
+            currentProfileLlmMode === 'random'
+                ? 'Disable Random LLM on the target profile to change the LLM model.'
+                : 'Switch LLM model'
+        );
+        if (modelDisabled) closeTileMenu(modelMenuToggleButton, modelOptionsElement);
+        if (globalModelControlElement) {
+            globalModelControlElement.classList.toggle(
+                'profile-random-muted',
+                !!currentProfileLlmInfo && currentProfileLlmMode === 'random'
+            );
+        }
+
+        renderProfileMenu();
+    }
+
+    function getProfileLlmTarget() {
+        if (currentModeAction === 'mode_director' ||
+            currentTargetOverrideMode === 'everyone') {
+            return null;
+        }
+        if (currentModeAction === 'mode_narrator' || currentTargetIsNarrator) {
+            return { type: 'narrator', name: '', key: 'narrator' };
+        }
+        if (!currentTargetName) return null;
+        return {
+            type: 'npc',
+            name: currentTargetName,
+            key: `npc:${currentTargetFormId || 0}:${currentTargetName}`
+        };
+    }
+
+    function renderProfileMenu() {
+        const profile = currentProfileLlmInfo;
+        const hasProfile = !!profile;
+        const isRandom = hasProfile && currentProfileLlmMode === 'random';
+        const target = getProfileLlmTarget();
+
+        if (profileMenuToggleButton) {
+            profileMenuToggleButton.disabled = !hasProfile;
+        }
+        setTextIfChanged(profileNameElement, hasProfile ? profile.profile_name : 'No Profile');
+        if (profileModeElement) {
+            profileModeElement.className = 'profile-mode-dot ' + (isRandom ? 'random' : 'fixed');
+            profileModeElement.textContent = isRandom ? 'Random' : 'Fixed';
+        }
+        setTextIfChanged(
+            profileTargetElement,
+            hasProfile ? `${profile.target_name} Profile` : 'No target selected'
+        );
+        const profileSlot = hasProfile ? Number(profile.profile_slot || 0) : 0;
+        setTextIfChanged(
+            profileSlotElement,
+            hasProfile
+                ? `${profile.profile_name} - ${profileSlot > 0 ? `Slot ${profileSlot}` : 'Not assigned to a slot'}`
+                : 'No profile slot'
+        );
+
+        if (profileSelectElement) {
+            const profiles = hasProfile && Array.isArray(profile.available_profiles)
+                ? profile.available_profiles
+                : [];
+            profileSelectElement.replaceChildren();
+            if (profiles.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = hasProfile ? profile.profile_name : 'No profile available';
+                profileSelectElement.appendChild(option);
+            } else {
+                const currentIsSlotted = profiles.some(function(item) {
+                    return Number(item.profile_id) === Number(profile.profile_id);
+                });
+                if (!currentIsSlotted) {
+                    const currentOption = document.createElement('option');
+                    currentOption.value = '';
+                    currentOption.textContent = `${profile.profile_name} (not assigned to a slot)`;
+                    profileSelectElement.appendChild(currentOption);
+                }
+                profiles.forEach(function(item) {
+                    const option = document.createElement('option');
+                    option.value = String(item.slot);
+                    option.dataset.profileId = String(item.profile_id);
+                    option.textContent = `${item.slot}. ${item.profile_name}`;
+                    option.selected = Number(item.profile_id) === Number(profile.profile_id);
+                    profileSelectElement.appendChild(option);
+                });
+            }
+
+            const canAssign = hasProfile && target && target.type === 'npc';
+            profileSelectElement.disabled = !canAssign || profileAssignmentInProgress ||
+                profileLlmSaveInProgress || profileDefaultSaveInProgress;
+            if (canAssign) {
+                setTextIfChanged(profileAssignmentHintElement, 'Changing this reassigns only the targeted NPC.');
+            } else if (hasProfile && target && target.type === 'narrator') {
+                setTextIfChanged(profileAssignmentHintElement, 'Narrator profile assignment is managed in the web UI.');
+            } else {
+                setTextIfChanged(profileAssignmentHintElement, 'Select a single NPC target to assign a profile.');
+            }
+        }
+
+        const connectorCount = hasProfile ? Number(profile.configured_slot_count || 0) : 0;
+
+        if (profileRandomToggleButton) {
+            profileRandomToggleButton.classList.toggle('on', isRandom);
+            profileRandomToggleButton.classList.toggle('off', !isRandom);
+            profileRandomToggleButton.setAttribute('aria-pressed', isRandom ? 'true' : 'false');
+            profileRandomToggleButton.disabled = !hasProfile || profileLlmSaveInProgress ||
+                profileDefaultSaveInProgress || profileAssignmentInProgress ||
+                (!isRandom && connectorCount === 0);
+            setTextIfChanged(
+                profileRandomToggleButton.querySelector('.profile-default-state'),
+                isRandom ? 'ON' : 'OFF'
+            );
+        }
+
+        const profileDefaults = hasProfile && profile.profile_defaults
+            ? profile.profile_defaults
+            : {};
+        profileDefaultToggleButtons.forEach(function(button) {
+            const setting = button.dataset.profileSetting || '';
+            const enabled = !!profileDefaults[setting];
+            const state = button.querySelector('.profile-default-state');
+            button.classList.toggle('on', enabled);
+            button.classList.toggle('off', !enabled);
+            button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            button.disabled = !hasProfile || profileDefaultSaveInProgress ||
+                profileLlmSaveInProgress || profileAssignmentInProgress;
+            setTextIfChanged(state, enabled ? 'ON' : 'OFF');
+        });
+
+        if (profileConnectorsElement) {
+            profileConnectorsElement.replaceChildren();
+            const connectors = hasProfile && Array.isArray(profile.configured_connectors)
+                ? profile.configured_connectors
+                : [];
+            if (connectors.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'profile-connector-empty';
+                empty.textContent = hasProfile
+                    ? 'No LLM connectors are configured on this profile.'
+                    : 'Select a target profile to view its connectors.';
+                profileConnectorsElement.appendChild(empty);
+            } else {
+                connectors.forEach(function(connector) {
+                    const row = document.createElement('div');
+                    row.className = 'profile-connector-row';
+                    const slot = document.createElement('div');
+                    slot.className = 'profile-connector-slot';
+                    slot.textContent = connector.label || `Slot ${connector.slot}`;
+                    const name = document.createElement('div');
+                    name.className = 'profile-connector-name';
+                    name.textContent = connector.connector_name || `Connector ${connector.connector_id}`;
+                    row.append(slot, name);
+                    profileConnectorsElement.appendChild(row);
+                });
+            }
+        }
+    }
+
+    async function refreshProfileLlmMode(force) {
+        const target = getProfileLlmTarget();
+        if (!target) {
+            profileLlmTargetKey = '';
+            currentProfileLlmInfo = null;
+            currentProfileLlmMode = 'fixed';
+            closeProfileMenu();
+            renderProfileLlmMode();
+            return null;
+        }
+        if (!force && target.key === profileLlmTargetKey) {
+            return currentProfileLlmInfo;
+        }
+
+        if (target.key !== profileLlmTargetKey) {
+            closeProfileMenu();
+        }
+        profileLlmTargetKey = target.key;
+        currentProfileLlmInfo = null;
+        currentProfileLlmMode = 'fixed';
+        renderProfileLlmMode();
+        const requestSequence = ++profileLlmRequestSequence;
+
+        try {
+            const params = new URLSearchParams({
+                target_type: target.type,
+                target_name: target.name
+            });
+            const response = await fetch(`${serverUrl}/ui/api/chim_profile_llm_mode.php?${params.toString()}`, {
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Profile mode unavailable.');
+            }
+            if (requestSequence !== profileLlmRequestSequence || target.key !== profileLlmTargetKey) {
+                return;
+            }
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            return currentProfileLlmInfo;
+        } catch (_err) {
+            if (requestSequence !== profileLlmRequestSequence) return;
+            currentProfileLlmInfo = null;
+            currentProfileLlmMode = 'fixed';
+            renderProfileLlmMode();
+            return null;
+        }
+    }
+
+    async function saveProfileLlmMode(mode) {
+        const target = getProfileLlmTarget();
+        if (!target || profileLlmSaveInProgress) {
+            return false;
+        }
+
+        const previousMode = currentProfileLlmMode;
+        profileLlmSaveInProgress = true;
+        renderProfileLlmMode();
+
+        try {
+            const formData = new FormData();
+            formData.append('target_type', target.type);
+            formData.append('target_name', target.name);
+            formData.append('mode', mode);
+            if (currentProfileLlmInfo && currentProfileLlmInfo.profile_id) {
+                formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
+            }
+
+            const response = await fetch(`${serverUrl}/ui/api/chim_profile_llm_mode.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Failed to update profile LLM mode.');
+            }
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            const count = Number(result.profile.shared_count || 0);
+            const usage = count === 1 ? 'used by 1 character' : `used by ${count} characters`;
+            pushChatboxSystemMessage(
+                `${currentProfileLlmMode === 'random' ? 'Random' : 'Fixed'} LLM selection enabled for ` +
+                `${result.profile.profile_name} (${usage}).`
+            );
+            return true;
+        } catch (_err) {
+            currentProfileLlmMode = previousMode;
+            renderProfileLlmMode();
+            pushChatboxSystemMessage('Failed to update the target profile LLM mode.');
+            showInGameDebugNotification('Failed to update target profile LLM mode.');
+            return false;
+        } finally {
+            profileLlmSaveInProgress = false;
+            renderProfileLlmMode();
+        }
+    }
+
+    async function saveProfileDefault(setting, enabled) {
+        const target = getProfileLlmTarget();
+        if (!target || !currentProfileLlmInfo || profileDefaultSaveInProgress ||
+            profileLlmSaveInProgress || profileAssignmentInProgress) {
+            return false;
+        }
+
+        const targetKey = target.key;
+        const previousProfile = currentProfileLlmInfo;
+        profileDefaultSaveInProgress = true;
+        renderProfileLlmMode();
+
+        try {
+            const formData = new FormData();
+            formData.append('target_type', target.type);
+            formData.append('target_name', target.name);
+            formData.append('setting', setting);
+            formData.append('enabled', enabled ? '1' : '0');
+            formData.append('expected_profile_id', String(currentProfileLlmInfo.profile_id));
+
+            const response = await fetch(`${serverUrl}/ui/api/chim_profile_llm_mode.php`, {
+                method: 'POST',
+                body: formData,
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            if (!response.ok || !result || !result.ok || !result.profile) {
+                throw new Error((result && result.message) || 'Failed to update profile default.');
+            }
+
+            const activeTarget = getProfileLlmTarget();
+            if (!activeTarget || activeTarget.key !== targetKey) return true;
+
+            currentProfileLlmInfo = result.profile;
+            currentProfileLlmMode = result.profile.random_enabled ? 'random' : 'fixed';
+            renderProfileLlmMode();
+            const button = Array.from(profileDefaultToggleButtons).find(function(item) {
+                return item.dataset.profileSetting === setting;
+            });
+            const label = button ? button.querySelector('.profile-default-label').textContent.trim() : setting;
+            pushChatboxSystemMessage(
+                `${label} ${enabled ? 'enabled' : 'disabled'} for ${result.profile.profile_name}.`
+            );
+            return true;
+        } catch (_err) {
+            currentProfileLlmInfo = previousProfile;
+            renderProfileLlmMode();
+            pushChatboxSystemMessage('Failed to update the target profile setting.');
+            showInGameDebugNotification('Failed to update target profile setting.');
+            return false;
+        } finally {
+            profileDefaultSaveInProgress = false;
+            renderProfileLlmMode();
+        }
+    }
+
+    function openProfileMenu() {
+        if (!profileMenuElement || !currentProfileLlmInfo) return;
+        profileMenuElement.classList.remove('hidden');
+        if (profileMenuToggleButton) profileMenuToggleButton.setAttribute('aria-expanded', 'true');
+        refreshProfileLlmMode(true);
+    }
+
+    function closeProfileMenu() {
+        if (profileMenuElement) profileMenuElement.classList.add('hidden');
+        if (profileMenuToggleButton) profileMenuToggleButton.setAttribute('aria-expanded', 'false');
+    }
+
+    function isProfileMenuOpen() {
+        return !!profileMenuElement && !profileMenuElement.classList.contains('hidden');
+    }
+
+    async function assignTargetProfile(slot) {
+        const target = getProfileLlmTarget();
+        if (!target || target.type !== 'npc' || profileAssignmentInProgress || !currentProfileLlmInfo) {
+            return false;
+        }
+
+        const selectedProfile = (currentProfileLlmInfo.available_profiles || []).find(function(profile) {
+            return Number(profile.slot) === Number(slot);
+        });
+        if (!selectedProfile || Number(selectedProfile.profile_id) === Number(currentProfileLlmInfo.profile_id)) {
+            renderProfileMenu();
+            return true;
+        }
+
+        profileAssignmentInProgress = true;
+        renderProfileMenu();
+        sendControlCommand(`profile_${slot}|${target.name}`);
+
+        let assigned = false;
+        for (const delay of [350, 800, 1500]) {
+            await new Promise(function(resolve) { setTimeout(resolve, delay); });
+            const activeTarget = getProfileLlmTarget();
+            if (!activeTarget || activeTarget.key !== target.key) break;
+            const refreshed = await refreshProfileLlmMode(true);
+            if (refreshed && Number(refreshed.profile_id) === Number(selectedProfile.profile_id)) {
+                assigned = true;
+                break;
+            }
+        }
+
+        profileAssignmentInProgress = false;
+        renderProfileLlmMode();
+        if (assigned) {
+            pushChatboxSystemMessage(`Assigned ${selectedProfile.profile_name} to ${target.name}.`);
+        } else {
+            pushChatboxSystemMessage(`Profile assignment sent for ${target.name}. The server may still be processing it.`);
+        }
+        return assigned;
+    }
 
     window.updateChatboxFocus = function(enabled) {
         isFocusChatEnabled = !!enabled;
@@ -676,9 +1467,7 @@
             currentRechatModeElement.className = 'mode-badge ' + config.class;
             currentRechatModeElement.textContent = config.label;
         }
-        if (rechatModeSelectElement) {
-            rechatModeSelectElement.value = normalizedMode;
-        }
+        setActiveTile(rechatOptionButtons, 'mode', normalizedMode);
     }
 
     window.updateChatboxRechatMode = function(mode) {
@@ -687,16 +1476,22 @@
     };
 
     async function saveRechatMode(mode) {
-        if (!rechatModeSelectElement || rechatModeSaveInProgress) return;
+        if (rechatModeSaveInProgress) return;
 
         const previousMode = currentRechatMode;
         rechatModeSaveInProgress = true;
-        rechatModeSelectElement.disabled = true;
+        setTileSelectorDisabled(
+            rechatMenuToggleButton,
+            rechatOptionButtons,
+            true,
+            'Updating global rechat mode'
+        );
+        closeTileMenu(rechatMenuToggleButton, rechatOptionsElement);
 
         try {
             const formData = new FormData();
             formData.append('mode', mode);
-            const response = await fetch(`${SERVER_URL}/ui/cmd/action_set_rechat_mode.php`, {
+            const response = await fetch(`${serverUrl}/ui/cmd/action_set_rechat_mode.php`, {
                 method: 'POST',
                 body: formData,
                 cache: 'no-store'
@@ -714,13 +1509,13 @@
             showInGameDebugNotification('Failed to update global rechat mode.');
         } finally {
             rechatModeSaveInProgress = false;
-            rechatModeSelectElement.disabled = false;
+            setTileSelectorDisabled(
+                rechatMenuToggleButton,
+                rechatOptionButtons,
+                false,
+                'Switch global rechat mode'
+            );
         }
-    }
-
-    function setChatboxViewerVisible(isVisible) {
-        if (!chatboxRoot) return;
-        chatboxRoot.classList.toggle('focus-only-hidden', !isVisible);
     }
 
     function getCurrentTime() {
@@ -735,22 +1530,100 @@
         }
     }
 
-    if (modeSelectElement) {
-        modeSelectElement.addEventListener('change', function() {
-            const action = modeSelectElement.value;
+    if (modeMenuToggleButton) {
+        modeMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(modeMenuToggleButton, modeOptionsElement);
+        });
+    }
+
+    modeOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const action = button.dataset.action;
+            closeTileMenu(modeMenuToggleButton, modeOptionsElement);
             if (!action || action === currentModeAction) return;
             resetTargetSelectionForModeChange();
             sendControlCommand(action);
         });
-    }
+    });
 
-    if (modelSelectElement) {
-        modelSelectElement.addEventListener('change', function() {
-            const action = modelSelectElement.value;
-            if (!action || action === currentModelAction) return;
-            sendControlCommand(action);
+    if (modelMenuToggleButton) {
+        modelMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(modelMenuToggleButton, modelOptionsElement);
         });
     }
+
+    modelOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const action = button.dataset.action;
+            closeTileMenu(modelMenuToggleButton, modelOptionsElement);
+            if (!action || action === currentModelAction) return;
+
+            const config = Object.values(modelConfig).find(function(item) {
+                return item.action === action;
+            });
+            if (config) {
+                currentGlobalModelLabel = config.label;
+                renderProfileLlmMode();
+            }
+            sendControlCommand(action);
+        });
+    });
+
+    if (profileMenuToggleButton) {
+        profileMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            closeAllTileMenus();
+            if (isProfileMenuOpen()) {
+                closeProfileMenu();
+            } else {
+                openProfileMenu();
+            }
+        });
+    }
+
+    if (profileMenuCloseButton) {
+        profileMenuCloseButton.addEventListener('click', function() {
+            closeProfileMenu();
+        });
+    }
+
+    if (profileMenuElement) {
+        profileMenuElement.addEventListener('click', function(event) {
+            event.stopPropagation();
+        });
+    }
+
+    if (profileRandomToggleButton) {
+        profileRandomToggleButton.addEventListener('click', function() {
+            if (!currentProfileLlmInfo || profileLlmSaveInProgress) return;
+            saveProfileLlmMode(currentProfileLlmMode === 'random' ? 'fixed' : 'random');
+        });
+    }
+
+    profileDefaultToggleButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+            if (!currentProfileLlmInfo || profileDefaultSaveInProgress) return;
+            const setting = button.dataset.profileSetting || '';
+            const enabled = button.getAttribute('aria-pressed') === 'true';
+            saveProfileDefault(setting, !enabled);
+        });
+    });
+
+    if (profileSelectElement) {
+        profileSelectElement.addEventListener('change', function() {
+            const slot = Number(profileSelectElement.value || 0);
+            if (slot > 0) assignTargetProfile(slot);
+        });
+    }
+
+    document.addEventListener('click', function() {
+        if (isProfileMenuOpen()) closeProfileMenu();
+        closeAllTileMenus();
+    });
 
     if (focusToggleButton) {
         focusToggleButton.addEventListener('click', function() {
@@ -779,17 +1652,36 @@
         });
     }
 
-    if (rechatModeSelectElement) {
-        rechatModeSelectElement.addEventListener('change', function() {
-            const mode = rechatModeSelectElement.value;
+    if (rechatMenuToggleButton) {
+        rechatMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(rechatMenuToggleButton, rechatOptionsElement);
+        });
+    }
+
+    rechatOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const mode = button.dataset.mode;
+            closeTileMenu(rechatMenuToggleButton, rechatOptionsElement);
             if (!mode || mode === currentRechatMode) return;
             saveRechatMode(mode);
         });
-    }
+    });
 
     if (deleteEventSelect) {
         deleteEventSelect.addEventListener('change', function() {
             clearPendingDeleteConfirmation();
+        });
+    }
+
+    if (storyNewEventsButton) {
+        storyNewEventsButton.addEventListener('click', scrollStoryToBottom);
+    }
+
+    if (contextToggleButton && contextPanelElement) {
+        contextToggleButton.addEventListener('click', function() {
+            applyContextCollapsed(!contextPanelElement.classList.contains('collapsed'));
         });
     }
 
@@ -828,12 +1720,10 @@
     updateFocusIndicator(isFocusChatEnabled);
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
+    renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
-
-    // Apply corner placement via shared layout manager
-    if (window.chimLayout) {
-        window.chimLayout.apply(chatboxRoot, 'chatbox');
-    }
+    applyContextCollapsed(loadContextCollapsed());
+    setContextPlacement(false);
 
     console.log('[Chatbox] Initialized - display mode + focus modal input');
 })();

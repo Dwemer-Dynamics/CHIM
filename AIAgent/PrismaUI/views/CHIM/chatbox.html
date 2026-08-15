@@ -6,134 +6,224 @@
     <title>CHIM Chatbox</title>
     <link rel="stylesheet" href="chatbox.css">
 </head>
-<body>
-    <div id="chim-chatbox">
-        <!-- Tab Bar -->
-        <div class="chatbox-tabs">
-            <button class="tab-button active" data-tab="chat" onclick="switchTab('chat')" aria-label="Chat"></button>
-            <button class="btn-close" onclick="closeChat()" title="Close">&times;</button>
-        </div>
-        
-        <!-- Chat Messages Area -->
-        <div class="chatbox-content">
-            <!-- Chat Tab -->
-            <div id="tab-chat" class="tab-pane active">
-                <div class="messages-container" id="chat-messages">
-                </div>
+<body data-chim-menu-scale-target="#chim-chatbox-viewer, .focus-chatbox-shell">
+    <div id="chim-chatbox-viewer">
+        <section id="chim-chatbox" class="focus-chatbox-context" aria-label="Recent context">
+            <div class="focus-chatbox-context-header">
+                <span>Recent Context</span>
+                <button id="focus-chatbox-context-toggle" class="focus-chatbox-context-toggle" type="button" aria-expanded="true" title="Minimize recent context">&minus;</button>
             </div>
-        </div>
+            <div class="focus-chatbox-context-body">
+                <div id="focus-chatbox-story-log" class="focus-chatbox-story-log" role="log" aria-live="polite"></div>
+                <div id="focus-chatbox-story-empty" class="focus-chatbox-story-empty">Loading recent context...</div>
+                <button id="focus-chatbox-story-new" class="focus-chatbox-story-new hidden" type="button">New context</button>
+            </div>
+        </section>
     </div>
 
     <div id="focus-chatbox-modal" class="focus-chatbox-modal hidden focus-position-center" aria-hidden="true">
         <div class="focus-chatbox-backdrop"></div>
         <div class="focus-chatbox-shell">
-            <div class="chatbox-targets-window" aria-label="Conversation Targets">
-                <div class="chatbox-targets-panel">
-                    <div class="chatbox-side-header">Targets</div>
-                    <div id="chatbox-targets-list" class="chatbox-targets-list"></div>
+            <div class="focus-chatbox-primary">
+                <div class="chatbox-targets-window" aria-label="Conversation Targets">
+                    <div class="chatbox-targets-panel">
+                        <div class="chatbox-side-header">Targets</div>
+                        <div id="chatbox-targets-list" class="chatbox-targets-list"></div>
+                    </div>
                 </div>
-            </div>
-            <div class="focus-chatbox-panel" role="dialog" aria-modal="true" aria-label="CHIM Chat">
-                <div class="focus-chatbox-header">
-                    <span>CHIM Chat</span>
-                    <button class="focus-btn focus-btn-close" type="button" title="Close" onclick="closeFocusChatbox()">&times;</button>
-                </div>
-                <div class="focus-chatbox-main">
-                    <div class="chatbox-controls">
-                        <div class="chatbox-control-grid">
+                <div class="focus-chatbox-panel" role="dialog" aria-modal="true" aria-label="CHIM Chat">
+                    <div class="focus-chatbox-header">
+                        <span>CHIM Chat</span>
+                        <button class="focus-btn focus-btn-close" type="button" title="Close" onclick="closeFocusChatbox()">&times;</button>
+                    </div>
+                    <div class="focus-chatbox-main">
+                        <div class="chatbox-controls">
+                            <div class="chatbox-control-grid">
                             <div class="chatbox-control-block">
                                 <div class="chatbox-control-label">Current Target</div>
                                 <div class="chatbox-control-value" id="chatbox-current-target">
                                     <span class="target-name no-target">No target</span>
                                 </div>
-                            </div>
-
-                            <div class="chatbox-control-block select-stack">
-                                <div class="chatbox-control-label">Current Mode</div>
-                                <div class="chatbox-control-value">
-                                    <span id="chatbox-current-mode" class="mode-badge standard">Standard</span>
-                                    <select id="chatbox-mode-select" class="chatbox-mode-select" title="Switch mode">
-                                        <option value="mode_standard">Standard</option>
-                                        <option value="mode_shout">Shout</option>
-                                        <option value="mode_whisper">Whisper</option>
-                                        <option value="mode_narrator">Narrator</option>
-                                        <option value="mode_director">Director</option>
-                                        <option value="mode_spawn">Spawn</option>
-                                        <option value="mode_cheat">Cheat Mode</option>
-                                        <option value="mode_autochat">Auto Chat</option>
-                                        <option value="mode_inject_log">Event Inject</option>
-                                        <option value="mode_inject_chat">Inject & Chat</option>
-                                    </select>
+                                <div class="chatbox-profile-inline">
+                                    <div class="chatbox-control-label">Profile</div>
+                                    <button id="chatbox-profile-menu-toggle" class="chatbox-profile-menu-toggle" type="button" aria-expanded="false" disabled>
+                                        <span id="chatbox-profile-name">No Profile</span>
+                                        <span id="chatbox-profile-mode" class="profile-mode-dot fixed">Fixed</span>
+                                    </button>
                                 </div>
                             </div>
 
-                            <div class="chatbox-control-block select-stack">
-                                <div class="chatbox-control-label">Current Model</div>
+                            <div class="chatbox-control-block selector-stack">
+                                <div class="chatbox-control-label chatbox-mode-label">
+                                    <span>Mode</span>
+                                    <span class="chatbox-mode-help" tabindex="0" aria-label="Chat mode shortcut help" aria-describedby="chatbox-mode-shortcuts">?</span>
+                                    <div id="chatbox-mode-shortcuts" class="chatbox-mode-shortcuts" role="tooltip">
+                                        <div class="chatbox-mode-shortcuts-title">One-shot mode shortcuts</div>
+                                        <div class="chatbox-mode-shortcuts-copy">Start a message with a symbol. Your saved mode will not change.</div>
+                                        <div class="chatbox-mode-shortcuts-grid">
+                                            <code>~</code><span>Whisper</span>
+                                            <code>~~</code><span>Close</span>
+                                            <code>!!</code><span>Shout</span>
+                                            <code>@</code><span>Narrator</span>
+                                            <code>&gt;</code><span>Director</span>
+                                            <code>#</code><span>Cheat Mode</span>
+                                            <code>**</code><span>Auto Chat</span>
+                                            <code>((...))</code><span>Event Inject</span>
+                                            <code>(...)</code><span>Inject &amp; Chat</span>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div class="chatbox-control-value">
-                                    <span id="chatbox-current-model" class="mode-badge standard">Standard</span>
-                                    <select id="chatbox-model-select" class="chatbox-mode-select" title="Switch model">
-                                        <option value="llm_standard">Standard</option>
-                                        <option value="llm_fast">Fast</option>
-                                        <option value="llm_powerful">Powerful</option>
-                                        <option value="llm_experimental">Experimental</option>
-                                    </select>
+                                    <div class="chatbox-tile-selector">
+                                        <button id="chatbox-mode-menu-toggle" class="chatbox-tile-trigger" type="button" aria-expanded="false" aria-controls="chatbox-mode-options" title="Switch mode">
+                                            <span id="chatbox-current-mode" class="mode-badge standard" aria-live="polite">Standard</span>
+                                            <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
+                                        </button>
+                                        <div id="chatbox-mode-options" class="chatbox-tile-options hidden" role="listbox" aria-label="Mode">
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_standard">Standard</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_whisper">Whisper</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_close" title="Private, close-range conversation">Close</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_shout">Shout</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_narrator">Narrator</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_director">Director</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_cheat">Cheat Mode</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_autochat">Auto Chat</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_inject_log">Event Inject</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_inject_chat">Inject &amp; Chat</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div class="chatbox-control-block select-stack">
+                            <div id="chatbox-global-model-control" class="chatbox-control-block selector-stack">
+                                <div class="chatbox-control-label">LLM Model</div>
+                                <div class="chatbox-control-value">
+                                    <div class="chatbox-tile-selector">
+                                        <button id="chatbox-model-menu-toggle" class="chatbox-tile-trigger" type="button" aria-expanded="false" aria-controls="chatbox-model-options" title="Switch LLM model">
+                                            <span id="chatbox-current-model" class="mode-badge standard">Standard</span>
+                                            <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
+                                        </button>
+                                        <div id="chatbox-model-options" class="chatbox-tile-options hidden" role="listbox" aria-label="LLM model">
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="llm_standard">Standard</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="llm_fast">Fast</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="llm_powerful">Powerful</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="llm_experimental">Experimental</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="chatbox-control-block selector-stack">
                                 <div class="chatbox-control-label">Rechat Mode</div>
                                 <div class="chatbox-control-value">
-                                    <span id="chatbox-current-rechat-mode" class="mode-badge random">Random</span>
-                                    <select id="chatbox-rechat-mode-select" class="chatbox-mode-select" title="Switch global rechat mode">
-                                        <option value="tight">Tight</option>
-                                        <option value="conversational">Conversational</option>
-                                        <option value="group">Group</option>
-                                        <option value="random">Random</option>
-                                    </select>
+                                    <div class="chatbox-tile-selector">
+                                        <button id="chatbox-rechat-menu-toggle" class="chatbox-tile-trigger" type="button" aria-expanded="false" aria-controls="chatbox-rechat-options" title="Switch global rechat mode">
+                                            <span id="chatbox-current-rechat-mode" class="mode-badge random">Random</span>
+                                            <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
+                                        </button>
+                                        <div id="chatbox-rechat-options" class="chatbox-tile-options hidden" role="listbox" aria-label="Rechat mode">
+                                            <button class="chatbox-option-tile" type="button" role="option" data-mode="tight">Tight</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-mode="conversational">Conversational</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-mode="group">Group</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-mode="random">Random</button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
                             <div class="chatbox-control-block focus-stack">
-                                <div class="chatbox-control-label">Focus Chat</div>
+                                <div class="chatbox-control-label">Compact Chat</div>
                                 <div class="chatbox-control-value">
                                     <button id="chatbox-focus-toggle" class="chatbox-focus-toggle off" type="button" aria-pressed="false">OFF</button>
                                 </div>
                             </div>
-                        </div>
+                            </div>
 
-                    </div>
-                    <textarea
-                        id="focus-chatbox-input"
-                        class="focus-chatbox-input"
-                        rows="2"
-                        placeholder="Type your message here. Enter sends, Shift+Enter adds a new line."
-                        spellcheck="false"></textarea>
-                    <div class="focus-chatbox-actions">
-                        <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">
-                            <div class="focus-chatbox-position-picker">
-                                <span class="focus-chatbox-position-label">Position</span>
-                                <div class="focus-chatbox-position-buttons" role="group" aria-label="Choose chatbox position">
-                                    <button id="chatbox-position-top" class="focus-chatbox-position-btn" type="button" data-position="top" title="Move chatbox to top" aria-label="Move chatbox to top">&#8593;</button>
-                                    <button id="chatbox-position-center" class="focus-chatbox-position-btn" type="button" data-position="center" title="Center chatbox" aria-label="Center chatbox">&#8722;</button>
-                                    <button id="chatbox-position-bottom" class="focus-chatbox-position-btn" type="button" data-position="bottom" title="Move chatbox to bottom" aria-label="Move chatbox to bottom">&#8595;</button>
+                            <div id="chatbox-profile-menu" class="chatbox-profile-menu hidden" role="dialog" aria-label="Profile and LLM settings">
+                            <div class="profile-menu-header">
+                                <div>
+                                    <div class="profile-menu-eyebrow">Profile &amp; LLM</div>
+                                    <div id="chatbox-profile-target" class="profile-menu-target">No target selected</div>
+                                    <div id="chatbox-profile-slot" class="profile-menu-slot">No profile slot</div>
+                                </div>
+                                <button id="chatbox-profile-menu-close" class="profile-menu-close" type="button" title="Close profile menu">&times;</button>
+                            </div>
+
+                            <div class="profile-menu-section">
+                                <label class="profile-menu-label" for="chatbox-profile-select">Assigned Profile</label>
+                                <select id="chatbox-profile-select" class="profile-menu-select" disabled>
+                                    <option value="">No profile available</option>
+                                </select>
+                                <div id="chatbox-profile-assignment-hint" class="profile-menu-hint">Select a single NPC target to assign a profile.</div>
+                            </div>
+
+                            <div class="profile-menu-section profile-default-list">
+                                <button id="chatbox-profile-random-toggle" class="profile-default-toggle off" type="button" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x1F3B2; Random LLM</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="dynamic_profile" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x267B;&#xFE0F; Dynamic Profile</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="middle_term_memory" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x1F4C3; Middle Term Memory</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="auto_diary" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x1F4D9; Auto Diary</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                                <button class="profile-default-toggle off" type="button" data-profile-setting="auto_diary_wait" aria-pressed="false" disabled>
+                                    <span class="profile-default-label">&#x23F3; Auto Diary Wait</span>
+                                    <span class="profile-default-state">OFF</span>
+                                </button>
+                            </div>
+
+                            <div class="profile-menu-section">
+                                <div class="profile-menu-label">Configured Connectors</div>
+                                <div id="chatbox-profile-connectors" class="profile-connector-list">
+                                    <div class="profile-connector-empty">Select a target profile to view its connectors.</div>
                                 </div>
                             </div>
-                            <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
-                            <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
-                            <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
-                            <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
-                            <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
+                            </div>
+
                         </div>
-                        <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
-                            <div class="focus-chatbox-event-controls">
-                                <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
-                                <div class="focus-chatbox-delete-controls">
-                                    <select id="chatbox-delete-events-select" class="chatbox-mode-select focus-chatbox-delete-select" title="Choose how many recent events to delete">
-                                        <option value="20">Last 20</option>
-                                        <option value="50">Last 50</option>
-                                        <option value="100">Last 100</option>
-                                    </select>
-                                    <button id="chatbox-delete-events-confirm" class="focus-btn focus-btn-danger" type="button">Delete</button>
+                        <textarea
+                            id="focus-chatbox-input"
+                            class="focus-chatbox-input"
+                            rows="2"
+                            placeholder="Enter message here, press Enter to send"
+                            spellcheck="false"></textarea>
+                        <div class="focus-chatbox-actions">
+                            <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">
+                                <div class="focus-chatbox-position-picker">
+                                    <span class="focus-chatbox-position-label">Position</span>
+                                    <div class="focus-chatbox-position-buttons" role="group" aria-label="Choose chatbox position">
+                                        <button id="chatbox-position-top" class="focus-chatbox-position-btn" type="button" data-position="top" title="Move chatbox to top" aria-label="Move chatbox to top">&#8593;</button>
+                                        <button id="chatbox-position-center" class="focus-chatbox-position-btn" type="button" data-position="center" title="Center chatbox" aria-label="Center chatbox">&#8722;</button>
+                                        <button id="chatbox-position-bottom" class="focus-chatbox-position-btn" type="button" data-position="bottom" title="Move chatbox to bottom" aria-label="Move chatbox to bottom">&#8595;</button>
+                                    </div>
+                                </div>
+                                <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
+                                <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
+                                <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
+                                <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
+                                <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
+                            </div>
+                            <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
+                                <div class="focus-chatbox-event-controls">
+                                    <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
+                                    <div class="focus-chatbox-delete-controls">
+                                        <select id="chatbox-delete-events-select" class="chatbox-mode-select focus-chatbox-delete-select" title="Choose how many recent events to delete">
+                                            <option value="5" selected>Last 5</option>
+                                            <option value="10">Last 10</option>
+                                            <option value="20">Last 20</option>
+                                            <option value="50">Last 50</option>
+                                            <option value="100">Last 100</option>
+                                        </select>
+                                        <button id="chatbox-delete-events-confirm" class="focus-btn focus-btn-danger" type="button">Delete</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -143,6 +233,8 @@
         </div>
     </div>
     <script src="layout.js"></script>
+    <script src="ui_scale.js"></script>
+    <script src="story_log.js"></script>
     <script src="chatbox.js"></script>
 </body>
 </html>

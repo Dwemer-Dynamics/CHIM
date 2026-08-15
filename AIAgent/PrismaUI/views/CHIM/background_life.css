@@ -1,0 +1,475 @@
+﻿:root {
+    --accent: #f27c11;
+    --accent-soft: rgba(242, 124, 17, 0.18);
+    --accent-line: rgba(242, 124, 17, 0.42);
+    --panel: #202024;
+    --panel-dark: #17171b;
+    --panel-soft: #29292e;
+    --line: #3b3b42;
+    --text: #ededf0;
+    --muted: #9b9ba3;
+    --danger: #d95c68;
+    --success: #55b879;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    overflow: hidden;
+    background: transparent;
+    color: var(--text);
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+button, input, textarea { font: inherit; }
+button { color: inherit; }
+.hidden, [hidden] { display: none !important; }
+
+.modal-container {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: min(1540px, 96vw);
+    height: min(920px, 94vh);
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 2px solid var(--accent-line);
+    border-radius: 8px;
+    background: rgba(24, 24, 28, 0.985);
+    box-shadow: 0 12px 42px rgba(0, 0, 0, 0.86);
+}
+
+.modal-header, .panel-heading, .rumors-header, .rumor-modal-header,
+.section-heading, .panel-footer, .header-actions, .map-navigation,
+.rumor-form-actions, .detail-tabs, .page-tabs {
+    display: flex;
+    align-items: center;
+}
+
+.modal-header {
+    justify-content: space-between;
+    gap: 18px;
+    padding: 13px 18px;
+    border-bottom: 1px solid var(--accent-line);
+    background: #151519;
+}
+
+.modal-header h1 { color: var(--accent); font-size: 1.35rem; }
+.modal-header p, .panel-heading p, .rumors-header p, .rumor-modal-header p {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 0.76rem;
+}
+.header-actions { gap: 8px; }
+
+.close-button, .rumor-modal-close {
+    width: 34px;
+    height: 34px;
+    border: 1px solid #4a4a50;
+    border-radius: 5px;
+    background: #29292e;
+    color: #ddd;
+    cursor: pointer;
+}
+.close-button:hover, .rumor-modal-close:hover { border-color: var(--accent); color: #fff; }
+
+.icon-button, .page-button, .control-button, .map-navigation button,
+.card-action, .rumor-action, .detail-tab, .page-tab {
+    min-height: 32px;
+    padding: 6px 11px;
+    border: 1px solid #494950;
+    border-radius: 5px;
+    background: #303035;
+    color: #f2f2f3;
+    font-weight: 650;
+    cursor: pointer;
+}
+.icon-button:hover, .page-button:hover:not(:disabled), .control-button:hover:not(:disabled),
+.map-navigation button:hover, .card-action:hover:not(:disabled), .rumor-action:hover,
+.detail-tab:hover, .page-tab:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+button:disabled { opacity: 0.45; cursor: default; }
+.primary { border-color: #3f8f5e; background: #2d7148; }
+.danger { border-color: #a84a55 !important; background: #71323a !important; }
+.full-width-action { width: 100%; margin-bottom: 9px; border-color: var(--accent-line); background: #543117; }
+
+.page-tabs {
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    background: #1b1b1f;
+}
+.page-tab { flex: 1; color: #fff; }
+.page-tab.active {
+    border-color: var(--accent);
+    background: #533116;
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tab-panel { min-height: 0; flex: 1; overflow: hidden; }
+.tab-panel.active { display: block; }
+
+.dashboard-grid {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    grid-template-areas: "map npcs controls";
+    grid-template-columns: minmax(380px, 1.06fr) minmax(450px, 1.25fr) minmax(245px, 0.6fr);
+    gap: 10px;
+    padding: 10px;
+}
+
+.map-panel, .npc-panel, .management-card, .history-layout, .rumors-layout,
+.rumor-list-panel {
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+}
+.map-panel, .npc-panel { display: flex; flex-direction: column; padding: 10px; }
+.map-panel { grid-area: map; order: 1; }
+.npc-panel { grid-area: npcs; order: 2; }
+.dashboard-controls { grid-area: controls; order: 3; }
+.panel-heading, .rumors-header { justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.panel-heading h2, .rumors-header h2, .rumor-modal-header h2 { font-size: 0.92rem; color: #fff; }
+.count-badge, .state-badge {
+    min-width: 34px;
+    padding: 3px 8px;
+    border: 1px solid var(--accent-line);
+    border-radius: 999px;
+    color: #efb47d;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-align: center;
+}
+.state-badge.enabled { border-color: #469a66; color: #80d69e; }
+
+.map-viewport {
+    position: relative;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+    border: 1px solid #45454c;
+    border-radius: 5px;
+    background: #101014;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+.map-viewport.dragging { cursor: grabbing; }
+.map-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+    transition: transform 130ms ease;
+    will-change: transform;
+}
+.map-image { display: block; width: 100%; height: auto; user-select: none; pointer-events: none; }
+#location-markers, #npc-map-markers { position: absolute; inset: 0; pointer-events: none; }
+.location-marker, .npc-map-marker {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+}
+.location-marker {
+    width: 8px;
+    height: 8px;
+    border: 1px solid rgba(255,255,255,.9);
+    border-radius: 50%;
+    background: rgba(40,40,45,.78);
+    opacity: .78;
+}
+.location-marker:hover { z-index: 20; width: 12px; height: 12px; border-color: var(--accent); }
+.npc-map-marker {
+    z-index: 40;
+    width: 18px;
+    height: 18px;
+    overflow: visible;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 2px 7px #000;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.npc-map-marker-icon { font-size: 10px; line-height: 1; pointer-events: none; }
+.npc-map-marker:hover, .npc-map-marker.focused { transform: translate(-50%, -50%) scale(1.2); z-index: 60; }
+.npc-map-marker.focused { box-shadow: 0 0 0 5px rgba(242,124,17,.35), 0 2px 7px #000; }
+.npc-map-marker-label {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 10px);
+    transform: translateX(-50%) scale(var(--bgl-info-scale, 1));
+    transform-origin: bottom center;
+    opacity: 0;
+    pointer-events: none;
+    white-space: nowrap;
+    padding: 7px 11px;
+    border: 1px solid rgba(242,124,17,.8);
+    border-radius: 4px;
+    background: rgba(16,16,20,.96);
+    box-shadow: 0 2px 8px #000;
+    color: #fff;
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1;
+    transition: opacity 100ms ease;
+}
+.npc-map-marker:hover .npc-map-marker-label,
+.npc-map-marker:focus-visible .npc-map-marker-label,
+.npc-map-marker.focused .npc-map-marker-label { opacity: 1; }
+.map-navigation { justify-content: center; gap: 6px; padding-top: 8px; }
+.map-navigation button { min-width: 38px; }
+
+.dashboard-controls { min-height: 0; overflow-y: auto; padding-right: 2px; }
+.management-card { margin-bottom: 8px; padding: 10px; }
+.section-heading { justify-content: space-between; gap: 8px; margin-bottom: 8px; color: #fff; font-size: 0.78rem; font-weight: 700; }
+.target-name { margin-top: 8px; font-weight: 700; color: #fff; }
+.target-refid, .target-status, .roster-status, .panel-status { color: var(--muted); font-size: 0.7rem; }
+.target-refid { margin-top: 2px; }
+.target-status { min-height: 18px; margin-top: 7px; }
+.error { color: #ef8f96 !important; }
+.success { color: #7ed69e !important; }
+.control-button { width: 100%; margin-top: 7px; }
+.compact-field { display: grid; gap: 5px; color: #c9c9ce; font-size: .72rem; }
+.compact-field input, .search-field input, .rumor-field input, .rumor-field textarea {
+    width: 100%;
+    border: 1px solid #494950;
+    border-radius: 4px;
+    background: #151519;
+    color: #fff;
+    padding: 7px 8px;
+}
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; color: #d5d5d8; font-size: .73rem; }
+input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
+
+.target-tile-selector { position: relative; min-width: 0; }
+.target-tile-trigger {
+    width: 100%;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 9px;
+    border: 1px solid var(--accent-line);
+    border-radius: 5px;
+    background: #242429;
+    color: #fff;
+    cursor: pointer;
+    text-align: left;
+}
+.target-tile-arrow { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--accent); }
+.target-tile-options {
+    position: absolute;
+    z-index: 200;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 5px;
+    border: 1px solid var(--accent-line);
+    border-radius: 5px;
+    background: #17171b;
+    box-shadow: 0 10px 24px rgba(0,0,0,.78);
+}
+.target-option-search {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    width: 100%;
+    margin-bottom: 5px;
+    padding: 7px 8px;
+    border: 1px solid var(--accent-line);
+    border-radius: 4px;
+    background: #202025;
+    color: #fff;
+}
+.target-option-search:focus { outline: 1px solid var(--accent); }
+.target-option-tile {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #ddd;
+    cursor: pointer;
+    text-align: left;
+}
+.target-option-tile:hover, .target-option-tile.is-active { border-color: var(--accent-line); background: var(--accent-soft); color: #fff; }
+.target-option-distance { color: var(--muted); font-size: .66rem; }
+.compact-option-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+.npc-location-options { max-height: 310px; }
+
+.npc-card-grid {
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 8px;
+    padding-right: 3px;
+}
+.npc-card {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid #414148;
+    border-left-width: 4px;
+    border-radius: 5px;
+    background: #25252a;
+    cursor: pointer;
+}
+.npc-card:hover { border-color: var(--accent-line); background: #29292f; }
+.npc-portrait { width: 70px; height: 82px; object-fit: cover; border: 1px solid #4b4b52; border-radius: 4px; background: #111; }
+.npc-card-body { min-width: 0; }
+.npc-card-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.npc-card-name { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font-size: .8rem; font-weight: 750; }
+.npc-card-color { width: 9px; height: 9px; flex: 0 0 9px; border: 1px solid rgba(255,255,255,.75); border-radius: 50%; box-shadow: 0 1px 3px #000; }
+.npc-card-meta { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: .64rem; text-overflow: ellipsis; white-space: nowrap; }
+.npc-card-activity { margin-top: 6px; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 6px; align-items: center; padding: 6px; border: 1px solid #3e3e45; border-radius: 4px; background: #202025; }
+.npc-card-activity-icon { font-size: 17px; line-height: 1; text-align: center; }
+.npc-card-activity-copy { min-width: 0; }
+.npc-card-activity-title { color: #f4f4f5; font-size: .64rem; font-weight: 700; }
+.npc-card-activity-summary { margin-top: 2px; overflow: hidden; color: #aaaab1; font-size: .6rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.npc-card-row-label { grid-column: 1 / -1; margin: 1px 0 -2px; color: var(--muted); font-size: .58rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.npc-card-requests { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+.npc-card-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.card-action { min-width: 0; min-height: 27px; padding: 4px 5px; font-size: .64rem; }
+.card-request { border-color: var(--accent-line); background: #3c2a1d; color: #fff; }
+.card-action.map { font-size: .83rem; text-decoration: none; }
+.card-action.remove { border-color: rgba(217,92,104,.48); color: #efa0a7; }
+.card-action.active { border-color: #429761; background: rgba(56,133,83,.35); color: #9ee3b5; }
+.card-setting-toggle { position: relative; padding-right: 13px; }
+.card-setting-toggle::after {
+    content: '';
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #a95059;
+}
+.card-setting-toggle.is-enabled::after { background: #4f9b68; }
+.empty-state { padding: 22px 12px; color: var(--muted); font-size: .76rem; text-align: center; }
+
+.history-layout, .rumors-layout { height: 100%; display: flex; flex-direction: column; margin: 10px; overflow: hidden; }
+.toolbar { display: grid; grid-template-columns: 1fr 1.3fr 150px; gap: 10px; padding: 10px; border-bottom: 1px solid var(--line); }
+.toolbar-field, .search-field { min-width: 0; display: grid; gap: 5px; color: #c7c7cc; font-size: .68rem; }
+.activity-container { min-height: 0; flex: 1; overflow-y: auto; padding: 8px 10px; }
+.activity-entry { display: grid; grid-template-columns: 180px 150px minmax(0,1fr); gap: 8px; padding: 8px; border-bottom: 1px solid #38383e; cursor: pointer; }
+.activity-entry:hover { background: #27272c; }
+.activity-time { color: #aaaab0; font-size: .69rem; }
+.activity-npc { color: #fff; font-size: .72rem; font-weight: 700; }
+.activity-summary { min-width: 0; color: #d1d1d5; font-size: .72rem; }
+.category-badge { display: inline-block; margin-right: 6px; color: #efb47d; font-weight: 700; }
+.activity-details { display: none; grid-column: 1 / -1; color: #777780; font-size: .64rem; }
+.activity-entry.expanded .activity-details { display: block; }
+.panel-status { min-height: 22px; padding: 6px 10px; }
+.panel-footer { justify-content: center; gap: 12px; padding: 8px; border-top: 1px solid var(--line); font-size: .72rem; }
+
+.rumors-layout { padding: 10px; }
+.rumor-columns { min-height: 0; flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rumor-list-panel { overflow: hidden; display: flex; flex-direction: column; padding: 9px; }
+.rumor-list-panel h3 { margin-bottom: 7px; color: #fff; font-size: .8rem; }
+.rumor-list { min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 7px; }
+.rumor-card { padding: 9px; border: 1px solid #414148; border-radius: 5px; background: #27272c; }
+.rumor-card h4 { color: #fff; font-size: .76rem; }
+.rumor-card p { margin-top: 5px; color: #c7c7cc; font-size: .7rem; line-height: 1.35; }
+.rumor-meta { margin-top: 6px; color: var(--muted); font-size: .63rem; }
+.rumor-actions { display: flex; gap: 5px; margin-top: 7px; }
+.rumor-action { min-height: 27px; padding: 4px 8px; font-size: .64rem; }
+
+.rumor-modal-overlay {
+    position: fixed;
+    z-index: 500;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(0,0,0,.72);
+}
+.rumor-modal-panel { width: min(760px, 92vw); max-height: 88vh; overflow: visible; border: 1px solid var(--accent-line); border-radius: 7px; background: #202024; box-shadow: 0 18px 50px #000; }
+.rumor-modal-header { justify-content: space-between; gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.rumor-form { max-height: calc(88vh - 72px); overflow-y: auto; display: grid; gap: 10px; padding: 14px; }
+.rumor-form-row, .npc-create-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 9px; }
+.rumor-field { min-width: 0; display: grid; gap: 5px; color: #d5d5d8; font-size: .7rem; }
+.rumor-form-actions { justify-content: flex-end; gap: 8px; }
+.rumor-form-status { min-height: 18px; color: var(--muted); font-size: .69rem; }
+.npc-create-modal-panel { width: min(920px, 94vw); }
+.npc-create-location-field, .npc-create-wide-field { grid-column: span 2; }
+.npc-create-advanced { padding: 8px; border: 1px solid #414148; border-radius: 5px; }
+.npc-create-advanced summary { color: #efb47d; cursor: pointer; font-size: .73rem; font-weight: 700; }
+.npc-create-advanced .npc-create-grid { margin-top: 9px; }
+.npc-game-running-note { padding: 8px; border-left: 3px solid var(--accent); background: var(--accent-soft); color: #ddd; font-size: .68rem; }
+
+.npc-detail-panel { width: min(900px, 94vw); }
+.detail-tabs { gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.detail-tab { flex: 1; color: #fff; }
+.detail-tab.active { border-color: var(--accent); background: #533116; }
+.npc-detail-content { min-height: 280px; max-height: 58vh; overflow-y: auto; padding: 10px 14px 14px; }
+
+#npc-detail-overlay {
+    position: absolute;
+    inset: 12px;
+    border-radius: 6px;
+}
+
+#npc-detail-overlay .npc-detail-panel {
+    width: min(720px, calc(100% - 24px));
+    max-height: min(620px, calc(100% - 24px));
+}
+
+#npc-detail-overlay .npc-detail-content {
+    min-height: 180px;
+    max-height: min(420px, 46vh);
+}
+.detail-entry { padding: 9px 0; border-bottom: 1px solid #3a3a40; }
+.detail-entry h4 { color: #fff; font-size: .75rem; }
+.detail-entry p { margin-top: 5px; color: #c9c9cd; font-size: .71rem; line-height: 1.4; white-space: pre-wrap; }
+.detail-entry time { color: var(--muted); font-size: .63rem; }
+
+.loading { cursor: progress; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { border-radius: 5px; background: rgba(242,124,17,.42); }
+::-webkit-scrollbar-track { background: rgba(0,0,0,.15); }
+
+@media (max-width: 1180px) {
+    .dashboard-grid {
+        grid-template-areas:
+            "map npcs"
+            "controls controls";
+        grid-template-columns: minmax(350px, 1fr) minmax(400px, 1.15fr);
+    }
+    .npc-panel { max-height: 330px; }
+    .npc-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 850px) {
+    .modal-container { width: 98vw; height: 96vh; }
+    .dashboard-grid { display: flex; flex-direction: column; overflow-y: auto; }
+    .map-panel { min-height: 360px; }
+    .dashboard-controls { overflow: visible; }
+    .npc-panel { max-height: none; min-height: 420px; }
+    .npc-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .toolbar, .rumor-columns, .rumor-form-row, .npc-create-grid { grid-template-columns: 1fr; }
+    .npc-create-location-field, .npc-create-wide-field { grid-column: auto; }
+}

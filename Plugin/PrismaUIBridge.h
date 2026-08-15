@@ -116,6 +116,31 @@ namespace PrismaUIBridge {
     // Fetch diaries data from HerikaServer and update the panel
     void FetchDiariesData(const std::string& mode, const std::string& param);
 
+    // ===== Background Life Functions =====
+
+    void CreateBackgroundLifePanel();
+    void ToggleBackgroundLifePanel();
+    void ShowBackgroundLifePanel();
+    void HideBackgroundLifePanel();
+    bool IsBackgroundLifePanelVisible();
+    void FetchBackgroundLifeData(const std::string& queryString);
+
+    // ===== CHIM NPC Manager Functions =====
+
+    void CreateNpcManagerPanel();
+    void ToggleNpcManagerPanel();
+    void ShowNpcManagerPanel();
+    void HideNpcManagerPanel();
+    bool IsNpcManagerPanelVisible();
+
+    // ===== CHIM Settings Hub Functions =====
+
+    void CreateConfigManagerPanel();
+    void ToggleConfigManagerPanel();
+    void ShowConfigManagerPanel(const std::string& tab = "globals");
+    void HideConfigManagerPanel();
+    bool IsConfigManagerPanelVisible();
+
     // ===== CHIM Browser Functions =====
 
     // Create the CHIM browser panel
@@ -251,6 +276,10 @@ namespace PrismaUIBridge {
 
     // Read the current CHIM mode tracked by the Prisma bridge
     std::string GetCurrentChatboxMode();
+
+    // Synchronize the native mode state after a Prisma, Papyrus, or server selection.
+    bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag,
+                               bool showNotification = false);
 
     // Multiplier applied to player-spoken spatial reach for the active CHIM mode
     float GetPlayerSpeechDistanceMultiplier();

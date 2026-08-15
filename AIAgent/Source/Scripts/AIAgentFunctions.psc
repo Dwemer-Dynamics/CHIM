@@ -2,6 +2,8 @@ Scriptname AIAgentFunctions
 
 ;Main Functions
 int function sendMessage(String a_msg,String a_type) Global Native		; Send message as user input and expects an IA response
+int function sendMessageToActor(String a_msg,String a_type,Actor targetActor) Global Native	; Send targeted user input
+
 int function commandEnded(String command)  Global Native
 int function commandEndedForActor(String command,string npc)  Global Native
 
@@ -27,6 +29,11 @@ int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
 int function isGameVR() Global Native									; 1 if VR
 
+int function sendLocationFast(Location curr,string tags,Cell referenceCell=None) global Native
+int function sendFactionFast(Faction factions,string name) global Native
+int function sendNPCFast(Actor akActor) global Native
+
+
 ; Conf opts send
 int function setConf(String code,float float_value,int int_value,String string_value) Global Native
 
@@ -51,7 +58,7 @@ int[] function findAllAgentsFormId() Global Native;
 ; Helpers
 ObjectReference function getLocationMarkerFor(Location loc) Global Native
 ObjectReference function getWorldLocationMarkerFor(Location loc) Global Native
-ObjectReference function getLocationCenterMarker(Location loc,int mode) Global Native ; mode. 0 localtioncenter,1 insideMarker,2 bossTreasure
+ObjectReference function getLocationCenterMarker(Location loc,int mode) Global Native ; mode. 0 localtioncenter,1 insideMarker,2 bossTreasure,3 outsideMrker, 4 mapmarker
 ObjectReference function getNearestDoor() global Native
 ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restriction=true) global Native;restriction, ref must have a name
 

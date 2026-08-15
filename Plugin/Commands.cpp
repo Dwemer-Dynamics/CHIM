@@ -1,17 +1,21 @@
 #include "Commands.h"
 
 #include "Globals.h"
+#include "DynamicDiaryBook.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ActorTargetIdentifierUtils.h"
 #include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "Papyrus.h"
 #include "PrismaUIBridge.h"
+#include "ResourceFileReader.h"
 #include "Replacements.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
 #include "MusicManager.h"
 #include "SpatialAwareness.h"
+#include "VRItemAwareness.h"
 #include "json.hpp"
 #include "RE/Skyrim.h"
 
@@ -178,6 +182,52 @@ std::string jusTrim(const std::string& input) {
     return result.substr(start, end - start + 1);
 }
 
+RE::Actor* resolveExplicitActorTarget(const ActorTargetIdentifierUtils::ParsedTarget& parsedTarget,
+                                      RE::TESObjectCELL* expectedCell, RE::Actor* sourceActor,
+                                      float radius, bool allowDead) {
+    if (!parsedTarget.hasRefId || !sourceActor) {
+        return nullptr;
+    }
+
+    auto* form = RE::TESForm::LookupByID(static_cast<RE::FormID>(parsedTarget.refId));
+    auto* actor = form ? form->As<RE::Actor>() : nullptr;
+    if (!actor || actor->IsDeleted() || actor->IsDisabled() ||
+        (!allowDead && actor->IsDead()) || !actor->Is3DLoaded() ||
+        !actor->GetActorRuntimeData().currentProcess) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} is not a valid loaded actor",
+                     parsedTarget.refId);
+        return nullptr;
+    }
+
+    auto* actorCell = actor->GetParentCell();
+    if (!expectedCell || !expectedCell->IsAttached() || !actorCell || !actorCell->IsAttached()) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} has no attached action cell",
+                     parsedTarget.refId);
+        return nullptr;
+    }
+
+    const bool expectedInterior = expectedCell->IsInteriorCell();
+    const bool actorInterior = actorCell->IsInteriorCell();
+    if (expectedInterior != actorInterior ||
+        (expectedInterior && expectedCell != actorCell) ||
+        (!expectedInterior && sourceActor->GetWorldspace() != actor->GetWorldspace())) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} is outside the source actor's loaded area",
+                     parsedTarget.refId);
+        return nullptr;
+    }
+
+    const float distance = sourceActor->GetPosition().GetDistance(actor->GetPosition());
+    if (radius > 0.0f && distance > radius) {
+        logger::warn("[ACTION_TARGET] RefID {:08X} is outside action radius ({:.1f} > {:.1f})",
+                     parsedTarget.refId, distance, radius);
+        return nullptr;
+    }
+
+    logger::info("[ACTION_TARGET] Resolved RefID {:08X} to '{}' at {:.1f} units",
+                 parsedTarget.refId, actor->GetDisplayFullName(), distance);
+    return actor;
+}
+
 std::vector<std::string> splitString(const std::string& input) {
     std::stringstream ss(input);
     std::string segment;
@@ -271,26 +321,22 @@ void refreshNpcVoiceRecovery(const std::shared_ptr<AIAgent>& agentPtr, const std
     }
 
     auto audiofile = AudioFilesBufferManager::findAudioFile(actor);
-    RE::BSResourceNiBinaryStream finaudioFileDetected(audiofile);
-    if (finaudioFileDetected.good()) {
-        auto size = finaudioFileDetected.stream->totalSize;
-        if (size > 0) {
-            auto buffer = std::make_unique<char[]>(size);
-            finaudioFileDetected.read(buffer.get(), size);
-            std::string finalData(buffer.get(), size);
+    std::string finalData;
+    std::string readFailure;
+    if (ResourceFileReader::Read(audiofile, finalData, readFailure)) {
+        logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
+        HTTPUploader& uploader = HTTPUploader::getInstance();
+        uploader.UploadVoiceSample(finalData, actorName, audiofile);
 
-            if (!finalData.empty()) {
-                logger::info("[RefreshNPCVoice] Uploading recovered voice sample for {} from {}", actorName, audiofile);
-                HTTPUploader& uploader = HTTPUploader::getInstance();
-                uploader.UploadVoiceSample(finalData, actorName, audiofile);
-
-                if (agentPtr) {
-                    agentPtr->setNeedsVoiceSample(false);
-                    agentPtr->setVoiceSamplePath(audiofile);
-                }
-                return;
-            }
+        if (agentPtr) {
+            agentPtr->setNeedsVoiceSample(false);
+            agentPtr->setVoiceSamplePath(audiofile);
         }
+        return;
+    }
+    if (!audiofile.empty()) {
+        logger::warn("[RefreshNPCVoice] Could not read sample for {} from {}: {}", actorName, audiofile,
+                     readFailure);
     }
 
     if (agentPtr) {
@@ -602,14 +648,25 @@ std::string getPreferredActorDisplayName(RE::Actor* actor, const std::string& fa
     return resolvedName;
 }
 
-RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
-    if (isPlayerTeleportTargetName(rawTargetName)) {
-        return RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+RE::Actor* resolveActionActorTarget(const std::string& rawTargetName, RE::Actor* sourceActor,
+                                    float radius, bool allowDead) {
+    const auto parsedTarget = ActorTargetIdentifierUtils::Parse(rawTargetName);
+    if (parsedTarget.hasRefId && sourceActor) {
+        if (auto* exactTarget = resolveExplicitActorTarget(
+                parsedTarget, sourceActor->GetParentCell(), sourceActor, radius, allowDead)) {
+            return exactTarget;
+        }
     }
 
-    auto targetName = jusTrim(rawTargetName);
+    const auto targetName = parsedTarget.fallbackName;
+    auto* player = RE::PlayerCharacter::GetSingleton();
     if (targetName.empty()) {
-        return RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+        return jusTrim(rawTargetName).empty()
+            ? (player ? player->As<RE::Actor>() : nullptr)
+            : nullptr;
+    }
+    if (isPlayerTeleportTargetName(targetName)) {
+        return player ? player->As<RE::Actor>() : nullptr;
     }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -625,18 +682,20 @@ RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
         }
     }
 
-    auto player = RE::PlayerCharacter::GetSingleton();
-    if (!player) {
+    if (!sourceActor || !sourceActor->GetParentCell()) {
         return nullptr;
     }
 
-    auto playerCell = player->GetParentCell();
-    if (!playerCell) {
-        return nullptr;
-    }
-
-    auto targetRef = findActorInCell(targetName, playerCell, player->As<RE::Actor>(), 4096.0f, false);
+    auto* targetRef = findActorInCell(
+        targetName, sourceActor->GetParentCell(), sourceActor, radius, allowDead);
     return targetRef ? targetRef->As<RE::Actor>() : nullptr;
+}
+
+RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    return player
+        ? resolveActionActorTarget(rawTargetName, player->As<RE::Actor>(), 4096.0f, false)
+        : nullptr;
 }
 
 RE::Actor* resolveNarratorRoleTargetActor(const std::string& rawTargetName) {
@@ -824,10 +883,18 @@ RE::TESForm* findLocation(std::string parameter) {
 
     if (!locationForm) {
         auto player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            logger::warn("[findLocation] Player is unavailable while searching nearby locations");
+            return nullptr;
+        }
         // Lets search for any building around
-        for (const auto& entry : LocationList::GetInstance()) {
+        for (const auto& entry : LocationList::GetInstance().Snapshot()) {
             const std::string& name = entry.first;
-            RE::TESObjectREFR* location = entry.second;
+            auto locationRef = entry.second.get();
+            RE::TESObjectREFR* location = locationRef ? locationRef.get() : nullptr;
+            if (!location) {
+                continue;
+            }
             if (location->GetPosition().GetDistance(player->GetPosition()) < 10000) {
                 
                 std::string normalizedname = entry.first;
@@ -932,14 +999,31 @@ void parseRoleCommand(std::string rawCommand) {
             int fidType = atoi(splitResult[1].c_str());
             int fidLoc = atoi(splitResult[2].c_str());
 
-            auto oNoteId = RE::TESDataHandler::GetSingleton()->LookupFormID((RE::FormID)0x021d0b, "AIAgent.esp");
-            auto oNote = RE::TESForm::LookupByID(oNoteId);
+            constexpr std::string_view encodedPrefix = "b64:";
+            if (splitResult[4].starts_with(encodedPrefix)) {
+                const auto content = HTTPManager::base64_decode(splitResult[4].substr(encodedPrefix.size()));
+                if (!DynamicDiaryBook::StoreDiaryText(splitResult[0], content)) {
+                    logger::warn("[PHYSICAL_DIARY] No readable text was cached for '{}'", splitResult[0]);
+                }
+            } else {
+                logger::warn("[PHYSICAL_DIARY] Server did not provide encoded text for '{}'", splitResult[0]);
+            }
 
-            SpeakManager::getInstance().downloadFakeNote(splitResult[0]);
+            auto* ownerForm = RE::TESForm::LookupByID(static_cast<RE::FormID>(fidLoc));
+            auto* ownerActor = ownerForm ? ownerForm->As<RE::Actor>() : nullptr;
+            if (DynamicDiaryBook::ActorCarriesDiary(ownerActor, splitResult[0])) {
+                logger::info("[PHYSICAL_DIARY] Refreshed '{}' for {}; physical book already present",
+                             splitResult[0], ownerActor->GetDisplayFullName());
+                responsePop("rolecommand");
+                return;
+            }
+
+            logger::info("[PHYSICAL_DIARY] '{}' is missing from {}; spawning replacement",
+                         splitResult[0], ownerActor ? ownerActor->GetDisplayFullName() : "unresolved NPC");
 
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             auto args = RE::MakeFunctionArguments(std::move(splitResult[0]), std::move(fidType), std::move(fidLoc),
-                                                  std::move(splitResult[3]), std::move(splitResult[4]));
+                                                  std::move(splitResult[3]), std::string{});
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SpawnBook",
                                                                                        args, callback);
         }
@@ -1528,7 +1612,12 @@ void parseRoleCommand(std::string rawCommand) {
         if (splitResult.size() != 2) {
             logger::info("Command has not enough parms {}", command);
         } else {
-            sendMessageReal(splitResult[0], splitResult[1]);
+            const std::string message = splitResult[0];
+            const std::string messageType = splitResult[1];
+            // Browser STT commands arrive on the manager worker, while routing reads live Skyrim objects.
+            SKSE::GetTaskInterface()->AddTask([message, messageType]() {
+                sendMessageReal(message, messageType);
+            });
         }
     } else if (command.contains("QuestNotifySound")) {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
@@ -2268,31 +2357,34 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         if (locationForm) {
             auto value = locationForm->As<RE::BGSLocation>();
-            for (int i = 0; i < value->specialRefs.size(); i++) {
-                auto specialRefs = value->specialRefs[i];
-                auto ref = RE::TESForm::LookupByID(specialRefs.refData.refID);  // Get Markers
+            if (value) {
+                for (int i = 0; i < value->specialRefs.size(); i++) {
+                    auto specialRefs = value->specialRefs[i];
+                    auto ref = RE::TESForm::LookupByID(specialRefs.refData.refID);  // Get Markers
 
-                if (ref) {
-                    // logger::info(" 0x{:08x} ", specialRefs.refData.refID);
-                    if (ref->GetFormType() == RE::FormType::Reference) {
-                        auto refFinal = ref->As<RE::TESObjectREFR>();
-                        if (refFinal->GetBaseObject()->GetFormID() == 0x3b) {
-                            logger::info("Early XMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
-                                         ref->GetFormID());
-                            markerForm = refFinal;
-                            break;
-                        } else if (refFinal->GetBaseObject()->GetFormID() == 0x10) {
-                            logger::info("Early MapMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
-                                         ref->GetFormID());
-                            markerForm = refFinal;
-                            break;
+                    if (ref) {
+                        // logger::info(" 0x{:08x} ", specialRefs.refData.refID);
+                        if (ref->GetFormType() == RE::FormType::Reference) {
+                            auto refFinal = ref->As<RE::TESObjectREFR>();
+                            if (refFinal->GetBaseObject()->GetFormID() == 0x3b) {
+                                logger::info("Early XMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
+                                             ref->GetFormID());
+                                markerForm = refFinal;
+                                break;
+                            } else if (refFinal->GetBaseObject()->GetFormID() == 0x10) {
+                                logger::info("Early MapMarker reference found {} 0x{:08x}", ref->GetFormEditorID(),
+                                             ref->GetFormID());
+                                markerForm = refFinal;
+                                break;
+                            }
                         }
                     }
                 }
             }
             if (!markerForm) {
                 auto value = locationForm->As<RE::BGSLocation>();
-                if (value->worldLocMarker) {
+                
+                if (value && value->worldLocMarker) {
                     auto wmarkerPtr = value->worldLocMarker.get();
                     if (wmarkerPtr) {
                         auto wmarker = wmarkerPtr.get();
@@ -2422,7 +2514,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     }
                 }
             }
-            buffer.append(boundObject->GetName()).append(equiped).append(",");
+            buffer.append(std::to_string(count)).append(" ").append(boundObject->GetName()).append(equiped).append(",");
         }
 
         HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
@@ -2913,17 +3005,11 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         // For these, we don't need a target actor - just cast at a location
         if (deliveryType == 4) {
             // Target Location spell - try to find nearby target for location, else use caster's location
-            AIAgentManager& aiam = AIAgentManager::getInstance();
-            
             // If target specified, try to find them for their location
             if (!targetName.empty() && targetName != "self" && targetName != actorname && 
                 targetName != "Target Location") {
-                auto targetAgentPtr = aiam.getAgentByName(targetName);
-                if (targetAgentPtr) {
-                    targetToCastOn = targetAgentPtr->getActor();
-                } else if (targetName == aiam.getPlayerName()) {
-                    targetToCastOn = RE::PlayerCharacter::GetSingleton();
-                }
+                targetToCastOn =
+                    resolveActionActorTarget(targetName, targetActor, 2048.0f, false);
             }
             
             // If no valid target found or target is "Target Location", use caster as reference point
@@ -2936,14 +3022,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             if (targetName.empty() || targetName == "self" || targetName == actorname) {
                 targetToCastOn = targetActor;  // Cast on self
             } else {
-                // Find target by name
-                AIAgentManager& aiam = AIAgentManager::getInstance();
-                auto targetAgentPtr = aiam.getAgentByName(targetName);
-                if (targetAgentPtr) {
-                    targetToCastOn = targetAgentPtr->getActor();
-                } else if (targetName == aiam.getPlayerName()) {
-                    targetToCastOn = RE::PlayerCharacter::GetSingleton();
-                }
+                targetToCastOn =
+                    resolveActionActorTarget(targetName, targetActor, 2048.0f, false);
             }
         }
         
@@ -3076,8 +3156,10 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                         npc);
 
         auto player = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
+        auto playerName = getPreferredActorDisplayName(player, "Player");
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(amount));
+        auto args = RE::MakeFunctionArguments(std::move(player), std::move(npc), std::move(amount),
+                                              std::move(playerName));
 
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "RentRoom", args,
                                                                                    callback);
@@ -3212,8 +3294,12 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         auto args = RE::MakeFunctionArguments(std::move(npc), std::move(1), std::move(taskid));
 
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "stayAtPlace", args,
-                                                                                   callback);
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm || !vm->DispatchStaticCall("AIAgentAIMind", "stayAtPlace", args, callback)) {
+            logger::error("[FollowPlayer] Failed to dispatch player follow for {}", agentPtr->getActorName());
+        } else {
+            logger::info("[FollowPlayer] Dispatched player follow for {}", agentPtr->getActorName());
+        }
 
     } else if (command.contains("MakeFollower")) {
         responsePop("command");
@@ -3262,8 +3348,12 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         auto args = RE::MakeFunctionArguments(std::move(npc), std::move(player));
 
-        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "FollowSoft", args,
-                                                                                   callback);
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (!vm || !vm->DispatchStaticCall("AIAgentAIMind", "ComeCloser", args, callback)) {
+            logger::error("[ComeCloser] Failed to dispatch temporary approach for {}", agentPtr->getActorName());
+        } else {
+            logger::info("[ComeCloser] Dispatched temporary approach for {}", agentPtr->getActorName());
+        }
 
     } else if (command.contains("EndConversation")) {
         responsePop("command");
@@ -3892,6 +3982,59 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             RefreshAIAgentInventory(npc, agentPtr->getActorName(), true);
         }
 
+    } else if (command.contains("TakeHeldItem")) {
+        responsePop("command");
+        const auto requestedItem = ItemIdentifierUtils::ParseInventoryItemIdentifier(trim(parameter));
+        if (!requestedItem.baseId.has_value() || requestedItem.name.empty()) {
+            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "command@TakeHeldItem@" + trim(parameter) + "@Error: invalid held item identifier"),
+                             agentPtr->getActor());
+            return;
+        }
+
+        int isVR = ((REL::Module::GetRuntime() == REL::Module::Runtime::VR)) ? 1 : 0;
+        if (!isVR) {
+            auto npc = agentPtr->getActor();
+            auto itemForm = RE::TESForm::LookupByID(requestedItem.baseId.value());
+            if (itemForm == nullptr) {
+                logger::error("[TakeHeldItem] Could not find item form for BaseID: 0x{:X}", requestedItem.baseId.value());
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@TakeHeldItem@" + requestedItem.name + "@Error: item form not found"),
+                                 npc);
+                return;
+            }
+            auto itemRef = itemForm->As<RE::TESObjectREFR>();
+            auto itemName = requestedItem.name;
+
+            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(itemRef), std::move(itemName),1);
+            auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+
+            if (!vm) {
+                logger::error("[PickupItem] Failed to get VirtualMachine!");
+                return;
+            }
+
+            bool dispatchResult = vm->DispatchStaticCall("AIAgentAIMind", "PickupItemFromWorld", args, callback);
+            if (!dispatchResult) {
+                logger::error("[HELD_ITEM_NO_VR] Failed to dispatch Papyrus call!");
+            } else {
+                logger::info("[HELD_ITEM_NO_VR] Successfully dispatched PickupItemFromWorld for {}.",
+                             requestedItem.name);
+            }
+
+        } else {
+            auto* recipient = agentPtr->getActor();
+            const auto error =
+                VRItemAwareness::BeginHeldItemHandoff(recipient, requestedItem.baseId.value(), requestedItem.name);
+            if (!error.empty()) {
+                logger::info("[HELD_ITEM_HANDOFF] Could not start for {}: {}", requestedItem.name, error);
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@TakeHeldItem@" + requestedItem.name + "@Error: " + error),
+                                 recipient);
+            }
+        }
+
     } else if (command.contains("PickupItem")) {
         responsePop("command");
         auto npc = agentPtr->getActor();
@@ -3973,7 +4116,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             
             // Call PickupItemFromWorld with the actual ObjectReference (much faster - no scanning in Papyrus)
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(itemRef), std::move(itemName));
+            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(itemRef), std::move(itemName),0);
             auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
             
             if (!vm) {
@@ -4023,9 +4166,17 @@ bool PlayerIsInInterior() {
 std::string InspectLocations(RE::TESObjectREFR* reference) {
     std::string buffer;
 
-    for (const auto& entry : LocationList::GetInstance()) {
-        const std::string& name = entry.first;
-        RE::TESObjectREFR* location = entry.second;
+    if (!reference) {
+        logger::warn("InspectLocations: reference is unavailable");
+        return "none";
+    }
+
+    for (const auto& entry : LocationList::GetInstance().Snapshot()) {
+        auto locationRef = entry.second.get();
+        RE::TESObjectREFR* location = locationRef ? locationRef.get() : nullptr;
+        if (!location) {
+            continue;
+        }
         if (location->GetPosition().GetDistance(reference->GetPosition()) < 10000) buffer.append(entry.first + ",");
     }
     if (buffer.empty()) buffer.assign("none");
@@ -4264,6 +4415,17 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
+        if (PrismaUIBridge::GetCurrentChatboxMode() == "CLOSE") {
+            const float closeRadius =
+                PlayerConversationRouter::GetCloseRadiusUnits(player->IsSneaking());
+            spatialSettings.maxAirDistance = closeRadius;
+            spatialSettings.interiorMaxDistance = closeRadius;
+            spatialSettings.exteriorMaxDistance = closeRadius;
+            spatialSettings.autoHearingDistance = 0.0f;
+            spatialSettings.immediateDistance = 0.0f;
+            return spatialSettings;
+        }
+
         const float distanceMultiplier = PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();
         spatialSettings.maxAirDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
@@ -4300,6 +4462,9 @@ float GetAudibleActorsDistanceMultiplier(RE::Actor* speaker)
 {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (speaker && player && speaker->GetFormID() == player->GetFormID()) {
+        if (PrismaUIBridge::GetCurrentChatboxMode() == "CLOSE") {
+            return -1.0f;
+        }
         return PrismaUIBridge::GetPlayerSpeechDistanceMultiplier();
     }
 
@@ -4942,23 +5107,30 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
 RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* cell, RE::Actor* sourceActor,
                                    float radius, bool allowDead) {
     RE::TESObjectREFR* target = nullptr;
-    bool interior = PlayerIsInInterior();
-    auto prd = RE::PlayerCharacter::GetSingleton()->GetParentCell();
-
     auto player = RE::PlayerCharacter::GetSingleton();
-    auto playerLoc = player->GetCurrentLocation();
-    RE::Actor* result = nullptr;
-    RE::TESObjectREFR* from = sourceActor->AsReference();
 
     // Validate source actor
-    if (!sourceActor || !from) {
+    if (!sourceActor || !player) {
         logger::warn("findActorInCell: Invalid source actor");
+        return nullptr;
+    }
+
+    const auto parsedTarget = ActorTargetIdentifierUtils::Parse(targetName);
+    if (parsedTarget.hasRefId) {
+        if (auto* exactTarget =
+                resolveExplicitActorTarget(parsedTarget, cell, sourceActor, radius, allowDead)) {
+            return exactTarget->AsReference();
+        }
+    }
+
+    targetName = parsedTarget.fallbackName;
+    if (targetName.empty()) {
         return nullptr;
     }
 
     float lastDistance = 10000;
     if (cell) {
-        cell->ForEachReference([&target, &targetName, &from, &sourceActor, allowDead,
+        cell->ForEachReference([&target, &targetName, &sourceActor, allowDead,
                                 &lastDistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
             float distance = 10000;
             // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(), object.GetFormID());
