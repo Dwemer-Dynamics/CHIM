@@ -13,7 +13,7 @@ EndFunction
 ;BEGIN FRAGMENT Fragment_3
 Function Fragment_3(Actor akActor)
 ;BEGIN CODE
-Debug.Notification("[CHIM] FollowSoft pakage ended")
+AIAgentAIMind.EndFollowSoft(akActor)
 ;END CODE
 EndFunction
 ;END FRAGMENT
