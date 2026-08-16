@@ -5317,7 +5317,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                             // if (element->animationType.get() == RE::BSFurnitureMarker::AnimationType::kSit) {
                             //if (marker->animationType.all(furnitureMode)) {
                             if (marker->animationType.get() == furnitureMode) {
-                                if (std::abs(marker->offset.z - 34) < 1) {
+                                if ((std::abs(marker->offset.z - 34) < 1) || furnitureMode == RE::BSFurnitureMarker::AnimationType::kSleep) {
                                     allMarkersToSit = allMarkersToSit && true;
                                     someMarkersToSit = someMarkersToSit || true;
                                 } else {
