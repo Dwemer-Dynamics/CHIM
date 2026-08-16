@@ -6911,6 +6911,8 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
     if (!player) {
         return;
     }
+    logger::info("[ACTIVITY_STATUS] Refreshing nearby activity status for player at position ({:.2f}, {:.2f}, {:.2f}) with radius {:.2f}",
+        player->GetPosition().x, player->GetPosition().y, player->GetPosition().z, radius);
 
     json batchPayload;
     batchPayload["type"] = "activity_status_bulk";
@@ -9376,8 +9378,9 @@ EventHandlers {
             }
         } else  if (topicActor && !event->flag) {
             if (topicActor) {
-                std::string actorName(topicActor->GetDisplayFullName());
-                auto agentPtr = aiam.getAgentByName(actorName);
+                //std::string actorName(topicActor->GetDisplayFullName());
+                //auto agentPtr = aiam.getAgentByName(actorName);
+                auto agentPtr = aiam.getAgentByFormId(topicActor->GetFormID());
 
                 if (agentPtr) {
                     // agentPtr->setAvailable(false);
