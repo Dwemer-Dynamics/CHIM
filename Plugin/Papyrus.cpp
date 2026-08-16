@@ -44,6 +44,7 @@
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
 
+extern void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
 extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
 extern void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
 
@@ -5162,6 +5163,21 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     return 0;
 }
 
+int Papyrus::updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                        RE::StaticFunctionTag*, RE::Actor* target) {
+    ScopedPapyrusLock lock("updateRemoteCombatSnapshot");
+
+    if (target && target->GetHandle()) {
+        const std::string actorName = target->GetDisplayFullName();
+        RefreshAIAgentEquipment(target, actorName, true);
+        RefreshAIAgentInventoryImpl(target, actorName, true, true);
+        RefreshAIAgentStats(target, actorName, true);
+    } else {
+        logger::warn("[updateRemoteCombatSnapshot] Target actor has no valid handle.");
+    }
+    return 0;
+}
+
  int Papyrus::updateRemoteInventory(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                     RE::StaticFunctionTag*,RE::Actor* target) {
 
@@ -5356,6 +5372,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
 
     a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
+    a_vm->RegisterFunction("updateRemoteCombatSnapshot", "AIAgentFunctions", updateRemoteCombatSnapshot, false);
     a_vm->RegisterFunction("updateRemoteInventory", "AIAgentFunctions", updateRemoteInventory, false);
 
     a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);
