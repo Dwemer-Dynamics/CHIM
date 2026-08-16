@@ -45,6 +45,7 @@
 extern int VoiceRecord(int bindedKey);
 
 extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+extern void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
 
 void SkipNextPlayerMenuTopicLocalPlayback();
 
@@ -5154,6 +5155,7 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     if (target->GetHandle()) {
         addBasicProfileReal(target->GetHandle());
         RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, true);
+        RefreshAIAgentStats(target, target->GetDisplayFullName(), true);
     } else {
         logger::warn("[addBasicProfile] Target actor has no valid handle.");
     }

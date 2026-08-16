@@ -6787,12 +6787,6 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         return;
     }
     
-    // Skip dead NPCs
-    if (npc->IsDead()) {
-        logger::trace("[STATS_SKIP] {} is dead, skipping stats", agentName);
-        return;
-    }
-    
     auto stats = npc->AsActorValueOwner();
     if (!stats) {
         logger::warn("[STATS_UPDATE] Actor {} has no ActorValueOwner", agentName);
