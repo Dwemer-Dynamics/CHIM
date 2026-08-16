@@ -525,28 +525,9 @@ function FollowSoft(Actor npc, ObjectReference akTarget) global
 	;Debug.Notification("[CHIM] "+npc.GetDisplayName()+" sandboxing near "+akTarget.GetDisplayName())
 	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" sandboxing near "+akTarget.GetDisplayName())
 
-endFunction
-
-function EndFollowSoft(Actor npc) global
 	
-	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
-	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
-	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	; // Psijic Monk Outfit
-	
-	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
-	if (restorePlayerFollow == 0)
-		return
-	endif
-
-	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
-	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
-	
-	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
-	npc.EvaluatePackage()
-	Debug.Trace("[CHIM] ComeCloser restored player follow for "+npc.GetDisplayName())
 	
 endFunction
-
 
 ; Lets a temporary close-distance move finish without cancelling an active player-follow command.
 function ComeCloser(Actor npc, ObjectReference akTarget) global
@@ -554,6 +535,31 @@ function ComeCloser(Actor npc, ObjectReference akTarget) global
 	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	FollowSoft(npc, akTarget)
 
+	if (restorePlayerFollow == 0)
+		return
+	endif
+
+	float startedAt = Utility.GetCurrentRealTime()
+	while (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) == 1 && npc.GetDistance(akTarget) > 300.0 && (Utility.GetCurrentRealTime() - startedAt) < 20.0)
+		Utility.Wait(0.5)
+	endwhile
+
+	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1)
+		Debug.Trace("[CHIM] ComeCloser did not restore player follow for "+npc.GetDisplayName()+" because another action replaced it")
+		return
+	endif
+
+	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
+	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
+	Faction FollowFaction = Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction
+	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword
+
+	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
+	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+	npc.SetFactionRank(FollowFaction,1)
+	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
+	npc.EvaluatePackage()
+	Debug.Trace("[CHIM] ComeCloser restored player follow for "+npc.GetDisplayName()+" after "+(Utility.GetCurrentRealTime() - startedAt)+" seconds at distance "+npc.GetDistance(akTarget))
 
 endFunction
 
