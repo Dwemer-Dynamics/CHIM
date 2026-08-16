@@ -8215,7 +8215,7 @@ EventHandlers {
             const RE::FormID currentPlayerCellFormId = playerCell->GetFormID();
             if (staticLastPlayerCellFormId == 0) {
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
-            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId) {
+            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId && false) {
                 const RE::FormID previousPlayerCellFormId = staticLastPlayerCellFormId;
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
 
