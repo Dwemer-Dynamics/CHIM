@@ -3961,8 +3961,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			AIAgentFunctions.updateRemoteInventory(akTarget)
 			Debug.Trace("[CHIM] BackgroundCmd->UpdateInventory sent")
 		elseif 	(cmd[0] == "UpdateCombatSnapshot")
-			AIAgentFunctions.sendNPCFast(akTarget)
-			AIAgentFunctions.updateRemoteInventory(akTarget)
+			AIAgentFunctions.addBasicProfile(akTarget)
 			Debug.Trace("[CHIM] BackgroundCmd->UpdateCombatSnapshot sent")
 		elseif 	(cmd[0] == "CombatOutcome")
 			Actor sceneAnchor = Game.GetFormEx(HexToInt(cmd[3])) as Actor
