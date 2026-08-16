@@ -3742,7 +3742,7 @@ String Function ApplyBackgroundCombatOutcome(Actor participant, String encounter
 	endif
 
 	if appliedOutcome == "dead"
-		participant.Kill()
+		participant.KillEssential()
 		Utility.Wait(0.2)
 		if !participant.IsDead()
 			AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(participant.GetFormId()) + "@failed@dead", "backgroundcombat_result", participant.GetDisplayName())
