@@ -29,13 +29,14 @@ function ResetPackages(Actor npc) global
 	Package MoveToPackage = Game.GetFormFromFile(0x01C6E8, "AIAgent.esp") as Package ; Package MoveToTarget
 	Package WaitPackage = Game.GetFormFromFile(0x02021F, "AIAgent.esp") as Package ; Package MoveToTarget
 	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package		; FollowPlayerPackage
+	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
 	Package SandboxPackage = Game.GetFormFromFile(0x20ce2,"AIAgent.esp") as Package		; Package sandboxPackage 
 	Package doNothing = Game.GetForm(0x654e2) as Package ; Package doNothing
 	Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
 	
 	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
 
-	
+	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	
 	ActorUtil.RemovePackageOverride(npc, TraveltoPackage)
 	ActorUtil.RemovePackageOverride(npc, AttackPackage)
@@ -44,6 +45,7 @@ function ResetPackages(Actor npc) global
 	ActorUtil.RemovePackageOverride(npc, MoveToPackage)
 	ActorUtil.RemovePackageOverride(npc, WaitPackage)
 	ActorUtil.RemovePackageOverride(npc, FollowPlayerPackage)
+	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
 	ActorUtil.RemovePackageOverride(npc, SandboxPackage)
 	ActorUtil.RemovePackageOverride(npc, doNothing)
 	ActorUtil.RemovePackageOverride(npc, SandboxWorkPackage)
@@ -526,6 +528,34 @@ function FollowSoft(Actor npc, ObjectReference akTarget) global
 	
 endFunction
 
+; Restores persistent player follow after the temporary FollowSoft package finishes.
+function EndFollowSoft(Actor npc) global
+
+	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1)
+		return
+	endif
+
+	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
+	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
+	Faction FollowFaction = Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction
+	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword
+
+	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
+	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+	npc.SetFactionRank(FollowFaction,1)
+	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
+	npc.EvaluatePackage()
+	Debug.Trace("[CHIM] FollowSoft restored player follow for "+npc.GetDisplayName())
+
+endFunction
+
+; Starts a temporary close-distance move without cancelling active player-follow intent.
+function ComeCloser(Actor npc, ObjectReference akTarget) global
+
+	FollowSoft(npc, akTarget)
+
+endFunction
+
 function MakeFollower(Actor npc) global
 	
 	ResetPackages(npc);
@@ -876,6 +906,7 @@ int Function stayAtPlace(Actor npc,int followPlayer,String taskid = "") global
 			
 		npc.SetFactionRank(FollowFaction,1)
 		ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100,0)
+		StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 1)
 		npc.EvaluatePackage();
 	endif
 	

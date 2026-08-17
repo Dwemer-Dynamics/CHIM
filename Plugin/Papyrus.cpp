@@ -1525,7 +1525,9 @@ int sendMessageReal(
         typeRevised.assign("inputtext_s");
         effectiveRoutingContext.mode = PlayerConversationSpeechMode::Close;
     } else {
-        const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
+        const std::string currentConversationMode = effectiveRoutingContext.symbolRoutingMode.empty()
+            ? PrismaUIBridge::GetCurrentChatboxMode()
+            : effectiveRoutingContext.symbolRoutingMode;
         effectiveRoutingContext.mode =
             PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
         effectiveRoutingContext.narratorMode =

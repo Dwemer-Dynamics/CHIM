@@ -29,6 +29,9 @@ struct PlayerConversationRoutingContext
     PlayerConversationSpeechMode mode = PlayerConversationSpeechMode::Standard;
     RE::FormID explicitTargetFormId = 0;
     std::string explicitTargetName;
+    // Route against stripped content while sending the original shortcut to HerikaServer.
+    std::string symbolRoutingMode;
+    std::string routingMessage;
     bool everyoneMode = false;
     bool narratorMode = false;
 };

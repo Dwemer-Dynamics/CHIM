@@ -63,6 +63,7 @@
     let isChatFocused = false;
     let quickChatMode = false;
     let isFocusChatEnabled = false;
+    let currentMode = 'STANDARD';
     let currentModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
     let currentGlobalModelLabel = 'Standard';
@@ -103,6 +104,39 @@
         INJECTION_LOG: { label: 'Event Inject', class: 'director', action: 'mode_inject_log' },
         INJECTION_CHAT: { label: 'Inject & Chat', class: 'director', action: 'mode_inject_chat' }
     };
+
+    const symbolModeRules = [
+        { prefix: '((', mode: 'INJECTION_LOG', display: '(…)' },
+        { prefix: '~~', mode: 'CLOSE' },
+        { prefix: '!!', mode: 'SHOUT' },
+        { prefix: '**', mode: 'AUTOCHAT' },
+        { prefix: '~', mode: 'WHISPER' },
+        { prefix: '@', mode: 'NARRATOR' },
+        { prefix: '>', mode: 'DIRECTOR' },
+        { prefix: '#', mode: 'CHEATMODE' },
+        { prefix: '(', mode: 'INJECTION_CHAT', display: '…' }
+    ];
+
+    function detectSymbolMode(message) {
+        return symbolModeRules.find(function(rule) {
+            return String(message || '').startsWith(rule.prefix);
+        }) || null;
+    }
+
+    // Preview the request-local symbol mode while leaving the saved selector state unchanged.
+    function renderModeIndicator() {
+        if (!currentModeElement) return;
+        const symbolMode = detectSymbolMode(focusInput ? focusInput.value : '');
+        const effectiveMode = symbolMode ? symbolMode.mode : currentMode;
+        const config = modeConfig[effectiveMode] || modeConfig.STANDARD;
+        currentModeElement.className = 'mode-badge ' + config.class;
+        currentModeElement.textContent = symbolMode
+            ? `${config.label} (${symbolMode.display || symbolMode.prefix})`
+            : config.label;
+        currentModeElement.title = symbolMode
+            ? `One-shot ${config.label}; saved mode remains ${modeConfig[currentMode].label}.`
+            : (config.label === 'Close' ? 'Private, close-range conversation' : '');
+    }
 
     const modelConfig = {
         standard: { label: 'Standard', class: 'standard', action: 'llm_standard' },
@@ -733,6 +767,7 @@
         if (focusInput) {
             focusInput.value = '';
             focusInput.blur();
+            renderModeIndicator();
         }
         window.switchTab('chat');
     };
@@ -751,6 +786,7 @@
             showStoryEmpty('Loading recent context...');
         }
         focusInput.value = '';
+        renderModeIndicator();
         setTimeout(function() {
             focusInput.focus();
             focusInput.selectionStart = focusInput.value.length;
@@ -767,6 +803,7 @@
         focusModal.classList.add('hidden');
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
+        renderModeIndicator();
         focusInput.blur();
         setContextPlacement(false);
         if (shouldNotifyBridge && window.chimChatboxCommand) {
@@ -787,12 +824,14 @@
         if (!message.trim()) return;
         sendMessageToBridge(message);
         focusInput.value = '';
+        renderModeIndicator();
         window.closeFocusChatbox(true);
     };
 
     window.clearFocusMessage = function() {
         if (!focusInput) return;
         focusInput.value = '';
+        renderModeIndicator();
         focusInput.focus();
     };
 
@@ -855,6 +894,7 @@
     };
 
     if (focusInput) {
+        focusInput.addEventListener('input', renderModeIndicator);
         focusInput.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 e.preventDefault();
@@ -1011,16 +1051,11 @@
 
     window.updateChatboxMode = function(mode) {
         const modeUpper = mode ? mode.toUpperCase().trim() : 'STANDARD';
-        const config = modeConfig[modeUpper] || modeConfig.STANDARD;
+        currentMode = modeConfig[modeUpper] ? modeUpper : 'STANDARD';
+        const config = modeConfig[currentMode];
 
         currentModeAction = config.action;
-        if (currentModeElement) {
-            currentModeElement.className = 'mode-badge ' + config.class;
-            currentModeElement.textContent = config.label;
-            currentModeElement.title = config.label === 'Close'
-                ? 'Private, close-range conversation'
-                : '';
-        }
+        renderModeIndicator();
         setActiveTile(modeOptionButtons, 'action', config.action);
         refreshProfileLlmMode();
     };

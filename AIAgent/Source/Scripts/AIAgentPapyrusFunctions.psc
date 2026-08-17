@@ -356,11 +356,12 @@ Event OnKeyDown(int keyCode)
 			inputType = "inputtext_i"
 			SendLegacyTextMessage(messageText,inputType,selectedActor)
 			
-		elseif (Input.IsKeyPressed(42))	; Left Ctrl
+		elseif (Input.IsKeyPressed(42))	; Left Shift
 			
 			AIAgentAIMind.sendCustomLocation(messageText)
 			
 		else
+			;AIAgentFunctions.sendMessage(messageText,inputType)
 			SendLegacyTextMessage(messageText,inputType,selectedActor)
 		endif;
 		

@@ -139,6 +139,95 @@ body {
     margin-bottom: 4px;
 }
 
+.chatbox-mode-label {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: max-content;
+}
+
+.chatbox-mode-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border: 1px solid rgba(242, 124, 17, 0.52);
+    border-radius: 50%;
+    color: #d8a06e;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: help;
+}
+
+.chatbox-mode-help:hover,
+.chatbox-mode-help:focus-visible {
+    border-color: rgb(242, 124, 17);
+    color: #ffd7b0;
+    outline: none;
+}
+
+.chatbox-mode-shortcuts {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 160;
+    width: 270px;
+    padding: 10px 12px;
+    border: 1px solid rgba(242, 124, 17, 0.62);
+    border-radius: 6px;
+    background: rgba(16, 14, 20, 0.99);
+    color: #dedbe2;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.72);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: normal;
+    line-height: 1.35;
+    text-transform: none;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-3px);
+    transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s ease;
+}
+
+.chatbox-mode-help:hover + .chatbox-mode-shortcuts,
+.chatbox-mode-help:focus-visible + .chatbox-mode-shortcuts {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.chatbox-mode-shortcuts-title {
+    margin-bottom: 3px;
+    color: #fff3e6;
+    font-weight: 700;
+}
+
+.chatbox-mode-shortcuts-copy {
+    margin-bottom: 8px;
+    color: #aaa6ae;
+}
+
+.chatbox-mode-shortcuts-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr max-content 1fr;
+    gap: 5px 9px;
+    align-items: center;
+}
+
+.chatbox-mode-shortcuts-grid code {
+    min-width: 25px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(242, 124, 17, 0.15);
+    color: #ffd7b0;
+    font-family: Consolas, monospace;
+    text-align: center;
+}
+
 .chatbox-control-value {
     display: flex;
     align-items: center;
