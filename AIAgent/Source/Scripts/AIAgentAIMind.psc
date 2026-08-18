@@ -36,7 +36,7 @@ function ResetPackages(Actor npc) global
 	
 	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	;
 
-	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
+	
 	
 	ActorUtil.RemovePackageOverride(npc, TraveltoPackage)
 	ActorUtil.RemovePackageOverride(npc, AttackPackage)
@@ -52,6 +52,7 @@ function ResetPackages(Actor npc) global
 	;ActorUtil.ClearPackageOverride(npc)
 	
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
+	StorageUtil.SetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	
 	npc.EvaluatePackage()
 	
@@ -503,6 +504,7 @@ function FollowSoft(Actor npc, ObjectReference akTarget) global
 	
 	; used by get into conversation to make NPC talk near plater
 	;ResetPackages(npc);
+	Debug.Trace("[CHIM] <"+npc.GetDisplayName()+"> FollowSoft near "+akTarget.GetDisplayName())
 	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package 
 	Faction FollowFaction=Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction 
 	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	; // Psijic Monk Outfit
@@ -519,40 +521,42 @@ function FollowSoft(Actor npc, ObjectReference akTarget) global
 	
 	npc.SetFactionRank(FollowFaction,1)
 	PO3_SKSEFunctions.SetLinkedRef(npc,akTarget,MoveTargetKw) ;AIAgentMoveLocation keyword
-	ActorUtil.AddPackageOverride(npc, FollowPackageSoft, 50, 0)
+	ActorUtil.AddPackageOverride(npc, FollowPackageSoft, 55, 0)
 	npc.EvaluatePackage()
 	;Debug.Notification("[CHIM] "+npc.GetDisplayName()+" sandboxing near "+akTarget.GetDisplayName())
-	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" sandboxing near "+akTarget.GetDisplayName())
+	Debug.Trace("[CHIM] END <"+npc.GetDisplayName()+"> FollowSoft near "+akTarget.GetDisplayName())
 
-	
-	
 endFunction
 
-; Restores persistent player follow after the temporary FollowSoft package finishes.
 function EndFollowSoft(Actor npc) global
-
-	if (StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0) != 1)
+	
+	Debug.Trace("[CHIM] EndFollowSoft for "+npc.GetDisplayName())
+	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
+	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
+	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword	; // Psijic Monk Outfit
+	
+	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
+	if (restorePlayerFollow == 0)
 		return
 	endif
 
-	Package FollowPackageSoft = Game.GetFormFromFile(0x0268b0, "AIAgent.esp") as Package
-	Package FollowPlayerPackage = Game.GetFormFromFile(0x2226d,"AIAgent.esp") as Package
-	Faction FollowFaction = Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction
-	Keyword MoveTargetKw = Game.GetFormFromFile(0x021245,"AIAgent.esp") as Keyword
-
 	ActorUtil.RemovePackageOverride(npc, FollowPackageSoft)
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
-	npc.SetFactionRank(FollowFaction,1)
+	
 	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
 	npc.EvaluatePackage()
-	Debug.Trace("[CHIM] FollowSoft restored player follow for "+npc.GetDisplayName())
-
+	Debug.Trace("[CHIM] EndFollowSoft:FollowPlayerPackage restored player follow for "+npc.GetDisplayName())
+	
 endFunction
 
-; Starts a temporary close-distance move without cancelling active player-follow intent.
-function ComeCloser(Actor npc, ObjectReference akTarget) global
 
+; Lets a temporary close-distance move finish without cancelling an active player-follow command.
+function ComeCloser(Actor npc, ObjectReference akTarget) global
+	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" ComeCloser  to"+akTarget.GetDisplayName())
+
+	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	FollowSoft(npc, akTarget)
+
 
 endFunction
 
@@ -654,7 +658,8 @@ function TravelToLocation(Actor npc, ObjectReference akTarget,String place) glob
 	Faction FollowFaction=Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction 
 	Faction WaitFaction=Game.GetFormFromFile(0x02021E, "AIAgent.esp") as Faction 
 	Faction SandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
-		
+	Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
+	
 	if (npc.Is3dLoaded())
 		; Properly reset
 		PO3_SKSEFunctions.SetLinkedRef(npc,None)
@@ -679,9 +684,11 @@ function TravelToLocation(Actor npc, ObjectReference akTarget,String place) glob
 	npc.RemoveFromFaction(WaitFaction)
 	
 	npc.SetFactionRank(TravelToFaction,1)
+	npc.SetFactionRank(SandboxFaction,1)
 
 	PO3_SKSEFunctions.SetLinkedRef(npc,akTarget)
 	ActorUtil.AddPackageOverride(npc, TraveltoPackage, 100)
+	ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 90); to apply one NPC reaches destination
 	npc.EvaluatePackage()
 	
 	StorageUtil.SetFormValue(npc, "LastTravelToLocation",akTarget);
@@ -1913,14 +1920,14 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 		
 		finalNpcToSpawn = Game.GetFormFromFile(FormIdNPC, "AIAgent.esp") as ActorBase ; We should choose a correct template here
 		if (!finalNpcToSpawn)
-			finalNpcToSpawn  = Game.GetForm(FormIdNPC) as ActorBase 
+			finalNpcToSpawn  = Game.GetFormEx(FormIdNPC) as ActorBase 
 		endif;
 		;finalNpcToSpawn = Game.GetForm(FormIdNPC) as ActorBase
 	
 		Outfit clothing 
-		clothing = Game.GetForm(FormIdClothing) as Outfit  
+		clothing = Game.GetFormEx(FormIdClothing) as Outfit  
 		
-		Weapon mainWeapon=Game.GetForm(FormIdWeapon)	as Weapon
+		Weapon mainWeapon=Game.GetFormEx(FormIdWeapon)	as Weapon
 	
 		Actor finalActor;
 		if (place==0)
@@ -1962,7 +1969,7 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 		
 
 		if !isMob		
-			ActorBase source = Game.GetForm(FormIdNPCSource) as ActorBase; Will use this actor base as source to copy hair.
+			ActorBase source = Game.GetFormEx(FormIdNPCSource) as ActorBase; Will use this actor base as source to copy hair.
 			Actor finalSourceActor=Game.GetPlayer().PlaceAtMe(source,1,false,true) as Actor; Spawn source actor instance
 			Debug.Trace("[CHIM] [SPAWN_AGENT] Source actorbase is "+DecToHex(source.GetFormID()) + " "+DecToHex(finalSourceActor.GetFormID()))
 
@@ -3918,6 +3925,10 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		elseif 	(cmd[0] == "UpdateInventory") 
 			AIAgentFunctions.updateRemoteInventory(akTarget)
 			Debug.Trace("[CHIM] BackgroundCmd->UpdateInventory sent")
+
+		elseif 	(cmd[0] == "RemoveFromBgL") 
+			AIAgentFunctions.removeFromRenamedNPCList(akTarget)
+			Debug.Trace("[CHIM] BackgroundCmd->RemoveFromBgL sent")			
 			
 		elseif 	(cmd[0] == "Track") 
 			float x = 0;
@@ -3996,7 +4007,12 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			float realCoordsY=akTarget.GetPositionY();
 			float realCoordsZ=akTarget.GetPositionZ();
 			
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ,"util_location_npc")
+			string runningPackageId=""
+			Package runningPackage=PO3_SKSEFunctions.GetRunningPackage(akTarget) as Package
+			if (runningPackage)
+				runningPackageId=DecToHex(runningPackage.GetFormID())
+			endif
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ+"/"+runningPackageId,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -4006,6 +4022,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			
 			AIAgentFunctions.scanActorsAroundOffline(akTarget);
 			AIAgentPapyrusFunctions.sendLocation( loc,"",akTarget.GetParentCell());
+			
 		elseif 	(cmd[0] == "FindNPC") 
 			Int locrefId=HexToInt(cmd[1])
 			ObjectReference destinationRef = Game.GetFormEx(locrefId) as ObjectReference;
@@ -4069,6 +4086,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					endif
 				endif
 
+				
 				;if (loc.IsSameLocation(akTarget.GetCurrentLocation()))
 					int retFnc=AIAgentFunctions.logMessage(destinationRef.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
 				;endif

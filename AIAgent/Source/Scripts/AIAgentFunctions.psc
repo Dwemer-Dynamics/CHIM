@@ -152,3 +152,4 @@ string function GetDoorActivationText(ObjectReference akRef) global native
 
 int function startMusicScene(string songName,string singer) global native
 int function stopMusicScene(string singer) global native
+int function removeFromRenamedNPCList(Actor akTarget)  global native;

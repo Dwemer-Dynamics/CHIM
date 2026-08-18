@@ -7215,6 +7215,11 @@ void RefreshPlayerInventory(bool forceUpdate) {
     std::vector<InventoryItemSnapshot> inventoryItems;
     auto inventory = player->GetInventory();
     
+    if (player->IsInCombat()) {
+        logger::info("[RefreshPlayerInventory] Avoided equipment update under combat");
+        return;
+    }
+
     for (const auto& item : inventory) {
         RE::TESBoundObject* boundObject = item.first;
         auto count = item.second.first;
