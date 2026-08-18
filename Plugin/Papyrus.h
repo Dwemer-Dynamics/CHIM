@@ -331,5 +331,8 @@ namespace Papyrus {
                          std::string songName, std::string singerName );
     int stopMusicScene(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         std::string singerName);
+
+    int removeFromRenamedNPCList(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                 RE::StaticFunctionTag*, RE::Actor *actor);
 }
     

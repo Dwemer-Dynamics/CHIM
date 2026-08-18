@@ -5234,6 +5234,23 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     
 }
 
+
+ int Papyrus::removeFromRenamedNPCList(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                      RE::StaticFunctionTag*, RE::Actor *actor) {
+    ScopedPapyrusLock lock("removeFromRenamedNPCList");
+    if (!actor) {
+        logger::error("removeFromRenamedNPCList, no actor");
+    }
+
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    logger::info("Removing actor {} from renamed list", actor->GetDisplayFullName());
+    aiam.removeRenamedNpcByFormId(actor->GetFormID());
+
+    return 0;
+
+
+}
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
@@ -5361,5 +5378,6 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);
     a_vm->RegisterFunction("sendFactionFast", "AIAgentFunctions", sendFactionFast, false);
     a_vm->RegisterFunction("sendNPCFast", "AIAgentFunctions", sendNPCFast, false);
+    a_vm->RegisterFunction("removeFromRenamedNPCList", "AIAgentFunctions", removeFromRenamedNPCList, false);
     return true;
 }
