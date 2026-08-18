@@ -537,6 +537,11 @@ function EndFollowSoft(Actor npc) global
 	
 	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	if (restorePlayerFollow == 0)
+		Faction FollowFaction=Game.GetFormFromFile(0x01BC24, "AIAgent.esp") as Faction 
+		npc.RemoveFromFaction(FollowFaction)
+		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw) 
+		npc.EvaluatePackage()
+		Debug.Trace("[CHIM] EndFollowSoft for "+npc.GetDisplayName())
 		return
 	endif
 
@@ -545,14 +550,14 @@ function EndFollowSoft(Actor npc) global
 	
 	ActorUtil.AddPackageOverride(npc, FollowPlayerPackage, 100, 0)
 	npc.EvaluatePackage()
-	Debug.Trace("[CHIM] EndFollowSoft:FollowPlayerPackage restored player follow for "+npc.GetDisplayName())
+	Debug.Trace("[CHIM] EndFollowSoft for "+npc.GetDisplayName()+",FollowPlayerPackage restored")
 	
 endFunction
 
 
 ; Lets a temporary close-distance move finish without cancelling an active player-follow command.
 function ComeCloser(Actor npc, ObjectReference akTarget) global
-	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" ComeCloser  to"+akTarget.GetDisplayName())
+	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" ComeCloser to "+akTarget.GetDisplayName())
 
 	int restorePlayerFollow = StorageUtil.GetIntValue(npc, "CHIM_FollowPlayerActive", 0)
 	FollowSoft(npc, akTarget)
