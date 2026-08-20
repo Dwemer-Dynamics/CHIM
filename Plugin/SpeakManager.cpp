@@ -1277,8 +1277,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
 
         if (!enable3DAudioPlayback) {
-            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
-            am.Update(noopPosition, noopPosition, 0.0f);
+            // This is the legacy behavior.
+            auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
+            auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
+            am.UpdateLegacy(
+                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerActorPointer->GetPosition()),
+                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
+                headingAngle);
+
+            //const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            //am.Update(noopPosition, noopPosition, 0.0f);
             return;
         }
 
@@ -1479,6 +1487,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     } _watchdogGuard{loopRunning, loopWakeCv, loopWatchdog};
     _dap_phase("post_watchdog_thread_spawn");
 
+    
     while (std::chrono::steady_clock::now() < endTimeWithBlankSegment) {
         loopIterCount.fetch_add(1, std::memory_order_relaxed);
         setPhase("iter_top");
@@ -1750,32 +1759,47 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                                              speaker);
                     }
                 } else if (fgen) {
-                        commitVisemeCandidate();
-                        setPhase("write_voice_timer");
+                        
+                    // Legacy behavior
+                        if (lastViseme == visemeCode) {
+                            // intensity += intensityStep;
+                            intensity = (intensity + intensityStep) * 1.01;
+
+                        } else {
+                        
+                            lastViseme = visemeCode;
+                            intensity = 0;
+                        }
+                        if (intensity > 0.99) intensity = 1.00f;
+
                         speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
 
-                        setPhase("queue_viseme_task");
                         auto* taskInterface = SKSE::GetTaskInterface();
                         if (taskInterface) {
                             auto actorHandle = speakerActorPointer->GetHandle();
                             const int queuedLastViseme = lastViseme;
                             const float queuedIntensity = intensity;
-                            taskInterface->AddTask(
-                                [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
-                                    auto* actor = actorHandle.get().get();
-                                    if (!actor || !actor->Is3DLoaded()) {
-                                        return;
-                                    }
+                            
+                            auto now = std::chrono::steady_clock::now();
+                            
+                                taskInterface->AddTask(
+                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
+                                        auto* actor = actorHandle.get().get();
+                                        if (!actor || !actor->Is3DLoaded()) {
+                                            return;
+                                        }
 
-                                    auto deferredFgen = actor->GetFaceGenAnimationData();
-                                    if (!deferredFgen) {
-                                        return;
-                                    }
+                                        auto deferredFgen = actor->GetFaceGenAnimationData();
+                                        if (!deferredFgen) {
+                                            return;
+                                        }
 
-                                    RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                    ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                     intensityStepDecal);
-                                });
+                                        RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                        ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                         intensityStepDecal);
+                                    });
+                            
+                            
                         } else {
                             logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                         }
@@ -1788,7 +1812,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("avoid_click_check");
         if (DXinitOK) {  // Only if audio being reproduced,
             const bool shouldUpdatePlaybackState =
-                !enable3DAudioPlayback || std::chrono::steady_clock::now() > avoidClick;
+                std::chrono::steady_clock::now() > avoidClick;
             if (shouldUpdatePlaybackState) {
                 setPhase("spatial_audio_position_update");
                 updatePlaybackSpatialPosition();

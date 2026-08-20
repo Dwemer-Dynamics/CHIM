@@ -45,6 +45,7 @@ public:
     void setSpatialUpdatesEnabled(bool enabled);
     void Update(const X3DAUDIO_VECTOR& sourcePosition, const X3DAUDIO_VECTOR& listenerPosition,
                 float headingAngle);
+    void UpdateLegacy(const X3DAUDIO_VECTOR& sourcePosition, const X3DAUDIO_VECTOR& listenerPosition, float headingAngle);
     float GetElapsedTimeSeconds();
     bool isPlaying() const;
     static X3DAUDIO_VECTOR ConvertNiPoint3ToX3DAUDIO_VECTOR(const RE::NiPoint3& niPoint);
