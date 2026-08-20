@@ -9,7 +9,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, function() {
     'use strict';
 
-    const dialogueEvents = new Set(['chat', 'inputtext', 'ginputtext']);
+    const dialogueEvents = new Set(['chat', 'chat_background', 'inputtext', 'ginputtext']);
     const actionEvents = new Set(['infoaction', 'book', 'combat', 'itemfound']);
     const storyEvents = new Set(['quest', 'death', 'info_timeforward', 'instruction', 'narration']);
     const persistedDuplicateWindowMs = 10000;
