@@ -1138,12 +1138,25 @@
     };
 
     window.submitRumorForm = async function (event) {
-        event.preventDefault();
+        if (event) event.preventDefault();
         if (rumorBusy) return;
-        const form = byId('rumor-create-form');
-        if (!form.reportValidity() || !byId('rumor-hold-select').value) {
+        const hold = String(byId('rumor-hold-select').value || '').trim();
+        const content = String(byId('rumor-content-input').value || '').trim();
+        const lengthDaysRaw = String(byId('rumor-length-days-input').value || '').trim();
+        const lengthDays = lengthDaysRaw || '7';
+        if (!hold) {
+            byId('rumor-form-status').textContent = 'Select a hold for this rumor.';
+            byId('rumor-form-status').className = 'rumor-form-status error';
+            return;
+        }
+        if (!content) {
+            byId('rumor-form-status').textContent = 'Enter rumor content.';
+            byId('rumor-form-status').className = 'rumor-form-status error';
+            return;
+        }
+        if (!/^\d+$/.test(lengthDays) || Number(lengthDays) < 1) {
             byId('rumor-form-status').textContent =
-                'Select a hold and enter rumor content.';
+                'Length (Days) must be a whole number of 1 or more.';
             byId('rumor-form-status').className = 'rumor-form-status error';
             return;
         }
@@ -1157,10 +1170,10 @@
             await postForm('/ui/api/background_life_rumors.php', {
                 operation: id ? 'update' : 'create',
                 id,
-                hold: byId('rumor-hold-select').value,
+                hold,
                 type: byId('rumor-type-input').value,
-                content: byId('rumor-content-input').value,
-                length_days: byId('rumor-length-days-input').value || '7'
+                content,
+                length_days: lengthDays
             });
             window.closeRumorModal();
             await refreshRumors();
