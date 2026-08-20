@@ -2793,7 +2793,7 @@ Function SetQuestTracker(ObjectReference ref) global
 EndFunction
 
 Function AddDelayedNPC(Actor akActor) global
-
+		
 	Debug.Trace("[CHIM] [SPAWN_AGENT_D] AddDelayedNPC checking "+akActor.GetDisplayName())
 	Utility.wait(1);
 	if (StorageUtil.HasFormValue(akActor,"CustomHairColor"))
@@ -2808,6 +2808,7 @@ Function AddDelayedNPC(Actor akActor) global
 		Debug.Trace("[CHIM] [SPAWN_AGENT_D] AddDelayedNPC Source actorbase is "+DecToHex(SourceActor.GetFormID()))
 		CopyApearanceFromToComplex(finalSourceActor,akActor); Copy appearance from source to dest
 		finalSourceActor.Disable(); Remove source actor as is not needed anymore.
+		finalSourceActor.Delete(); Remove source actor as is not needed anymore.
 	else
 		Debug.Trace("[CHIM] [SPAWN_AGENT_D] AddDelayedNPC: No OriginalNPC");
 	endif
@@ -4096,6 +4097,19 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					int retFnc=AIAgentFunctions.logMessage(destinationRef.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name,"util_location_npc")
 				;endif
 			endif
+		elseif  (cmd[0] == "SleepInBed")
+			Int bedRef=StringToInt(cmd[1])
+			ObjectReference destination = Game.GetFormEx(bedRef) as ObjectReference;
+			
+			
+			if (destination)
+				SleepInBed(akTarget,destination)
+				Debug.Trace("[CHIM] BackgroundCmd, SleepInBed destination: "+destination.GetName()+ ", FormId:"+DecToHex(bedRef))
+				
+			else
+				Debug.Trace("[CHIM] BackgroundCmd, SleepInBed Couldn't find destination for formId: "+DecToHex(bedRef))
+			endif
+			
 		else
 			Debug.Trace("[CHIM] BackgroundCmd unrecogniced "+cmd[0]);
 		endif
