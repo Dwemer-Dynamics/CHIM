@@ -24,6 +24,16 @@ function loadOverlayFunction(name) {
     return new Function(source + '\nreturn ' + name + ';')();
 }
 
+function loadChatboxFunction(name) {
+    const marker = 'function ' + name + '(';
+    const start = script.indexOf(marker);
+    assert.notEqual(start, -1, name + ' not found in chatbox.js');
+    const end = script.indexOf('\n    }', start);
+    assert.notEqual(end, -1, name + ' body not delimited in chatbox.js');
+    const source = script.slice(start, end + '\n    }'.length);
+    return new Function(source + '\nreturn ' + name + ';')();
+}
+
 test('keeps a standalone recent-context viewer available outside the chat modal', () => {
     const viewerStart = html.indexOf('<div id="chim-chatbox-viewer">');
     const contextStart = html.indexOf('<section id="chim-chatbox"');
@@ -140,4 +150,47 @@ test('colors the overlay listener status semantically without changing its text'
     ['hearing-ok', 'hearing-partial', 'hearing-blocked'].forEach((cls) => {
         assert.ok(overlayCss.includes('.target-status.' + cls + ' {'), cls);
     });
+});
+
+test('accepts every Delete Events count the selector offers', () => {
+    const selectMatch = html.match(/<select id="chatbox-delete-events-select"[\s\S]*?<\/select>/);
+    assert.ok(selectMatch, 'delete events select not found in chatbox.html');
+    const offered = [...selectMatch[0].matchAll(/<option value="(\d+)"/g)].map((m) => Number(m[1]));
+    assert.deepEqual(offered, [5, 10, 20, 50, 100]);
+
+    const normalize = loadChatboxFunction('normalizeDeleteEventCount');
+    offered.forEach((count) => {
+        assert.equal(normalize(count), count, 'numeric ' + count);
+        assert.equal(normalize(String(count)), count, 'select value "' + count + '"');
+    });
+
+    // Anything outside the selector is refused instead of deleting a different amount.
+    [0, 1, 7, 15, 99, 200, -5, NaN, null, undefined, '', 'all'].forEach((bad) => {
+        assert.equal(normalize(bad), 0, String(bad));
+    });
+
+    // Click handling and the request path share the single validator.
+    assert.doesNotMatch(script, /\[20, 50, 100\]/);
+    assert.equal(script.match(/normalizeDeleteEventCount\(/g).length, 3);
+});
+
+test('requires two presses on Delete Events and asks "Are you sure?" in between', () => {
+    assert.match(script, /function armDeleteConfirmation\(deleteCount\)[\s\S]*?deleteEventConfirmButton\.textContent = 'Are you sure\?'/);
+    assert.doesNotMatch(script, /Confirm Delete/);
+
+    // The second press only fires when it confirms the same selected count.
+    assert.match(script, /if \(pendingDeleteCount === deleteCount\) \{[\s\S]*?window\.deleteRecentEvents\(deleteCount\);[\s\S]*?armDeleteConfirmation\(deleteCount\);/);
+});
+
+test('never leaves the Delete Events button stuck on the confirmation prompt', () => {
+    assert.match(script, /function clearPendingDeleteConfirmation\(\)[\s\S]*?pendingDeleteCount = 0;[\s\S]*?window\.clearTimeout\(pendingDeleteConfirmTimeoutId\)[\s\S]*?deleteEventConfirmButton\.textContent = 'Delete'/);
+    // Expiry, count changes, and every busy/error/success exit reset the label.
+    assert.match(script, /pendingDeleteConfirmTimeoutId = window\.setTimeout\(function\(\) \{\s*clearPendingDeleteConfirmation\(\);\s*\}, \d+\)/);
+    assert.match(script, /deleteEventSelect\.addEventListener\('change', function\(\) \{\s*clearPendingDeleteConfirmation\(\);/);
+    assert.match(script, /\} finally \{\s*setDeleteEventControlsBusy\(false\);\s*clearPendingDeleteConfirmation\(\);/);
+
+    // It stays a real focusable button, with the tooltip matching whichever state it shows.
+    assert.match(html, /<button id="chatbox-delete-events-confirm"[^>]*type="button"[^>]*title="Delete the selected number of recent events"[^>]*>Delete<\/button>/);
+    assert.match(script, /textContent = 'Are you sure\?';\s*deleteEventConfirmButton\.title = 'Press again to delete the selected events'/);
+    assert.match(script, /textContent = 'Delete';\s*deleteEventConfirmButton\.title = 'Delete the selected number of recent events'/);
 });
