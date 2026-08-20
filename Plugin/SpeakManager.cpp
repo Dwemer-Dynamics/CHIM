@@ -1262,6 +1262,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         logger::info(
             "[SpeakManager] SpatialAudioDBG skipped for '{}' (narrator={}, speakerPtr={}, listenerPtr={})",
             speaker, isNarrator ? 1 : 0, speakerActorPointer ? 1 : 0, playbackListenerActor ? 1 : 0);
+        am.setDistanceScaler(1.0f);
     }
 
     //
@@ -1318,7 +1319,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                       SpatialAwareness::GetEffectiveActorPosition(RE::PlayerCharacter::GetSingleton())),
                   headingAngle);
     };
+
     _dap_phase("before_LoadWAV");
+
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         _dap_phase("after_LoadWAV_ok");
         am.setMuffledPlayback(runtimeMuffleFilter);
