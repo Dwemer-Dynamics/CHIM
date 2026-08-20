@@ -131,6 +131,9 @@ namespace PrismaUIBridge {
     static bool g_lastChatboxFocusChatSent = false;
     static bool g_chatboxModeInitialized = false;
     static std::string g_lastChatboxMode = "";
+    // Once a valid server or local value is accepted, delayed startup hydration
+    // must not replace it with an older persisted value.
+    static std::atomic<bool> g_chatboxModeHydrated{false};
     static std::string g_chatboxCurrentModelLabel = "Standard";
     static bool g_chatboxModelInitialized = false;
     static std::string g_lastChatboxModelLabel = "";
@@ -332,6 +335,8 @@ namespace PrismaUIBridge {
     static void UpdateChatboxTargetUI(const std::string& name, float distance);
     static void UpdateChatboxTargetsUI(const std::string& payload);
     static void UpdateChatboxModeUI(const std::string& mode);
+    static void UpdateOverlayModeUI(const std::string& mode);
+    static void PushCurrentModeToViews();
     static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
     static void UpdateChatboxFocusUI(bool focused);
@@ -1792,7 +1797,8 @@ R"CHIM(
         g_prismaUI->Invoke(view, call.c_str(), nullptr);
     }
 
-    bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag, bool showNotification) {
+    bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag, bool showNotification,
+                               bool persistToServer, bool serverHydration) {
         std::string normalizedMode = mode;
         std::transform(normalizedMode.begin(), normalizedMode.end(), normalizedMode.begin(),
             [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
@@ -1804,6 +1810,10 @@ R"CHIM(
         if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
             logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
             return false;
+        }
+
+        if (!serverHydration) {
+            g_chatboxModeHydrated.store(true);
         }
 
         const std::string previousMode = g_chatboxCurrentMode;
@@ -1818,6 +1828,11 @@ R"CHIM(
         }
         logger::info("[{}] Set mode to: {}", sourceTag, normalizedMode);
 
+        if (persistToServer) {
+            HTTPManager::log(std::format("setconf|{}|{}|chim_mode@{}",
+                getCurrentTimeMillis(), GetGameTimeStamp(), normalizedMode));
+        }
+
         if (showNotification) {
             RE::DebugNotification(("[CHIM] Chat mode: " + normalizedMode).c_str());
         }
@@ -1831,6 +1846,7 @@ R"CHIM(
                          sourceTag, previousMode, normalizedMode);
         }
 
+        PushCurrentModeToViews();
         return true;
     }
 
@@ -1851,10 +1867,7 @@ R"CHIM(
             return false;
         }
 
-        HTTPManager::log(std::format("setconf|{}|{}|chim_mode@{}",
-            getCurrentTimeMillis(), GetGameTimeStamp(), modeStr));
-
-        return SetCurrentChatboxMode(modeStr, sourceTag, showNotification);
+        return SetCurrentChatboxMode(modeStr, sourceTag, showNotification, true);
     }
 
     // ===== CHIM Overlay Functions =====
@@ -1896,6 +1909,12 @@ R"CHIM(
     static void OnOverlayDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Overlay panel DOM ready");
         g_overlayDomReady.store(true);
+
+        // Claim the mode badge for the native mode before any server payload paints it.
+        PushCurrentModeToViews();
+        if (!g_chatboxModeHydrated.load()) {
+            SyncChatboxStatusFromServerAsync();
+        }
 
         // Initial fetch of overlay data
         FetchAndUpdateOverlay();
@@ -2089,6 +2108,10 @@ R"CHIM(
     void FetchAndUpdateOverlay() {
         if (!g_prismaUI || !g_overlayCreated.load()) {
             return;
+        }
+
+        if (!g_chatboxModeHydrated.load()) {
+            SyncChatboxStatusFromServerAsync();
         }
 
         {
@@ -6308,6 +6331,27 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateOverlayModeUI(const std::string& mode) {
+        if (!g_prismaUI || !g_overlayCreated.load() || !g_overlayDomReady.load()) {
+            return;
+        }
+
+        const std::string modeUpper = mode.empty() ? "STANDARD" : mode;
+        const std::string jsCall =
+            "window.updateOverlayMode && window.updateOverlayMode('" + EscapeForJS(modeUpper) + "')";
+        g_prismaUI->Invoke(g_overlayView, jsCall.c_str(), nullptr);
+    }
+
+    // Single fan-out for the persistent CHIM mode so the chatbox selector and the
+    // overlay badge always render the same value from the same native source.
+    static void PushCurrentModeToViews() {
+        const std::string mode = g_chatboxCurrentMode.empty() ? "STANDARD" : g_chatboxCurrentMode;
+        UpdateChatboxModeUI(mode);
+        UpdateOverlayModeUI(mode);
+        g_lastChatboxMode = mode;
+        g_chatboxModeInitialized = true;
+    }
+
     static void UpdateChatboxModelUI(const std::string& modelLabel) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
             return;
@@ -6445,9 +6489,20 @@ R"CHIM(
                     if (parsed.contains("success") && parsed["success"].is_boolean() && parsed["success"].get<bool>() &&
                         parsed.contains("data") && parsed["data"].is_object()) {
                         const auto& data = parsed["data"];
-                        if (data.contains("mode") && data["mode"].is_string()) {
-                            SetCurrentChatboxMode(
-                                data["mode"].get<std::string>(), "Chatbox Status Sync", false);
+                        if (data.contains("mode") && data["mode"].is_string() &&
+                            !g_chatboxModeHydrated.load()) {
+                            const std::string serverMode = data["mode"].get<std::string>();
+                            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                                taskInterface->AddTask([serverMode]() {
+                                    if (g_chatboxModeHydrated.exchange(true)) {
+                                        return;
+                                    }
+                                    if (!SetCurrentChatboxMode(
+                                            serverMode, "Chatbox Status Sync", false, false, true)) {
+                                        g_chatboxModeHydrated.store(false);
+                                    }
+                                });
+                            }
                         }
                         if (data.contains("active_model_label") && data["active_model_label"].is_string()) {
                             g_chatboxCurrentModelLabel = data["active_model_label"].get<std::string>();
@@ -6791,9 +6846,7 @@ R"CHIM(
         }
 
         if (!g_chatboxModeInitialized || g_lastChatboxMode != g_chatboxCurrentMode) {
-            UpdateChatboxModeUI(g_chatboxCurrentMode);
-            g_lastChatboxMode = g_chatboxCurrentMode;
-            g_chatboxModeInitialized = true;
+            PushCurrentModeToViews();
         }
 
         if (!g_chatboxModelInitialized || g_lastChatboxModelLabel != g_chatboxCurrentModelLabel) {
@@ -6884,7 +6937,7 @@ R"CHIM(
         welcomeMsg += "- Status: " + std::string(conf.isOk() ? "Connected" : "Disconnected");
         
         PushSystemLogEntry("info", welcomeMsg, std::string(timeDateString));
-        UpdateChatboxModeUI(g_chatboxCurrentMode);
+        PushCurrentModeToViews();
         SyncChatboxStatusFromServerAsync();
         FetchAndUpdateChatboxStory(true);
         logger::info("[PrismaUIBridge] Pushed welcome message to chatbox");
@@ -6922,7 +6975,6 @@ R"CHIM(
             UnfocusChatboxPanel();
         } else if (cmd.starts_with("mode_")) {
             if (ApplyModeSelection(cmd, "Chatbox", true)) {
-                UpdateChatboxModeUI(g_chatboxCurrentMode);
                 CheckAndUpdateChatboxControls(true);
             }
         } else if (cmd.starts_with("llm_")) {
@@ -7497,10 +7549,7 @@ R"CHIM(
 
         const std::string_view nextMode = ChatboxModePolicy::ModeAfterSubmission(submittedMode);
         if (nextMode != submittedMode &&
-            SetCurrentChatboxMode(std::string(nextMode), "Chatbox One-Shot Mode", false)) {
-            UpdateChatboxModeUI(g_chatboxCurrentMode);
-            g_lastChatboxMode = g_chatboxCurrentMode;
-            g_chatboxModeInitialized = true;
+            SetCurrentChatboxMode(std::string(nextMode), "Chatbox One-Shot Mode", false, true)) {
             logger::info("[PrismaUIBridge] Reset one-shot {} mode to STANDARD after submission",
                          submittedMode);
         }
@@ -7599,7 +7648,6 @@ R"CHIM(
         // Mode wheel actions
         if (actionId.starts_with("mode_")) {
             if (ApplyModeSelection(actionId, "Settings Menu", true)) {
-                UpdateChatboxModeUI(g_chatboxCurrentMode);
                 CheckAndUpdateChatboxControls(true);
             }
             HideSettingsMenu();

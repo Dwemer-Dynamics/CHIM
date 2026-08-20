@@ -9,7 +9,20 @@ const masterMenuHtml = fs.readFileSync(path.join(viewRoot, 'master_menu.html'), 
 const masterMenuScript = fs.readFileSync(path.join(viewRoot, 'master_menu.js'), 'utf8');
 const css = fs.readFileSync(path.join(viewRoot, 'chatbox.css'), 'utf8');
 const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
+const overlayScript = fs.readFileSync(path.join(viewRoot, 'overlay.js'), 'utf8');
+const overlayCss = fs.readFileSync(path.join(viewRoot, 'overlay.css'), 'utf8');
 const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
+
+// Evaluate the small pure helper straight out of overlay.js so the mapping itself is tested.
+function loadOverlayFunction(name) {
+    const marker = 'function ' + name + '(';
+    const start = overlayScript.indexOf(marker);
+    assert.notEqual(start, -1, name + ' not found in overlay.js');
+    const end = overlayScript.indexOf('\n    }', start);
+    assert.notEqual(end, -1, name + ' body not delimited in overlay.js');
+    const source = overlayScript.slice(start, end + '\n    }'.length);
+    return new Function(source + '\nreturn ' + name + ';')();
+}
 
 test('keeps a standalone recent-context viewer available outside the chat modal', () => {
     const viewerStart = html.indexOf('<div id="chim-chatbox-viewer">');
@@ -84,4 +97,47 @@ test('keeps standalone context expanded and reserves collapse for focused chat',
     assert.match(script, /function setContextPlacement\(focused\)[\s\S]*?if \(focused\)[\s\S]*?applyContextCollapsed\(loadContextCollapsed\(\)\)[\s\S]*?contextPanelElement\.classList\.remove\('collapsed'\)/);
     assert.match(html, /<div class="chatbox-control-label">LLM Model<\/div>/);
     assert.doesNotMatch(html, /<div class="chatbox-control-label">Global Model<\/div>/);
+});
+
+test('keeps one persistent CHIM mode authority for the chatbox and the overlay badge', () => {
+    assert.match(bridge, /static void PushCurrentModeToViews\(\)[\s\S]*?UpdateChatboxModeUI\(mode\);[\s\S]*?UpdateOverlayModeUI\(mode\);/);
+    assert.match(bridge, /static void OnOverlayDomReady[\s\S]*?PushCurrentModeToViews\(\);/);
+    assert.match(bridge, /static void OnChatboxDomReady[\s\S]*?PushCurrentModeToViews\(\);/);
+    // Periodic server payloads no longer repaint the persistent mode.
+    assert.match(overlayScript, /window\.updateOverlayMode = function\(mode\)[\s\S]*?pluginModeApplied = true/);
+    assert.match(overlayScript, /if \(!pluginModeApplied\) \{[\s\S]*?updateMode\(overlay\.mode\);/);
+    // Overlay label and colour parity with the chatbox selector.
+    ['CLOSE', 'SHOUT', 'NARRATOR', 'INJECTION_CHAT'].forEach((mode) => {
+        assert.ok(overlayScript.includes("'" + mode + "': { label:"), mode);
+    });
+    ['close', 'shout', 'narrator'].forEach((cls) => {
+        assert.ok(overlayCss.includes('.mode-badge.' + cls + ' {'), cls);
+    });
+});
+
+test('colors the overlay listener status semantically without changing its text', () => {
+    const classify = loadOverlayFunction('classifyListenerStatus');
+
+    assert.equal(classify('Crosshair: Can hear you'), 'hearing-ok');
+    assert.equal(classify('Nearest: Can hear you: around a wall'), 'hearing-ok');
+    assert.equal(classify('Crosshair: Can hear you: 3m above you'), 'hearing-ok');
+
+    assert.equal(classify("Crosshair: Can't hear you clearly"), 'hearing-partial');
+    assert.equal(classify('Nearest: Can hear you, muffled by door'), 'hearing-partial');
+
+    assert.equal(classify('Crosshair: Too far away'), 'hearing-blocked');
+    assert.equal(classify("Nearest: Can't hear you"), 'hearing-blocked');
+    assert.equal(classify("Crosshair: Can't hear you: closed door"), 'hearing-blocked');
+
+    assert.equal(classify('No target'), '');
+    assert.equal(classify('Crosshair'), '');
+    assert.equal(classify('Nearest'), '');
+    assert.equal(classify('Crosshair: In combat'), '');
+    assert.equal(classify(''), '');
+    assert.equal(classify(null), '');
+
+    assert.match(overlayScript, /const statusClass = toneClass \? `target-status \$\{toneClass\}` : 'target-status'/);
+    ['hearing-ok', 'hearing-partial', 'hearing-blocked'].forEach((cls) => {
+        assert.ok(overlayCss.includes('.target-status.' + cls + ' {'), cls);
+    });
 });
