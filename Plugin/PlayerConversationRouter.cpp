@@ -95,6 +95,11 @@ namespace
             return false;
         }
 
+        if (actor->AsActorState()->IsUnconscious()) {
+            reason = "unconscious";
+            return false;
+        }
+
         auto* playerCell = player->GetParentCell();
         auto* actorCell = actor->GetParentCell();
         if (!playerCell || !playerCell->IsAttached() || !actorCell || !actorCell->IsAttached()) {

@@ -324,6 +324,9 @@ namespace SpatialAwareness
 
         bool IsUnavailable(RE::Actor* actor)
         {
+            if (actor && actor->AsActorState() && actor->AsActorState()->IsUnconscious()) {
+                return true;
+            }
             return !actor || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted();
         }
 
