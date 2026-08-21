@@ -1200,6 +1200,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             }
         }
     };
+
+    
     ScopedVolumeRestore scopedVolumeRestore{am, am.defaultVolume, false};
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -1262,6 +1264,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         logger::info(
             "[SpeakManager] SpatialAudioDBG skipped for '{}' (narrator={}, speakerPtr={}, listenerPtr={})",
             speaker, isNarrator ? 1 : 0, speakerActorPointer ? 1 : 0, playbackListenerActor ? 1 : 0);
+        
+        // Default to 1.0f for non-spatial playback, so that the volume multiplier is not affected by spatial
+        // calculations.
         am.setDistanceScaler(1.0f);
     }
 
@@ -1271,7 +1276,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     bool hasBeenAborted = false;
     logger::debug("[SpeakManager] Loading WAV");
+
     am.setSpatialUpdatesEnabled(enable3DAudioPlayback);
+
     auto updatePlaybackSpatialPosition = [&]() {
         if (!DXinitOK) {
             return;
@@ -1323,20 +1330,26 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     _dap_phase("before_LoadWAV");
 
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
-        _dap_phase("after_LoadWAV_ok");
-        am.setMuffledPlayback(runtimeMuffleFilter);
-        // Always set base playback volume. AudioManager ramps from 0 during Update(),
-        // even when spatial positioning is disabled.
-        if (std::abs(runtimeLineVolumeMultiplier - 1.0f) > 0.001f || enable3DAudioPlayback) {
-            logger::info("[SpeakManager] Applying line volume multiplier: {}", runtimeLineVolumeMultiplier);
+        if (enable3DAudioPlayback) {
+            _dap_phase("after_LoadWAV_ok");
+            am.setMuffledPlayback(runtimeMuffleFilter);
+            // Always set base playback volume. AudioManager ramps from 0 during Update(),
+            // even when spatial positioning is disabled.
+            if (std::abs(runtimeLineVolumeMultiplier - 1.0f) > 0.001f || enable3DAudioPlayback) {
+                logger::info("[SpeakManager] Applying line volume multiplier: {}", runtimeLineVolumeMultiplier);
+            }
+            am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
+            scopedVolumeRestore.active = true;
+            DXinitOK = true;
+            updatePlaybackSpatialPosition();
+            _dap_phase("before_Play");
+            if (!am.Play()) DXinitOK = false;
+            _dap_phase("after_Play");
+        } else {
+            DXinitOK = true;
+            if (!am.Play()) 
+                DXinitOK = false;
         }
-        am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
-        scopedVolumeRestore.active = true;
-        DXinitOK = true;
-        updatePlaybackSpatialPosition();
-        _dap_phase("before_Play");
-        if (!am.Play()) DXinitOK = false;
-        _dap_phase("after_Play");
     } else {
         _dap_phase("after_LoadWAV_failed");
     }
