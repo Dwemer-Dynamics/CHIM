@@ -300,8 +300,11 @@ namespace PrismaUIBridge {
     std::string GetCurrentChatboxMode();
 
     // Synchronize the native mode state after a Prisma, Papyrus, or server selection.
+    // Pass persistToServer=true only when the caller has not already written the
+    // matching chim_mode setconf entry itself. Server hydration is startup-only.
     bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag,
-                               bool showNotification = false);
+                               bool showNotification = false, bool persistToServer = false,
+                               bool serverHydration = false);
 
     // Multiplier applied to player-spoken spatial reach for the active CHIM mode
     float GetPlayerSpeechDistanceMultiplier();

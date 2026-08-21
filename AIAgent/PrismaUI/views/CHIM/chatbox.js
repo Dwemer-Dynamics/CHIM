@@ -687,6 +687,11 @@
         updateFocusPositionButtons();
     }
 
+    function normalizeDeleteEventCount(count) {
+        const deleteCount = Number(count || 0);
+        return [5, 10, 20, 50, 100].includes(deleteCount) ? deleteCount : 0;
+    }
+
     function setDeleteEventControlsBusy(isBusy) {
         if (deleteEventSelect) {
             deleteEventSelect.disabled = !!isBusy;
@@ -705,6 +710,7 @@
 
         if (deleteEventConfirmButton) {
             deleteEventConfirmButton.textContent = 'Delete';
+            deleteEventConfirmButton.title = 'Delete the selected number of recent events';
         }
     }
 
@@ -712,7 +718,8 @@
         clearPendingDeleteConfirmation();
         pendingDeleteCount = deleteCount;
         if (deleteEventConfirmButton) {
-            deleteEventConfirmButton.textContent = 'Confirm Delete';
+            deleteEventConfirmButton.textContent = 'Are you sure?';
+            deleteEventConfirmButton.title = 'Press again to delete the selected events';
         }
         pendingDeleteConfirmTimeoutId = window.setTimeout(function() {
             clearPendingDeleteConfirmation();
@@ -854,8 +861,11 @@
     };
 
     window.deleteRecentEvents = async function(count) {
-        const deleteCount = Number(count || 0);
-        if (![20, 50, 100].includes(deleteCount)) return;
+        const deleteCount = normalizeDeleteEventCount(count);
+        if (!deleteCount) {
+            clearPendingDeleteConfirmation();
+            return;
+        }
 
         setDeleteEventControlsBusy(true);
         try {
@@ -1641,8 +1651,11 @@
 
     if (deleteEventConfirmButton) {
         deleteEventConfirmButton.addEventListener('click', function() {
-            const deleteCount = Number(deleteEventSelect ? deleteEventSelect.value : 0);
-            if (![20, 50, 100].includes(deleteCount)) return;
+            const deleteCount = normalizeDeleteEventCount(deleteEventSelect ? deleteEventSelect.value : 0);
+            if (!deleteCount) {
+                clearPendingDeleteConfirmation();
+                return;
+            }
             if (pendingDeleteCount === deleteCount) {
                 window.deleteRecentEvents(deleteCount);
                 return;
