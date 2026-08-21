@@ -2685,6 +2685,71 @@ std::string Papyrus::getCurrentRecordingDeviceName(RE::BSScript::Internal::Virtu
     return GetCurrentRecordingDeviceName();
 }
 
+int Papyrus::beginChimMcmSnapshot(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("beginChimMcmSnapshot");
+    PrismaUIBridge::BeginChimMcmSnapshot();
+    return 1;
+}
+
+int Papyrus::publishChimMcmEntry(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*,
+    std::string page, std::string section, std::string key, std::string label, std::string description,
+    std::string type, std::string value, std::string options) {
+    ScopedPapyrusLock lock("publishChimMcmEntry");
+    std::array<std::string, 6> parsedOptions{};
+    std::istringstream optionStream(options);
+    for (auto& option : parsedOptions) {
+        std::getline(optionStream, option, '|');
+    }
+    const auto parseFloat = [](const std::string& raw) {
+        try {
+            return raw.empty() ? 0.0f : std::stof(raw);
+        } catch (...) {
+            return 0.0f;
+        }
+    };
+    PrismaUIBridge::PublishChimMcmEntry(
+        page, section, key, label, description, type, value,
+        parseFloat(parsedOptions[0]), parseFloat(parsedOptions[1]), parseFloat(parsedOptions[2]), parsedOptions[3],
+        parsedOptions[4] == "1", parsedOptions[5] == "1");
+    return 1;
+}
+
+int Papyrus::commitChimMcmSnapshot(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*, int revision) {
+    ScopedPapyrusLock lock("commitChimMcmSnapshot");
+    PrismaUIBridge::CommitChimMcmSnapshot(revision);
+    return 1;
+}
+
+int Papyrus::beginChimMcmAgents(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("beginChimMcmAgents");
+    PrismaUIBridge::BeginChimMcmAgents();
+    return 1;
+}
+
+int Papyrus::publishChimMcmAgent(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*,
+    std::string bucket, int formId, std::string name) {
+    ScopedPapyrusLock lock("publishChimMcmAgent");
+    PrismaUIBridge::PublishChimMcmAgent(bucket, formId, name);
+    return 1;
+}
+
+int Papyrus::commitChimMcmAgents(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("commitChimMcmAgents");
+    PrismaUIBridge::CommitChimMcmAgents();
+    return 1;
+}
+
+int Papyrus::publishChimMcmCommandResult(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*,
+    std::string request, bool ok, std::string message) {
+    ScopedPapyrusLock lock("publishChimMcmCommandResult");
+    PrismaUIBridge::PublishChimMcmCommandResult(request, ok, message);
+    return 1;
+}
+
 int Papyrus::setConf(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                      std::string code, float f_Value, int i_value, std::string s_value) {
     ScopedPapyrusLock lock("setConf");
@@ -5234,6 +5299,23 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     
 }
 
+
+ int Papyrus::removeFromRenamedNPCList(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                      RE::StaticFunctionTag*, RE::Actor *actor) {
+    ScopedPapyrusLock lock("removeFromRenamedNPCList");
+    if (!actor) {
+        logger::error("removeFromRenamedNPCList, no actor");
+    }
+
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    logger::info("Removing actor {} from renamed list", actor->GetDisplayFullName());
+    aiam.removeRenamedNpcByFormId(actor->GetFormID());
+
+    return 0;
+
+
+}
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
@@ -5255,6 +5337,14 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("stopOpenMicMonitoring", "AIAgentFunctions", stopOpenMicMonitoring, false);
     a_vm->RegisterFunction("setOpenMicMuted", "AIAgentFunctions", setOpenMicMuted, false);
     a_vm->RegisterFunction("getCurrentRecordingDeviceName", "AIAgentFunctions", getCurrentRecordingDeviceName, false);
+    a_vm->RegisterFunction("beginChimMcmSnapshot", "AIAgentFunctions", beginChimMcmSnapshot, false);
+    a_vm->RegisterFunction("publishChimMcmEntry", "AIAgentFunctions", publishChimMcmEntry, false);
+    a_vm->RegisterFunction("commitChimMcmSnapshot", "AIAgentFunctions", commitChimMcmSnapshot, false);
+    a_vm->RegisterFunction("beginChimMcmAgents", "AIAgentFunctions", beginChimMcmAgents, false);
+    a_vm->RegisterFunction("publishChimMcmAgent", "AIAgentFunctions", publishChimMcmAgent, false);
+    a_vm->RegisterFunction("commitChimMcmAgents", "AIAgentFunctions", commitChimMcmAgents, false);
+    a_vm->RegisterFunction(
+        "publishChimMcmCommandResult", "AIAgentFunctions", publishChimMcmCommandResult, false);
     a_vm->RegisterFunction("requestMessage", "AIAgentFunctions", requestMessage, false);
     a_vm->RegisterFunction("requestMessageForActor", "AIAgentFunctions", requestMessageForActor, false);
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
@@ -5361,5 +5451,6 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);
     a_vm->RegisterFunction("sendFactionFast", "AIAgentFunctions", sendFactionFast, false);
     a_vm->RegisterFunction("sendNPCFast", "AIAgentFunctions", sendNPCFast, false);
+    a_vm->RegisterFunction("removeFromRenamedNPCList", "AIAgentFunctions", removeFromRenamedNPCList, false);
     return true;
 }

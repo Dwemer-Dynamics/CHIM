@@ -3341,6 +3341,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         }
 
     } else if (command.contains("ComeCloser")) {
+        logger::info("[ComeCloser] Received command to approach player for {}", agentPtr->getActorName());
         responsePop("command");
         auto npc = agentPtr->getActor();
         auto player = RE::PlayerCharacter::GetSingleton()->AsReference();
@@ -5317,7 +5318,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                             // if (element->animationType.get() == RE::BSFurnitureMarker::AnimationType::kSit) {
                             //if (marker->animationType.all(furnitureMode)) {
                             if (marker->animationType.get() == furnitureMode) {
-                                if (std::abs(marker->offset.z - 34) < 1) {
+                                if ((std::abs(marker->offset.z - 34) < 1) || furnitureMode == RE::BSFurnitureMarker::AnimationType::kSleep) {
                                     allMarkersToSit = allMarkersToSit && true;
                                     someMarkersToSit = someMarkersToSit || true;
                                 } else {

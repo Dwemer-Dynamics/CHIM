@@ -156,3 +156,16 @@ test('identifies duplicate persisted events received in separate polling batches
     assert.equal(storyLog.isPersistedDuplicate(first, duplicate), true);
     assert.equal(storyLog.isPersistedDuplicate(first, laterRepeat), false);
 });
+
+test('keeps ambient background chat as NPC dialogue', () => {
+    const entry = storyLog.normalizeEvent({
+        Event: 'chat_background',
+        Events: '(Context location: Whiterun background chat) Lydia: The wind is picking up. (talking to Dragonborn)',
+        'Tamrielic Time': '19th of Last Seed, 4E 201, 09:33',
+        ROWID: '40'
+    }, 'The Narrator');
+
+    assert.equal(entry.kind, 'npc');
+    assert.equal(entry.speaker, 'Lydia');
+    assert.equal(entry.text, 'The wind is picking up.');
+});
