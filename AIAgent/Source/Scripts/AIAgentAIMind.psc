@@ -934,7 +934,7 @@ function OpenInventory(Actor npc,string originalCommand) global
 	float now = Utility.GetCurrentRealTime()
 	float lastInventoryMenuOpen = StorageUtil.GetFloatValue(npc, "CHIM_LastInventoryMenuOpenRealTime", -999.0)
 	if ((now - lastInventoryMenuOpen) < 2.5)
-		Debug.Trace("[CHIM] Suppressing rapid inventory reopen for "+npc.GetDisplayName()+" via "+originalCommand)
+		Debug.Trace("[CHIM] Suppressing rapid inventory reopen for "+npc.GetDisplayName()+" via "+originalCommand + ",lastInventoryMenuOpen vs now : "+lastInventoryMenuOpen+","+now )
 		return
 	endif
 	StorageUtil.SetFloatValue(npc, "CHIM_LastInventoryMenuOpenRealTime", now)
