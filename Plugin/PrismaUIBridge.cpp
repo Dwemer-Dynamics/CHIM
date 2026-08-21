@@ -12,6 +12,7 @@
 #include "SpatialSnapshotManager.h"
 #include "PlayerConversationRouter.h"
 #include "SpatialAwareness.h"
+#include "json.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -33,6 +34,7 @@
 #pragma comment(lib, "winhttp.lib")
 
 namespace logger = SKSE::log;
+using json = nlohmann::json;
 
 extern RE::TESFaction* AIAgentRoleMasterFaction;
 extern void ScriptProxyRun(const std::string& jsonStr);
@@ -65,6 +67,9 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_backgroundLifeDomReady{false};
     static std::atomic<bool> g_npcManagerDomReady{false};
     static std::atomic<bool> g_configManagerDomReady{false};
+    static std::mutex g_chimMcmMutex;
+    static json g_chimMcmEntries = json::array();
+    static json g_chimMcmAgents = {{"active", json::array()}, {"available", json::array()}};
     static uint32_t g_backgroundLifeSelectedFormId = 0;
     static std::atomic<int> g_lastRowId{0};
     static std::string g_lastError;
@@ -3785,6 +3790,122 @@ R"CHIM(
 
     // ===== CHIM Settings Hub Functions =====
 
+    static void QueueChimMcmEvent(const std::string& payload, float number = 0.0f) {
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            PublishChimMcmCommandResult(payload, false, "Game task interface is unavailable.");
+            return;
+        }
+
+        taskInterface->AddTask([payload, number]() {
+            auto* eventSource = SKSE::GetModCallbackEventSource();
+            if (!eventSource) {
+                PublishChimMcmCommandResult(payload, false, "Papyrus event interface is unavailable.");
+                return;
+            }
+
+            SKSE::ModCallbackEvent event{
+                RE::BSFixedString("CHIM_PrismaMCMRequest"),
+                RE::BSFixedString(payload),
+                number,
+                nullptr
+            };
+            eventSource->SendEvent(&event);
+        });
+    }
+
+    static bool TryParseMcmNumber(const std::string& raw, float& value) {
+        try {
+            size_t consumed = 0;
+            value = std::stof(raw, &consumed);
+            return consumed == raw.size() && std::isfinite(value);
+        } catch (...) {
+            return false;
+        }
+    }
+
+    static bool IsSafeMcmKey(const std::string& key) {
+        return !key.empty() && key.size() <= 64 &&
+               std::all_of(key.begin(), key.end(), [](unsigned char ch) {
+                   return std::isalnum(ch) || ch == '_';
+               });
+    }
+
+    static std::string ResolveMcmActorName(const std::string& rawFormId) {
+        try {
+            size_t consumed = 0;
+            const auto formId = static_cast<RE::FormID>(std::stoul(rawFormId, &consumed, 16));
+            if (consumed != rawFormId.size()) {
+                return {};
+            }
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(formId);
+            if (!actor) {
+                return {};
+            }
+            const char* displayName = actor->GetDisplayFullName();
+            if (!displayName || displayName[0] == '\0') {
+                return {};
+            }
+            std::string name = displayName;
+            std::replace(name.begin(), name.end(), '|', ' ');
+            return name;
+        } catch (...) {
+            return {};
+        }
+    }
+
+    static void HandleChimMcmCommand(const std::string& command) {
+        if (command == "snapshot" || command == "agents_refresh" ||
+            command == "agents_add_all" || command == "agents_remove_all") {
+            QueueChimMcmEvent(command);
+            return;
+        }
+
+        constexpr std::string_view setPrefix = "set|";
+        if (command.starts_with(setPrefix)) {
+            const auto separator = command.find('|', setPrefix.size());
+            if (separator == std::string::npos) {
+                PublishChimMcmCommandResult(command, false, "Invalid setting command.");
+                return;
+            }
+
+            const std::string key = command.substr(setPrefix.size(), separator - setPrefix.size());
+            const std::string rawValue = command.substr(separator + 1);
+            float numericValue = 0.0f;
+            if (!IsSafeMcmKey(key) || !TryParseMcmNumber(rawValue, numericValue)) {
+                PublishChimMcmCommandResult(command, false, "Invalid setting value.");
+                return;
+            }
+            QueueChimMcmEvent("set|" + key, numericValue);
+            return;
+        }
+
+        constexpr std::string_view addPrefix = "agent_add|";
+        constexpr std::string_view removePrefix = "agent_remove|";
+        if (command.starts_with(addPrefix) || command.starts_with(removePrefix)) {
+            const bool adding = command.starts_with(addPrefix);
+            const auto prefixSize = adding ? addPrefix.size() : removePrefix.size();
+            const std::string actorName = ResolveMcmActorName(command.substr(prefixSize));
+            if (actorName.empty()) {
+                PublishChimMcmCommandResult(command, false, "The selected NPC is no longer available.");
+                return;
+            }
+            QueueChimMcmEvent(std::string(adding ? "agent_add|" : "agent_remove|") + actorName);
+            return;
+        }
+
+        constexpr std::string_view toolPrefix = "tool|";
+        if (command.starts_with(toolPrefix)) {
+            const std::string tool = command.substr(toolPrefix.size());
+            if (tool == "sync_factions_locations" || tool == "send_voice_samples") {
+                QueueChimMcmEvent(command);
+                return;
+            }
+        }
+
+        PublishChimMcmCommandResult(command, false, "Unknown CHIM MCM command.");
+    }
+
     static void SetConfigManagerServerUrl() {
         if (!g_prismaUI || !g_configManagerCreated.load() || g_configManagerView == 0 ||
             !g_prismaUI->IsValid(g_configManagerView)) {
@@ -3814,6 +3935,8 @@ R"CHIM(
             SetConfigManagerServerUrl();
         } else if (command == "tab_npcs") {
             ShowConfigManagerPanel("npcs");
+        } else if (command.starts_with("mcm|")) {
+            HandleChimMcmCommand(command.substr(4));
         } else if (command.starts_with("npc|")) {
             const std::string npcCommand = command.substr(4);
             if (npcCommand == "close") {
@@ -3872,7 +3995,7 @@ R"CHIM(
         if (g_settingsMenuCreated.load() && !g_prismaUI->IsHidden(g_settingsMenuView)) HideSettingsMenu();
         g_prismaUI->Show(g_configManagerView);
         SetConfigManagerServerUrl();
-        const std::string normalizedTab = tab == "profiles" || tab == "npcs" ? tab : "globals";
+        const std::string normalizedTab = tab == "profiles" || tab == "npcs" || tab == "mcm" ? tab : "globals";
         const std::string call = "window.setConfigManagerTab && window.setConfigManagerTab('" + normalizedTab + "')";
         g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
         const bool focused = g_prismaUI->Focus(g_configManagerView, true, false);
@@ -3892,6 +4015,91 @@ R"CHIM(
     bool IsConfigManagerPanelVisible() {
         return g_prismaUI && g_configManagerCreated.load() && g_configManagerView != 0 &&
                g_prismaUI->IsValid(g_configManagerView) && !g_prismaUI->IsHidden(g_configManagerView);
+    }
+
+    void BeginChimMcmSnapshot() {
+        std::lock_guard<std::mutex> lock(g_chimMcmMutex);
+        g_chimMcmEntries = json::array();
+    }
+
+    void PublishChimMcmEntry(
+        const std::string& page,
+        const std::string& section,
+        const std::string& key,
+        const std::string& label,
+        const std::string& description,
+        const std::string& type,
+        const std::string& value,
+        float minValue,
+        float maxValue,
+        float step,
+        const std::string& unit,
+        bool readOnly,
+        bool deprecated) {
+        std::lock_guard<std::mutex> lock(g_chimMcmMutex);
+        g_chimMcmEntries.push_back({
+            {"page", page}, {"section", section}, {"key", key}, {"label", label},
+            {"description", description}, {"type", type}, {"value", value},
+            {"min", minValue}, {"max", maxValue}, {"step", step}, {"unit", unit},
+            {"readonly", readOnly}, {"deprecated", deprecated}
+        });
+    }
+
+    void CommitChimMcmSnapshot(int revision) {
+        json payload;
+        {
+            std::lock_guard<std::mutex> lock(g_chimMcmMutex);
+            payload = {{"revision", revision}, {"entries", g_chimMcmEntries}};
+        }
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_configManagerDomReady.load() ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        const std::string call = "window.updateChimMcmState && window.updateChimMcmState(" + payload.dump() + ")";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+    }
+
+    void BeginChimMcmAgents() {
+        std::lock_guard<std::mutex> lock(g_chimMcmMutex);
+        g_chimMcmAgents = {{"active", json::array()}, {"available", json::array()}};
+    }
+
+    void PublishChimMcmAgent(const std::string& bucket, int formId, const std::string& name) {
+        if (bucket != "active" && bucket != "available") {
+            return;
+        }
+        std::ostringstream formIdText;
+        formIdText << std::uppercase << std::hex << std::setw(8) << std::setfill('0')
+                   << static_cast<std::uint32_t>(formId);
+        std::lock_guard<std::mutex> lock(g_chimMcmMutex);
+        g_chimMcmAgents[bucket].push_back({{"refid", formIdText.str()}, {"name", name}});
+    }
+
+    void CommitChimMcmAgents() {
+        json payload;
+        {
+            std::lock_guard<std::mutex> lock(g_chimMcmMutex);
+            payload = g_chimMcmAgents;
+        }
+        payload["updated_at"] = std::to_string(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_configManagerDomReady.load() ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        const std::string call = "window.updateChimMcmAgents && window.updateChimMcmAgents(" + payload.dump() + ")";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+    }
+
+    void PublishChimMcmCommandResult(const std::string& request, bool ok, const std::string& message) {
+        if (!g_prismaUI || !g_configManagerCreated.load() || !g_configManagerDomReady.load() ||
+            !g_prismaUI->IsValid(g_configManagerView)) {
+            return;
+        }
+        const json payload = {{"request", request}, {"ok", ok}, {"message", message}};
+        const std::string call = "window.chimMcmCommandResult && window.chimMcmCommandResult(" + payload.dump() + ")";
+        g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
     }
 
     // ===== CHIM Browser Functions =====

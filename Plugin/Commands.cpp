@@ -3341,7 +3341,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         }
 
     } else if (command.contains("ComeCloser")) {
-        //logger::info("[ComeCloser] Received command to approach player for {}", agentPtr->getActorName());
+        logger::info("[ComeCloser] Received command to approach player for {}", agentPtr->getActorName());
         responsePop("command");
         auto npc = agentPtr->getActor();
         auto player = RE::PlayerCharacter::GetSingleton()->AsReference();
