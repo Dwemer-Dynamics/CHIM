@@ -141,6 +141,28 @@ namespace PrismaUIBridge {
     void HideConfigManagerPanel();
     bool IsConfigManagerPanelVisible();
 
+    // Stage one metadata-rich CHIM MCM setting before publishing the snapshot to Prisma.
+    void BeginChimMcmSnapshot();
+    void PublishChimMcmEntry(
+        const std::string& page,
+        const std::string& section,
+        const std::string& key,
+        const std::string& label,
+        const std::string& description,
+        const std::string& type,
+        const std::string& value,
+        float minValue,
+        float maxValue,
+        float step,
+        const std::string& unit,
+        bool readOnly,
+        bool deprecated);
+    void CommitChimMcmSnapshot(int revision);
+    void BeginChimMcmAgents();
+    void PublishChimMcmAgent(const std::string& bucket, int formId, const std::string& name);
+    void CommitChimMcmAgents();
+    void PublishChimMcmCommandResult(const std::string& request, bool ok, const std::string& message);
+
     // ===== CHIM Browser Functions =====
 
     // Create the CHIM browser panel
