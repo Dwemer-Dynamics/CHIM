@@ -3598,6 +3598,7 @@ Function GatherAround()  global
 		bool mustCome= true
 		;mustCome = mustCome && (!actorAtIndex.IsHostileToActor(Game.GetPlayer()))	; Hostiles wont come
 		;mustCome = mustCome && (actorAtIndex.Getrace().isPlayable())				; Only playable races
+		mustCome = mustCome && (!actorAtIndex.IsUnconscious()) && (actorAtIndex.GetSleepState()!=3)
 		if (mustCome) 
 			Debug.Trace("[CHIM] "+actorAtIndex.getDisplayName() +" will come to player"); 
 			stayAtPlace(actorAtIndex,1,"papyrus");
