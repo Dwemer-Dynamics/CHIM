@@ -281,7 +281,10 @@ int			_overlaystatus_cycle_keyDefault	= -1
 
 int			_historydiaries_cycle_keyDefault = -1
 
+int _prismaMcmRevision = 0
+
 event OnPlayerLoadGame()
+	RegisterPrismaMCMEvent()
 	; Re-apply combat settings on every game load since C++ plugin doesn't persist them
 	Debug.Trace("[CHIM] OnPlayerLoadGame")
 	int combatDialogueValue = AIAgentFunctions.get_conf_i("_combat_dialogue")
@@ -345,6 +348,7 @@ endEvent
 event OnConfigInit()
 
 	ModName="CHIM"
+	RegisterPrismaMCMEvent()
 	Pages = new string[6]
 	Pages[0] = "Hotkeys"
 	Pages[1] = "Auto Activate"
@@ -695,6 +699,457 @@ int function getActionMode()
 	endif
 	return 0
 EndFunction
+
+Function RegisterPrismaMCMEvent()
+	UnregisterForModEvent("CHIM_PrismaMCMRequest")
+	RegisterForModEvent("CHIM_PrismaMCMRequest", "OnPrismaMCMRequest")
+EndFunction
+
+String Function PrismaMCMBool(bool value)
+	if value
+		return "1"
+	endif
+	return "0"
+EndFunction
+
+Function PublishPrismaMCMEntry(String pageName, String sectionName, String keyName, String label, String description, String controlType, String value, String options)
+	AIAgentFunctions.publishChimMcmEntry(pageName, sectionName, keyName, label, description, controlType, value, options)
+EndFunction
+
+Function PublishPrismaMCMState()
+	AIAgentFunctions.beginChimMcmSnapshot()
+
+	; Prisma captures DirectInput key codes and applies them only when Save is pressed.
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Open Prisma Text Chat and type a message.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Push to talk with AI NPCs or summarize an open book.", "keymap", _myKey2 as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "manual_ai_activate", "Manual AI Activate", "Activate or deactivate AI control for the targeted NPC.", "keymap", _myKey7 as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Legacy text chat input. Use Text Chat instead.", "keymap", _myKey as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "chatbox_view", "Chatbox View", "Toggle the live Prisma Chatbox View.", "keymap", _chatbox_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "actions_menu", "Actions Menu", "Open the Prisma AI actions panel.", "keymap", _settingsmenu_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "overlay_status_cycle", "Status, Minihud, Terminator Views", "Cycle through the Prisma status views.", "keymap", _overlaystatus_cycle_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "history_diaries_cycle", "History/Diaries", "Cycle through Conversation History and Diaries.", "keymap", _historydiaries_cycle_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "browser", "Browser Beta", "Toggle the in-game CHIM Browser.", "keymap", _browser_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "logs_view", "Logs View (Beta)", "Open the Prisma CHIM Logs View.", "keymap", _debugger_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "master_wheel", "Master Wheel", "Deprecated wheel-menu launcher.", "keymap", _masterwheel_key as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "roleplay_wheel", "Roleplay Wheel", "Deprecated roleplay wheel.", "keymap", _myKey4 as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "settings_wheel", "Settings Wheel", "Deprecated settings wheel.", "keymap", _myKey3 as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "mode_wheel", "Mode Wheel", "Deprecated chat-mode wheel.", "keymap", _godmode_key as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "soulgaze_wheel", "Soulgaze Wheel", "Deprecated Soulgaze wheel.", "keymap", _myKey6 as String, "0|0|0||0|1")
+
+	PublishPrismaMCMEntry("Auto Activate", "Auto Activate", "enable_auto_activate", "Enable Auto Activate", "Automatically activate eligible NPCs around the player.", "toggle", PrismaMCMBool(_toggleAddAllNPCState), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Distances", "max_distance_inside", "Interior Auto Activate Distance", "Auto Activate NPCs within this distance indoors.", "slider", _max_distance_inside as String, "10|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Distances", "max_distance_outside", "Exterior Auto Activate Distance", "Auto Activate NPCs within this distance outdoors.", "slider", _max_distance_outside as String, "10|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_inside", "Interior Spatial Hearing Distance", "Set indoor conversation hearing distance.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_outside", "Exterior Spatial Hearing Distance", "Set outdoor conversation hearing distance.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Hearing", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
+
+	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
+	PublishPrismaMCMEntry("Behavior", "Timers", "dynamic_profile_period", "Dynamic Profile Timer", "Period for automatic dynamic profile updates.", "slider", _dynamic_profile_period as String, "5|120|1|minutes|0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "animations", "Enable Animations", "Allow AI NPCs to perform animations.", "toggle", PrismaMCMBool(_animationstate), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "player_tts_traditional_dialogue", "Player TTS for Traditional Dialogue", "Play configured Player TTS for traditional dialogue choices.", "toggle", PrismaMCMBool(_playerTtsTraditionalDialogueState), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "soulgaze_hd", "Soulgaze HD Mode", "Use DirectX backbuffer capture for Soulgaze.", "toggle", PrismaMCMBool(_toggleState7), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "timeout", "Connection Timeout", "Timeout for requests to CHIM Server.", "slider", _timeout_int as String, "15|300|1|seconds|0|0")
+	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_sandbox_near", "NPCs Sandbox Near Player", "Let NPCs subtly move near the player during conversations.", "toggle", PrismaMCMBool(_toggle_npc_go_near_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_walk_to_target", "NPCs Walk To Target", "Let speaking NPCs walk toward their target.", "toggle", PrismaMCMBool(_toggle_npc_walk_to_target_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "seat_conversation_camera", "Seat Conversation Camera", "Turn the first-person camera toward speaking NPCs while seated.", "toggle", PrismaMCMBool(_toggle_autofocus_on_sit_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_scene_safety", "NPC Scene Safety", "Prevent traditional dialogue-scene NPCs from responding automatically.", "toggle", PrismaMCMBool(_toggle_restrict_onscene_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "Combat Settings", "combat_dialogue", "Allow combat dialogue", "Allow CHIM dialogue while NPCs are in combat.", "toggle", PrismaMCMBool(_toggle_combatdialogue_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "Combat Settings", "cancel_dialogue_on_combat", "Clear dialogue entering combat", "Cancel active AI dialogue when combat starts.", "toggle", PrismaMCMBool(_toggle_cancel_dialogue_on_combat_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "Combat Settings", "combat_barks", "Enable Combat Barks", "Let combatants periodically shout combat barks.", "toggle", PrismaMCMBool(_toggle_combat_barks_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "Combat Settings", "combat_barks_period", "Combat Bark Timer", "Seconds between combat barks.", "slider", _combat_barks_period as String, "5|120|5|seconds|0|0")
+
+	PublishPrismaMCMEntry("Sound", "Basic", "sound_volume", "AI Voice Volume", "Set AI NPC speech volume.", "slider", _sound_volume as String, "0|500|2|%|0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "head_voice_volume", "Narrator / Player TTS Volume", "Adjust narrator and player TTS volume relative to AI voices.", "slider", _head_voice_volume as String, "0|200|5|%|0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance.", "slider", _sound_ds as String, "0.1|20|0.1||0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness.", "slider", _playback_dropoff_inside as String, "25|200|1|%|0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness.", "slider", _playback_dropoff_outside as String, "25|200|1|%|0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "enable_3d_audio", "Enable 3D Audio Playback", "Play voices from their in-world positions.", "toggle", PrismaMCMBool(_enable3daudioplaybackstate), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "sound_preclip", "Skip milliseconds at beginning", "Skip silence at the beginning of generated speech.", "slider", _sound_preclip as String, "0|100|10|ms|0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "sound_postclip", "Skip milliseconds at end", "Skip silence at the end of generated speech.", "slider", _sound_postclip as String, "0|2000|2|ms|0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "lip_resolution", "Resolution of Lip Animations", "Tune lip animation sampling resolution.", "slider", _lip_res as String, "0|1000|10||0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "lip_intensity", "Intensity of Lip Animations", "Tune mouth movement intensity.", "slider", _lip_int as String, "0.1|2|0.1||0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "pause_dialogue", "Pause Dialogue on Game Pause", "Pause CHIM dialogue while game menus pause Skyrim.", "toggle", PrismaMCMBool(_pauseDialogueState), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "use_websocket_stt", "Use WebSocket STT", "Use the optional local WebSocket speech-to-text service.", "toggle", PrismaMCMBool(_toggle_usewebsocketstt_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Open Mic Settings", "openmic_enabled", "Enable Open Mic", "Automatically record when voice activity is detected.", "toggle", PrismaMCMBool(_toggle_openmic_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Open Mic Settings", "openmic_sensitivity", "Voice Detection Sensitivity", "Higher values require louder input to start recording.", "slider", _openmic_sensitivity as String, "100|5000|100||0|0")
+	PublishPrismaMCMEntry("Sound", "Open Mic Settings", "openmic_enddelay", "End of Sentence Delay", "Wait this long after voice stops before processing speech.", "slider", _openmic_enddelay as String, "0.5|5|0.1|seconds|0|0")
+	PublishPrismaMCMEntry("Sound", "Open Mic Settings", "openmic_mute", "Mute Open Mic", "Key used to temporarily mute open microphone capture.", "keymap", _openmic_mute_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Sound", "Recording Device", "current_recording_device", "Current Device", "Windows recording device currently resolved by CHIM.", "text", AIAgentFunctions.getCurrentRecordingDeviceName(), "0|0|0||1|0")
+
+	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
+EndFunction
+
+bool Function IsPrismaMCMKeySetting(String keyName)
+	return keyName == "text_chat" || keyName == "voice_chat" || keyName == "halt_ai_actions" || keyName == "master_menu" || keyName == "manual_ai_activate" || keyName == "text_chat_deprecated" || keyName == "chatbox_view" || keyName == "actions_menu" || keyName == "overlay_status_cycle" || keyName == "history_diaries_cycle" || keyName == "browser" || keyName == "logs_view" || keyName == "master_wheel" || keyName == "roleplay_wheel" || keyName == "settings_wheel" || keyName == "mode_wheel" || keyName == "soulgaze_wheel" || keyName == "openmic_mute"
+EndFunction
+
+bool Function IsPrismaMCMValueValid(String keyName, float value)
+	if IsPrismaMCMKeySetting(keyName)
+		int keyCode = value as Int
+		return value == (keyCode as Float) && (keyCode == -1 || (keyCode >= 2 && keyCode <= 281))
+	elseif keyName == "max_distance_inside" || keyName == "max_distance_outside"
+		return value >= 10.0 && value <= 5000.0
+	elseif keyName == "spatial_hearing_inside" || keyName == "spatial_hearing_outside"
+		return value >= 50.0 && value <= 5000.0
+	elseif keyName == "auto_hearing_radius_m"
+		return value >= 1.0 && value <= 20.0
+	elseif keyName == "bored_period"
+		return value >= 15.0 && value <= 600.0
+	elseif keyName == "dynamic_profile_period"
+		return value >= 5.0 && value <= 120.0
+	elseif keyName == "timeout"
+		return value >= 15.0 && value <= 300.0
+	elseif keyName == "combat_barks_period"
+		return value >= 5.0 && value <= 120.0
+	elseif keyName == "sound_volume"
+		return value >= 0.0 && value <= 500.0
+	elseif keyName == "head_voice_volume"
+		return value >= 0.0 && value <= 200.0
+	elseif keyName == "sound_distance_scale"
+		return value >= 0.1 && value <= 20.0
+	elseif keyName == "playback_dropoff_inside" || keyName == "playback_dropoff_outside"
+		return value >= 25.0 && value <= 200.0
+	elseif keyName == "sound_preclip"
+		return value >= 0.0 && value <= 100.0
+	elseif keyName == "sound_postclip"
+		return value >= 0.0 && value <= 2000.0
+	elseif keyName == "lip_resolution"
+		return value >= 0.0 && value <= 1000.0
+	elseif keyName == "lip_intensity"
+		return value >= 0.1 && value <= 2.0
+	elseif keyName == "openmic_sensitivity"
+		return value >= 100.0 && value <= 5000.0
+	elseif keyName == "openmic_enddelay"
+		return value >= 0.5 && value <= 5.0
+	endif
+	return value == 0.0 || value == 1.0
+EndFunction
+
+; Apply a Prisma key capture through the same native bindings used by SkyUI MCM.
+bool Function ApplyPrismaMCMKeySetting(String keyName, int keyCode)
+	if keyName == "text_chat"
+		if keyCode != -1 && keyCode == _chatbox_key
+			return false
+		endif
+		controlScript.removeBinding(_chatbox_focus_key)
+		_chatbox_focus_key = keyCode
+		controlScript.doBinding17(keyCode)
+	elseif keyName == "voice_chat"
+		controlScript.removeBinding(_myKey2)
+		_myKey2 = keyCode
+		controlScript.doBinding2(keyCode)
+	elseif keyName == "halt_ai_actions"
+		controlScript.removeBinding(_halt_key)
+		_halt_key = keyCode
+		controlScript.doBinding10(keyCode)
+	elseif keyName == "master_menu"
+		controlScript.removeBinding(_mastermenu_key)
+		_mastermenu_key = keyCode
+		controlScript.doBinding19(keyCode)
+	elseif keyName == "manual_ai_activate"
+		controlScript.removeBinding(_myKey7)
+		_myKey7 = keyCode
+		controlScript.doBinding7(keyCode)
+	elseif keyName == "text_chat_deprecated"
+		controlScript.removeBinding(_myKey)
+		_myKey = keyCode
+		controlScript.doBinding(keyCode)
+	elseif keyName == "chatbox_view"
+		if keyCode != -1 && keyCode == _chatbox_focus_key
+			return false
+		endif
+		controlScript.removeBinding(_chatbox_key)
+		_chatbox_key = keyCode
+		controlScript.doBinding16(keyCode)
+	elseif keyName == "actions_menu"
+		controlScript.removeBinding(_settingsmenu_key)
+		_settingsmenu_key = keyCode
+		controlScript.doBinding18(keyCode)
+	elseif keyName == "overlay_status_cycle"
+		controlScript.removeBinding(_overlaystatus_cycle_key)
+		_overlaystatus_cycle_key = keyCode
+		controlScript.doBinding12(keyCode)
+	elseif keyName == "history_diaries_cycle"
+		controlScript.removeBinding(_historydiaries_cycle_key)
+		_historydiaries_cycle_key = keyCode
+		controlScript.doBinding13(keyCode)
+	elseif keyName == "browser"
+		controlScript.removeBinding(_browser_key)
+		_browser_key = keyCode
+		controlScript.doBinding14(keyCode)
+	elseif keyName == "logs_view"
+		controlScript.removeBinding(_debugger_key)
+		_debugger_key = keyCode
+		controlScript.doBinding15(keyCode)
+	elseif keyName == "master_wheel"
+		controlScript.removeBinding(_masterwheel_key)
+		_masterwheel_key = keyCode
+		controlScript.doBinding11(keyCode)
+	elseif keyName == "roleplay_wheel"
+		controlScript.removeBinding(_myKey4)
+		_myKey4 = keyCode
+		controlScript.doBinding4(keyCode)
+	elseif keyName == "settings_wheel"
+		controlScript.removeBinding(_myKey3)
+		_myKey3 = keyCode
+		controlScript.doBinding3(keyCode)
+	elseif keyName == "mode_wheel"
+		controlScript.removeBinding(_godmode_key)
+		_godmode_key = keyCode
+		controlScript.doBinding8(keyCode)
+	elseif keyName == "soulgaze_wheel"
+		controlScript.removeBinding(_myKey6)
+		_myKey6 = keyCode
+		controlScript.doBinding6(keyCode)
+	elseif keyName == "openmic_mute"
+		controlScript.removeBinding(_openmic_mute_key)
+		_openmic_mute_key = keyCode
+		controlScript.doBinding9(keyCode)
+	else
+		return false
+	endif
+	return true
+EndFunction
+
+bool Function ApplyPrismaMCMSetting(String keyName, float value)
+	if !IsPrismaMCMValueValid(keyName, value)
+		return false
+	endif
+	if IsPrismaMCMKeySetting(keyName)
+		return ApplyPrismaMCMKeySetting(keyName, value as Int)
+	endif
+
+	bool enabled = value > 0.5
+	if keyName == "enable_auto_activate"
+		_toggleAddAllNPCState = enabled
+		controlScript.setConf("_toggleAddAllNPC", value)
+	elseif keyName == "max_distance_inside"
+		_max_distance_inside = value
+		controlScript.mdi = value
+		controlScript.setConf("_max_distance_inside", value)
+	elseif keyName == "max_distance_outside"
+		_max_distance_outside = value
+		controlScript.mdo = value
+		controlScript.setConf("_max_distance_outside", value)
+	elseif keyName == "spatial_hearing_inside"
+		_spatial_hearing_inside = value
+		controlScript.setConf("_spatial_hearing_inside", value)
+	elseif keyName == "spatial_hearing_outside"
+		_spatial_hearing_outside = value
+		controlScript.setConf("_spatial_hearing_outside", value)
+	elseif keyName == "auto_hearing_radius_m"
+		_auto_hearing_radius_m = value
+		controlScript.setConf("_auto_hearing_radius_m", value)
+	elseif keyName == "autoadd_hostile"
+		_toggle_autoadd_hostile_state = enabled
+		controlScript.setConf("_autoadd_hostile", value)
+	elseif keyName == "autoadd_allraces"
+		_toggle_autoadd_allraces_state = enabled
+		controlScript.setConf("_autoadd_allraces", value)
+	elseif keyName == "bored_period"
+		_bored_period = value
+		controlScript.setConf("_bored_period", value)
+	elseif keyName == "dynamic_profile_period"
+		_dynamic_profile_period = value
+		controlScript.setConf("_dynamic_profile_period", value)
+	elseif keyName == "enable_ai_actions"
+		_toggleState2 = enabled
+		controlScript.setNewActionMode(enabled as Int)
+	elseif keyName == "animations"
+		_animationstate = enabled
+		controlScript.setConf("_animations", value)
+	elseif keyName == "player_tts_traditional_dialogue"
+		_playerTtsTraditionalDialogueState = enabled
+		controlScript.setConf("_player_tts_traditional_dialogue", value)
+	elseif keyName == "soulgaze_hd"
+		_toggleState7 = enabled
+		controlScript.setSoulgazeModeNative(enabled as Int)
+	elseif keyName == "timeout"
+		_timeout_int = value
+		controlScript.setConf("_timeout", value)
+	elseif keyName == "npc_sandbox_near"
+		_toggle_npc_go_near_state = enabled
+		StorageUtil.SetIntValue(None, "AIAgentNpcWalkNear", enabled as Int)
+	elseif keyName == "npc_walk_to_target"
+		_toggle_npc_walk_to_target_state = enabled
+		StorageUtil.SetIntValue(None, "AIAgentNpcWalkToTarget", enabled as Int)
+	elseif keyName == "seat_conversation_camera"
+		_toggle_autofocus_on_sit_state = enabled
+		StorageUtil.SetIntValue(None, "AIAgentAutoFocusOnSit", enabled as Int)
+	elseif keyName == "npc_scene_safety"
+		_toggle_restrict_onscene_state = enabled
+		controlScript.setConf("_restrict_onscene", value)
+	elseif keyName == "combat_dialogue"
+		_toggle_combatdialogue_state = enabled
+		controlScript.setConf("_combat_dialogue", value)
+	elseif keyName == "cancel_dialogue_on_combat"
+		_toggle_cancel_dialogue_on_combat_state = enabled
+		controlScript.setConf("_cancel_dialogue_on_combat", value)
+	elseif keyName == "combat_barks"
+		_toggle_combat_barks_state = enabled
+		controlScript.setConf("_combat_barks", value)
+	elseif keyName == "combat_barks_period"
+		_combat_barks_period = value
+		controlScript.setConf("_combat_barks_period", value)
+	elseif keyName == "sound_volume"
+		_sound_volume = value
+		controlScript.setConf("_sound_volume", value)
+	elseif keyName == "head_voice_volume"
+		_head_voice_volume = value
+		controlScript.setConf("_head_voice_volume", value)
+	elseif keyName == "sound_distance_scale"
+		_sound_ds = value
+		controlScript.setConf("_sound_ds", value)
+	elseif keyName == "playback_dropoff_inside"
+		_playback_dropoff_inside = value
+		controlScript.setConf("_playback_dropoff_inside", value)
+	elseif keyName == "playback_dropoff_outside"
+		_playback_dropoff_outside = value
+		controlScript.setConf("_playback_dropoff_outside", value)
+	elseif keyName == "enable_3d_audio"
+		_enable3daudioplaybackstate = enabled
+		controlScript.setConf("_enable_3d_audio_playback", value)
+	elseif keyName == "camera_based_audio"
+		_camera_based_audio_state = enabled
+		controlScript.setConf("_camera_based_audio", value)
+	elseif keyName == "sound_preclip"
+		_sound_preclip = value
+		controlScript.setConf("_sound_preclip", value)
+	elseif keyName == "sound_postclip"
+		_sound_postclip = value
+		controlScript.setConf("_sound_postclip", value)
+	elseif keyName == "invert_heading"
+		_invertheadingstate = enabled
+		controlScript.setConf("_invertheadingstate", value)
+	elseif keyName == "lip_resolution"
+		_lip_res = value
+		controlScript.setConf("_lip_res", value)
+	elseif keyName == "lip_intensity"
+		_lip_int = value
+		controlScript.setConf("_lip_int", value)
+	elseif keyName == "pause_dialogue"
+		_pauseDialogueState = enabled
+		controlScript.setConf("_pause_dialogue_when_menu_open", value)
+	elseif keyName == "use_websocket_stt"
+		_toggle_usewebsocketstt_state = enabled
+		StorageUtil.SetIntValue(None, "AIAgentWebSockeSTT", enabled as Int)
+	elseif keyName == "openmic_enabled"
+		_toggle_openmic_state = enabled
+		controlScript.setConf("_openmic_enabled", value)
+	elseif keyName == "openmic_sensitivity"
+		_openmic_sensitivity = value
+		controlScript.setConf("_openmic_sensitivity", value)
+	elseif keyName == "openmic_enddelay"
+		_openmic_enddelay = value
+		controlScript.setConf("_openmic_enddelay", value)
+	else
+		return false
+	endif
+	return true
+EndFunction
+
+Function PublishPrismaMCMAgents()
+	AIAgentFunctions.beginChimMcmAgents()
+	Actor playerActor = Game.GetPlayer()
+	Actor[] activeAgents = AIAgentFunctions.findAllAgents()
+	int i = 0
+	int published = 0
+	while i < activeAgents.Length && published < 120
+		if activeAgents[i] && activeAgents[i] != playerActor && activeAgents[i].GetDisplayName() != "The Narrator"
+			AIAgentFunctions.publishChimMcmAgent("active", activeAgents[i].GetFormID(), activeAgents[i].GetDisplayName())
+			published += 1
+		endif
+		i += 1
+	endwhile
+
+	Actor[] availableAgents = AIAgentFunctions.findAllNearbyNonAgents()
+	i = 0
+	published = 0
+	while i < availableAgents.Length && published < 60
+		if availableAgents[i] && availableAgents[i] != playerActor && availableAgents[i].GetDisplayName() != "The Narrator"
+			AIAgentFunctions.publishChimMcmAgent("available", availableAgents[i].GetFormID(), availableAgents[i].GetDisplayName())
+			published += 1
+		endif
+		i += 1
+	endwhile
+	AIAgentFunctions.commitChimMcmAgents()
+EndFunction
+
+Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, Form sender)
+	if payload == "snapshot"
+		PublishPrismaMCMState()
+		return
+	elseif payload == "agents_refresh"
+		PublishPrismaMCMAgents()
+		return
+	elseif StringUtil.Find(payload, "set|") == 0
+		String keyName = StringUtil.Substring(payload, 4)
+		bool applied = ApplyPrismaMCMSetting(keyName, numericValue)
+		if applied
+			_prismaMcmRevision += 1
+			AIAgentFunctions.publishChimMcmCommandResult(payload, true, "Setting applied.")
+			PublishPrismaMCMState()
+		else
+			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "The setting or value is invalid.")
+		endif
+		return
+	elseif payload == "agents_add_all"
+		AIAgentFunctions.testAddAllNPCAround()
+		AIAgentFunctions.publishChimMcmCommandResult(payload, true, "Nearby AI agents added.")
+		PublishPrismaMCMAgents()
+		return
+	elseif payload == "agents_remove_all"
+		AIAgentFunctions.testRemoveAll()
+		AIAgentFunctions.publishChimMcmCommandResult(payload, true, "All AI agents removed.")
+		PublishPrismaMCMAgents()
+		return
+	elseif StringUtil.Find(payload, "agent_add|") == 0
+		String actorName = StringUtil.Substring(payload, 10)
+		Actor[] nearbyActors = AIAgentFunctions.findAllNearbyNonAgents()
+		int i = 0
+		Actor actorToAdd = None
+		while i < nearbyActors.Length && !actorToAdd
+			if nearbyActors[i] && nearbyActors[i].GetDisplayName() == actorName
+				actorToAdd = nearbyActors[i]
+			endif
+			i += 1
+		endwhile
+		if actorToAdd
+			AIAgentFunctions.setDrivenByAIA(actorToAdd, true)
+			AIAgentFunctions.publishChimMcmCommandResult(payload, true, "AI agent added: " + actorName)
+		else
+			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "The NPC is no longer nearby.")
+		endif
+		PublishPrismaMCMAgents()
+		return
+	elseif StringUtil.Find(payload, "agent_remove|") == 0
+		String actorName = StringUtil.Substring(payload, 13)
+		AIAgentFunctions.removeAgentByName(actorName)
+		AIAgentFunctions.publishChimMcmCommandResult(payload, true, "AI agent removed: " + actorName)
+		PublishPrismaMCMAgents()
+		return
+	elseif payload == "tool|sync_factions_locations"
+		AIAgentPapyrusFunctions.RunToolsSendFactionLocationInfo()
+		AIAgentFunctions.publishChimMcmCommandResult(payload, true, "Faction and location information sent.")
+		return
+	elseif payload == "tool|send_voice_samples"
+		int voiceResult = AIAgentPapyrusFunctions.RunToolsSendAllVoiceSamples()
+		if voiceResult == 0
+			AIAgentFunctions.publishChimMcmCommandResult(payload, true, "Voice samples uploaded.")
+		else
+			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "Voice sample upload failed.")
+		endif
+		return
+	endif
+	AIAgentFunctions.publishChimMcmCommandResult(payload, false, "Unknown CHIM MCM command.")
+EndEvent
 
 event OnPageReset(string a_page)
 
@@ -1160,14 +1615,14 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		controlScript.setConf("_combat_barks_period",_combat_barks_period)
 		SetSliderOptionValue(a_option, a_value, "{0}")
 	endIf
-	
-	
+	_prismaMcmRevision += 1
 endEvent
 	
 	
 event OnGameReload()
 	Debug.Trace("[CHIM] OnGameReload")
 	parent.OnGameReload()
+	RegisterPrismaMCMEvent()
 	bool a; to avoid warnings on runtime
 	if (_toggleState1)
 		;controlScript.setTTSOn();
@@ -1301,7 +1756,7 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_restrict_onscene",0)
 	endif
-
+	_prismaMcmRevision += 1
 endEvent
 
 event OnOptionDefault(int a_option)

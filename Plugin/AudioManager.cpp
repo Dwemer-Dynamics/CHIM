@@ -422,6 +422,83 @@ void AudioManager::setVolume(float vol) {
 }
 
 
+void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3DAUDIO_VECTOR& listenerPosition,
+                           float headingAngle) {
+    if (!pSourceVoice) {
+        // logger::warn("[AudioManager] Update called with null source voice");
+        return;
+    }
+
+    // Handle volume ramping
+    if (isRamping) {
+        auto currentTime = std::chrono::steady_clock::now();
+        float elapsedSeconds = std::chrono::duration<float>(currentTime - rampStartTime).count();
+
+        if (elapsedSeconds < rampDuration) {
+            // Calculate ramped volume
+            float newVolume = (elapsedSeconds / rampDuration) * defaultVolume;
+            if (std::abs(newVolume - currentVolume) > 0.01f) {  // Only update if change is significant
+                currentVolume = newVolume;
+                pSourceVoice->SetVolume(currentVolume);
+                // logger::debug("[AudioManager] Ramping volume to: {}", currentVolume);
+            }
+        } else {
+            // Ramping complete
+            if (std::abs(defaultVolume - currentVolume) > 0.01f) {
+                currentVolume = defaultVolume;
+                pSourceVoice->SetVolume(currentVolume);
+                // logger::debug("[AudioManager] Volume ramp complete, set to: {}", currentVolume);
+            }
+            isRamping = false;
+        }
+    } else if (std::abs(defaultVolume - currentVolume) > 0.01f) {
+        // Only update volume if it has changed significantly
+        currentVolume = defaultVolume;
+        pSourceVoice->SetVolume(currentVolume);
+        // logger::debug("[AudioManager] Set volume to: {}", defaultVolume);
+    }
+
+    const float PI = 3.14159265358979323846f;
+
+    X3DAUDIO_VECTOR relativePosition;
+    relativePosition.x = emitterPosition.x - listenerPosition.x;
+    relativePosition.y = emitterPosition.y - listenerPosition.y;
+    relativePosition.z = emitterPosition.z - listenerPosition.z;
+
+    float angle_rad = headingAngle * (PI / 180.0f);
+
+    X3DAUDIO_VECTOR rotatedPosition;
+    rotatedPosition.x = relativePosition.x * cos(headingAngle) - relativePosition.y * sin(headingAngle);
+    rotatedPosition.y = relativePosition.x * sin(headingAngle) + relativePosition.y * cos(headingAngle);
+    rotatedPosition.z = relativePosition.z;
+
+    // Only update position if change is significant
+    const float positionThreshold = 0.1f;
+    bool positionChanged = false;
+
+    if (std::abs(emitter.Position.x - round(rotatedPosition.x) / 100) > positionThreshold ||
+        std::abs(emitter.Position.y - round(rotatedPosition.y) / 100) > positionThreshold ||
+        std::abs(emitter.Position.z - round(rotatedPosition.z) / 100) > positionThreshold) {
+        emitter.Position.x = round(rotatedPosition.x) / 100;
+        emitter.Position.y = round(rotatedPosition.y) / 100;
+        emitter.Position.z = round(rotatedPosition.z) / 100;
+        positionChanged = true;
+
+        // logger::debug("[AudioManager] Updated 3D position - X: {:.2f}, Y: {:.2f}, Z: {:.2f}, Heading: {:.2f}°",
+        // emitter.Position.x, emitter.Position.y, emitter.Position.z, headingAngle);
+    }
+
+    if (positionChanged) {
+        X3DAudioCalculate(x3DInstance, &listener, &emitter, X3DAUDIO_CALCULATE_MATRIX, &dspSettings);
+
+        HRESULT hr = pSourceVoice->SetOutputMatrix(pMasterVoice, wfx.nChannels, dspSettings.DstChannelCount,
+                                                   dspSettings.pMatrixCoefficients);
+        if (FAILED(hr)) {
+            logger::error("[AudioManager] Failed to set output matrix: {}", hr);
+        }
+    }
+}
+
 void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
                           const X3DAUDIO_VECTOR& listenerPosition, float headingAngle) {
     // try_to_lock: 90Hz from playback loop. Skip frame if Stop/LoadWAV is rebuilding
