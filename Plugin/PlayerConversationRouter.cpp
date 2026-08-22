@@ -451,6 +451,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
 
         candidate.automaticBlockReason =
             PlayerConversationRouter::GetAutomaticBlockReason(candidate.agent, actor, player);
+        candidate.policy.directEligible = candidate.automaticBlockReason != "cooldown";
         candidate.policy.autoEligible = candidate.automaticBlockReason.empty();
         if (candidate.policy.distance <= result.audienceRadiusUnits) {
             const auto spatial = SpatialAwareness::Evaluate(player, actor, audienceSettings);

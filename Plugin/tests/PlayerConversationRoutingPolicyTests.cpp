@@ -108,6 +108,25 @@ int main()
     Check(result.candidateIndex == 0 && result.reason == "true_crosshair",
           "True crosshair did not bypass soft eligibility");
 
+    candidates[0].directEligible = false;
+    result = Select("Normal speech", candidates);
+    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
+          "Conversation cooldown did not block the crosshair target");
+
+    Request cooldownTargetRequest{};
+    cooldownTargetRequest.utterance = "Normal speech";
+    cooldownTargetRequest.explicitTargetFormId = 0x10;
+    cooldownTargetRequest.explicitTargetName = "Camilla Valerius";
+    cooldownTargetRequest.directAddressRadius = 1000.0f;
+    cooldownTargetRequest.interactionRadius = 560.0f;
+    result = PlayerConversationRoutingPolicy::Select(cooldownTargetRequest, candidates);
+    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
+          "Conversation cooldown did not block the explicit UI target");
+
+    result = Select("Hey Camilla Valerius", candidates);
+    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
+          "Conversation cooldown did not block the named target");
+
     candidates[0].hardEligible = false;
     result = Select("Hey", candidates);
     Check(result.candidateIndex == 2 && result.reason == "bare_hey_fov",

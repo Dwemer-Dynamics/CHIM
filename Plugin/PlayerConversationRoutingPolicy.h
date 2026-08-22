@@ -78,6 +78,7 @@ namespace PlayerConversationRoutingPolicy
         float distance = 0.0f;
         float facingDot = -1.0f;
         bool hardEligible = false;
+        bool directEligible = true;
         bool autoEligible = false;
         bool audible = false;
         bool trueCrosshair = false;
@@ -248,7 +249,7 @@ namespace PlayerConversationRoutingPolicy
                 for (std::size_t index = 0; index < candidates.size(); ++index) {
                     const auto& candidate = candidates[index];
                     if (candidate.formId == request.explicitTargetFormId &&
-                        candidate.hardEligible &&
+                        candidate.hardEligible && candidate.directEligible &&
                         WithinRadius(candidate.distance, request.directAddressRadius)) {
                         result.kind = SelectionKind::Candidate;
                         result.candidateIndex = index;
@@ -263,7 +264,7 @@ namespace PlayerConversationRoutingPolicy
             if (!normalizedExplicitName.empty()) {
                 for (std::size_t index = 0; index < candidates.size(); ++index) {
                     const auto& candidate = candidates[index];
-                    if (!candidate.hardEligible ||
+                    if (!candidate.hardEligible || !candidate.directEligible ||
                         !WithinRadius(candidate.distance, request.directAddressRadius) ||
                         Normalize(candidate.name) != normalizedExplicitName) {
                         continue;
@@ -292,7 +293,7 @@ namespace PlayerConversationRoutingPolicy
             for (std::size_t index = 0; index < candidates.size(); ++index) {
                 const auto& candidate = candidates[index];
                 const std::string normalizedName = Normalize(candidate.name);
-                if (!candidate.hardEligible || normalizedName.empty() ||
+                if (!candidate.hardEligible || !candidate.directEligible || normalizedName.empty() ||
                     !WithinRadius(candidate.distance, request.directAddressRadius) ||
                     !StartsWithToken(addressedText, normalizedName)) {
                     continue;
@@ -320,7 +321,7 @@ namespace PlayerConversationRoutingPolicy
 
         for (std::size_t index = 0; index < candidates.size(); ++index) {
             const auto& candidate = candidates[index];
-            if (candidate.trueCrosshair && candidate.hardEligible &&
+            if (candidate.trueCrosshair && candidate.hardEligible && candidate.directEligible &&
                 WithinRadius(candidate.distance, request.directAddressRadius)) {
                 result.kind = SelectionKind::Candidate;
                 result.candidateIndex = index;
