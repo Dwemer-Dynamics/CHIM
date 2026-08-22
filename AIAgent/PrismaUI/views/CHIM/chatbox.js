@@ -107,10 +107,10 @@
 
     const symbolModeRules = [
         { prefix: '((', mode: 'INJECTION_LOG', display: '(…)' },
-        { prefix: '~~', mode: 'CLOSE' },
+        { prefix: '||', mode: 'CLOSE' },
         { prefix: '!!', mode: 'SHOUT' },
         { prefix: '**', mode: 'AUTOCHAT' },
-        { prefix: '~', mode: 'WHISPER' },
+        { prefix: '|', mode: 'WHISPER' },
         { prefix: '@', mode: 'NARRATOR' },
         { prefix: '>', mode: 'DIRECTOR' },
         { prefix: '#', mode: 'CHEATMODE' },

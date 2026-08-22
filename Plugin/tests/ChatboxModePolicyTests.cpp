@@ -35,11 +35,11 @@ int main()
     Check(ChatboxModePolicy::ModeAfterSubmission("SHOUT"sv) == "SHOUT"sv,
           "Persistent mode changed after submission");
 
-    const auto whisper = ChatboxModePolicy::ParseSubmission("~ Keep this quiet", "STANDARD");
+    const auto whisper = ChatboxModePolicy::ParseSubmission("| Keep this quiet", "STANDARD");
     Check(whisper.symbolOverride && whisper.mode == "WHISPER" && whisper.message == "Keep this quiet",
           "Whisper symbol was not parsed");
 
-    const auto close = ChatboxModePolicy::ParseSubmission("~~ Only you should hear this", "WHISPER");
+    const auto close = ChatboxModePolicy::ParseSubmission("|| Only you should hear this", "WHISPER");
     Check(close.symbolOverride && close.mode == "CLOSE" && close.message == "Only you should hear this",
           "Long Close symbol did not take precedence over Whisper");
 
@@ -68,7 +68,7 @@ int main()
     Check(!standard.symbolOverride && standard.mode == "SHOUT" && standard.message == "Hello there",
           "Unprefixed input did not preserve the selected mode");
 
-    const auto emptyShortcut = ChatboxModePolicy::ParseSubmission("~~   ", "STANDARD");
+    const auto emptyShortcut = ChatboxModePolicy::ParseSubmission("||   ", "STANDARD");
     Check(emptyShortcut.symbolOverride && emptyShortcut.message.empty(),
           "Symbol-only input must remain empty so submission can be rejected");
 
