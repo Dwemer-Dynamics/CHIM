@@ -43,6 +43,9 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
+
+constexpr double MIN_SEGMENT_DURATION = 0.080;  // 80 ms
+
 constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
@@ -897,7 +900,277 @@ std::string toUppercase(const std::string& inputString) {
     return result;
 }
 
+
+std::vector<TextSegment> segmentTextV2(const std::string& text_p, double soundDuration) {
+    int currentPosition = 0;
+    std::vector<TextSegment> segments;
+
+    std::string text = toUppercase(text_p);
+
+    // ------------------------------------------------------------
+    // FIRST PASS
+    // Create segments from phonemes
+    // ------------------------------------------------------------
+
+    while (currentPosition < text.size()) {
+        bool foundPhoneme = false;
+        int viseme = -2;
+        double visemeDuration = 0;
+        int visemeLength;
+
+        // Try to match 2-character phonemes first
+        for (const auto& entry : phonemeLabelToIdentifier) {
+            const std::string& phoneme = entry.first;
+            int phonemeIdentifier = entry.second;
+            size_t phonemeLength = phoneme.length();
+
+            if (phonemeLength == 2 && text.compare(currentPosition, phonemeLength, phoneme) == 0) {
+                viseme = phonemeToViseme[phonemeIdentifier];
+
+                visemeDuration = (double(soundDuration) * phonemeLength) / text.length();
+
+                visemeLength = 2;
+                break;
+            }
+        }
+
+        // Try 1-character phonemes
+        if (viseme == -2) {
+            for (const auto& entry : phonemeLabelToIdentifier) {
+                const std::string& phoneme = entry.first;
+                int phonemeIdentifier = entry.second;
+                size_t phonemeLength = phoneme.length();
+
+                if (phonemeLength == 1 && text[currentPosition] == phoneme[0]) {
+                    viseme = phonemeToViseme[phonemeIdentifier];
+
+                    visemeDuration = (double(soundDuration) * phonemeLength) / text.length();
+
+                    visemeLength = 1;
+                    break;
+                }
+            }
+        }
+
+        if (viseme != -2) {
+            segments.push_back(
+                {std::to_string(viseme), text.substr(currentPosition, visemeLength), visemeDuration, visemeLength});
+
+            currentPosition += visemeLength;
+            foundPhoneme = true;
+        }
+
+        if (!foundPhoneme) {
+            currentPosition++;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // SECOND PASS
+    // Recalculate durations based on total viseme length
+    // ------------------------------------------------------------
+
+    int totalVisemeLength = 0;
+
+    for (const auto& segment : segments) {
+        totalVisemeLength += segment.visemeLength;
+    }
+
+    for (auto& segment : segments) {
+        segment.duration = (double(soundDuration) * segment.visemeLength) / totalVisemeLength;
+
+        // logger::info("Text {}, Viseme: {} {} ,Duration {}, Length:{}", text, segment.text, segment.sourcetext, segment.duration,segment.visemeLength);
+    }
+
+    double minDuration = 1000;
+    for (const auto& segment : segments) {
+        // logger::info("[TextSegments][Original] Text {}, Viseme: {} {} ,Duration {}", text, segment.text,segment.sourcetext, segment.duration);
+        
+        if (segment.duration < minDuration)    
+            minDuration = segment.duration;
+    }
+    logger::info("[TextSegments][Original] Total segments: {}", segments.size());
+    
+
+    if (minDuration < 0.05) {
+        // ------------------------------------------------------------
+        // THIRD PASS
+        // Reduce the number of segments to approximately 60%.
+        //
+        // Merges are distributed across the complete sequence.
+        // A merge keeps the phoneme/source text of the last segment
+        // and combines the durations.
+        //
+        // Separator segments using viseme 7 are never merged.
+        // ------------------------------------------------------------
+
+        constexpr std::size_t targetPercentage = 80;
+
+        const std::size_t originalSegmentCount = segments.size();
+
+        if (originalSegmentCount > 1) {
+            // Integer ceiling:
+            // 110 * 60% -> 66
+            const std::size_t targetSegmentCount = (originalSegmentCount * targetPercentage + 99) / 100;
+
+            std::size_t requiredMerges =
+                originalSegmentCount > targetSegmentCount ? originalSegmentCount - targetSegmentCount : 0;
+
+            auto isProtectedSeparator = [](const TextSegment& segment) {
+                if (segment.text != "7" || segment.sourcetext.empty()) {
+                    return false;
+                }
+
+                // Protect spaces, commas, periods, apostrophes, etc.
+                return std::all_of(segment.sourcetext.begin(), segment.sourcetext.end(), [](unsigned char character) {
+                    return std::isspace(character) || std::ispunct(character);
+                });
+            };
+
+            // Each value is the right-hand index of an eligible boundary.
+            //
+            // For example, boundary 5 represents:
+            //     segments[4] + segments[5]
+            //
+            // The resulting segment will use the phoneme from segments[5].
+            std::vector<std::size_t> eligibleBoundaries;
+            eligibleBoundaries.reserve(originalSegmentCount - 1);
+
+            for (std::size_t i = 1; i < originalSegmentCount; ++i) {
+                const TextSegment& previous = segments[i - 1];
+                const TextSegment& current = segments[i];
+
+                // Neither side of a merge may be a protected separator.
+                if (isProtectedSeparator(previous) || isProtectedSeparator(current)) {
+                    continue;
+                }
+
+                eligibleBoundaries.push_back(i);
+            }
+
+            if (requiredMerges > eligibleBoundaries.size()) {
+                logger::warn(
+                    "[TextSegments][Reduced] Requested {} merges, but only {} "
+                    "eligible merge boundaries exist because separators are protected",
+                    requiredMerges, eligibleBoundaries.size());
+
+                requiredMerges = eligibleBoundaries.size();
+            }
+
+            if (requiredMerges > 0) {
+                // selectedBoundary[i] means merge segments[i - 1] with
+                // segments[i].
+                std::vector<bool> selectedBoundary(originalSegmentCount, false);
+
+                /*
+                 * Divide all eligible boundaries into requiredMerges buckets.
+                 * Select one boundary from each bucket.
+                 *
+                 * This distributes merges throughout the complete text instead
+                 * of applying every merge near the beginning.
+                 *
+                 * Inside each bucket, prefer the adjacent pair with the shortest
+                 * combined duration.
+                 */
+                const std::size_t eligibleCount = eligibleBoundaries.size();
+
+                for (std::size_t bucket = 0; bucket < requiredMerges; ++bucket) {
+                    const std::size_t bucketBegin = (bucket * eligibleCount) / requiredMerges;
+
+                    const std::size_t bucketEnd = ((bucket + 1) * eligibleCount) / requiredMerges;
+
+                    std::size_t bestBoundary = eligibleBoundaries[bucketBegin];
+
+                    double bestCombinedDuration = segments[bestBoundary - 1].duration + segments[bestBoundary].duration;
+
+                    for (std::size_t candidateIndex = bucketBegin + 1; candidateIndex < bucketEnd; ++candidateIndex) {
+                        const std::size_t candidateBoundary = eligibleBoundaries[candidateIndex];
+
+                        const double combinedDuration =
+                            segments[candidateBoundary - 1].duration + segments[candidateBoundary].duration;
+
+                        if (combinedDuration < bestCombinedDuration) {
+                            bestCombinedDuration = combinedDuration;
+                            bestBoundary = candidateBoundary;
+                        }
+                    }
+
+                    selectedBoundary[bestBoundary] = true;
+                }
+
+                std::vector<TextSegment> reducedSegments;
+                reducedSegments.reserve(originalSegmentCount - requiredMerges);
+
+                for (std::size_t i = 0; i < originalSegmentCount; ++i) {
+                    if (i > 0 && selectedBoundary[i]) {
+                        TextSegment& merged = reducedSegments.back();
+                        const TextSegment& last = segments[i];
+
+                        // Preserve the complete duration.
+                        merged.duration += last.duration;
+
+                        // Use the viseme/phoneme of the last segment.
+                        merged.text = last.text;
+
+                        // This produces the requested behavior:
+                        //
+                        //     4 S + 6 E -> 6 E
+                        //
+                        // If you need the complete source sequence instead,
+                        // replace this with:
+                        //
+                        // merged.sourcetext += last.sourcetext;
+                        merged.sourcetext = last.sourcetext;
+
+                        // Keep this consistent if visemeLength is used later.
+                        merged.visemeLength += last.visemeLength;
+                    } else {
+                        reducedSegments.push_back(segments[i]);
+                    }
+                }
+
+                segments = std::move(reducedSegments);
+            }
+
+            logger::info(
+                "[TextSegments][Reduced] Original: {}, target: {}, actual: {}, "
+                "merges: {}",
+                originalSegmentCount, targetSegmentCount, segments.size(), originalSegmentCount - segments.size());
+            /*
+            for (const auto& segment : segments) {
+                logger::info(
+                    "[TextSegments][Reduced] Text {}, Phoneme: {} {}, "
+                    "Duration {}, Length: {}",
+                    text, segment.text, segment.sourcetext, segment.duration, segment.visemeLength);
+            }
+            */
+        }
+    }
+
+    // ------------------------------------------------------------
+    // FINAL PASS
+    // Close mouth at end
+    // ------------------------------------------------------------
+
+    segments.push_back({"7", "_", 0.10, 1});
+
+    int n = 0;
+    if (false) {
+        for (const auto& segment : segments) {
+            logger::info(
+                "[TextSegments][Final] Text {}, Phoneme: {} {}, "
+                "Duration {}, Length: {}, Segment {}",
+                text, segment.text, segment.sourcetext, segment.duration, segment.visemeLength, ++n);
+        }
+    }
+
+    return segments;
+}
+
 std::vector<TextSegment> segmentText(const std::string& text_p, double soundDuration) {
+    if (true) {
+        return segmentTextV2(text_p, soundDuration);
+    }
     int currentPosition = 0;
     std::vector<TextSegment> segments;
 
@@ -964,12 +1237,15 @@ std::vector<TextSegment> segmentText(const std::string& text_p, double soundDura
         totalVisemeLength += segment.visemeLength;
     }
 
+
     for (auto& segment : segments) {
         double interpolatedDuration = (double(soundDuration) * segment.visemeLength) / totalVisemeLength;
         segment.duration = interpolatedDuration;
         //logger::info("Text {}, Viseme: {} {} ,Duration {}", text, segment.text, segment.sourcetext, segment.duration);
     }
 
+    logger::info("[SpeakerManager] [TextSegment] Segments after seconds pass: {}", segments.size());
+    
     // TO close mouth at end
     segments.push_back({"-1", "_", 0.15, 1});
 
@@ -1423,7 +1699,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     bool lastLost = false;
 
-    auto endTimeWithBlankSegment = endTime + std::chrono::duration<double>(0.15);
+    auto endTimeWithBlankSegment = endTime + std::chrono::duration<double>(0.10);
     auto lastRuntimeSpatialRefresh = std::chrono::steady_clock::now();
     auto lastRuntimeSpatialHeartbeatLog = std::chrono::steady_clock::now();
     std::string lastRuntimeSpatialLogSignature;
@@ -1503,7 +1779,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     } _watchdogGuard{loopRunning, loopWakeCv, loopWatchdog};
     _dap_phase("post_watchdog_thread_spawn");
 
-    
+    int lastSegmentIndex = 1;
+    logger::info("[SPEAKERMANAGER] Starting playback loop for speaker={} text={}, resolution {}", speaker, text,
+                 animationDelayMicroSecs);
     while (std::chrono::steady_clock::now() < endTimeWithBlankSegment) {
         loopIterCount.fetch_add(1, std::memory_order_relaxed);
         setPhase("iter_top");
@@ -1674,10 +1952,14 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         if (!isNarrator) {
             TextSegment currentSegment;
             double totalDuration = 0.0;
+            int nSegment = 0;
+            int currentNSegment = 0;
             for (const TextSegment& segment : textSegments) {
                 totalDuration += segment.duration;
+                ++nSegment;
                 if (elapsedSeconds <= totalDuration) {
                     currentSegment = segment;
+                    currentNSegment = nSegment;
                     break;
                 }
             }
@@ -1786,7 +2068,36 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             lastViseme = visemeCode;
                             intensity = 0;
                         }
-                        if (intensity > 0.99) intensity = 1.00f;
+
+
+                        //if (intensity > 0.99) intensity = 1.00f;
+                        
+                        if (intensity > 0.99) {
+                            
+                            if (visemeCode >= 0) {
+                                if (lastSegmentIndex == currentNSegment) {
+                                    // Only apply intensity modifier adjustment if we are still in the same segment
+                                    logger::info(
+                                        "[SpeakManager] Intensity capped at 1.0 for viseme code {} (label: "
+                                        "{}),intensityModifier: {}, adjusting intensityModifier to {}, segment {}",
+                                        visemeCode, getVISEMEName(visemeCode), intensityModifier,
+                                        intensityModifier - 0.01,currentNSegment);
+                                    // We lower modifier to avoid capping.
+                                    intensityModifier -= 0.01;
+                                    if (intensityModifier < 0.01) {
+                                        intensityModifier = 0.01;
+                                    }
+                                }
+                            }
+                            intensity = 1.00f;
+                        }
+
+                        
+                        lastSegmentIndex = currentNSegment;
+
+                        intensityStepDecal = intensityStep/2;
+                            
+                        
 
                         speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
 
@@ -1845,6 +2156,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         
         setPhase("iter_sleep");
 
+        
 
         std::this_thread::sleep_for(std::chrono::microseconds(animationDelayMicroSecs));
     }
