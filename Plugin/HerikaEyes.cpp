@@ -2,14 +2,17 @@
 #include <Windows.h>
 #include <d3d11.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #include "Globals.h"
 #include "HTTPUploader.h"
@@ -18,9 +21,11 @@
 #include "RE/Skyrim.h"
 #include "SpatialAwareness.h"
 #include "ThreadPool.h"
+#include "json.hpp"
 #pragma comment(lib, "d3d11.lib")
 
 namespace logger = SKSE::log;
+using json = nlohmann::json;
 
 std::string globalHints;
 
@@ -105,6 +110,132 @@ namespace {
                "&visual_cell=" + EncodeVisualQueryValue(cellId) +
                "&visual_location=" + EncodeVisualQueryValue(location) +
                "&visual_perspective=first_person";
+    }
+
+    struct VisualActorCandidate {
+        json data;
+        bool crosshairTarget;
+        float screenCenterDistance;
+        float worldDistance;
+    };
+
+    // Collect actor identities projected into the exact camera frame being uploaded.
+    std::string BuildVisualActorCandidates() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* camera = RE::Main::WorldRootCamera();
+        auto* processLists = RE::ProcessLists::GetSingleton();
+        if (!player || !camera || !processLists) {
+            return "[]";
+        }
+
+        RE::FormID crosshairFormId = 0;
+        if (auto* crosshairData = RE::CrosshairPickData::GetSingleton(); crosshairData && crosshairData->target) {
+            if (auto target = crosshairData->target.get()) {
+                crosshairFormId = target->GetFormID();
+            }
+        }
+
+        const auto& cameraData = camera->GetRuntimeData();
+        const auto& cameraData2 = camera->GetRuntimeData2();
+        std::vector<VisualActorCandidate> candidates;
+        candidates.reserve(16);
+
+        for (auto& actorHandle : processLists->highActorHandles) {
+            auto actorPointer = actorHandle.get();
+            auto* actor = actorPointer.get();
+            if (!actor || actor == player || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded()) {
+                continue;
+            }
+
+            const char* displayName = actor->GetDisplayFullName();
+            const std::string actorName = displayName ? displayName : "";
+            const float worldDistance = player->GetPosition().GetDistance(actor->GetPosition());
+            if (actorName.empty() || !std::isfinite(worldDistance) || worldDistance > HERIKA_MAX_VISION_RANGE) {
+                continue;
+            }
+
+            const bool isCrosshairTarget = actor->GetFormID() == crosshairFormId;
+            bool hasLineOfSight = false;
+            player->HasLineOfSight(actor, hasLineOfSight);
+            if (!isCrosshairTarget && !hasLineOfSight) {
+                continue;
+            }
+
+            auto* actor3D = actor->Get3D();
+            const RE::NiPoint3 screenPoint = actor3D ? actor3D->worldBound.center : actor->GetLookingAtLocation();
+            float screenX = 0.0f;
+            float screenY = 0.0f;
+            float screenZ = 0.0f;
+            if (!RE::NiCamera::WorldPtToScreenPt3(cameraData.worldToCam, cameraData2.port, screenPoint, screenX,
+                                                  screenY, screenZ, 1.0e-5f) ||
+                !std::isfinite(screenX) || !std::isfinite(screenY) || screenX < 0.0f || screenX > 1.0f ||
+                screenY < 0.0f || screenY > 1.0f) {
+                continue;
+            }
+
+            // The projection API reports Y from the bottom; the protocol uses image coordinates from the top.
+            screenY = 1.0f - screenY;
+            auto roundCoordinate = [](float value) { return std::round(value * 1000.0f) / 1000.0f; };
+
+            json candidate = {
+                {"name", actorName},
+                {"ref_id", FormIdText(actor->GetFormID())},
+                {"screen_x", roundCoordinate(screenX)},
+                {"screen_y", roundCoordinate(screenY)},
+                {"distance_game_units", static_cast<int>(std::round(worldDistance))},
+                {"crosshair_target", isCrosshairTarget},
+                {"dead", actor->IsDead()},
+            };
+            if (auto* baseObject = actor->GetBaseObject()) {
+                candidate["base_id"] = FormIdText(baseObject->GetLocalFormID());
+                if (auto* sourceFile = baseObject->GetFile(0)) {
+                    candidate["plugin"] = sourceFile->GetFilename();
+                }
+            }
+
+            const float deltaX = screenX - 0.5f;
+            const float deltaY = screenY - 0.5f;
+            candidates.push_back({std::move(candidate), isCrosshairTarget, deltaX * deltaX + deltaY * deltaY,
+                                  worldDistance});
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+            if (left.crosshairTarget != right.crosshairTarget) {
+                return left.crosshairTarget;
+            }
+            if (left.screenCenterDistance != right.screenCenterDistance) {
+                return left.screenCenterDistance < right.screenCenterDistance;
+            }
+            return left.worldDistance < right.worldDistance;
+        });
+
+        json payload = json::array();
+        constexpr std::size_t maxCandidates = 12;
+        for (std::size_t index = 0; index < std::min(candidates.size(), maxCandidates); ++index) {
+            payload.push_back(std::move(candidates[index].data));
+        }
+        return payload.dump();
+    }
+
+    // Freeze all camera-derived metadata before screenshot processing moves to a worker thread.
+    std::string BuildVisualCaptureHints() {
+        std::string hints = "&vc=" + EncodeVisualQueryValue(globalHints);
+        hints.append(BuildVisualCaptureMetadata());
+
+        const std::string actorCandidates = BuildVisualActorCandidates();
+        if (actorCandidates != "[]") {
+            hints.append("&visual_actor_candidates=" + EncodeVisualQueryValue(actorCandidates));
+        }
+
+        auto* crosshairData = RE::CrosshairPickData::GetSingleton();
+        auto crosshairTarget = crosshairData ? crosshairData->target : RE::ObjectRefHandle{};
+        if (crosshairTarget) {
+            if (auto target = crosshairTarget.get()) {
+                const char* displayName = target->GetDisplayFullName();
+                hints.append("&fg=" + EncodeVisualQueryValue(displayName ? displayName : ""));
+            }
+        }
+        return hints;
     }
 }
 
@@ -345,7 +476,8 @@ void ProcedureTakeShot() {
         logger::info("Take a shot failed");
 
     else {
-        ThreadPool::getInstance().enqueue("ProcessScreenshot", [id]() {
+        std::string captureHints = BuildVisualCaptureHints();
+        ThreadPool::getInstance().enqueue("ProcessScreenshot", [id, captureHints = std::move(captureHints)]() {
             /* std::ofstream outputFile("eyeShot.bmp", std::ios::out | std::ios::binary);
             if (outputFile.is_open()) {
                 outputFile.write(reinterpret_cast<const char*>(id->bmpData), id->fileSize);
@@ -363,20 +495,8 @@ void ProcedureTakeShot() {
             std::string rawdata = reinterpret_cast<const char*>(id->bmpData);
             logger::info("Uploading...");
 
-            std::string hints;
-
-            hints.append("&vc=" + globalHints);
-            hints.append(BuildVisualCaptureMetadata());
-
-            // hints.append(ScenarioHints());
-
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-            if (cameraObject) {
-                hints.append("&fg=");
-                hints.append(cameraObject.get()->GetDisplayFullName());
-            }
-
-            std::string buffer = uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, hints);
+            std::string buffer =
+                uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, captureHints);
             logger::info("Done");
             FreeImageData(id);
 
@@ -393,7 +513,8 @@ void ProcedureTakeShot() {
 void ProcedureSendShot(char const* a_path) {
     logger::info("Send  a shot");
 
-    ThreadPool::getInstance().enqueue("UploadScreenshot", [a_path]() {
+    std::string captureHints = BuildVisualCaptureHints();
+    ThreadPool::getInstance().enqueue("UploadScreenshot", [a_path, captureHints = std::move(captureHints)]() {
         logger::info(" HTTPUploader::getInstance()");
 
         HTTPUploader& uploader = HTTPUploader::getInstance();
@@ -427,20 +548,8 @@ void ProcedureSendShot(char const* a_path) {
 
         logger::info("Uploading...");
 
-        std::string hints;
-
-        hints.append("&vc=" + globalHints);
-        hints.append(BuildVisualCaptureMetadata());
-
-        // hints.append(ScenarioHints());
-
-        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-        if (cameraObject) {
-            hints.append("&fg=");
-            hints.append(cameraObject.get()->GetDisplayFullName());
-        }
-
-        std::string buffer = uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, hints);
+        std::string buffer =
+            uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, captureHints);
         logger::info("Done");
 
         delete[] prebuffer;
