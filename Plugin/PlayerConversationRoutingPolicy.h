@@ -14,6 +14,56 @@ namespace PlayerConversationRoutingPolicy
 {
     inline constexpr float kFieldOfViewCosine = 0.86f;
 
+    // Distinguish direct player speech from autonomous events before applying scene safety.
+    inline bool IsPlayerInitiatedRequest(std::string_view message)
+    {
+        const auto separator = message.find('|');
+        const std::string_view eventType = message.substr(0, separator);
+        return eventType == "inputtext" || eventType == "inputtext_s" ||
+               eventType == "ginputtext" || eventType == "ginputtext_s" ||
+               eventType == "narrator_inputtext";
+    }
+
+    struct AutomaticEligibilityFacts
+    {
+        bool conversationCooldown = false;
+        bool hostile = false;
+        bool autoAddHostile = false;
+        bool inCombat = false;
+        bool combatDialogueEnabled = false;
+        bool restrained = false;
+        bool unconscious = false;
+        bool sleeping = false;
+        bool inScene = false;
+        bool sceneDialogueEnabled = false;
+    };
+
+    inline std::string_view GetAutomaticBlockReason(const AutomaticEligibilityFacts& facts)
+    {
+        if (facts.conversationCooldown) {
+            return "cooldown";
+        }
+        if (facts.hostile && !facts.autoAddHostile) {
+            return "hostile";
+        }
+        if (facts.inCombat && !facts.combatDialogueEnabled) {
+            return "combat";
+        }
+        if (facts.restrained) {
+            return "restrained";
+        }
+        if (facts.unconscious) {
+            return "unconscious";
+        }
+        if (facts.sleeping) {
+            return "sleeping";
+        }
+        if (facts.inScene && !facts.sceneDialogueEnabled) {
+            return "scene";
+        }
+        return {};
+    }
+
     enum class SelectionKind
     {
         Candidate,

@@ -51,6 +51,43 @@ int main()
 {
     using namespace PlayerConversationRoutingPolicy;
 
+    Check(IsPlayerInitiatedRequest("inputtext|1|date|Player: hello"),
+          "Direct player speech was not recognized");
+    Check(IsPlayerInitiatedRequest("ginputtext_s|1|date|Player: hello"),
+          "Direct group speech was not recognized");
+    Check(!IsPlayerInitiatedRequest("rpg_word|1|date|context"),
+          "Automatic Word of Power event was recognized as player speech");
+
+    AutomaticEligibilityFacts eligibility{};
+    Check(GetAutomaticBlockReason(eligibility).empty(),
+          "Eligible actor received an automatic block reason");
+    eligibility.conversationCooldown = true;
+    Check(GetAutomaticBlockReason(eligibility) == "cooldown", "Cooldown was not enforced");
+    eligibility = {};
+    eligibility.hostile = true;
+    Check(GetAutomaticBlockReason(eligibility) == "hostile", "Hostility was not enforced");
+    eligibility.autoAddHostile = true;
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled hostile auto-add was ignored");
+    eligibility = {};
+    eligibility.inCombat = true;
+    Check(GetAutomaticBlockReason(eligibility) == "combat", "Combat was not enforced");
+    eligibility.combatDialogueEnabled = true;
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled combat dialogue was ignored");
+    eligibility = {};
+    eligibility.restrained = true;
+    Check(GetAutomaticBlockReason(eligibility) == "restrained", "Restraint was not enforced");
+    eligibility = {};
+    eligibility.unconscious = true;
+    Check(GetAutomaticBlockReason(eligibility) == "unconscious", "Unconscious state was not enforced");
+    eligibility = {};
+    eligibility.sleeping = true;
+    Check(GetAutomaticBlockReason(eligibility) == "sleeping", "Sleeping was not enforced");
+    eligibility = {};
+    eligibility.inScene = true;
+    Check(GetAutomaticBlockReason(eligibility) == "scene", "Scene Safety was not enforced");
+    eligibility.sceneDialogueEnabled = true;
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled scene dialogue was ignored");
+
     Check(ExtractUtterance("inputtext|1|date|Rangroo: Hey Lydia, come here") ==
               "hey lydia come here",
           "Wire utterance extraction failed");
