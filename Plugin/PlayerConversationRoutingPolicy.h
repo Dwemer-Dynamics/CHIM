@@ -14,6 +14,22 @@ namespace PlayerConversationRoutingPolicy
 {
     inline constexpr float kFieldOfViewCosine = 0.86f;
 
+    // Distinguish direct player speech from autonomous events before applying scene safety.
+    inline bool IsPlayerInitiatedRequest(std::string_view message)
+    {
+        const auto separator = message.find('|');
+        const std::string_view eventType = message.substr(0, separator);
+        return eventType == "inputtext" || eventType == "inputtext_s" ||
+               eventType == "ginputtext" || eventType == "ginputtext_s" ||
+               eventType == "narrator_inputtext";
+    }
+
+    inline bool ShouldSuppressAutomaticSceneResponse(
+        std::string_view message, bool allowActorsOnScene, bool actorInScene)
+    {
+        return !allowActorsOnScene && actorInScene && !IsPlayerInitiatedRequest(message);
+    }
+
     enum class SelectionKind
     {
         Candidate,

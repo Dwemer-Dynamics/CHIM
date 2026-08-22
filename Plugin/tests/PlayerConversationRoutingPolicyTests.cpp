@@ -51,6 +51,19 @@ int main()
 {
     using namespace PlayerConversationRoutingPolicy;
 
+    Check(ShouldSuppressAutomaticSceneResponse("rpg_word|1|date|context", false, true),
+          "Scene Safety did not suppress an automatic Word of Power response");
+    Check(ShouldSuppressAutomaticSceneResponse("rechat|1|date|context", false, true),
+          "Scene Safety did not suppress an automatic rechat response");
+    Check(!ShouldSuppressAutomaticSceneResponse("inputtext|1|date|Player: hello", false, true),
+          "Scene Safety suppressed direct player speech");
+    Check(!ShouldSuppressAutomaticSceneResponse("ginputtext_s|1|date|Player: hello", false, true),
+          "Scene Safety suppressed direct group speech");
+    Check(!ShouldSuppressAutomaticSceneResponse("rpg_word|1|date|context", true, true),
+          "Disabled Scene Safety suppressed an automatic response");
+    Check(!ShouldSuppressAutomaticSceneResponse("rpg_word|1|date|context", false, false),
+          "Scene Safety suppressed an actor outside a scene");
+
     Check(ExtractUtterance("inputtext|1|date|Rangroo: Hey Lydia, come here") ==
               "hey lydia come here",
           "Wire utterance extraction failed");
