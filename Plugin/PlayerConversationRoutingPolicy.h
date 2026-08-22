@@ -24,10 +24,40 @@ namespace PlayerConversationRoutingPolicy
                eventType == "narrator_inputtext";
     }
 
-    inline bool ShouldSuppressAutomaticSceneResponse(
-        std::string_view message, bool allowActorsOnScene, bool actorInScene)
+    struct AutomaticEligibilityFacts
     {
-        return !allowActorsOnScene && actorInScene && !IsPlayerInitiatedRequest(message);
+        bool conversationCooldown = false;
+        bool hostile = false;
+        bool autoAddHostile = false;
+        bool inCombat = false;
+        bool combatDialogueEnabled = false;
+        bool restrained = false;
+        bool sleeping = false;
+        bool inScene = false;
+        bool sceneDialogueEnabled = false;
+    };
+
+    inline std::string_view GetAutomaticBlockReason(const AutomaticEligibilityFacts& facts)
+    {
+        if (facts.conversationCooldown) {
+            return "cooldown";
+        }
+        if (facts.hostile && !facts.autoAddHostile) {
+            return "hostile";
+        }
+        if (facts.inCombat && !facts.combatDialogueEnabled) {
+            return "combat";
+        }
+        if (facts.restrained) {
+            return "restrained";
+        }
+        if (facts.sleeping) {
+            return "sleeping";
+        }
+        if (facts.inScene && !facts.sceneDialogueEnabled) {
+            return "scene";
+        }
+        return {};
     }
 
     enum class SelectionKind

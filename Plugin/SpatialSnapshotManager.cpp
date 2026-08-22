@@ -1,5 +1,6 @@
 #include "SpatialSnapshotManager.h"
 
+#include "PlayerConversationRouter.h"
 #include "SpatialAwareness.h"
 
 #include <algorithm>
@@ -772,28 +773,27 @@ namespace
     bool IsAutoBlocked(const std::shared_ptr<AIAgent>& agent, RE::Actor* actor, RE::Actor* player,
                        std::string& status)
     {
-        if (!agent || !actor || !player) {
-            status = "Unavailable";
-            return true;
+        const std::string reason =
+            PlayerConversationRouter::GetAutomaticBlockReason(agent, actor, player);
+        if (reason.empty()) {
+            return false;
         }
-        if (agent->hasConversationCooldown()) {
+        if (reason == "cooldown") {
             status = "Busy";
-            return true;
-        }
-        if (actor->IsHostileToActor(player) && !AutoAddHostile) {
+        } else if (reason == "hostile") {
             status = "Hostile";
-            return true;
-        }
-        if (!CombatDialogueEnabled && (actor->IsInCombat() || actor->IsAttacking() || actor->IsInKillMove())) {
+        } else if (reason == "combat") {
             status = "In combat";
-            return true;
-        }
-        if (actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
+        } else if (reason == "restrained") {
             status = "Restrained";
-            return true;
+        } else if (reason == "sleeping") {
+            status = "Sleeping";
+        } else if (reason == "scene") {
+            status = "In scene";
+        } else {
+            status = "Unavailable";
         }
-
-        return false;
+        return true;
     }
 
     std::shared_ptr<AIAgent> FindDisplayAgentByFormId(RE::FormID formId)
@@ -1626,7 +1626,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
 
         std::string blockedStatus;
         if (target.targetable && IsAutoBlocked(target.agent, target.actor, player, blockedStatus)) {
-            target.targetable = false;
             target.autoEligible = false;
             target.status = blockedStatus;
             target.sortBucket = std::max(target.sortBucket, 2);
@@ -1767,6 +1766,10 @@ bool SpatialSnapshotManager::IsValidPlayerSpeechTarget(
     }
     if (mode == PlayerSpeechTargetMode::Manual && !target.targetable) {
         return false;
+    }
+
+    if (mode == PlayerSpeechTargetMode::Manual) {
+        return true;
     }
 
     std::string blockedStatus;

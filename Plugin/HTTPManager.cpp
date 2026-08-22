@@ -81,30 +81,42 @@ static bool IsPlayerStreamActor(const std::string& actorName)
     return !configuredPlayerName.empty() && EqualsIgnoreCaseHttp(normalizedActorName, configuredPlayerName);
 }
 
-static bool SceneSafetySuppressesResponse(std::string_view message, RE::Actor* actor)
+static std::string AutomaticResponseBlockReason(
+    std::string_view message, const std::shared_ptr<AIAgent>& agent, RE::Actor* actor)
 {
-    return actor && PlayerConversationRoutingPolicy::ShouldSuppressAutomaticSceneResponse(
-        message, AllowActorsOnScene, actor->GetCurrentScene() != nullptr);
+    if (PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(message) ||
+        !agent || agent->isNarrator() || !actor) {
+        return {};
+    }
+
+    return PlayerConversationRouter::GetAutomaticBlockReason(
+        agent, actor, RE::PlayerCharacter::GetSingleton());
 }
 
 static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, const std::string& listener,
-                              bool enforceSceneSafety)
+                              bool enforceAutomaticEligibility)
 {
     if (!actor || !agent || listener == NARRATOR_NAME) {
         return;
     }
 
     auto actorHandle = actor->GetHandle();
-    SKSE::GetTaskInterface()->AddTask([actorHandle, agent, listener, enforceSceneSafety]() {
+    SKSE::GetTaskInterface()->AddTask([actorHandle, agent, listener, enforceAutomaticEligibility]() {
         auto* resolvedActor = actorHandle.get().get() ? actorHandle.get().get()->As<RE::Actor>() : nullptr;
         if (!resolvedActor || resolvedActor->IsDead()) {
             logger::debug("[HTTPStream] Skipping interrupt for {}; actor no longer valid", listener);
             return;
         }
 
-        if (enforceSceneSafety && !AllowActorsOnScene && resolvedActor->GetCurrentScene()) {
-            logger::info("[SCENE_SAFETY] Skipping automatic dialogue interrupt for {} in active scene", listener);
-            return;
+        if (enforceAutomaticEligibility) {
+            const std::string blockReason = PlayerConversationRouter::GetAutomaticBlockReason(
+                agent, resolvedActor, RE::PlayerCharacter::GetSingleton());
+            if (!blockReason.empty()) {
+                logger::info(
+                    "[AUTO_ELIGIBILITY] Skipping automatic dialogue interrupt for {} (reason={})",
+                    listener, blockReason);
+                return;
+            }
         }
 
         struct SEHTranslatorScope {
@@ -941,10 +953,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         AIAgentManager& responseAgentManager = AIAgentManager::getInstance();
                         auto responseAgent = responseAgentManager.getAgentByName(trim(lineParts[0]));
                         RE::Actor* responseActor = responseAgent ? responseAgent->getActor() : nullptr;
-                        if (SceneSafetySuppressesResponse(decodedMsg, responseActor)) {
+                        const std::string responseBlockReason =
+                            AutomaticResponseBlockReason(decodedMsg, responseAgent, responseActor);
+                        if (!responseBlockReason.empty()) {
                             logger::info(
-                                "[SCENE_SAFETY] Dropping automatic streamed response for {} in active scene (event={})",
-                                trim(lineParts[0]), requestEventType);
+                                "[AUTO_ELIGIBILITY] Dropping automatic streamed response for {} "
+                                "(event={}, reason={})",
+                                trim(lineParts[0]), requestEventType, responseBlockReason);
                             continue;
                         }
 
@@ -1800,8 +1815,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         if (!unifiedPlayerRouting && !agentPointer) {
             auto lookIt = std::find_if(rankedTargets.begin(), rankedTargets.end(),
-                [](const PlayerSpatialCandidate& target) {
-                    return target.lookTarget && target.targetable;
+                [playerInputMessage](const PlayerSpatialCandidate& target) {
+                    return target.lookTarget && target.targetable &&
+                           (playerInputMessage || target.autoEligible);
                 });
             if (lookIt != rankedTargets.end()) {
                 if (!validatePlayerInputTarget(*lookIt, "look_target")) {
@@ -1892,7 +1908,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             logger::info("[LISTENER-RESOLVE] Using Everyone chatbox target override");
         }
 
-        if (!unifiedPlayerRouting && agentPointer->hasConversationCooldown()) {
+        if (!unifiedPlayerRouting && !playerInputMessage && agentPointer->hasConversationCooldown()) {
             logger::info("{} is on conversation cooldown, showing message", agentPointer->getActorName());
             std::string cooldownMsg = std::format("[CHIM] {} does not want to talk right now.", agentPointer->getActorName());
             RE::DebugNotification(cooldownMsg.c_str());
@@ -1972,11 +1988,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             forceNarratorListener("Narrator mode");
         }
 
-        if (SceneSafetySuppressesResponse(msg, listenerPtr)) {
+        const std::string listenerBlockReason =
+            AutomaticResponseBlockReason(msg, agentPointer, listenerPtr);
+        if (!listenerBlockReason.empty()) {
             logger::info(
-                "[SCENE_SAFETY] Routing automatic event away from {} because the actor is in an active scene",
-                listener);
-            if (!forceNarratorListener("Scene Safety")) {
+                "[AUTO_ELIGIBILITY] Routing automatic event away from {} (reason={})",
+                listener, listenerBlockReason);
+            if (!forceNarratorListener("automatic eligibility")) {
                 return;
             }
         }
@@ -2263,13 +2281,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             return;
         }
 
-        if (SceneSafetySuppressesResponse(msg, actor)) {
-            logger::info("[SCENE_SAFETY] Suppressing automatic event for {} in active scene",
-                         actor->GetDisplayFullName());
-            return;
-        }
-
-        const bool enforceSceneSafety =
+        const bool enforceAutomaticEligibility =
             !PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(msg);
         const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -2282,6 +2294,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 agent = a;
                 break;
             }
+        }
+
+        const std::string blockReason = AutomaticResponseBlockReason(msg, agent, actor);
+        if (!blockReason.empty()) {
+            logger::info("[AUTO_ELIGIBILITY] Suppressing automatic event for {} (reason={})",
+                         actor->GetDisplayFullName(), blockReason);
+            return;
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
@@ -2304,7 +2323,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 ;  // Don't interrupt if the same actor is already processing speech, to avoid cutting off their current
                    // subtitle line
             else
-                QueueInterruptNPC(actor, agent, listener, enforceSceneSafety);
+                QueueInterruptNPC(actor, agent, listener, enforceAutomaticEligibility);
         } else if (isCombatBark) {
             logger::trace("[HTTPStream] Combat bark skips dialogue interrupt for {}", listener);
         }
