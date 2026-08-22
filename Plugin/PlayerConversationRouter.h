@@ -68,6 +68,8 @@ namespace PlayerConversationRouter
 
     PlayerConversationSpeechMode ParseSpeechMode(std::string_view mode);
     float GetCloseRadiusUnits(bool sneaking);
+    std::string GetAutomaticBlockReason(const std::shared_ptr<AIAgent>& agent,
+                                        RE::Actor* actor, RE::Actor* player);
     PlayerConversationRoutingResult Resolve(const std::string& wireMessage,
                                             const PlayerConversationRoutingContext& context);
 }
