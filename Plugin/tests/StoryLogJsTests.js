@@ -169,3 +169,39 @@ test('keeps ambient background chat as NPC dialogue', () => {
     assert.equal(entry.speaker, 'Lydia');
     assert.equal(entry.text, 'The wind is picking up.');
 });
+
+test('labels relationship events by affinity direction', () => {
+    const entries = storyLog.normalizeEntries([
+        {
+            Event: 'relationship',
+            Events: "Lydia's affinity toward RANGROO increased by 5 (28 to 33, now Friendly) and the relationship changed from neutral to platonic. Appreciated the help.",
+            'Tamrielic Time': '19th of Last Seed, 4E 201, 10:05',
+            ROWID: '50'
+        },
+        {
+            Event: 'relationship',
+            Events: "Lydia's affinity toward Nazeem decreased by 3 (20 to 17).",
+            'Tamrielic Time': '19th of Last Seed, 4E 201, 10:06',
+            ROWID: '51'
+        },
+        {
+            Event: 'relationship',
+            Events: "Lydia's relationship toward RANGROO changed from neutral to platonic.",
+            'Tamrielic Time': '19th of Last Seed, 4E 201, 10:07',
+            ROWID: '52'
+        }
+    ], 'The Narrator');
+
+    assert.deepEqual(
+        entries.map((entry) => entry.kind),
+        ['relationship-up', 'relationship-down', 'relationship']
+    );
+    assert.deepEqual(
+        entries.map((entry) => entry.speaker),
+        ['Affinity', 'Affinity', 'Relationship']
+    );
+    // Direction must survive in the visible text, not only in the row colour.
+    assert.match(entries[0].text, /increased by 5/);
+    assert.match(entries[1].text, /decreased by 3/);
+    assert.equal(entries[0].timestamp, '10:05');
+});
