@@ -6589,6 +6589,16 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateChatboxVisualContextUI(bool available, const std::string& locationName) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
+            return;
+        }
+
+        const std::string jsCall = std::string("window.updateChatboxVisualContext && window.updateChatboxVisualContext(") +
+            (available ? "true" : "false") + ", '" + EscapeForJS(locationName) + "')";
+        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+    }
+
     static bool ApplyLLMProfileSelection(const std::string& actionId, const char* sourceTag, bool showNotification) {
         std::string profileNum;
         std::string label;
@@ -6744,6 +6754,15 @@ R"CHIM(
                         if (data.contains("rechat_mode") && data["rechat_mode"].is_string()) {
                             g_chatboxCurrentRechatMode = data["rechat_mode"].get<std::string>();
                             g_chatboxRechatModeLoaded.store(true);
+                        }
+                        if (data.contains("visual_context_available") &&
+                            data["visual_context_available"].is_boolean()) {
+                            const bool available = data["visual_context_available"].get<bool>();
+                            const std::string locationName =
+                                data.contains("visual_context_location") && data["visual_context_location"].is_string()
+                                    ? data["visual_context_location"].get<std::string>()
+                                    : "";
+                            UpdateChatboxVisualContextUI(available, locationName);
                         }
                     }
                 } catch (...) {
@@ -7224,6 +7243,18 @@ R"CHIM(
             }
 
             logger::info("[Chatbox] Queued global halt AI action");
+        } else if (cmd == "soulgaze_describe") {
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = "sg_soulgaze";
+            }
+            logger::info("[Chatbox] Queued Soulgaze scene description");
+        } else if (cmd == "soulgaze_context") {
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = "sg_context";
+            }
+            logger::info("[Chatbox] Queued Soulgaze visual context capture");
         } else if (cmd.starts_with("debug_notify|")) {
             std::string message = cmd.substr(13);
             if (!message.empty()) {

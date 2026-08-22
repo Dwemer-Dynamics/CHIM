@@ -1734,6 +1734,11 @@ body {
     .focus-chatbox-event-controls {
         width: 100%;
     }
+
+    .focus-btn-visual-context {
+        min-width: 0;
+        flex: 1 1 auto;
+    }
 }
 
 .focus-btn {
@@ -1776,6 +1781,50 @@ body {
 .focus-btn-stop:hover {
     background: rgba(184, 34, 34, 0.6);
     border-color: rgba(235, 106, 106, 0.76);
+}
+
+.focus-btn-compact {
+    padding: 6px 10px;
+    font-size: 0.86em;
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.focus-btn-soulgaze {
+    border-color: rgba(242, 124, 17, 0.55);
+    background: rgba(242, 124, 17, 0.24);
+}
+
+.focus-btn-soulgaze:hover {
+    background: rgba(242, 124, 17, 0.38);
+    border-color: rgba(242, 124, 17, 0.75);
+}
+
+/* Width is pinned so the saved/unsaved label swap does not reflow the row. */
+.focus-btn-visual-context {
+    min-width: 178px;
+    text-align: center;
+}
+
+.focus-btn-visual-context.is-missing {
+    border-color: rgba(242, 124, 17, 0.4);
+    background: rgba(242, 124, 17, 0.16);
+}
+
+.focus-btn-visual-context.is-missing:hover {
+    background: rgba(242, 124, 17, 0.3);
+    border-color: rgba(242, 124, 17, 0.62);
+}
+
+.focus-btn-visual-context.is-saved {
+    border-color: rgba(46, 204, 113, 0.5);
+    background: rgba(46, 204, 113, 0.22);
+    color: #e2f8ea;
+}
+
+.focus-btn-visual-context.is-saved:hover {
+    background: rgba(46, 204, 113, 0.36);
+    border-color: rgba(46, 204, 113, 0.72);
 }
 
 .focus-btn-close {

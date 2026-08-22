@@ -207,6 +207,8 @@
                                 </div>
                                 <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
                                 <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
+                                <button id="chatbox-soulgaze-btn" class="focus-btn focus-btn-compact focus-btn-soulgaze" type="button" title="Soulgaze: describe what you are looking at right now" aria-label="Soulgaze: describe what you are looking at right now" onclick="triggerSoulgazeDescribe()">Soulgaze</button>
+                                <button id="chatbox-visual-context-btn" class="focus-btn focus-btn-compact focus-btn-visual-context is-missing" type="button" aria-live="polite" title="No visual description stored for the current location. Capture one now." aria-label="No visual description stored for the current location. Capture one now." onclick="triggerSoulgazeVisualContext()">Capture Visual Description</button>
                                 <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
                                 <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
                                 <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>

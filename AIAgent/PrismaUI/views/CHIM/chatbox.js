@@ -43,6 +43,7 @@
     const rechatOptionsElement = document.getElementById('chatbox-rechat-options');
     const rechatOptionButtons = document.querySelectorAll('#chatbox-rechat-options .chatbox-option-tile');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
+    const visualContextButton = document.getElementById('chatbox-visual-context-btn');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
@@ -77,6 +78,8 @@
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
     let currentFocusPosition = 'center';
+    let visualContextAvailable = false;
+    let visualContextLocationName = '';
     let currentTargetName = '';
     let currentTargetFormId = 0;
     let currentTargetIsNarrator = false;
@@ -858,6 +861,52 @@
 
     window.triggerHaltAIActions = function() {
         sendControlCommand('halt_ai_actions');
+    };
+
+    /**
+     * Soulgaze the current view. The modal is dismissed immediately so the
+     * delayed capture frames the scene rather than the chat UI.
+     */
+    window.triggerSoulgazeDescribe = function() {
+        sendControlCommand('soulgaze_describe');
+        window.closeFocusChatbox(true);
+    };
+
+    /**
+     * Capture or refresh the stored visual description for the current
+     * location. Always actionable, whether or not one is already saved.
+     */
+    window.triggerSoulgazeVisualContext = function() {
+        sendControlCommand('soulgaze_context');
+        window.closeFocusChatbox(true);
+    };
+
+    function renderVisualContextButton() {
+        if (!visualContextButton) return;
+
+        const locationLabel = visualContextLocationName || 'the current location';
+        const label = visualContextAvailable ? 'Visual Description: Saved' : 'Capture Visual Description';
+        const description = visualContextAvailable
+            ? `Visual description stored for ${locationLabel}. Capture again to refresh it.`
+            : `No visual description stored for ${locationLabel}. Capture one now.`;
+
+        setTextIfChanged(visualContextButton, label);
+        setClassNameIfChanged(
+            visualContextButton,
+            'focus-btn focus-btn-compact focus-btn-visual-context ' +
+                (visualContextAvailable ? 'is-saved' : 'is-missing')
+        );
+        visualContextButton.title = description;
+        visualContextButton.setAttribute('aria-label', description);
+    }
+
+    /**
+     * Visual context availability push (called from C++ via Invoke)
+     */
+    window.updateChatboxVisualContext = function(available, locationName) {
+        visualContextAvailable = !!available;
+        visualContextLocationName = typeof locationName === 'string' ? locationName.trim() : '';
+        renderVisualContextButton();
     };
 
     window.deleteRecentEvents = async function(count) {
@@ -1731,6 +1780,7 @@
     }
 
     updateFocusIndicator(isFocusChatEnabled);
+    renderVisualContextButton();
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
     renderRechatMode('random');
