@@ -3,6 +3,7 @@
 #include <d3d11.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -237,6 +238,143 @@ namespace {
         }
         return hints;
     }
+
+    struct SoulgazeCaptureRequest {
+        int sendMode{0};
+        RE::ActorHandle actor;
+        std::string actorName;
+    };
+
+    std::atomic_bool g_soulgazeCaptureInFlight{false};
+    std::mutex g_soulgazeCaptureMutex;
+    SoulgazeCaptureRequest g_soulgazeCaptureRequest;
+
+    bool IsActivatedAiActor(RE::Actor* actor) {
+        if (!actor) {
+            return false;
+        }
+
+        const RE::FormID formId = actor->GetFormID();
+        for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+            if (agent && agent->getActor() && agent->getActor()->GetFormID() == formId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool IsSuccessfulSoulgazeResponse(int sendMode, const std::string& response) {
+        if (response.empty() || response == "...") {
+            return false;
+        }
+        if (sendMode == 1) {
+            return response.find("\"ok\":true") != std::string::npos ||
+                   response.find("\"ok\": true") != std::string::npos;
+        }
+        return true;
+    }
+
+    void FinishSoulgazeCapture(int sendMode, std::string response) {
+        if (!g_soulgazeCaptureInFlight.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        SoulgazeCaptureRequest request;
+        {
+            std::scoped_lock lock(g_soulgazeCaptureMutex);
+            if (g_soulgazeCaptureRequest.sendMode != sendMode) {
+                return;
+            }
+            request = g_soulgazeCaptureRequest;
+            g_soulgazeCaptureRequest = {};
+        }
+        g_soulgazeCaptureInFlight.store(false, std::memory_order_release);
+
+        const bool success = IsSuccessfulSoulgazeResponse(sendMode, response);
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            logger::error("[SOULGAZE] Cannot dispatch capture completion to the game thread");
+            return;
+        }
+
+        taskInterface->AddTask([request = std::move(request), response = std::move(response), success]() mutable {
+            if (!success) {
+                logger::warn("[SOULGAZE] Capture failed mode={} actor={}", request.sendMode, request.actorName);
+                RE::DebugNotification("[CHIM] Soulgaze capture failed. Check AIAgent.log.");
+                return;
+            }
+
+            if (request.sendMode == 3) {
+                logger::info("[SOULGAZE] Visual context capture completed");
+                RE::DebugNotification("[CHIM] Soulgaze visual context captured.");
+                return;
+            }
+
+            if (request.sendMode == 1) {
+                logger::info("[SOULGAZE] Portrait capture completed actor={}", request.actorName);
+                RE::DebugNotification(std::format("[CHIM] {} portrait updated.", request.actorName).c_str());
+                return;
+            }
+
+            auto actorReference = request.actor.get();
+            auto* actor = actorReference ? actorReference.get()->As<RE::Actor>() : nullptr;
+            if (!actor || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded() ||
+                !IsActivatedAiActor(actor)) {
+                logger::warn("[SOULGAZE] Response actor is no longer available actor={}", request.actorName);
+                RE::DebugNotification("[CHIM] Soulgaze speaker is no longer nearby.");
+                return;
+            }
+
+            logger::info("[SOULGAZE] Dispatching scene description actor={}", request.actorName);
+            RE::DebugNotification(std::format("[CHIM] {} is describing the scene.", request.actorName).c_str());
+            HTTPManager::stream(
+                std::format("vision|{}|{}|{} {}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                            "(Context location: " + std::string(GetPlayerLocation()) + ")", response),
+                actor);
+        });
+    }
+
+    void FailSoulgazeCapture(int sendMode, const char* reason) {
+        logger::warn("[SOULGAZE] Capture aborted mode={} reason={}", sendMode, reason ? reason : "unknown");
+        FinishSoulgazeCapture(sendMode, {});
+    }
+}
+
+// Reserve the shared screenshot pipeline for one gesture capture and freeze its response actor.
+int BeginSoulgazeCapture(int captureType, RE::Actor* actor) {
+    int sendMode = 0;
+    if (captureType == 0) {
+        sendMode = 3;
+    } else if (captureType == 1) {
+        sendMode = 1;
+    } else if (captureType == 2) {
+        sendMode = 4;
+    } else {
+        return 0;
+    }
+
+    if (captureType != 0 && !IsActivatedAiActor(actor)) {
+        return 0;
+    }
+
+    bool expected = false;
+    if (!g_soulgazeCaptureInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return -1;
+    }
+
+    SoulgazeCaptureRequest request;
+    request.sendMode = sendMode;
+    if (actor) {
+        request.actor = actor->GetHandle();
+        request.actorName = actor->GetDisplayFullName();
+    }
+    {
+        std::scoped_lock lock(g_soulgazeCaptureMutex);
+        g_soulgazeCaptureRequest = std::move(request);
+    }
+    logger::info("[SOULGAZE] Capture reserved mode={} actor={}", sendMode,
+                 actor ? actor->GetDisplayFullName() : "");
+    return sendMode;
 }
 
 extern int MutexGetScreenShotSendMode();
@@ -470,14 +608,19 @@ void FreeImageData(ImageData* imageData) {
 void ProcedureTakeShot() {
     logger::info("Take a shot");
 
+    const int sendMode = MutexGetScreenShotSendMode();
+    MutexSetScreenShotSendMode(0);
+
     ImageData* id = TakeShotToMemory();
 
-    if (id == nullptr)
+    if (id == nullptr) {
         logger::info("Take a shot failed");
+        FailSoulgazeCapture(sendMode, "backbuffer_capture_failed");
+    }
 
     else {
         std::string captureHints = BuildVisualCaptureHints();
-        ThreadPool::getInstance().enqueue("ProcessScreenshot", [id, captureHints = std::move(captureHints)]() {
+        ThreadPool::getInstance().enqueue("ProcessScreenshot", [id, captureHints = std::move(captureHints), sendMode]() {
             /* std::ofstream outputFile("eyeShot.bmp", std::ios::out | std::ios::binary);
             if (outputFile.is_open()) {
                 outputFile.write(reinterpret_cast<const char*>(id->bmpData), id->fileSize);
@@ -496,15 +639,15 @@ void ProcedureTakeShot() {
             logger::info("Uploading...");
 
             std::string buffer =
-                uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, captureHints);
+                uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, captureHints, sendMode);
             logger::info("Done");
             FreeImageData(id);
 
-             if (MutexGetScreenShotSendMode() == 0)
+             if (sendMode == 0)
                 HTTPManager::stream(std::format("vision|{}|{}|{} {}", getCurrentTimeMillis(), GetGameTimeStamp(),
                               "(Context location: " + std::string(GetPlayerLocation()) + ")", buffer));
-             
-             MutexSetScreenShotSendMode(0);
+
+             FinishSoulgazeCapture(sendMode, std::move(buffer));
         });
     }
     return;
@@ -513,8 +656,11 @@ void ProcedureTakeShot() {
 void ProcedureSendShot(char const* a_path) {
     logger::info("Send  a shot");
 
+    const int sendMode = MutexGetScreenShotSendMode();
+    MutexSetScreenShotSendMode(0);
+    const std::string screenshotPath = a_path ? a_path : "";
     std::string captureHints = BuildVisualCaptureHints();
-    ThreadPool::getInstance().enqueue("UploadScreenshot", [a_path, captureHints = std::move(captureHints)]() {
+    ThreadPool::getInstance().enqueue("UploadScreenshot", [screenshotPath, captureHints = std::move(captureHints), sendMode]() {
         logger::info(" HTTPUploader::getInstance()");
 
         HTTPUploader& uploader = HTTPUploader::getInstance();
@@ -525,10 +671,11 @@ void ProcedureSendShot(char const* a_path) {
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "(beings in range:" + result + ")"));
 
-        std::ifstream binaryFile(a_path, std::ios::binary);
+        std::ifstream binaryFile(screenshotPath, std::ios::binary);
 
         if (!binaryFile.is_open()) {
-            logger::info("Failed to open the binary file. {}", a_path);
+            logger::info("Failed to open the binary file. {}", screenshotPath);
+            FailSoulgazeCapture(sendMode, "native_screenshot_unavailable");
             return ;
         }
 
@@ -549,16 +696,16 @@ void ProcedureSendShot(char const* a_path) {
         logger::info("Uploading...");
 
         std::string buffer =
-            uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, captureHints);
+            uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, captureHints, sendMode);
         logger::info("Done");
 
         delete[] prebuffer;
 
-        if (MutexGetScreenShotSendMode() == 0)
+        if (sendMode == 0)
                    HTTPManager::stream(std::format("vision|{}|{}|{} {}", getCurrentTimeMillis(), GetGameTimeStamp(),
                           "(Context location: " + std::string(GetPlayerLocation()) + ")", buffer));
 
-        MutexSetScreenShotSendMode(0);
+        FinishSoulgazeCapture(sendMode, std::move(buffer));
     });
 
     return;

@@ -157,6 +157,10 @@ namespace Papyrus {
     int shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       std::string hints, int mode);
 
+    int startSoulgazeCapture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                             RE::StaticFunctionTag*, std::string hints, int captureType, int renderMode,
+                             RE::Actor* target);
+
     int isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int setConf(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,

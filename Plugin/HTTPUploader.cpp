@@ -86,6 +86,21 @@ namespace {
         }
         return "application/octet-stream";
     }
+
+    bool IsSuccessfulHttpStatus(HINTERNET request) {
+        DWORD statusCode = 0;
+        DWORD statusSize = sizeof(statusCode);
+        if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr,
+                                 &statusCode, &statusSize, nullptr)) {
+            logger::error("Unable to read image upload HTTP status: {}", GetLastError());
+            return false;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            logger::error("Image upload returned HTTP status {}", statusCode);
+            return false;
+        }
+        return true;
+    }
 }
 
 struct FileCloser {
@@ -753,7 +768,7 @@ std::string HTTPUploader::UploadCSVFile(std::string data, std::string filename, 
     return response;
 }
 
-std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string hints) {
+std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string hints, int sendMode) {
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -765,11 +780,11 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
     std::string path = Conf::getInstance().getPath();
     auto pos = path.find("comm.php");
     if (pos != std::string::npos) {
-        if (MutexGetScreenShotSendMode()==0)
+        if (sendMode == 0 || sendMode == 3 || sendMode == 4)
             path.replace(pos, 8, "itt.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 1)
+        else if (sendMode == 1)
             path.replace(pos, 8, "pic.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 2)
+        else if (sendMode == 2)
             path.replace(pos, 8, "upl.php?stuff");
     }
 
@@ -863,11 +878,16 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
         logger::info("Error using http://{}:{}{}", server, port, path);
     }
 
+    const bool imageRequestSucceeded = IsSuccessfulHttpStatus(hRequest);
+
     // Clean up
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
+    if (!imageRequestSucceeded) {
+        return "";
+    }
     return response;
 }
 /*
@@ -966,7 +986,7 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
 }
 */
 
-std::string HTTPUploader::UploadImage(const char *data, int size, std::string hints) {
+std::string HTTPUploader::UploadImage(const char *data, int size, std::string hints, int sendMode) {
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -978,11 +998,11 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
     std::string path = Conf::getInstance().getPath();
     auto pos = path.find("comm.php");
     if (pos != std::string::npos) {
-        if (MutexGetScreenShotSendMode() == 0)
+        if (sendMode == 0 || sendMode == 3 || sendMode == 4)
             path.replace(pos, 8, "itt.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 1)
+        else if (sendMode == 1)
             path.replace(pos, 8, "pic.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 2)
+        else if (sendMode == 2)
             path.replace(pos, 8, "upl.php?stuff");
     }
 
@@ -1076,10 +1096,15 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
         logger::info("Error using http://{}:{}{}", server, port, path);
     }
 
+    const bool imageRequestSucceeded = IsSuccessfulHttpStatus(hRequest);
+
     // Clean up
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
+    if (!imageRequestSucceeded) {
+        return "";
+    }
     return response;
 }
