@@ -4269,6 +4269,8 @@ std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, flo
             actorLabel += " (restrained)";
         } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kUnconcious) {
             actorLabel += " (unconscious)";
+        } else if (target->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            actorLabel += " (sleeping)";
         } 
 
         results.push_back(actorLabel);
@@ -4824,6 +4826,8 @@ std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCac
             actorLabel += " (restrained)";
         } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kUnconcious) {
             actorLabel += " (unconscious)";
+        } else if (target->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            actorLabel += " (sleeping)";
         }
 
         results.push_back(actorLabel);

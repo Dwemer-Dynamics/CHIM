@@ -1152,7 +1152,7 @@ std::vector<TextSegment> segmentTextV2(const std::string& text_p, double soundDu
     // Close mouth at end
     // ------------------------------------------------------------
 
-    segments.push_back({"7", "_", 0.10, 1});
+    segments.push_back({"-1", "_", 0.10, 1});
 
     int n = 0;
     if (false) {
@@ -1780,6 +1780,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     _dap_phase("post_watchdog_thread_spawn");
 
     int lastSegmentIndex = 1;
+    TextSegment lastSegment{};
+    ;
     logger::info("[SPEAKERMANAGER] Starting playback loop for speaker={} text={}, resolution {}", speaker, text,
                  animationDelayMicroSecs);
     while (std::chrono::steady_clock::now() < endTimeWithBlankSegment) {
@@ -2077,23 +2079,36 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             if (visemeCode >= 0) {
                                 if (lastSegmentIndex == currentNSegment) {
                                     // Only apply intensity modifier adjustment if we are still in the same segment
-                                    logger::info(
-                                        "[SpeakManager] Intensity capped at 1.0 for viseme code {} (label: "
-                                        "{}),intensityModifier: {}, adjusting intensityModifier to {}, segment {}",
-                                        visemeCode, getVISEMEName(visemeCode), intensityModifier,
-                                        intensityModifier - 0.01,currentNSegment);
-                                    // We lower modifier to avoid capping.
-                                    intensityModifier -= 0.01;
-                                    if (intensityModifier < 0.01) {
-                                        intensityModifier = 0.01;
+                                    if (lastSegment.text != currentSegment.text) {
+                                        // But maybe last segment has the same viseme code, so it's normal
+                                        // in this case we don't want to adjust the intensity modifier, because it's
+                                        // normal to have the intensity high from last segment
+                                        logger::info(
+                                            "[SpeakManager] Intensity capped at 1.0 for viseme code {} (label: "
+                                            "{}),intensityModifier: {}, adjusting intensityModifier to {}, segment {}",
+                                            visemeCode, getVISEMEName(visemeCode), intensityModifier,
+                                            intensityModifier - 0.01, currentNSegment);
+                                        
+                                        // So, last segment viseme is different, we are in the same segment,
+                                        // and reached max intensity, so we will adjust the intensity modifier down to
+                                        // avoid this in the future
+
+                                        intensityModifier -= 0.01;
+                                        if (intensityModifier < 0.01) {
+                                            intensityModifier = 0.01;
+                                        }
                                     }
-                                }
+                                } 
                             }
                             intensity = 1.00f;
                         }
 
+                        if (lastSegmentIndex != currentNSegment) {
+                            lastSegment = currentSegment;
+                        }
                         
                         lastSegmentIndex = currentNSegment;
+                        
 
                         intensityStepDecal = intensityStep/2;
                             
