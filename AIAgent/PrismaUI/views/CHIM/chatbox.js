@@ -890,6 +890,16 @@
         window.closeFocusChatbox(true);
     };
 
+    /**
+     * Refresh the portrait of the NPC currently being looked at. Same
+     * dismiss-first behaviour so the capture frames the NPC, not the chat UI.
+     */
+    window.triggerSoulgazePortrait = function() {
+        closeSoulgazeMenu();
+        sendControlCommand('soulgaze_portrait');
+        window.closeFocusChatbox(true);
+    };
+
     function closeSoulgazeMenu() {
         closeTileMenu(soulgazeMenuToggleButton, soulgazeOptionsElement);
     }
@@ -1750,14 +1760,17 @@
         });
     }
 
+    const soulgazeActionHandlers = {
+        context: function() { window.triggerSoulgazeVisualContext(); },
+        portrait: function() { window.triggerSoulgazePortrait(); },
+        describe: function() { window.triggerSoulgazeDescribe(); }
+    };
+
     soulgazeOptionButtons.forEach(function(button) {
         button.addEventListener('click', function(event) {
             event.stopPropagation();
-            if (button.dataset.soulgazeAction === 'describe') {
-                window.triggerSoulgazeDescribe();
-            } else {
-                window.triggerSoulgazeVisualContext();
-            }
+            const handler = soulgazeActionHandlers[button.dataset.soulgazeAction];
+            if (handler) handler();
         });
     });
 

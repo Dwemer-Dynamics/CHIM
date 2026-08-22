@@ -7249,6 +7249,12 @@ R"CHIM(
                 g_pendingSettingsAction = "sg_soulgaze";
             }
             logger::info("[Chatbox] Queued Soulgaze scene description");
+        } else if (cmd == "soulgaze_portrait") {
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = "sg_photo_zoom";
+            }
+            logger::info("[Chatbox] Queued Soulgaze targeted NPC portrait capture");
         } else if (cmd == "soulgaze_context") {
             {
                 std::lock_guard<std::mutex> lock(g_settingsMenuMutex);

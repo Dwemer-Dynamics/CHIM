@@ -1656,6 +1656,16 @@ body {
     align-items: flex-end;
 }
 
+/* Its own small group so the Soulgaze trigger sits beside the Delete Events
+   controls at natural button width instead of stretching the row. The row's
+   align-items: flex-end keeps it baseline-aligned with the Delete button
+   even though this group has no label above it. */
+.focus-chatbox-soulgaze-controls {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: flex-end;
+}
+
 .focus-chatbox-delete-label {
     font-size: 0.72em;
     color: #a7a7b0;
@@ -1735,16 +1745,12 @@ body {
         width: 100%;
     }
 
-    /* Higher specificity than the .focus-btn-* base rules further down the
-       file, which would otherwise win on source order. */
-    .focus-chatbox-actions-row .focus-chatbox-soulgaze {
-        min-width: 0;
-        flex: 1 1 auto;
-    }
-
-    .focus-chatbox-soulgaze .focus-btn-soulgaze {
-        width: 100%;
-        justify-content: center;
+    /* The Soulgaze group wraps onto its own line above the full-width Delete
+       Events group rather than stretching, so the trigger keeps the same
+       size as every other action button. */
+    .focus-chatbox-soulgaze-controls {
+        max-width: 100%;
+        justify-content: flex-end;
     }
 }
 
@@ -1864,14 +1870,15 @@ body {
     border: 0;
 }
 
-/* The action row sits at the bottom of the panel, so this menu opens upward
-   and is anchored to the trigger's right edge to stay inside the shell. */
+/* The secondary action row sits at the bottom of the panel, so this menu opens
+   upward and is anchored to the trigger's right edge to stay inside the shell. */
 .chatbox-tile-options.soulgaze-options {
     top: auto;
     bottom: calc(100% + 6px);
     left: auto;
     right: 0;
     width: max(232px, 100%);
+    max-width: calc(100vw - 32px);
     grid-template-columns: minmax(0, 1fr);
 }
 

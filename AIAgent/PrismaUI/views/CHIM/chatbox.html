@@ -207,23 +207,26 @@
                                 </div>
                                 <button class="focus-btn focus-btn-primary" type="button" onclick="sendFocusMessage()">Send</button>
                                 <button class="focus-btn" type="button" onclick="triggerContinueSpeaking()">Continue Speaking</button>
-                                <div id="chatbox-soulgaze-selector" class="focus-chatbox-soulgaze">
-                                    <button id="chatbox-soulgaze-menu-toggle" class="focus-btn focus-btn-compact focus-btn-soulgaze" type="button" aria-expanded="false" aria-controls="chatbox-soulgaze-options" title="Soulgaze. No visual description stored for the current location." aria-label="Soulgaze. No visual description stored for the current location.">
-                                        <span>Soulgaze</span>
-                                        <span id="chatbox-soulgaze-status-dot" class="soulgaze-status-dot is-missing" aria-hidden="true"></span>
-                                        <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
-                                    </button>
-                                    <span id="chatbox-soulgaze-status-text" class="soulgaze-status-text" aria-live="polite">No visual description stored for the current location.</span>
-                                    <div id="chatbox-soulgaze-options" class="chatbox-tile-options soulgaze-options hidden" role="group" aria-label="Soulgaze actions">
-                                        <button class="chatbox-option-tile" type="button" data-soulgaze-action="describe" title="Describe what you are looking at right now">Describe Scene</button>
-                                        <button id="chatbox-soulgaze-context-option" class="chatbox-option-tile" type="button" data-soulgaze-action="context" title="Store a visual description of the current location.">Capture Visual Description</button>
-                                    </div>
-                                </div>
                                 <button class="focus-btn focus-btn-danger" type="button" onclick="clearFocusMessage()">Clear Text</button>
                                 <button class="focus-btn focus-btn-stop" type="button" onclick="triggerStopAllDialogue()">Stop All Dialogue</button>
                                 <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
                             </div>
                             <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
+                                <div class="focus-chatbox-soulgaze-controls">
+                                    <div id="chatbox-soulgaze-selector" class="focus-chatbox-soulgaze">
+                                        <button id="chatbox-soulgaze-menu-toggle" class="focus-btn focus-btn-soulgaze" type="button" aria-expanded="false" aria-controls="chatbox-soulgaze-options" title="Soulgaze. No visual description stored for the current location." aria-label="Soulgaze. No visual description stored for the current location.">
+                                            <span>Soulgaze</span>
+                                            <span id="chatbox-soulgaze-status-dot" class="soulgaze-status-dot is-missing" aria-hidden="true"></span>
+                                            <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
+                                        </button>
+                                        <span id="chatbox-soulgaze-status-text" class="soulgaze-status-text" aria-live="polite">No visual description stored for the current location.</span>
+                                        <div id="chatbox-soulgaze-options" class="chatbox-tile-options soulgaze-options hidden" role="group" aria-label="Soulgaze actions">
+                                            <button id="chatbox-soulgaze-context-option" class="chatbox-option-tile" type="button" data-soulgaze-action="context" title="Store a visual description of the current location.">Capture Visual Description</button>
+                                            <button class="chatbox-option-tile" type="button" data-soulgaze-action="portrait" title="Refresh the portrait of the NPC you are looking at">Update Targeted NPC Portrait</button>
+                                            <button class="chatbox-option-tile" type="button" data-soulgaze-action="describe" title="Describe what you are looking at right now">Describe Scene</button>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div class="focus-chatbox-event-controls">
                                     <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
                                     <div class="focus-chatbox-delete-controls">
