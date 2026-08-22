@@ -7296,7 +7296,9 @@ void RefreshPlayerInventory(bool forceUpdate) {
                 {"name", item.name},
                 {"baseid", item.baseid},
                 {"count", item.count},
-                {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
+                {"keywords", item.keywords.is_array() ? item.keywords : json::array()},
+                {"goldvalue", item.gold}
+                
             });
         }
         
