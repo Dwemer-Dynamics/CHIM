@@ -459,8 +459,9 @@ namespace
             }
 
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-            auto args = RE::MakeFunctionArguments(std::move(recipient), itemRef.get(), std::move(handoff.itemName));
-            if (!vm->DispatchStaticCall("AIAgentAIMind", "AcceptHeldItemFromPlayer", args, callback)) {
+            auto args = RE::MakeFunctionArguments(
+                std::move(recipient), itemRef.get(), std::move(handoff.itemName), 1);
+            if (!vm->DispatchStaticCall("AIAgentAIMind", "PickupItemFromWorld", args, callback)) {
                 logger::warn("[HELD_ITEM_HANDOFF] Failed to dispatch transfer for RefID 0x{:08X}", handoff.itemRefId);
                 return;
             }
