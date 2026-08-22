@@ -1735,9 +1735,16 @@ body {
         width: 100%;
     }
 
-    .focus-btn-visual-context {
+    /* Higher specificity than the .focus-btn-* base rules further down the
+       file, which would otherwise win on source order. */
+    .focus-chatbox-actions-row .focus-chatbox-soulgaze {
         min-width: 0;
         flex: 1 1 auto;
+    }
+
+    .focus-chatbox-soulgaze .focus-btn-soulgaze {
+        width: 100%;
+        justify-content: center;
     }
 }
 
@@ -1790,41 +1797,82 @@ body {
     white-space: nowrap;
 }
 
+.focus-chatbox-soulgaze {
+    position: relative;
+    display: flex;
+    pointer-events: auto;
+}
+
 .focus-btn-soulgaze {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     border-color: rgba(242, 124, 17, 0.55);
     background: rgba(242, 124, 17, 0.24);
 }
 
-.focus-btn-soulgaze:hover {
+.focus-btn-soulgaze:hover,
+.focus-btn-soulgaze[aria-expanded="true"] {
     background: rgba(242, 124, 17, 0.38);
     border-color: rgba(242, 124, 17, 0.75);
 }
 
-/* Width is pinned so the saved/unsaved label swap does not reflow the row. */
-.focus-btn-visual-context {
-    min-width: 178px;
-    text-align: center;
+.focus-btn-soulgaze:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
 }
 
-.focus-btn-visual-context.is-missing {
-    border-color: rgba(242, 124, 17, 0.4);
-    background: rgba(242, 124, 17, 0.16);
+.focus-btn-soulgaze[aria-expanded="true"] .chatbox-tile-trigger-arrow {
+    transform: rotate(180deg);
 }
 
-.focus-btn-visual-context.is-missing:hover {
-    background: rgba(242, 124, 17, 0.3);
-    border-color: rgba(242, 124, 17, 0.62);
+/* Saved/missing is carried by shape as well as hue: a filled dot means the
+   current location has a stored description, a hollow ring means it does not.
+   The trigger title/aria-label spells the same state out in words. */
+.soulgaze-status-dot {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    background: transparent;
 }
 
-.focus-btn-visual-context.is-saved {
-    border-color: rgba(46, 204, 113, 0.5);
-    background: rgba(46, 204, 113, 0.22);
-    color: #e2f8ea;
+.soulgaze-status-dot.is-missing {
+    border-color: rgba(242, 124, 17, 0.95);
+    background: transparent;
 }
 
-.focus-btn-visual-context.is-saved:hover {
-    background: rgba(46, 204, 113, 0.36);
-    border-color: rgba(46, 204, 113, 0.72);
+.soulgaze-status-dot.is-saved {
+    border-color: rgba(46, 204, 113, 0.95);
+    background: #37d67a;
+    box-shadow: 0 0 5px rgba(46, 204, 113, 0.6);
+}
+
+/* Announced by screen readers when the stored-context state changes; the
+   visible trigger keeps reading exactly "Soulgaze". */
+.soulgaze-status-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* The action row sits at the bottom of the panel, so this menu opens upward
+   and is anchored to the trigger's right edge to stay inside the shell. */
+.chatbox-tile-options.soulgaze-options {
+    top: auto;
+    bottom: calc(100% + 6px);
+    left: auto;
+    right: 0;
+    width: max(232px, 100%);
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .focus-btn-close {

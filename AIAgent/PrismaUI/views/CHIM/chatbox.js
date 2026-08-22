@@ -43,7 +43,13 @@
     const rechatOptionsElement = document.getElementById('chatbox-rechat-options');
     const rechatOptionButtons = document.querySelectorAll('#chatbox-rechat-options .chatbox-option-tile');
     const focusToggleButton = document.getElementById('chatbox-focus-toggle');
-    const visualContextButton = document.getElementById('chatbox-visual-context-btn');
+    const soulgazeSelectorElement = document.getElementById('chatbox-soulgaze-selector');
+    const soulgazeMenuToggleButton = document.getElementById('chatbox-soulgaze-menu-toggle');
+    const soulgazeOptionsElement = document.getElementById('chatbox-soulgaze-options');
+    const soulgazeOptionButtons = document.querySelectorAll('#chatbox-soulgaze-options .chatbox-option-tile');
+    const soulgazeStatusDotElement = document.getElementById('chatbox-soulgaze-status-dot');
+    const soulgazeStatusTextElement = document.getElementById('chatbox-soulgaze-status-text');
+    const soulgazeContextOptionButton = document.getElementById('chatbox-soulgaze-context-option');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
@@ -459,7 +465,8 @@
         [
             [modeMenuToggleButton, modeOptionsElement],
             [modelMenuToggleButton, modelOptionsElement],
-            [rechatMenuToggleButton, rechatOptionsElement]
+            [rechatMenuToggleButton, rechatOptionsElement],
+            [soulgazeMenuToggleButton, soulgazeOptionsElement]
         ].forEach(function(selector) {
             if (selector[1] !== exceptOptionsElement) {
                 closeTileMenu(selector[0], selector[1]);
@@ -868,6 +875,7 @@
      * delayed capture frames the scene rather than the chat UI.
      */
     window.triggerSoulgazeDescribe = function() {
+        closeSoulgazeMenu();
         sendControlCommand('soulgaze_describe');
         window.closeFocusChatbox(true);
     };
@@ -877,27 +885,48 @@
      * location. Always actionable, whether or not one is already saved.
      */
     window.triggerSoulgazeVisualContext = function() {
+        closeSoulgazeMenu();
         sendControlCommand('soulgaze_context');
         window.closeFocusChatbox(true);
     };
 
-    function renderVisualContextButton() {
-        if (!visualContextButton) return;
+    function closeSoulgazeMenu() {
+        closeTileMenu(soulgazeMenuToggleButton, soulgazeOptionsElement);
+    }
 
+    function isSoulgazeMenuOpen() {
+        return !!soulgazeOptionsElement && !soulgazeOptionsElement.classList.contains('hidden');
+    }
+
+    /**
+     * The visible trigger always reads "Soulgaze"; stored-context state is
+     * carried by the status dot plus the title/aria-label and the wording of
+     * the location option.
+     */
+    function renderSoulgazeControl() {
         const locationLabel = visualContextLocationName || 'the current location';
-        const label = visualContextAvailable ? 'Visual Description: Saved' : 'Capture Visual Description';
-        const description = visualContextAvailable
+        const status = visualContextAvailable
             ? `Visual description stored for ${locationLabel}. Capture again to refresh it.`
             : `No visual description stored for ${locationLabel}. Capture one now.`;
 
-        setTextIfChanged(visualContextButton, label);
+        if (soulgazeMenuToggleButton) {
+            soulgazeMenuToggleButton.title = `Soulgaze. ${status}`;
+            soulgazeMenuToggleButton.setAttribute('aria-label', `Soulgaze. ${status}`);
+        }
+
         setClassNameIfChanged(
-            visualContextButton,
-            'focus-btn focus-btn-compact focus-btn-visual-context ' +
-                (visualContextAvailable ? 'is-saved' : 'is-missing')
+            soulgazeStatusDotElement,
+            'soulgaze-status-dot ' + (visualContextAvailable ? 'is-saved' : 'is-missing')
         );
-        visualContextButton.title = description;
-        visualContextButton.setAttribute('aria-label', description);
+        setTextIfChanged(soulgazeStatusTextElement, status);
+
+        if (soulgazeContextOptionButton) {
+            setTextIfChanged(
+                soulgazeContextOptionButton,
+                visualContextAvailable ? 'Refresh Visual Description' : 'Capture Visual Description'
+            );
+            soulgazeContextOptionButton.title = status;
+        }
     }
 
     /**
@@ -906,7 +935,7 @@
     window.updateChatboxVisualContext = function(available, locationName) {
         visualContextAvailable = !!available;
         visualContextLocationName = typeof locationName === 'string' ? locationName.trim() : '';
-        renderVisualContextButton();
+        renderSoulgazeControl();
     };
 
     window.deleteRecentEvents = async function(count) {
@@ -1714,6 +1743,36 @@
         });
     }
 
+    if (soulgazeMenuToggleButton) {
+        soulgazeMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(soulgazeMenuToggleButton, soulgazeOptionsElement);
+        });
+    }
+
+    soulgazeOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            if (button.dataset.soulgazeAction === 'describe') {
+                window.triggerSoulgazeDescribe();
+            } else {
+                window.triggerSoulgazeVisualContext();
+            }
+        });
+    });
+
+    if (soulgazeSelectorElement) {
+        // Escape from the trigger or any option closes the menu without
+        // dismissing the chat, and hands focus back to the trigger.
+        soulgazeSelectorElement.addEventListener('keydown', function(event) {
+            if (event.key !== 'Escape' || !isSoulgazeMenuOpen()) return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeSoulgazeMenu();
+            if (soulgazeMenuToggleButton) soulgazeMenuToggleButton.focus();
+        });
+    }
+
     if (rechatMenuToggleButton) {
         rechatMenuToggleButton.addEventListener('click', function(event) {
             event.stopPropagation();
@@ -1780,7 +1839,7 @@
     }
 
     updateFocusIndicator(isFocusChatEnabled);
-    renderVisualContextButton();
+    renderSoulgazeControl();
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
     renderRechatMode('random');
