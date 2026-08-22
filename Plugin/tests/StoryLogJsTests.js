@@ -176,19 +176,22 @@ test('labels relationship events by affinity direction', () => {
             Event: 'relationship',
             Events: "Lydia's affinity toward RANGROO increased by 5 (28 to 33, now Friendly) and the relationship changed from neutral to platonic. Appreciated the help.",
             'Tamrielic Time': '19th of Last Seed, 4E 201, 10:05',
-            ROWID: '50'
+            'Time (UTC)': '19-07-2026 10:05:00',
+            ROWID: 'relationship:50'
         },
         {
             Event: 'relationship',
             Events: "Lydia's affinity toward Nazeem decreased by 3 (20 to 17).",
             'Tamrielic Time': '19th of Last Seed, 4E 201, 10:06',
-            ROWID: '51'
+            'Time (UTC)': '19-07-2026 10:06:00',
+            ROWID: 'relationship:51'
         },
         {
             Event: 'relationship',
             Events: "Lydia's relationship toward RANGROO changed from neutral to platonic.",
             'Tamrielic Time': '19th of Last Seed, 4E 201, 10:07',
-            ROWID: '52'
+            'Time (UTC)': '19-07-2026 10:07:00',
+            ROWID: 'relationship:52'
         }
     ], 'The Narrator');
 

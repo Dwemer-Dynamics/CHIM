@@ -212,6 +212,10 @@
             .map(function(entry) { return normalizeEvent(entry, narratorName, decode); })
             .filter(Boolean)
             .sort(function(left, right) {
+                if (left.occurredAtMs && right.occurredAtMs) {
+                    const timeDelta = left.occurredAtMs - right.occurredAtMs;
+                    if (timeDelta !== 0) return timeDelta;
+                }
                 if (left.rowId && right.rowId) return left.rowId - right.rowId;
                 return 0;
             });
