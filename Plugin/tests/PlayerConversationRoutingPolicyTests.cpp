@@ -77,6 +77,9 @@ int main()
     eligibility.restrained = true;
     Check(GetAutomaticBlockReason(eligibility) == "restrained", "Restraint was not enforced");
     eligibility = {};
+    eligibility.unconscious = true;
+    Check(GetAutomaticBlockReason(eligibility) == "unconscious", "Unconscious state was not enforced");
+    eligibility = {};
     eligibility.sleeping = true;
     Check(GetAutomaticBlockReason(eligibility) == "sleeping", "Sleeping was not enforced");
     eligibility = {};

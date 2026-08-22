@@ -101,11 +101,6 @@ namespace
             return false;
         }
 
-        if (actor->AsActorState()->IsUnconscious()) {
-            reason = "unconscious";
-            return false;
-        }
-
         auto* playerCell = player->GetParentCell();
         auto* actorCell = actor->GetParentCell();
         if (!playerCell || !playerCell->IsAttached() || !actorCell || !actorCell->IsAttached()) {
@@ -326,6 +321,7 @@ std::string PlayerConversationRouter::GetAutomaticBlockReason(
     facts.combatDialogueEnabled = CombatDialogueEnabled;
     facts.restrained =
         actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained;
+    facts.unconscious = actor->AsActorState()->IsUnconscious();
     facts.sleeping = IsSleeping(actor);
     facts.inScene = actor->GetCurrentScene() != nullptr;
     facts.sceneDialogueEnabled = AllowActorsOnScene;

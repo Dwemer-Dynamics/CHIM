@@ -32,6 +32,7 @@ namespace PlayerConversationRoutingPolicy
         bool inCombat = false;
         bool combatDialogueEnabled = false;
         bool restrained = false;
+        bool unconscious = false;
         bool sleeping = false;
         bool inScene = false;
         bool sceneDialogueEnabled = false;
@@ -50,6 +51,9 @@ namespace PlayerConversationRoutingPolicy
         }
         if (facts.restrained) {
             return "restrained";
+        }
+        if (facts.unconscious) {
+            return "unconscious";
         }
         if (facts.sleeping) {
             return "sleeping";

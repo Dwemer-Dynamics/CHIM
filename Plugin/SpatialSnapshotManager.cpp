@@ -786,6 +786,8 @@ namespace
             status = "In combat";
         } else if (reason == "restrained") {
             status = "Restrained";
+        } else if (reason == "unconscious") {
+            status = "Unconscious";
         } else if (reason == "sleeping") {
             status = "Sleeping";
         } else if (reason == "scene") {
