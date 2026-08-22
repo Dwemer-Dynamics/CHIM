@@ -442,14 +442,14 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
             if (std::abs(newVolume - currentVolume) > 0.01f) {  // Only update if change is significant
                 currentVolume = newVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                logger::debug("[AudioManager] Ramping volume to: {}", currentVolume);
+                logger::debug("[AudioManager Legacy] Ramping volume to: {}", currentVolume);
             }
         } else {
             // Ramping complete
             if (std::abs(defaultVolume - currentVolume) > 0.01f) {
                 currentVolume = defaultVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                logger::debug("[AudioManager] Volume ramp complete, set to: {}", currentVolume);
+                logger::debug("[AudioManager Legacy] Volume ramp complete, set to: {}", currentVolume);
             }
             isRamping = false;
         }

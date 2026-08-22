@@ -60,6 +60,12 @@ namespace
         if (!actor) {
             return false;
         }
+
+        if (actor && actor->AsActorState() &&
+            actor->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            return true;
+        }
+
         auto furnitureHandle = actor->GetOccupiedFurniture();
         auto* furnitureReference = furnitureHandle ? furnitureHandle.get().get() : nullptr;
         if (!furnitureReference) {
