@@ -323,10 +323,17 @@ EndFunction
 
 function sendCellInfoPlayer() 
 
-	
-	
 	ObjectReference player = Game.GetPlayer()
+	
+	if (!player)
+		Return
+	endif;
+	
 	Cell localCell = player.getParentCell()
+	
+	if (!localCell)
+		Return
+	endif;
 	
 	Debug.Trace("[CHIM] AIAgentPlayerScript sendCellInfoPlayer, cell <0x"+DecToHex(localCell.GetFormId())+"> " );
 	
