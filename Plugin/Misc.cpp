@@ -1321,6 +1321,7 @@ float GetPitchFromQuaternion(const RE::NiQuaternion& q) {
 
 std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(RE::Actor* target) {
 
+    int localdebug = 0;
     if (!target) {
         logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef early exit: target is null");
         return {};
@@ -1372,7 +1373,10 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
         if (!cell || !targetCell || cell != targetCell) {
             // Skip actors that are in a different cell than the target, or cells are null
-            //logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",name.empty() ? "Unknown" : name, id);
+            if (localdebug) {
+                logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target", name.empty() ? "Unknown" : name, id);
+            }
+            
             continue;
         }
 
@@ -1381,18 +1385,85 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
         float distance = target->GetPosition().GetDistance(actor->GetPosition());
         if (distance > 4096) {
             // Skip actors that are too far from the target
+            if (localdebug) 
+                logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - distance {} > 4096", name.empty() ? "Unknown" : name, id, distance);
             continue;
         }
 
         RE::TESWorldSpace* worldspace = actor->GetWorldspace();
         if (targetWorldspace != worldspace) {
             // Skip actors that are in a different worldspace than the target
+            if (localdebug)
+                logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different worldspace than target",
+                         name.empty() ? "Unknown" : name, id);
             continue;
         }
 
         auto pos = actor->GetPosition();
 
-        logger::info("[LOW ACTOR] {} ({:X}) pos=({}, {}, {}), distance {}", name.empty() ? "Unknown" : name, id, pos.x,
+        logger::info("[LOW ACTOR][LOW] {} ({:X}) pos=({}, {}, {}), distance {}", name.empty() ? "Unknown" : name, id, pos.x,
+                     pos.y, pos.z, distance);
+
+        results.push_back({name.empty() ? "Unknown" : name, actor->GetFormID()});
+        n++;
+    }
+
+    for (auto& handle : processLists->middleLowActorHandles) {
+        // Convert handle -> ActorPtr safely
+        RE::Actor* actor = handle.get().get();
+        if (!actor) {
+            continue;
+        }
+
+        if (actor->GetFormID() == target->GetFormID()) {
+            // Skip the target actor itself
+            continue;
+        }
+        // Basic validity checks
+        if (!actor->Is3DLoaded() && !actor->GetParentCell()) {
+            // still may be valid persistent actor, so don't skip blindly
+        }
+
+        // Actor identity
+        auto baseForm = actor->GetBaseObject();
+        if (!baseForm) {
+            continue;
+        }
+
+        std::string name = actor->GetDisplayFullName();
+        RE::FormID id = actor->GetFormID();
+        RE::TESObjectCELL* cell = actor->GetParentCell();
+
+        if (!cell || !targetCell || cell != targetCell) {
+            // Skip actors that are in a different cell than the target, or cells are null
+            if (localdebug)
+                logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different cell than target",
+                         name.empty() ? "Unknown" : name, id);
+            continue;
+        }
+
+        // Distance from target
+
+        float distance = target->GetPosition().GetDistance(actor->GetPosition());
+        if (distance > 4096) {
+            // Skip actors that are too far from the target
+            logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - distance {} > 4096", name.empty() ? "Unknown" : name,
+                         id, distance);
+            continue;
+        }
+
+        RE::TESWorldSpace* worldspace = actor->GetWorldspace();
+        if (targetWorldspace != worldspace) {
+            // Skip actors that are in a different worldspace than the target
+            if (localdebug)
+                logger::info("[LOW ACTOR] Skipping actor {} ({:X}) - different worldspace than target",
+                         name.empty() ? "Unknown" : name, id);
+            continue;
+        }
+
+        auto pos = actor->GetPosition();
+
+        logger::info("[LOW ACTOR][LowMiddle] {} ({:X}) pos=({}, {}, {}), distance {}", name.empty() ? "Unknown" : name, id, pos.x,
                      pos.y, pos.z, distance);
 
         results.push_back({name.empty() ? "Unknown" : name, actor->GetFormID()});
