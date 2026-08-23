@@ -2819,7 +2819,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         if (furniture > 0) {
             RE::TESObjectREFR* furnitureForm = RE::TESForm::LookupByID(furniture)->AsReference();
-            logger::info("Furniture: {}", furnitureForm->GetName());
+            logger::info("[GoToSleep] Furniture: {}", furnitureForm->GetName());
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             auto args = RE::MakeFunctionArguments(std::move(npc), std::move(furnitureForm));
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SleepInBed",
@@ -2836,6 +2836,16 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             }
 
         } else {
+
+            // Try to use StayAtPlace intent sleep
+            logger::info("[GoToSleep] No furniture found, trying to use StayAtPlace intent sleep");
+            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+            std::string bgParm = "StayAtPlace/0x14/sleep";
+            RE::TESForm *npcAsForm = npc->As<RE::TESForm>();
+            auto args = RE::MakeFunctionArguments(std::move(npcAsForm), std::move(bgParm));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "BackgroundCmd",
+                                                                                       args, callback);
+
             if (GlobalRechatPolicyAsap == 1) {
                 HTTPManager::stream(std::format("funcret|{}|{}|{} ({})", getCurrentTimeMillis(), GetGameTimeStamp(),
                                                 "command@" + command + "@" + trim(parameter) +
@@ -5309,7 +5319,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                     // logger::info("[TAKEASEAT] Posible sit target {} is free 0x{:08x}", currentFurniture,object.GetFormID());
                 }
 
-                if (object.IsActivationBlocked()) {
+                if (object.IsActivationBlocked() && false) {
                     logger::info("[TAKEASEAT] Possible sit target {} is IsActivationBlocked 0x{:08x}", currentFurniture,object.GetFormID());
                     return RE::BSContainer::ForEachResult::kContinue;
                 }
@@ -5401,7 +5411,11 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
             return RE::BSContainer::ForEachResult::kContinue;
         });
     }
-    if (foundTarget) logger::info("[TAKEASEAT] Return final selected FormID {:08x} ", foundTarget);
+    if (foundTarget) {
+        logger::info("[TAKEASEAT] Return final selected FormID {:08x} ", foundTarget);
+    } else {
+        logger::info("[TAKEASEAT] No valid furniture found in cell");
+    }
     return foundTarget;
 }
 
