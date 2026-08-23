@@ -588,7 +588,7 @@ Event OnUpdate()
 	ObjectReference player = Game.GetPlayer()
 	Cell currCell = player.GetParentCell()
 	Location currLoc = player.GetCurrentLocation()
-	if (!processedDeferredCellInfo && ShouldSendCellInfoPlayer(currCell,currLoc) || true)
+	if (!processedDeferredCellInfo && ShouldSendCellInfoPlayer(currCell,currLoc))
 		sendCellInfoPlayer()
 	endif
 	
