@@ -241,7 +241,6 @@ function MoveToTargetEnd(Actor npc) global
 						string logMessage
 						logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 						Debug.TraceUser("ChimHTTPSender", logMessage)
-						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 						
 						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
@@ -837,7 +836,7 @@ function TravelToTargetEnd(Actor npc) global
 					logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 					Debug.TraceUser("ChimHTTPSender", logMessage)
 					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
-					
+					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"infoaction",npc.GetDisplayName())
 					Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 				endif
 			endif
@@ -3369,6 +3368,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Debug.TraceUser("ChimHTTPSender", logMessage)
 		
 		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
+		AIAgentFunctions.logMessage(npc.GetDisplayName()+" picked up "+itemName,"infoaction")
 	else
 		; Too far - store details and initiate movement
 		;StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
@@ -3403,7 +3403,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Debug.TraceUser("ChimHTTPSender", logMessage)
 		
 		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
-		
+		AIAgentFunctions.logMessage(npc.GetDisplayName()+" picked up "+itemName,"infoaction")
 	endif
 EndFunction
 
@@ -3777,7 +3777,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		Debug.Trace("[CHIM] BackgroundCmd, parm0: "+cmd[0])
 		
 		if cmd.length>2
-			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+"> parm2: <"+cmd[1]+">")
+			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+"> parm2: <"+cmd[2]+">")
 		elseif cmd.length>1
 			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+">")
 		endif
