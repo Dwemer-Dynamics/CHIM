@@ -8667,7 +8667,7 @@ EventHandlers {
 
 
                 if (objectPointer) {
-                    logger::info("Player activated {}, type {}, horse {}", objectPointer->GetName(),static_cast<std::uint8_t>(activatedS->formType.get()), objectPointer->IsHorse());
+                    logger::info("Player activated  {:#x}", objectPointer->GetFormID());
                     
                     if (objectPointer->GetFactionOwner() == AIAgentRoleMasterFaction) {
                         HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
