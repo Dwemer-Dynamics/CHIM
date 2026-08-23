@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.2.5"
-#define PLUGIN_RELEASE_DATE "2026-08-21"
+#define PLUGIN_VERSION "3.2.6"
+#define PLUGIN_RELEASE_DATE "2026-08-23"
 
 const char* GetPluginVersion()
 {
@@ -10453,6 +10453,11 @@ EventHandlers {
          auto source = event->oldContainer;
          auto destination = event->newContainer;
 
+         // Container shuffles can report the same owner on both sides; they are not transfers.
+         if (source == destination) {
+             return;
+         }
+
          std::string itemName;
          std::string itemNameEx;
 
@@ -10533,7 +10538,7 @@ EventHandlers {
              
              AIAgentManager& aiam = AIAgentManager::getInstance();
              auto agent = aiam.getAgentByFormId(destinationPointer->GetFormID());
-             if (agent) {
+             if (agent && !agent->isNarrator()) {
                  if (agent->getActor()->GetFormID() == destinationPointer->GetFormID()) {
                      HTTPManager::log(std::format("itemfound|{}|{}|{} gave {} {} to {},(value {} gold)",
                                                   getCurrentTimeMillis(), GetGameTimeStamp(),
