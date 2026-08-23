@@ -12,6 +12,7 @@
 #include "SpatialSnapshotManager.h"
 #include "PlayerConversationRouter.h"
 #include "SpatialAwareness.h"
+#include "SupportReportLauncher.h"
 #include "json.hpp"
 
 #include <winsock2.h>
@@ -8212,75 +8213,34 @@ R"CHIM(
         }
     }
 
-    // Starts the installed launcher in its headless diagnostic mode and waits off the game thread.
-    static void GenerateSupportReportAsync() {
-        ThreadPool::getInstance().enqueue(
-            "GenerateSupportReport",
-            []() {
-                constexpr wchar_t kLauncherPath[] = L"C:\\DwemerDistro\\DwemerDistro.exe";
-                if (GetFileAttributesW(kLauncherPath) == INVALID_FILE_ATTRIBUTES) {
-                    logger::error("[Support Report] DwemerDistro launcher was not found at C:\\DwemerDistro\\DwemerDistro.exe");
-                    PublishSupportReportResult(
-                        "error",
-                        "DwemerDistro is not installed at C:\\DwemerDistro.",
-                        "[CHIM] DwemerDistro was not found. Reinstall or update DwemerDistro.");
-                    return;
-                }
-
-                std::wstring commandLine = std::wstring(L"\"") + kLauncherPath +
-                                           L"\" --generate-diagnostics --open-output-folder";
-                STARTUPINFOW startupInfo{};
-                startupInfo.cb = sizeof(startupInfo);
-                PROCESS_INFORMATION processInfo{};
-
-                if (!CreateProcessW(
-                        kLauncherPath,
-                        commandLine.data(),
-                        nullptr,
-                        nullptr,
-                        FALSE,
-                        CREATE_NO_WINDOW,
-                        nullptr,
-                        nullptr,
-                        &startupInfo,
-                        &processInfo)) {
-                    const DWORD error = ::GetLastError();
-                    logger::error("[Support Report] Failed to start DwemerDistro diagnostics (Win32 error {})", error);
-                    PublishSupportReportResult(
-                        "error",
-                        "DwemerDistro could not start. Check AIAgent.log for the Windows error code.",
-                        "[CHIM] Support report could not start. Check AIAgent.log.");
-                    return;
-                }
-
-                WaitForSingleObject(processInfo.hProcess, INFINITE);
-                DWORD exitCode = 1;
-                if (!GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
-                    exitCode = 1;
-                }
-                CloseHandle(processInfo.hThread);
-                CloseHandle(processInfo.hProcess);
-
-                logger::info("[Support Report] DwemerDistro diagnostics exited with code {}", exitCode);
-                if (exitCode == 0) {
-                    PublishSupportReportResult(
-                        "success",
-                        "Saved to Desktop\\DwemerDistro-Diagnostics. Attach the newest file to your Discord bug report.",
-                        "[CHIM] Support report created on your Desktop.");
-                } else if (exitCode == 3) {
-                    PublishSupportReportResult(
-                        "partial",
-                        "Another support report is already being generated.",
-                        "[CHIM] A support report is already being generated.");
-                } else {
-                    PublishSupportReportResult(
-                        "error",
-                        "DwemerDistro could not finish the report. Check its launcher startup log.",
-                        "[CHIM] Support report failed. Check the DwemerDistro launcher log.");
-                }
-            },
-            "DwemerDistroDiagnostics",
-            std::chrono::minutes(10));
+    static void HandleSupportReportResult(SupportReportLauncher::Result result) {
+        using Status = SupportReportLauncher::Status;
+        if (result.status == Status::Success) {
+            PublishSupportReportResult(
+                "success",
+                "Saved to Desktop\\DwemerDistro-Diagnostics. Attach the newest file to your Discord bug report.",
+                "[CHIM] Support report created on your Desktop.");
+        } else if (result.status == Status::AlreadyRunning) {
+            PublishSupportReportResult(
+                "partial",
+                "Another support report is already being generated.",
+                "[CHIM] A support report is already being generated.");
+        } else if (result.status == Status::LauncherMissing) {
+            PublishSupportReportResult(
+                "error",
+                "DwemerDistro is not installed at C:\\DwemerDistro.",
+                "[CHIM] DwemerDistro was not found. Reinstall or update DwemerDistro.");
+        } else if (result.status == Status::StartFailed) {
+            PublishSupportReportResult(
+                "error",
+                "DwemerDistro could not start. Check AIAgent.log for the Windows error code.",
+                "[CHIM] Support report could not start. Check AIAgent.log.");
+        } else {
+            PublishSupportReportResult(
+                "error",
+                "DwemerDistro could not finish the report. Check its launcher startup log.",
+                "[CHIM] Support report failed. Check the DwemerDistro launcher log.");
+        }
     }
 
     static void OnMasterMenuDomReady(PrismaView view) {
@@ -8325,7 +8285,7 @@ R"CHIM(
 
                     SetSupportReportState("generating", "Collecting logs. This can take a moment.");
                     HideMasterMenu();
-                    GenerateSupportReportAsync();
+                    SupportReportLauncher::GenerateAsync(HandleSupportReportResult);
                 });
             if (!shown) {
                 SetSupportReportState("error", "The confirmation dialog could not be opened.");
