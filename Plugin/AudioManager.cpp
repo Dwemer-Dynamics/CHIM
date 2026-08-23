@@ -94,6 +94,7 @@ void AudioManager::Stop() {
 void AudioManager::setDistanceScaler(float cds) {
 
     emitter.CurveDistanceScaler = cds;
+    logger::info("[AudioManager] Set emitter CurveDistanceScaler to {}", cds);
 
 }
 
@@ -419,6 +420,7 @@ void AudioManager::setVolume(float vol) {
     if (normalized < 0.0f) normalized = 0.0f;
     else if (normalized > 5.0f) normalized = 5.0f;
     defaultVolume.store(normalized, std::memory_order_relaxed);
+    logger::info("[AudioManager] Set default volume to: {:.2f}", normalized);
 }
 
 
@@ -440,14 +442,14 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
             if (std::abs(newVolume - currentVolume) > 0.01f) {  // Only update if change is significant
                 currentVolume = newVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                // logger::debug("[AudioManager] Ramping volume to: {}", currentVolume);
+                logger::debug("[AudioManager Legacy] Ramping volume to: {}", currentVolume);
             }
         } else {
             // Ramping complete
             if (std::abs(defaultVolume - currentVolume) > 0.01f) {
                 currentVolume = defaultVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                // logger::debug("[AudioManager] Volume ramp complete, set to: {}", currentVolume);
+                logger::debug("[AudioManager Legacy] Volume ramp complete, set to: {}", currentVolume);
             }
             isRamping = false;
         }
@@ -455,7 +457,7 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
         // Only update volume if it has changed significantly
         currentVolume = defaultVolume;
         pSourceVoice->SetVolume(currentVolume);
-        // logger::debug("[AudioManager] Set volume to: {}", defaultVolume);
+        logger::debug("[AudioManager Legacy] Set volume to: {}", defaultVolume);
     }
 
     const float PI = 3.14159265358979323846f;
@@ -474,7 +476,7 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
 
     // Only update position if change is significant
     const float positionThreshold = 0.1f;
-    bool positionChanged = false;
+    bool positionChanged = true;
 
     if (std::abs(emitter.Position.x - round(rotatedPosition.x) / 100) > positionThreshold ||
         std::abs(emitter.Position.y - round(rotatedPosition.y) / 100) > positionThreshold ||
@@ -484,8 +486,8 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
         emitter.Position.z = round(rotatedPosition.z) / 100;
         positionChanged = true;
 
-        // logger::debug("[AudioManager] Updated 3D position - X: {:.2f}, Y: {:.2f}, Z: {:.2f}, Heading: {:.2f}°",
-        // emitter.Position.x, emitter.Position.y, emitter.Position.z, headingAngle);
+        /*logger::debug("[AudioManager Legacy] Updated 3D position - X: {:.2f}, Y: {:.2f}, Z: {:.2f}, Heading: {:.2f}°",
+        emitter.Position.x, emitter.Position.y, emitter.Position.z, headingAngle);*/
     }
 
     if (positionChanged) {
@@ -494,7 +496,7 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
         HRESULT hr = pSourceVoice->SetOutputMatrix(pMasterVoice, wfx.nChannels, dspSettings.DstChannelCount,
                                                    dspSettings.pMatrixCoefficients);
         if (FAILED(hr)) {
-            logger::error("[AudioManager] Failed to set output matrix: {}", hr);
+            logger::error("[AudioManager Legacy] Failed to set output matrix: {}", hr);
         }
     }
 }

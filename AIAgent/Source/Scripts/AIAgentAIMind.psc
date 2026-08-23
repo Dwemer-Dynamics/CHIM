@@ -934,7 +934,7 @@ function OpenInventory(Actor npc,string originalCommand) global
 	float now = Utility.GetCurrentRealTime()
 	float lastInventoryMenuOpen = StorageUtil.GetFloatValue(npc, "CHIM_LastInventoryMenuOpenRealTime", -999.0)
 	if ((now - lastInventoryMenuOpen) < 2.5)
-		Debug.Trace("[CHIM] Suppressing rapid inventory reopen for "+npc.GetDisplayName()+" via "+originalCommand)
+		Debug.Trace("[CHIM] Suppressing rapid inventory reopen for "+npc.GetDisplayName()+" via "+originalCommand + ",lastInventoryMenuOpen vs now : "+lastInventoryMenuOpen+","+now )
 		return
 	endif
 	StorageUtil.SetFloatValue(npc, "CHIM_LastInventoryMenuOpenRealTime", now)
@@ -3598,6 +3598,7 @@ Function GatherAround()  global
 		bool mustCome= true
 		;mustCome = mustCome && (!actorAtIndex.IsHostileToActor(Game.GetPlayer()))	; Hostiles wont come
 		;mustCome = mustCome && (actorAtIndex.Getrace().isPlayable())				; Only playable races
+		mustCome = mustCome && (!actorAtIndex.IsUnconscious()) && (actorAtIndex.GetSleepState()!=3)
 		if (mustCome) 
 			Debug.Trace("[CHIM] "+actorAtIndex.getDisplayName() +" will come to player"); 
 			stayAtPlace(actorAtIndex,1,"papyrus");

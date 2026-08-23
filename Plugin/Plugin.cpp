@@ -7296,7 +7296,9 @@ void RefreshPlayerInventory(bool forceUpdate) {
                 {"name", item.name},
                 {"baseid", item.baseid},
                 {"count", item.count},
-                {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
+                {"keywords", item.keywords.is_array() ? item.keywords : json::array()},
+                {"goldvalue", item.gold}
+                
             });
         }
         
@@ -8665,7 +8667,7 @@ EventHandlers {
 
 
                 if (objectPointer) {
-                    // logger::info("Player activated {}, type {}, horse {}", objectPointer->GetName(),static_cast<std::uint8_t>(activatedS->formType.get()), objectPointer->IsHorse());
+                    logger::info("Player activated {}, type {}, horse {}", objectPointer->GetName(),static_cast<std::uint8_t>(activatedS->formType.get()), objectPointer->IsHorse());
                     
                     if (objectPointer->GetFactionOwner() == AIAgentRoleMasterFaction) {
                         HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
@@ -8673,16 +8675,22 @@ EventHandlers {
                                                      1, objectPointer->GetDisplayFullName()));
                     }
                     auto activatedActor = objectPointer->As<RE::Actor>();
-                    // logger::info("Player activated {}, type {}, horse {},mount {}", activatedActor->GetName(),static_cast<std::uint8_t>(activatedActor->formType.get()),activatedActor->IsHorse(),activatedActor->IsAMount());
-                    if (activatedActor->IsAMount()) {
-                        if (!RE::PlayerCharacter::GetSingleton()->IsOnMount())
-                            HTTPManager::log(std::format("infoaction|{}|{}|{} mounts horse '{}'. The party ride now", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
-                                                         objectPointer->GetDisplayFullName()));
-                        else
-                            HTTPManager::log(std::format(
-                                "infoaction|{}|{}|{} unmounts horse '{}'.The party don't ride anymore", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                RE::PlayerCharacter::GetSingleton()->GetName(), objectPointer->GetDisplayFullName()));
+                    if (activatedActor) {
+                        // logger::info("Player activated {}, type {}, horse {},mount {}",
+                        // activatedActor->GetName(),static_cast<std::uint8_t>(activatedActor->formType.get()),activatedActor->IsHorse(),activatedActor->IsAMount());
+                        if (activatedActor->IsAMount()) {
+                            if (!RE::PlayerCharacter::GetSingleton()->IsOnMount())
+                                HTTPManager::log(std::format(
+                                    "infoaction|{}|{}|{} mounts horse '{}'. The party ride now", getCurrentTimeMillis(),
+                                    GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
+                                    objectPointer->GetDisplayFullName()));
+                            else
+                                HTTPManager::log(
+                                    std::format("infoaction|{}|{}|{} unmounts horse '{}'.The party don't ride anymore",
+                                                getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                RE::PlayerCharacter::GetSingleton()->GetName(),
+                                                objectPointer->GetDisplayFullName()));
+                        }
                     }
                 }
             }

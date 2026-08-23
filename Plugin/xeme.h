@@ -56,7 +56,7 @@
 #define vocab_VISEME_R 13       // R
 #define vocab_VISEME_TH 14      // th
 #define vocab_VISEME_W 15       // W
-#define vocab_VISEME_0 7       // reset
+#define vocab_VISEME_0 -1       // reset
 
 
 
