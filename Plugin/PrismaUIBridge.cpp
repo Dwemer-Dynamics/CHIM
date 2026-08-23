@@ -267,6 +267,9 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_masterMenuDomReady{false};
     static std::atomic<bool> g_masterMenuVisible{false};  // Track visibility state
     static std::mutex g_masterMenuMutex;
+    static std::mutex g_supportReportMutex;
+    static std::string g_supportReportState = "idle";
+    static std::string g_supportReportMessage;
 
     // Quest Manager state
     static PrismaView g_questManagerView = 0;
@@ -8163,10 +8166,128 @@ R"CHIM(
         g_prismaUI->Invoke(view, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateSupportReportState(PrismaView view) {
+        if (!g_prismaUI || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        std::string state;
+        std::string message;
+        {
+            std::lock_guard<std::mutex> lock(g_supportReportMutex);
+            state = g_supportReportState;
+            message = g_supportReportMessage;
+        }
+
+        const std::string jsCall = "window.setSupportReportState && window.setSupportReportState('" +
+                                   EscapeForJS(state) + "','" + EscapeForJS(message) + "')";
+        g_prismaUI->Invoke(view, jsCall.c_str(), nullptr);
+    }
+
+    static void SetSupportReportState(const std::string& state, const std::string& message) {
+        {
+            std::lock_guard<std::mutex> lock(g_supportReportMutex);
+            g_supportReportState = state;
+            g_supportReportMessage = message;
+        }
+
+        if (g_masterMenuDomReady.load()) {
+            UpdateSupportReportState(g_masterMenuView);
+        }
+    }
+
+    static void PublishSupportReportResult(const std::string& state, const std::string& message,
+                                           const std::string& notification) {
+        auto publish = [state, message, notification]() {
+            SetSupportReportState(state, message);
+            if (!notification.empty()) {
+                RE::DebugNotification(notification.c_str());
+            }
+        };
+
+        if (auto* taskInterface = SKSE::GetTaskInterface()) {
+            taskInterface->AddTask(std::move(publish));
+        } else {
+            logger::warn("[Support Report] Game task interface unavailable; UI result could not be published");
+        }
+    }
+
+    // Starts the installed launcher in its headless diagnostic mode and waits off the game thread.
+    static void GenerateSupportReportAsync() {
+        ThreadPool::getInstance().enqueue(
+            "GenerateSupportReport",
+            []() {
+                constexpr wchar_t kLauncherPath[] = L"C:\\DwemerDistro\\DwemerDistro.exe";
+                if (GetFileAttributesW(kLauncherPath) == INVALID_FILE_ATTRIBUTES) {
+                    logger::error("[Support Report] DwemerDistro launcher was not found at C:\\DwemerDistro\\DwemerDistro.exe");
+                    PublishSupportReportResult(
+                        "error",
+                        "DwemerDistro is not installed at C:\\DwemerDistro.",
+                        "[CHIM] DwemerDistro was not found. Reinstall or update DwemerDistro.");
+                    return;
+                }
+
+                std::wstring commandLine = std::wstring(L"\"") + kLauncherPath +
+                                           L"\" --generate-diagnostics --open-output-folder";
+                STARTUPINFOW startupInfo{};
+                startupInfo.cb = sizeof(startupInfo);
+                PROCESS_INFORMATION processInfo{};
+
+                if (!CreateProcessW(
+                        kLauncherPath,
+                        commandLine.data(),
+                        nullptr,
+                        nullptr,
+                        FALSE,
+                        CREATE_NO_WINDOW,
+                        nullptr,
+                        nullptr,
+                        &startupInfo,
+                        &processInfo)) {
+                    const DWORD error = ::GetLastError();
+                    logger::error("[Support Report] Failed to start DwemerDistro diagnostics (Win32 error {})", error);
+                    PublishSupportReportResult(
+                        "error",
+                        "DwemerDistro could not start. Check AIAgent.log for the Windows error code.",
+                        "[CHIM] Support report could not start. Check AIAgent.log.");
+                    return;
+                }
+
+                WaitForSingleObject(processInfo.hProcess, INFINITE);
+                DWORD exitCode = 1;
+                if (!GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
+                    exitCode = 1;
+                }
+                CloseHandle(processInfo.hThread);
+                CloseHandle(processInfo.hProcess);
+
+                logger::info("[Support Report] DwemerDistro diagnostics exited with code {}", exitCode);
+                if (exitCode == 0) {
+                    PublishSupportReportResult(
+                        "success",
+                        "Saved to Desktop\\DwemerDistro-Diagnostics. Attach the newest file to your Discord bug report.",
+                        "[CHIM] Support report created on your Desktop.");
+                } else if (exitCode == 3) {
+                    PublishSupportReportResult(
+                        "partial",
+                        "Another support report is already being generated.",
+                        "[CHIM] A support report is already being generated.");
+                } else {
+                    PublishSupportReportResult(
+                        "error",
+                        "DwemerDistro could not finish the report. Check its launcher startup log.",
+                        "[CHIM] Support report failed. Check the DwemerDistro launcher log.");
+                }
+            },
+            "DwemerDistroDiagnostics",
+            std::chrono::minutes(10));
+    }
+
     static void OnMasterMenuDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Master menu DOM ready");
         g_masterMenuDomReady.store(true);
         UpdateMasterMenuVersion(view);
+        UpdateSupportReportState(view);
     }
 
     static void OnMasterMenuCommand(const char* argument) {
@@ -8181,6 +8302,33 @@ R"CHIM(
                 HideMasterMenu();
             } else {
                 UpdateMasterMenuVersion(g_masterMenuView);
+                UpdateSupportReportState(g_masterMenuView);
+            }
+            return;
+        }
+
+        if (cmd == "generate_logs") {
+            SetSupportReportState("confirming", "Confirm the report contents to continue.");
+            const bool shown = ShowConfirmation(
+                "Generate Support Report",
+                "This creates one text report containing DwemerDistro debugging information, recent service and LLM logs, and AIAgent.log when available. Review it before attaching it to a Discord bug report.",
+                "Cancel",
+                "Generate",
+                [](bool accepted) {
+                    if (!accepted) {
+                        SetSupportReportState("idle", "Support report canceled.");
+                        if (g_prismaUI && g_masterMenuVisible.load() && g_prismaUI->IsValid(g_masterMenuView)) {
+                            g_prismaUI->Focus(g_masterMenuView, true, false);
+                        }
+                        return;
+                    }
+
+                    SetSupportReportState("generating", "Collecting logs. This can take a moment.");
+                    HideMasterMenu();
+                    GenerateSupportReportAsync();
+                });
+            if (!shown) {
+                SetSupportReportState("error", "The confirmation dialog could not be opened.");
             }
             return;
         }
@@ -8371,6 +8519,7 @@ R"CHIM(
                 "window.setContextWindowVisible && window.setContextWindowVisible({})",
                 contextWindowVisible ? "true" : "false");
             g_prismaUI->Invoke(g_masterMenuView, jsCall.c_str(), nullptr);
+            UpdateSupportReportState(g_masterMenuView);
         }
     }
 

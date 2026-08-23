@@ -22,9 +22,18 @@
             <div class="settings-group">
                 <div class="group-title-row">
                     <h2 class="group-title">Menu Select</h2>
-                    <button class="menu-settings-btn" onclick="selectPanel('settings')"
-                            onmouseenter="showDescription('Manage Global Settings, Profiles, and CHIM NPCs')"
-                            onmouseleave="clearDescription()"><span aria-hidden="true">&#9881;</span> Settings</button>
+                    <div class="menu-utility-actions">
+                        <button type="button" class="menu-settings-btn" id="generate-logs-btn"
+                                title="Create one DwemerDistro support report including AIAgent.log for Discord bug reports"
+                                aria-label="Generate Logs: Create one DwemerDistro support report including AIAgent.log for Discord bug reports"
+                                onclick="requestSupportReport()"
+                                onmouseenter="describeSupportReport()"
+                                onmouseleave="clearDescription()"><span aria-hidden="true">&#x1F4C3;</span> <span id="generate-logs-label">Generate Logs</span></button>
+                        <button type="button" class="menu-settings-btn" onclick="selectPanel('settings')"
+                                title="Manage Global Settings, Profiles, and CHIM NPCs"
+                                onmouseenter="showDescription('Manage Global Settings, Profiles, and CHIM NPCs')"
+                                onmouseleave="clearDescription()"><span aria-hidden="true">&#9881;</span> Settings</button>
+                    </div>
                 </div>
                 <div class="prisma-panels-layout">
                     <div class="primary-actions-row">
@@ -195,6 +204,7 @@
 
         <div class="menu-footer">
             <div class="hint-text" id="hover-description">Select a panel to toggle</div>
+            <span class="visually-hidden" id="support-report-status" role="status" aria-live="polite"></span>
         </div>
     </div>
     

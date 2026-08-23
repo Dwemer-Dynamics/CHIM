@@ -5,6 +5,66 @@ let hudLayoutExpanded = false;
 let toolsExpanded = false;
 let contextWindowVisible = false;
 
+const SUPPORT_REPORT_HELP = 'Create one DwemerDistro support report including AIAgent.log for Discord bug reports';
+const SUPPORT_REPORT_LABEL = 'Generate Logs';
+const SUPPORT_REPORT_IDLE_ARIA = SUPPORT_REPORT_LABEL + ': ' + SUPPORT_REPORT_HELP;
+
+// Footer copy carries an explicit prefix so the outcome never depends on colour alone.
+const SUPPORT_REPORT_STATES = {
+    idle: {
+        label: SUPPORT_REPORT_LABEL,
+        aria: SUPPORT_REPORT_IDLE_ARIA,
+        busy: false,
+        prefix: '',
+        fallback: '',
+        color: '#e8e8e8'
+    },
+    confirming: {
+        label: 'Confirming...',
+        aria: 'Confirming support report request',
+        busy: true,
+        prefix: 'Support report: ',
+        fallback: 'confirm the request in game to continue',
+        color: '#f2c317'
+    },
+    generating: {
+        label: 'Generating...',
+        aria: 'Generating DwemerDistro support report',
+        busy: true,
+        prefix: 'Support report: ',
+        fallback: 'collecting logs, this can take a moment',
+        color: '#f2c317'
+    },
+    success: {
+        label: SUPPORT_REPORT_LABEL,
+        aria: SUPPORT_REPORT_IDLE_ARIA,
+        busy: false,
+        prefix: 'Support report ready: ',
+        fallback: 'report created',
+        color: '#8fe3a8'
+    },
+    partial: {
+        label: SUPPORT_REPORT_LABEL,
+        aria: SUPPORT_REPORT_IDLE_ARIA,
+        busy: false,
+        prefix: 'Support report incomplete: ',
+        fallback: 'some logs could not be collected',
+        color: '#f2c317'
+    },
+    error: {
+        label: SUPPORT_REPORT_LABEL,
+        aria: SUPPORT_REPORT_IDLE_ARIA,
+        busy: false,
+        prefix: 'Support report failed: ',
+        fallback: 'the report could not be created',
+        color: '#ff9b8f'
+    }
+};
+
+let supportReportState = 'idle';
+let supportReportNotice = '';
+let supportReportNoticeColor = '';
+
 window.setPluginVersion = function(version) {
     const normalizedVersion = String(version || '').trim();
     const title = normalizedVersion ? `CHIM (${normalizedVersion})` : 'CHIM';
@@ -16,22 +76,95 @@ window.setPluginVersion = function(version) {
     }
 };
 
-// Show description in footer
-window.showDescription = function(text) {
+function setFooterHelp(text, color) {
     const descElement = document.getElementById('hover-description');
     if (descElement) {
         descElement.textContent = text;
-        descElement.style.color = '#e8e8e8';
+        descElement.style.color = color;
     }
+}
+
+// Show description in footer
+window.showDescription = function(text) {
+    setFooterHelp(text, '#e8e8e8');
 };
 
 // Clear description in footer
 window.clearDescription = function() {
-    const descElement = document.getElementById('hover-description');
-    if (descElement) {
-        descElement.textContent = 'Select a panel to toggle';
-        descElement.style.color = '#999';
+    if (supportReportNotice) {
+        setFooterHelp(supportReportNotice, supportReportNoticeColor);
+        return;
     }
+    setFooterHelp('Select a panel to toggle', '#999');
+};
+
+function getSupportReportButton() {
+    return document.getElementById('generate-logs-btn');
+}
+
+function isSupportReportBusy() {
+    const config = SUPPORT_REPORT_STATES[supportReportState];
+    return !!(config && config.busy);
+}
+
+// Show the button's purpose on hover, or the live progress copy while it is working.
+window.describeSupportReport = function() {
+    if (supportReportNotice && isSupportReportBusy()) {
+        setFooterHelp(supportReportNotice, supportReportNoticeColor);
+        return;
+    }
+    window.showDescription(SUPPORT_REPORT_HELP);
+};
+
+// Called by native code to publish support report progress:
+// idle | confirming | generating | success | partial | error
+window.setSupportReportState = function(state, message) {
+    const requested = String(state === undefined || state === null ? '' : state).trim().toLowerCase();
+    const config = SUPPORT_REPORT_STATES[requested] || SUPPORT_REPORT_STATES.idle;
+    const resolvedState = SUPPORT_REPORT_STATES[requested] ? requested : 'idle';
+    const detail = String(message === undefined || message === null ? '' : message).trim();
+
+    supportReportState = resolvedState;
+
+    const button = getSupportReportButton();
+    if (button) {
+        const label = document.getElementById('generate-logs-label');
+        if (label) {
+            label.textContent = config.label;
+        }
+        button.disabled = config.busy;
+        button.setAttribute('aria-busy', config.busy ? 'true' : 'false');
+        button.setAttribute('aria-label', config.aria);
+    }
+
+    const body = detail || config.fallback;
+    supportReportNotice = resolvedState === 'idle' ? detail : (config.prefix + body);
+    supportReportNoticeColor = supportReportNotice ? config.color : '';
+
+    const statusElement = document.getElementById('support-report-status');
+    if (statusElement) {
+        statusElement.textContent = supportReportNotice;
+    }
+
+    window.clearDescription();
+};
+
+window.requestSupportReport = function() {
+    if (isSupportReportBusy()) {
+        window.describeSupportReport();
+        return;
+    }
+
+    if (!window.chimMasterMenuCommand) {
+        window.setSupportReportState('error', 'CHIM is not connected to the game yet. Try again in a moment.');
+        return;
+    }
+
+    console.log('[CHIM Master Menu] Requesting support report');
+    window.chimMasterMenuCommand('generate_logs');
+
+    // Optimistic lock so the button cannot be double-fired before native reports back.
+    window.setSupportReportState('confirming');
 };
 
 // Initialize when DOM is ready
@@ -50,6 +183,7 @@ function initMasterMenu() {
 
     initLayoutPickers();
     initMenuScalePicker();
+    window.setSupportReportState('idle');
     setHudLayoutExpanded(false);
     setToolsExpanded(false);
 }
