@@ -60,6 +60,12 @@ namespace
         if (!actor) {
             return false;
         }
+
+        if (actor && actor->AsActorState() &&
+            actor->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            return true;
+        }
+
         auto furnitureHandle = actor->GetOccupiedFurniture();
         auto* furnitureReference = furnitureHandle ? furnitureHandle.get().get() : nullptr;
         if (!furnitureReference) {
@@ -105,43 +111,6 @@ namespace
         const bool actorInterior = actorCell->IsInteriorCell();
         if (playerInterior != actorInterior || (playerInterior && playerCell != actorCell)) {
             reason = "different_loaded_area";
-            return false;
-        }
-
-        reason.clear();
-        return true;
-    }
-
-    bool IsAutomaticallyEligible(const std::shared_ptr<AIAgent>& agent, RE::Actor* actor,
-                                 RE::Actor* player, std::string& reason)
-    {
-        if (!agent || !actor || !player) {
-            reason = "invalid_actor";
-            return false;
-        }
-        if (agent->hasConversationCooldown()) {
-            reason = "cooldown";
-            return false;
-        }
-        if (actor->IsHostileToActor(player) && !AutoAddHostile) {
-            reason = "hostile";
-            return false;
-        }
-        if (!CombatDialogueEnabled &&
-            (actor->IsInCombat() || actor->IsAttacking() || actor->IsInKillMove())) {
-            reason = "combat";
-            return false;
-        }
-        if (actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
-            reason = "restrained";
-            return false;
-        }
-        if (IsSleeping(actor)) {
-            reason = "sleeping";
-            return false;
-        }
-        if (!AllowActorsOnScene && actor->GetCurrentScene()) {
-            reason = "scene";
             return false;
         }
 
@@ -337,6 +306,28 @@ namespace
     }
 }
 
+std::string PlayerConversationRouter::GetAutomaticBlockReason(
+    const std::shared_ptr<AIAgent>& agent, RE::Actor* actor, RE::Actor* player)
+{
+    if (!agent || !actor || !player) {
+        return "invalid_actor";
+    }
+
+    PlayerConversationRoutingPolicy::AutomaticEligibilityFacts facts{};
+    facts.conversationCooldown = agent->hasConversationCooldown();
+    facts.hostile = actor->IsHostileToActor(player);
+    facts.autoAddHostile = AutoAddHostile;
+    facts.inCombat = actor->IsInCombat() || actor->IsAttacking() || actor->IsInKillMove();
+    facts.combatDialogueEnabled = CombatDialogueEnabled;
+    facts.restrained =
+        actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained;
+    facts.unconscious = actor->AsActorState()->IsUnconscious();
+    facts.sleeping = IsSleeping(actor);
+    facts.inScene = actor->GetCurrentScene() != nullptr;
+    facts.sceneDialogueEnabled = AllowActorsOnScene;
+    return std::string(PlayerConversationRoutingPolicy::GetAutomaticBlockReason(facts));
+}
+
 PlayerConversationSpeechMode PlayerConversationRouter::ParseSpeechMode(std::string_view mode)
 {
     std::string normalized(mode);
@@ -458,8 +449,10 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
             candidate.policy.facingDot = cameraForward.Dot(toActor);
         }
 
-        candidate.policy.autoEligible =
-            IsAutomaticallyEligible(candidate.agent, actor, player, candidate.automaticBlockReason);
+        candidate.automaticBlockReason =
+            PlayerConversationRouter::GetAutomaticBlockReason(candidate.agent, actor, player);
+        candidate.policy.directEligible = candidate.automaticBlockReason != "cooldown";
+        candidate.policy.autoEligible = candidate.automaticBlockReason.empty();
         if (candidate.policy.distance <= result.audienceRadiusUnits) {
             const auto spatial = SpatialAwareness::Evaluate(player, actor, audienceSettings);
             candidate.policy.audible = spatial.canCommunicate;

@@ -4267,6 +4267,10 @@ std::string InspectSurroundings(RE::TESObjectREFR* reference, bool useCache, flo
             actorLabel += " (far away)";
         } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
             actorLabel += " (restrained)";
+        } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kUnconcious) {
+            actorLabel += " (unconscious)";
+        } else if (target->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            actorLabel += " (sleeping)";
         } 
 
         results.push_back(actorLabel);
@@ -4820,6 +4824,10 @@ std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCac
             actorLabel += " (far away)";
         } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
             actorLabel += " (restrained)";
+        } else if (target->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kUnconcious) {
+            actorLabel += " (unconscious)";
+        } else if (target->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            actorLabel += " (sleeping)";
         }
 
         results.push_back(actorLabel);
@@ -4869,6 +4877,8 @@ std::string InspectSurroundingsOld(RE::TESObjectREFR* reference, bool useCache, 
                             actorLabel.append(" (busy)");
                         else if (actor->IsInCombat())
                             actorLabel.append(" (in combat)");
+                        else if (actor->AsActorState() && actor->AsActorState()->IsUnconscious())
+                            actorLabel.append(" (unconscious)");
                         else if (distance > 2048)
                             actorLabel.append(" (far away)");
 
