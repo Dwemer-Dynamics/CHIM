@@ -51,6 +51,43 @@ int main()
 {
     using namespace PlayerConversationRoutingPolicy;
 
+    Check(IsPlayerInitiatedRequest("inputtext|1|date|Player: hello"),
+          "Direct player speech was not recognized");
+    Check(IsPlayerInitiatedRequest("ginputtext_s|1|date|Player: hello"),
+          "Direct group speech was not recognized");
+    Check(!IsPlayerInitiatedRequest("rpg_word|1|date|context"),
+          "Automatic Word of Power event was recognized as player speech");
+
+    AutomaticEligibilityFacts eligibility{};
+    Check(GetAutomaticBlockReason(eligibility).empty(),
+          "Eligible actor received an automatic block reason");
+    eligibility.conversationCooldown = true;
+    Check(GetAutomaticBlockReason(eligibility) == "cooldown", "Cooldown was not enforced");
+    eligibility = {};
+    eligibility.hostile = true;
+    Check(GetAutomaticBlockReason(eligibility) == "hostile", "Hostility was not enforced");
+    eligibility.autoAddHostile = true;
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled hostile auto-add was ignored");
+    eligibility = {};
+    eligibility.inCombat = true;
+    Check(GetAutomaticBlockReason(eligibility) == "combat", "Combat was not enforced");
+    eligibility.combatDialogueEnabled = true;
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled combat dialogue was ignored");
+    eligibility = {};
+    eligibility.restrained = true;
+    Check(GetAutomaticBlockReason(eligibility) == "restrained", "Restraint was not enforced");
+    eligibility = {};
+    eligibility.unconscious = true;
+    Check(GetAutomaticBlockReason(eligibility) == "unconscious", "Unconscious state was not enforced");
+    eligibility = {};
+    eligibility.sleeping = true;
+    Check(GetAutomaticBlockReason(eligibility) == "sleeping", "Sleeping was not enforced");
+    eligibility = {};
+    eligibility.inScene = true;
+    Check(GetAutomaticBlockReason(eligibility) == "scene", "Scene Safety was not enforced");
+    eligibility.sceneDialogueEnabled = true;
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled scene dialogue was ignored");
+
     Check(ExtractUtterance("inputtext|1|date|Rangroo: Hey Lydia, come here") ==
               "hey lydia come here",
           "Wire utterance extraction failed");
@@ -70,6 +107,25 @@ int main()
     result = Select("Normal speech", candidates);
     Check(result.candidateIndex == 0 && result.reason == "true_crosshair",
           "True crosshair did not bypass soft eligibility");
+
+    candidates[0].directEligible = false;
+    result = Select("Normal speech", candidates);
+    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
+          "Conversation cooldown did not block the crosshair target");
+
+    Request cooldownTargetRequest{};
+    cooldownTargetRequest.utterance = "Normal speech";
+    cooldownTargetRequest.explicitTargetFormId = 0x10;
+    cooldownTargetRequest.explicitTargetName = "Camilla Valerius";
+    cooldownTargetRequest.directAddressRadius = 1000.0f;
+    cooldownTargetRequest.interactionRadius = 560.0f;
+    result = PlayerConversationRoutingPolicy::Select(cooldownTargetRequest, candidates);
+    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
+          "Conversation cooldown did not block the explicit UI target");
+
+    result = Select("Hey Camilla Valerius", candidates);
+    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
+          "Conversation cooldown did not block the named target");
 
     candidates[0].hardEligible = false;
     result = Select("Hey", candidates);

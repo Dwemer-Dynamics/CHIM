@@ -93,6 +93,7 @@ Event OnPlayerLoadGame()
 	thirdPartyInit()
 	; Re-arm polling after load to ensure Prisma pending actions are always processed.
 	RegisterForSingleUpdate(0.1)
+	
 EndEvent
 
 ; Process pending settings menu action (shared by hotkey and mod event)
@@ -834,7 +835,8 @@ bool Function thirdPartyInit()
 	UnRegisterForModEvent("AIAgent_PlayerMenuTTSFinished")
 	RegisterVrikGestureActions()
 	PlayerRefAlias.ForceRefTo(Game.GetPlayer());
-	
+	Debug.Trace("[CHIM] Resetting CHIM_LastInventoryMenuOpenRealTime timestamps")
+	StorageUtil.ClearFloatValuePrefix("CHIM_LastInventoryMenuOpenRealTime");Resets CHIM_LastInventoryMenuOpenRealTime for all NPCs
 EndFunction
 
 Bool Function IsVrikLoaded()

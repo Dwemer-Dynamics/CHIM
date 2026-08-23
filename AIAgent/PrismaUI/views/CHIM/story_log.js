@@ -9,10 +9,11 @@
 })(typeof window !== 'undefined' ? window : globalThis, function() {
     'use strict';
 
-    const dialogueEvents = new Set(['chat', 'inputtext', 'ginputtext']);
+    const dialogueEvents = new Set(['chat', 'chat_background', 'inputtext', 'ginputtext']);
     const actionEvents = new Set(['infoaction', 'book', 'combat', 'itemfound']);
     const storyEvents = new Set(['quest', 'death', 'info_timeforward', 'instruction', 'narration']);
     const persistedDuplicateWindowMs = 10000;
+    const affinityDirectionPattern = /affinity toward\b[\s\S]*?\b(increased|decreased)\s+by\s+\d/i;
 
     function clean(value, decode) {
         const text = String(value || '');
@@ -54,6 +55,12 @@
             .replace(/^info_?/i, '')
             .replace(/_/g, ' ')
             .replace(/\b\w/g, function(character) { return character.toUpperCase(); });
+    }
+
+    function relationshipKind(text) {
+        const match = String(text || '').match(affinityDirectionPattern);
+        if (!match) return 'relationship';
+        return match[1].toLowerCase() === 'increased' ? 'relationship-up' : 'relationship-down';
     }
 
     function findField(entry, fieldName) {
@@ -165,6 +172,12 @@
             return buildEntry(rowId, timestamp, kind, label, text, source, occurredAtMs);
         }
 
+        if (eventType === 'relationship') {
+            const kind = relationshipKind(rawText);
+            const label = kind === 'relationship' ? 'Relationship' : 'Affinity';
+            return buildEntry(rowId, timestamp, kind, label, rawText, source, occurredAtMs);
+        }
+
         return null;
     }
 
@@ -199,6 +212,10 @@
             .map(function(entry) { return normalizeEvent(entry, narratorName, decode); })
             .filter(Boolean)
             .sort(function(left, right) {
+                if (left.occurredAtMs && right.occurredAtMs) {
+                    const timeDelta = left.occurredAtMs - right.occurredAtMs;
+                    if (timeDelta !== 0) return timeDelta;
+                }
                 if (left.rowId && right.rowId) return left.rowId - right.rowId;
                 return 0;
             });

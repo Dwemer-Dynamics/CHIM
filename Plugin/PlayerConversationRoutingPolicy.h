@@ -14,6 +14,56 @@ namespace PlayerConversationRoutingPolicy
 {
     inline constexpr float kFieldOfViewCosine = 0.86f;
 
+    // Distinguish direct player speech from autonomous events before applying scene safety.
+    inline bool IsPlayerInitiatedRequest(std::string_view message)
+    {
+        const auto separator = message.find('|');
+        const std::string_view eventType = message.substr(0, separator);
+        return eventType == "inputtext" || eventType == "inputtext_s" ||
+               eventType == "ginputtext" || eventType == "ginputtext_s" ||
+               eventType == "narrator_inputtext";
+    }
+
+    struct AutomaticEligibilityFacts
+    {
+        bool conversationCooldown = false;
+        bool hostile = false;
+        bool autoAddHostile = false;
+        bool inCombat = false;
+        bool combatDialogueEnabled = false;
+        bool restrained = false;
+        bool unconscious = false;
+        bool sleeping = false;
+        bool inScene = false;
+        bool sceneDialogueEnabled = false;
+    };
+
+    inline std::string_view GetAutomaticBlockReason(const AutomaticEligibilityFacts& facts)
+    {
+        if (facts.conversationCooldown) {
+            return "cooldown";
+        }
+        if (facts.hostile && !facts.autoAddHostile) {
+            return "hostile";
+        }
+        if (facts.inCombat && !facts.combatDialogueEnabled) {
+            return "combat";
+        }
+        if (facts.restrained) {
+            return "restrained";
+        }
+        if (facts.unconscious) {
+            return "unconscious";
+        }
+        if (facts.sleeping) {
+            return "sleeping";
+        }
+        if (facts.inScene && !facts.sceneDialogueEnabled) {
+            return "scene";
+        }
+        return {};
+    }
+
     enum class SelectionKind
     {
         Candidate,
@@ -28,6 +78,7 @@ namespace PlayerConversationRoutingPolicy
         float distance = 0.0f;
         float facingDot = -1.0f;
         bool hardEligible = false;
+        bool directEligible = true;
         bool autoEligible = false;
         bool audible = false;
         bool trueCrosshair = false;
@@ -198,7 +249,7 @@ namespace PlayerConversationRoutingPolicy
                 for (std::size_t index = 0; index < candidates.size(); ++index) {
                     const auto& candidate = candidates[index];
                     if (candidate.formId == request.explicitTargetFormId &&
-                        candidate.hardEligible &&
+                        candidate.hardEligible && candidate.directEligible &&
                         WithinRadius(candidate.distance, request.directAddressRadius)) {
                         result.kind = SelectionKind::Candidate;
                         result.candidateIndex = index;
@@ -213,7 +264,7 @@ namespace PlayerConversationRoutingPolicy
             if (!normalizedExplicitName.empty()) {
                 for (std::size_t index = 0; index < candidates.size(); ++index) {
                     const auto& candidate = candidates[index];
-                    if (!candidate.hardEligible ||
+                    if (!candidate.hardEligible || !candidate.directEligible ||
                         !WithinRadius(candidate.distance, request.directAddressRadius) ||
                         Normalize(candidate.name) != normalizedExplicitName) {
                         continue;
@@ -242,7 +293,7 @@ namespace PlayerConversationRoutingPolicy
             for (std::size_t index = 0; index < candidates.size(); ++index) {
                 const auto& candidate = candidates[index];
                 const std::string normalizedName = Normalize(candidate.name);
-                if (!candidate.hardEligible || normalizedName.empty() ||
+                if (!candidate.hardEligible || !candidate.directEligible || normalizedName.empty() ||
                     !WithinRadius(candidate.distance, request.directAddressRadius) ||
                     !StartsWithToken(addressedText, normalizedName)) {
                     continue;
@@ -270,7 +321,7 @@ namespace PlayerConversationRoutingPolicy
 
         for (std::size_t index = 0; index < candidates.size(); ++index) {
             const auto& candidate = candidates[index];
-            if (candidate.trueCrosshair && candidate.hardEligible &&
+            if (candidate.trueCrosshair && candidate.hardEligible && candidate.directEligible &&
                 WithinRadius(candidate.distance, request.directAddressRadius)) {
                 result.kind = SelectionKind::Candidate;
                 result.candidateIndex = index;

@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.2.4"
-#define PLUGIN_RELEASE_DATE "2026-08-13"
+#define PLUGIN_VERSION "3.2.5"
+#define PLUGIN_RELEASE_DATE "2026-08-21"
 
 const char* GetPluginVersion()
 {
@@ -2012,7 +2012,8 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     if (agent) {
         auto* attackTarget = agent->getAttackTarget();
         if (attackTarget) {
-            attackTargetName = trim(attackTarget->GetDisplayFullName());
+            if (attackTarget->GetDisplayFullName())
+                attackTargetName = trim(attackTarget->GetDisplayFullName());
         }
     }
 
@@ -6911,6 +6912,8 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
     if (!player) {
         return;
     }
+    logger::info("[ACTIVITY_STATUS] Refreshing nearby activity status for player at position ({:.2f}, {:.2f}, {:.2f}) with radius {:.2f}",
+        player->GetPosition().x, player->GetPosition().y, player->GetPosition().z, radius);
 
     json batchPayload;
     batchPayload["type"] = "activity_status_bulk";
@@ -6976,6 +6979,11 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
 void RefreshPlayerEquipment(bool forceUpdate) {
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
+
+    if (player->IsInCombat()) {
+        logger::info("[RefreshPlayerEquipment] Avoided equipment update under combat");
+        return;
+    }
     
     std::string helmet, helmet_baseid;
     std::string armor, armor_baseid;
@@ -7207,6 +7215,11 @@ void RefreshPlayerInventory(bool forceUpdate) {
     std::vector<InventoryItemSnapshot> inventoryItems;
     auto inventory = player->GetInventory();
     
+    if (player->IsInCombat()) {
+        logger::info("[RefreshPlayerInventory] Avoided equipment update under combat");
+        return;
+    }
+
     for (const auto& item : inventory) {
         RE::TESBoundObject* boundObject = item.first;
         auto count = item.second.first;
@@ -7283,7 +7296,9 @@ void RefreshPlayerInventory(bool forceUpdate) {
                 {"name", item.name},
                 {"baseid", item.baseid},
                 {"count", item.count},
-                {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
+                {"keywords", item.keywords.is_array() ? item.keywords : json::array()},
+                {"goldvalue", item.gold}
+                
             });
         }
         
@@ -8213,7 +8228,7 @@ EventHandlers {
             const RE::FormID currentPlayerCellFormId = playerCell->GetFormID();
             if (staticLastPlayerCellFormId == 0) {
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
-            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId) {
+            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId && false) {
                 const RE::FormID previousPlayerCellFormId = staticLastPlayerCellFormId;
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
 
@@ -8646,18 +8661,59 @@ EventHandlers {
 
             if (event->objectActivated) objectPointer = event->objectActivated.get();
 
+            
             if (refObjActivator->GetFormID() ==
                 RE::PlayerCharacter::GetSingleton()->GetFormID()) {  // Player activates something
+
+
                 if (objectPointer) {
+                    logger::info("Player activated {}, type {}, horse {}", objectPointer->GetName(),static_cast<std::uint8_t>(activatedS->formType.get()), objectPointer->IsHorse());
+                    
                     if (objectPointer->GetFactionOwner() == AIAgentRoleMasterFaction) {
                         HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
                                                      1, objectPointer->GetDisplayFullName()));
                     }
+                    auto activatedActor = objectPointer->As<RE::Actor>();
+                    if (activatedActor) {
+                        // logger::info("Player activated {}, type {}, horse {},mount {}",
+                        // activatedActor->GetName(),static_cast<std::uint8_t>(activatedActor->formType.get()),activatedActor->IsHorse(),activatedActor->IsAMount());
+                        if (activatedActor->IsAMount()) {
+                            if (!RE::PlayerCharacter::GetSingleton()->IsOnMount())
+                                HTTPManager::log(std::format(
+                                    "infoaction|{}|{}|{} mounts horse '{}'. The party ride now", getCurrentTimeMillis(),
+                                    GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
+                                    objectPointer->GetDisplayFullName()));
+                            else
+                                HTTPManager::log(
+                                    std::format("infoaction|{}|{}|{} unmounts horse '{}'.The party don't ride anymore",
+                                                getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                RE::PlayerCharacter::GetSingleton()->GetName(),
+                                                objectPointer->GetDisplayFullName()));
+                        }
+                    }
                 }
             }
 
             if (activatedS->formType == RE::FormType::ActorCharacter) {
+                /*
+                // To review. Seems followers don't trigger this event when they mount a horse, but the player does. 
+                logger::info("{} activates {}", activator, activated);
+                if (objectPointer) {
+                    auto activatorActor = refObjActivator->As<RE::Actor>();
+                    if (activatorActor) {
+                        if (activatorActor->IsPlayerTeammate()) {
+                            auto activatedActor = objectPointer->As<RE::Actor>();
+                            if (activatedActor && activatedActor->IsAMount()) {
+                                HTTPManager::log(std::format(
+                                    "infoaction|{}|{}|{} mounts horse {}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                    refObjActivator->GetDisplayFullName(), objectPointer->GetDisplayFullName()));
+                            }
+                        }
+                    }
+                    
+                }
+                */
 
             } else if (activated2->formType == RE::FormType::Book) {
                 // Herika reads a book
@@ -9376,8 +9432,9 @@ EventHandlers {
             }
         } else  if (topicActor && !event->flag) {
             if (topicActor) {
-                std::string actorName(topicActor->GetDisplayFullName());
-                auto agentPtr = aiam.getAgentByName(actorName);
+                //std::string actorName(topicActor->GetDisplayFullName());
+                //auto agentPtr = aiam.getAgentByName(actorName);
+                auto agentPtr = aiam.getAgentByFormId(topicActor->GetFormID());
 
                 if (agentPtr) {
                     // agentPtr->setAvailable(false);
@@ -10578,6 +10635,7 @@ EventHandlers {
             // Only enqueue if not already running to prevent duplicate updates
             int runningTasks = ThreadPool::getInstance().runningTasksByType("PlayerInventoryUpdate");
             
+
             if (runningTasks == 0) {
                 ThreadPool::getInstance().enqueue(
                     "PlayerInventoryUpdate",
