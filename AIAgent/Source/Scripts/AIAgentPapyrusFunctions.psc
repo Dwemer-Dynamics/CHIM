@@ -1660,13 +1660,13 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				
 				
 				Worldspace cws= locationCenterMarkerRef.GetWorldSpace()
-				if (!cws)
+				if (!cws && insideEntranceMarkerRef)
 					cws= insideEntranceMarkerRef.GetWorldSpace()
 				endif
-				if (!cws)
+				if (!cws && outsideEntranceMarkerRef)
 					cws= outsideEntranceMarkerRef.GetWorldSpace()
 				endif
-				if (!cws)
+				if (!cws && mapMarkerRefType)
 					cws = mapMarkerRefType.GetWorldSpace()
 				endif
 				string worldspaceName=""
