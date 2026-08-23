@@ -3775,8 +3775,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		Debug.Trace("[CHIM] BackgroundCmd, actor: "+aktarget.GetDisplayName())
 		String[] cmd = StringUtil.Split(command, "/")
 		Debug.Trace("[CHIM] BackgroundCmd, parm0: "+cmd[0])
-		if cmd.length>1
-			Debug.Trace("[CHIM] BackgroundCmd, parm1: "+cmd[1])
+		
+		if cmd.length>2
+			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+"> parm2: <"+cmd[1]+">")
+		elseif cmd.length>1
+			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+">")
 		endif
 		
 		if (cmd[0] == "TravelTo") 
@@ -3910,7 +3913,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			
 			else
 				; Just Sandbox
-				Sandbox(akTarget,"")
+				Sandbox(akTarget,"sleep")
 				Debug.Trace("[CHIM] StayAtPlace. NO linked reference found for: "+DecToHex(akTarget.getFormId()))
 			endif
 		
@@ -3944,8 +3947,15 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			string name
 			
 			Location loc= akTarget.GetCurrentLocation()
-			Location currParentLvl1=PO3_SKSEFunctions.GetParentLocation(loc)
-			Location currParentLvl2=PO3_SKSEFunctions.GetParentLocation(currParentLvl1)
+			Location currParentLvl1=None
+			if (loc)
+				currParentLvl1=PO3_SKSEFunctions.GetParentLocation(loc)
+			endif
+			Location currParentLvl2=None
+			if (currParentLvl1)
+				currParentLvl2=PO3_SKSEFunctions.GetParentLocation(currParentLvl1)
+			endif
+			
 			string lvl1s = ""
 			string lvl2s = ""
 			if currParentLvl1
@@ -3960,8 +3970,12 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			Worldspace cws= akTarget.GetWorldSpace()
 			string worldspaceName=""
 			
+			if (loc)
+				name=loc.GetName()
+			endif 
+			
 			if (cws)
-				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetFormId())
+				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+name+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetFormId())
 				worldspaceName = cws.GetName()
 				if (worldspaceName == "Skyrim" ||worldspaceName == "")
 					if !akTarget.IsInInterior() 
@@ -3969,14 +3983,17 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					endif
 				endif
 			else
-				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace null")
+				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+name+"/"+lvl1s+"/"+lvl2s+" worldspace null")
 			endif;
 			
 			if (useRawCoords)
-				x=akTarget.GetPositionX();
-				y=akTarget.GetPositionY();
-				z=akTarget.GetPositionZ();
-				name=loc.GetName();
+				x=akTarget.GetPositionX()
+				y=akTarget.GetPositionY()
+				z=akTarget.GetPositionZ()
+				name=""
+				if (loc)
+					name=loc.GetName()
+				endif
 				Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+",Not interior, akTarget.GetPosition, Track: "+x+","+y+","+z);
 			else
 				ObjectReference destMarker=AIAgentFunctions.getWorldLocationMarkerFor(loc);
@@ -4019,7 +4036,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			if (runningPackage)
 				runningPackageId=DecToHex(runningPackage.GetFormID())
 			endif
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ+"/"+runningPackageId,"util_location_npc")
+			string formIdTxt="";
+			if (loc)
+				formIdTxt=DecToHex(loc.GetFormID())
+			endif
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+formIdTxt+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ+"/"+runningPackageId,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -4475,7 +4496,9 @@ int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) g
 		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
 		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
 		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
-				
+		if (taskid=="sleep")		
+			SandboxWorkPackage = Game.GetFormFromFile(0x4adf0,"AIAgent.esp") as Package		; Package sandboxSleep	
+		endif
 		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
 		npc.EvaluatePackage();
 		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
