@@ -159,6 +159,19 @@ body {
     line-height: 1.25;
 }
 
+/* Supplementary hearing tone; the status text itself is unchanged. */
+.target-status.hearing-ok {
+    color: #58d68d;
+}
+
+.target-status.hearing-partial {
+    color: #fdba74;
+}
+
+.target-status.hearing-blocked {
+    color: #f1948a;
+}
+
 .info-section:last-child {
     border-bottom: none;
     margin-bottom: 0;
@@ -198,6 +211,24 @@ body {
     background: rgba(155, 89, 182, 0.2);
     color: #bb8fce;
     border: 1px solid rgba(155, 89, 182, 0.4);
+}
+
+.mode-badge.close {
+    background: rgba(236, 72, 153, 0.18);
+    color: #f9a8d4;
+    border: 1px solid rgba(236, 72, 153, 0.42);
+}
+
+.mode-badge.shout {
+    background: rgba(231, 76, 60, 0.2);
+    color: #f1948a;
+    border: 1px solid rgba(231, 76, 60, 0.4);
+}
+
+.mode-badge.narrator {
+    background: rgba(241, 196, 15, 0.18);
+    color: #f7dc6f;
+    border: 1px solid rgba(241, 196, 15, 0.38);
 }
 
 .mode-badge.director {

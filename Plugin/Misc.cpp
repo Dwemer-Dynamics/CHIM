@@ -302,7 +302,7 @@ std::string GetCurrentWeatherDescription() {
             appendLabel("Raining");
         }
         if ((flags & RE::TESWeather::WeatherDataFlag::kSnow) != RE::TESWeather::WeatherDataFlag::kNone) {
-            appendLabel("Snowning");
+            appendLabel("Snowing");
         }
         if (WeatherLooksFoggy(weatherData)) {
             appendLabel("Foggy");
