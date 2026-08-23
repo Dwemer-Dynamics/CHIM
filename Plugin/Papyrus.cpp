@@ -2211,20 +2211,25 @@ int Papyrus::sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE
 int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         std::string msg, std::string type) {
     ScopedPapyrusLock lock("logMessage");
-    auto player = RE::PlayerCharacter::GetSingleton();
-    RE::TESObjectCELL* cell = player->GetParentCell();
-    auto result =
-        InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+    const bool isSetConf = type == "setconf" || type == "setConf";
+    const bool isCellTelemetry = type == "named_cell" || type == "named_cell_static";
 
-    if (type == "setconf" || (type == "setConf")) {
+    // Cell telemetry carries its complete payload and should not trigger an unrelated actor scan.
+    if (!isSetConf && !isCellTelemetry) {
+        if (auto player = RE::PlayerCharacter::GetSingleton()) {
+            auto result = InspectSurroundings(
+                player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+            HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "(beings in range:" + result + ")"));
+        }
+    }
+
+    if (isSetConf) {
         constexpr std::string_view modePrefix = "chim_mode@";
         if (msg.starts_with(modePrefix)) {
             PrismaUIBridge::SetCurrentChatboxMode(
                 msg.substr(modePrefix.size()), "Papyrus Mode Selection", false);
         }
-    } else {
-        HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(beings in range:" + result + ")"));
     }
 
     HTTPManager::log(std::format("{}|{}|{}|{}", type, getCurrentTimeMillis(), GetGameTimeStamp(), msg));

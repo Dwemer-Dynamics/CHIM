@@ -485,7 +485,8 @@ bool Function ShouldSendCellInfoPlayer(Cell localCell, Location currLoc)
 	if (localCell != lastCellInfoPlayerCell || currLoc != lastCellInfoPlayerLocation)
 		return true
 	endif
-	return (Utility.GetCurrentRealTime() - lastCellInfoPlayerSentAt) >= 60.0
+	; OnUpdate runs every five seconds; allow a little scheduler jitter.
+	return (Utility.GetCurrentRealTime() - lastCellInfoPlayerSentAt) >= 4.0
 EndFunction
 
 function ProcessExteriorCellInfoEnrichment(int maxDoors = 2) global
