@@ -1561,16 +1561,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
 
         if (!enable3DAudioPlayback) {
-            // This is the legacy behavior.
-            auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
-            auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
-            am.UpdateLegacy(
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerActorPointer->GetPosition()),
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
-                headingAngle);
-
-            //const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
-            //am.Update(noopPosition, noopPosition, 0.0f);
+            // Leave the source centered with no positional attenuation when 3D playback is disabled.
+            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            am.Update(noopPosition, noopPosition, 0.0f);
             return;
         }
 
