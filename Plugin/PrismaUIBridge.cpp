@@ -8271,7 +8271,7 @@ R"CHIM(
             SetSupportReportState("confirming", "Confirm the report contents to continue.");
             const bool shown = ShowConfirmation(
                 "Generate Support Report",
-                "This creates one text report containing DwemerDistro debugging information, recent service and LLM logs, and AIAgent.log when available. Review it before attaching it to a Discord bug report.",
+                "This creates one text report containing DwemerDistro debugging information, recent service and LLM logs, and your AIAgent.log and Papyrus.0.log when available. Review it before attaching it to a Discord bug report.",
                 "Cancel",
                 "Generate",
                 [](bool accepted) {
