@@ -68,6 +68,12 @@
                         </div>
                         <button class="button primary" type="submit">Save Profile</button>
                     </header>
+                    <div id="profile-preset-row" class="profile-preset-row" hidden>
+                        <span id="profile-preset-label" class="profile-preset-label">Profile Preset</span>
+                        <select id="profile-preset-select" class="profile-preset-select" aria-labelledby="profile-preset-label" aria-describedby="profile-preset-status"></select>
+                        <button id="profile-preset-apply" class="button profile-preset-apply" type="button" disabled>Apply</button>
+                        <p id="profile-preset-status" class="profile-preset-status" role="status" aria-live="polite"></p>
+                    </div>
                     <section class="settings-section">
                         <h2>⚙ Profile Core</h2>
                         <div class="profile-core-grid">

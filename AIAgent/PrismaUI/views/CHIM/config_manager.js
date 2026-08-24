@@ -178,6 +178,7 @@
         status('Loading Profiles...', false);
         profileData = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { cache: 'no-store' }));
         renderProfileList();
+        renderProfilePresets();
         const id = Number(preferredId || selectedProfileId || (profileData.profiles[0] && profileData.profiles[0].id));
         if (id) await loadProfile(id); else status('No profiles found.', true);
     }
@@ -206,6 +207,8 @@
         selectedProfileId = Number(id); renderProfileList(); status('Loading profile...', false);
         const payload = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php?id=${selectedProfileId}`, { cache: 'no-store' }));
         profileData.profiles = payload.profiles; profileData.connector_options = payload.connector_options;
+        if (Array.isArray(payload.profile_presets)) profileData.profile_presets = payload.profile_presets;
+        renderProfilePresets();
         renderProfile(payload.detail); status('Profile loaded.', false);
     }
     function renderProfile(detail) {
@@ -1599,6 +1602,113 @@
         });
     }
 
+    /* ----- Profile Presets: profile-preset- prefixed, only used by #profiles-page ----- */
+    let profilePresetBusy = false;
+
+    function profilePresets() {
+        const list = profileData && Array.isArray(profileData.profile_presets) ? profileData.profile_presets : [];
+        return list.filter((preset) => preset && preset.id !== undefined && preset.id !== null && String(preset.id) !== '');
+    }
+    function profilePresetStatus(message, error) {
+        const line = byId('profile-preset-status');
+        if (!line) return;
+        line.textContent = message || '';
+        line.classList.toggle('error', !!error);
+    }
+    function findProfilePreset(id) {
+        return profilePresets().find((preset) => String(preset.id) === String(id)) || null;
+    }
+    function selectedProfilePreset() {
+        const select = byId('profile-preset-select');
+        return select ? findProfilePreset(select.value) : null;
+    }
+    function currentProfileLabel() {
+        const profile = ((profileData && profileData.profiles) || []).find((item) => Number(item.id) === Number(selectedProfileId));
+        return String((profile && profile.label) || byId('profile-editor-name').textContent || 'this profile');
+    }
+    function syncProfilePresetRow() {
+        const select = byId('profile-preset-select');
+        const apply = byId('profile-preset-apply');
+        if (!select || !apply) return;
+        const available = profilePresets().length > 0;
+        select.disabled = profilePresetBusy || !available;
+        apply.disabled = profilePresetBusy || !available || !selectedProfileId || !selectedProfilePreset();
+        apply.setAttribute('aria-busy', profilePresetBusy ? 'true' : 'false');
+    }
+    function setProfilePresetBusy(busy) {
+        profilePresetBusy = !!busy;
+        syncProfilePresetRow();
+    }
+    // Options come straight from the server list; no preset id, name, description or value is repeated here.
+    function renderProfilePresets(reset) {
+        const select = byId('profile-preset-select');
+        const row = byId('profile-preset-row');
+        if (!select || !row) return;
+        const presets = profilePresets();
+        // Older HerikaServer builds omit profile_presets, so the row stays hidden instead of failing.
+        row.hidden = presets.length === 0;
+        const previous = reset ? '' : select.value;
+        select.replaceChildren(new Option('Choose preset...', ''));
+        presets.forEach((preset) => {
+            const option = new Option(String(preset.name || preset.id), String(preset.id));
+            if (preset.description) option.title = String(preset.description);
+            select.appendChild(option);
+        });
+        select.value = findProfilePreset(previous) ? String(previous) : '';
+        syncProfilePresetRow();
+    }
+    function profilePresetConfirmBody(preset) {
+        const description = preset.description ? `${String(preset.description)} ` : '';
+        return `${description}Apply "${String(preset.name || preset.id)}" to profile "${currentProfileLabel()}"? This profile is saved immediately, and unsaved edits on this page are discarded.`;
+    }
+    async function applyProfilePreset(preset) {
+        const profileId = selectedProfileId;
+        const fallbackName = String(preset.name || preset.id);
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Applying "${fallbackName}"...`, false);
+        try {
+            const result = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation: 'apply_preset', id: profileId, preset_id: String(preset.id) }) }));
+            await loadProfiles(profileId);
+            // The select is an action picker, not a saved identity, so it returns to the placeholder.
+            renderProfilePresets(true);
+            profilePresetStatus(`Applied ${String(result.preset_name || fallbackName)} to ${String(result.profile_name || currentProfileLabel())}.`, false);
+        } catch (error) {
+            profilePresetStatus(`Apply failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            // Disabling the button during the request drops focus to the body; put it back on the row.
+            if (!document.activeElement || document.activeElement === document.body) {
+                const select = byId('profile-preset-select');
+                if (select && !select.disabled) select.focus();
+            }
+        }
+    }
+    function initProfilePresets() {
+        const select = byId('profile-preset-select');
+        const apply = byId('profile-preset-apply');
+        renderProfilePresets(true);
+        // Selecting only surfaces the server description; nothing is written until Apply.
+        select.addEventListener('change', () => {
+            const preset = selectedProfilePreset();
+            syncProfilePresetRow();
+            profilePresetStatus(preset && preset.description ? String(preset.description) : '', false);
+        });
+        // The row sits inside #profile-form, so Enter here must not reach Save Profile.
+        select.addEventListener('keydown', (event) => { if (event.key === 'Enter') event.preventDefault(); });
+        apply.addEventListener('click', () => {
+            const preset = selectedProfilePreset();
+            if (!preset || profilePresetBusy || !selectedProfileId) return;
+            openMcmConfirm({
+                title: 'Apply profile preset',
+                body: profilePresetConfirmBody(preset),
+                confirmLabel: 'Apply preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { applyProfilePreset(preset).catch(showError); }
+            });
+        });
+    }
+
     function switchPage(page) {
         if (!SETTINGS_PAGES.includes(page)) page = 'globals';
         stopMcmCapture();
@@ -1623,6 +1733,7 @@
         enhanceSelect(byId('profile-form').elements.slot);
         initMcm();
         initPresets();
+        initProfilePresets();
         byId('close-button').addEventListener('click', () => { stopMcmCapture(); closeMcmConfirm(false); closePresetNameDialog(false); command('input_capture|off'); command('close'); });
         const topTabs = Array.from(document.querySelectorAll('.top-tab'));
         topTabs.forEach((button) => button.addEventListener('click', () => switchPage(button.dataset.page)));

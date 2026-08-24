@@ -75,6 +75,16 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .preset-name-field { margin-top: 13px; margin-bottom: 0; }
 .preset-name-error { margin-top: 8px; color: #ff9ca4; font-size: .72rem; }
 
+/* Profile presets: profile-preset- prefixed and scoped to #profiles-page. */
+#profiles-page .profile-preset-row { display: grid; grid-template-columns: auto minmax(160px, 250px) auto; gap: 5px 10px; align-items: center; padding: 7px 11px; border: 1px solid #404040; border-radius: 8px; background: var(--panel-soft); }
+#profiles-page .profile-preset-row[hidden] { display: none; }
+#profiles-page .profile-preset-label { color: #e8e3db; font-size: .8rem; font-weight: 600; }
+#profiles-page .profile-preset-select { min-width: 0; min-height: 34px; padding: 6px 9px; }
+#profiles-page .profile-preset-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#profiles-page .profile-preset-select:disabled, #profiles-page .profile-preset-apply:disabled { opacity: .5; cursor: default; }
+#profiles-page .profile-preset-status { grid-column: 1 / -1; min-width: 0; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+#profiles-page .profile-preset-status.error { color: #ff9ca4; }
+
 /* Uses the same tile-menu interaction and visual language as CHIM Chat. */
 .settings-native-select { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; clip-path: inset(50%) !important; white-space: nowrap !important; border: 0 !important; }
 .settings-tile-selector { position: relative; width: 100%; pointer-events: auto; }
@@ -131,6 +141,7 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .advanced-metadata summary { cursor: pointer; color: #f3bd7e; font-weight: 700; }
 .advanced-metadata textarea { margin-top: 9px; font-family: Consolas, monospace; }
 @container (max-width: 760px) {
+    #profiles-page .profile-preset-row { grid-template-columns: minmax(0, 1fr); }
     .profile-core-grid { grid-template-columns: minmax(0,1fr) 110px; }
     .profile-default-card { grid-column: 1 / -1; min-height: auto; }
     .connector-selection-grid, .profile-settings-columns { grid-template-columns: 1fr; }
