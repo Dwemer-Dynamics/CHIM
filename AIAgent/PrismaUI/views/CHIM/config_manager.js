@@ -259,8 +259,8 @@
         });
         byId('profile-metadata-json').value = JSON.stringify(detail.metadata || {}, null, 2);
     }
-    async function saveProfile(event) {
-        event.preventDefault();
+    // Captures the profile form metadata exactly as saveProfile() posts it, unsaved edits included.
+    function serializeProfileMetadata() {
         let metadata; try { metadata = JSON.parse(byId('profile-metadata-json').value || '{}'); } catch (_error) { throw new Error('Advanced Metadata JSON is invalid.'); }
         const multi = {};
         byId('profile-form').querySelectorAll('[name^="metadata:"]').forEach((control) => { metadata[control.name.slice(9)] = control.type === 'checkbox' ? control.checked : (control.type === 'number' && control.value !== '' ? Number(control.value) : control.value); });
@@ -273,6 +273,11 @@
             if (!control) return;
             metadata[key] = control.type === 'checkbox' ? control.checked : (control.type === 'number' && control.value !== '' ? Number(control.value) : control.value);
         });
+        return metadata;
+    }
+    async function saveProfile(event) {
+        event.preventDefault();
+        const metadata = serializeProfileMetadata();
         const connectors = {}; byId('profile-form').querySelectorAll('[name^="connector:"]').forEach((control) => { connectors[control.name.slice(10)] = control.value; });
         const core = { label: event.currentTarget.elements.label.value, slot: event.currentTarget.elements.slot.value, default_npc: event.currentTarget.elements.default_npc.checked, prompt: event.currentTarget.elements.prompt.value };
         status('Saving profile...', false);
@@ -1304,6 +1309,7 @@
     let presetNameBusy = false;
     let presetNameAction = null;
     let presetNameInvoker = null;
+    let presetNameDefaults = null;
 
     function presetStatus(message, error) {
         const line = byId('preset-status');
@@ -1445,6 +1451,10 @@
     }
     function openPresetNameDialog(options) {
         const backdrop = byId('preset-name-backdrop');
+        // The markup carries the Global Settings copy, so it doubles as the default for callers that pass none.
+        if (!presetNameDefaults) presetNameDefaults = { title: byId('preset-name-title').textContent, body: byId('preset-name-body').textContent };
+        byId('preset-name-title').textContent = options.title || presetNameDefaults.title;
+        byId('preset-name-body').textContent = options.body || presetNameDefaults.body;
         presetNameAction = typeof options.onConfirm === 'function' ? options.onConfirm : null;
         presetNameInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         byId('preset-name-input').value = options.value || '';
@@ -1603,6 +1613,8 @@
     }
 
     /* ----- Profile Presets: profile-preset- prefixed, only used by #profiles-page ----- */
+    const PROFILE_PRESET_ENDPOINT = '/ui/api/chim_profile_manager.php';
+    const PROFILE_PRESET_IMPORT_LIMIT = 256 * 1024;
     let profilePresetBusy = false;
 
     function profilePresets() {
@@ -1626,28 +1638,50 @@
         const profile = ((profileData && profileData.profiles) || []).find((item) => Number(item.id) === Number(selectedProfileId));
         return String((profile && profile.label) || byId('profile-editor-name').textContent || 'this profile');
     }
+    // Builds that predate custom profile presets omit built_in, so the custom actions stay hidden there.
+    function profilePresetsSupportCustom() {
+        return profilePresets().some((preset) => Object.prototype.hasOwnProperty.call(preset, 'built_in'));
+    }
     function syncProfilePresetRow() {
         const select = byId('profile-preset-select');
         const apply = byId('profile-preset-apply');
         if (!select || !apply) return;
         const available = profilePresets().length > 0;
+        const preset = selectedProfilePreset();
+        const custom = !!preset && preset.built_in !== true;
         select.disabled = profilePresetBusy || !available;
-        apply.disabled = profilePresetBusy || !available || !selectedProfileId || !selectedProfilePreset();
-        apply.setAttribute('aria-busy', profilePresetBusy ? 'true' : 'false');
+        apply.disabled = profilePresetBusy || !available || !selectedProfileId || !preset;
+        byId('profile-preset-custom-actions').hidden = !profilePresetsSupportCustom();
+        byId('profile-preset-save-new').disabled = profilePresetBusy || !selectedProfileId;
+        byId('profile-preset-overwrite').disabled = profilePresetBusy || !selectedProfileId || !custom;
+        byId('profile-preset-export').disabled = profilePresetBusy || !custom;
+        byId('profile-preset-import').disabled = profilePresetBusy;
+        byId('profile-preset-row').querySelectorAll('.profile-preset-actions .button').forEach((button) => button.setAttribute('aria-busy', profilePresetBusy ? 'true' : 'false'));
+    }
+    // Disabling a button during a request drops focus to the body; put it back on the row once nothing is modal.
+    function restoreProfilePresetFocus(preferredId) {
+        if (!byId('preset-name-backdrop').classList.contains('hidden')) return;
+        if (!byId('mcm-confirm-backdrop').classList.contains('hidden')) return;
+        if (document.activeElement && document.activeElement !== document.body) return;
+        const preferred = preferredId ? byId(preferredId) : null;
+        if (preferred && !preferred.disabled) { preferred.focus(); return; }
+        const select = byId('profile-preset-select');
+        if (select && !select.disabled) select.focus();
     }
     function setProfilePresetBusy(busy) {
         profilePresetBusy = !!busy;
         syncProfilePresetRow();
     }
     // Options come straight from the server list; no preset id, name, description or value is repeated here.
-    function renderProfilePresets(reset) {
+    function renderProfilePresets(reset, preferredId) {
         const select = byId('profile-preset-select');
         const row = byId('profile-preset-row');
         if (!select || !row) return;
         const presets = profilePresets();
         // Older HerikaServer builds omit profile_presets, so the row stays hidden instead of failing.
         row.hidden = presets.length === 0;
-        const previous = reset ? '' : select.value;
+        const preferred = preferredId === undefined || preferredId === null ? '' : String(preferredId);
+        const previous = preferred || (reset ? '' : select.value);
         select.replaceChildren(new Option('Choose preset...', ''));
         presets.forEach((preset) => {
             const option = new Option(String(preset.name || preset.id), String(preset.id));
@@ -1667,7 +1701,7 @@
         setProfilePresetBusy(true);
         profilePresetStatus(`Applying "${fallbackName}"...`, false);
         try {
-            const result = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation: 'apply_preset', id: profileId, preset_id: String(preset.id) }) }));
+            const result = await profilePresetRequest({ operation: 'apply_preset', id: profileId, preset_id: String(preset.id) });
             await loadProfiles(profileId);
             // The select is an action picker, not a saved identity, so it returns to the placeholder.
             renderProfilePresets(true);
@@ -1676,12 +1710,119 @@
             profilePresetStatus(`Apply failed: ${presetError(error)}`, true);
         } finally {
             setProfilePresetBusy(false);
-            // Disabling the button during the request drops focus to the body; put it back on the row.
-            if (!document.activeElement || document.activeElement === document.body) {
-                const select = byId('profile-preset-select');
-                if (select && !select.disabled) select.focus();
-            }
+            restoreProfilePresetFocus();
         }
+    }
+    async function profilePresetRequest(body) {
+        return responseData(await fetch(`${serverBaseUrl}${PROFILE_PRESET_ENDPOINT}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+    }
+    // Only the preset list is refreshed, so unsaved profile edits on screen survive save, overwrite and import.
+    async function refreshProfilePresetList(data, preferredId) {
+        let list = data && Array.isArray(data.profile_presets) ? data.profile_presets : null;
+        if (!list) {
+            const payload = await responseData(await fetch(`${serverBaseUrl}${PROFILE_PRESET_ENDPOINT}`, { cache: 'no-store' }));
+            list = Array.isArray(payload.profile_presets) ? payload.profile_presets : [];
+        }
+        if (profileData) profileData.profile_presets = list;
+        renderProfilePresets(false, preferredId);
+    }
+    // The write already landed on the server, so a failed refresh is reported as its own problem.
+    async function settleProfilePresetWrite(data, preferredId, message) {
+        try {
+            await refreshProfilePresetList(data, preferredId);
+            profilePresetStatus(message, false);
+        } catch (error) {
+            profilePresetStatus(`${message} The preset list could not be refreshed: ${presetError(error)}`, true);
+        }
+    }
+    async function saveProfilePresetAsNew(name, metadata) {
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Saving "${name}"...`, false);
+        try {
+            const data = await profilePresetRequest({ operation: 'save_preset_new', id: selectedProfileId, name: name, metadata: metadata });
+            const saved = (data && data.preset) || {};
+            await settleProfilePresetWrite(data, saved.id, `Saved preset "${String(saved.name || name)}".`);
+        } catch (error) {
+            profilePresetStatus(`Save failed: ${presetError(error)}`, true);
+            throw error;
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-save-new');
+        }
+    }
+    async function overwriteProfilePreset(preset, metadata) {
+        const fallbackName = String(preset.name || preset.id);
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Overwriting "${fallbackName}"...`, false);
+        try {
+            const data = await profilePresetRequest({ operation: 'overwrite_preset', id: selectedProfileId, preset_id: String(preset.id), metadata: metadata });
+            const saved = (data && data.preset) || {};
+            await settleProfilePresetWrite(data, saved.id || preset.id, `Overwrote preset "${String(saved.name || fallbackName)}".`);
+        } catch (error) {
+            profilePresetStatus(`Overwrite failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-overwrite');
+        }
+    }
+    // The server owns the filename and the document body; this only turns them into a download.
+    function downloadJsonDocument(filename, doc) {
+        const text = typeof doc === 'string' ? doc : JSON.stringify(doc, null, 2);
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url; link.download = filename; link.rel = 'noopener'; link.hidden = true;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+    async function exportProfilePreset(preset) {
+        const fallbackName = String(preset.name || preset.id);
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Exporting "${fallbackName}"...`, false);
+        try {
+            const data = await profilePresetRequest({ operation: 'export_preset', preset_id: String(preset.id) });
+            const doc = data ? data.document : null;
+            if (!doc || (typeof doc !== 'object' && typeof doc !== 'string')) throw new Error('The server returned no preset document.');
+            const filename = String((data && data.filename) || '').trim() || 'chim-profile-preset.json';
+            downloadJsonDocument(filename, doc);
+            profilePresetStatus(`Exported "${fallbackName}" as ${filename}.`, false);
+        } catch (error) {
+            profilePresetStatus(`Export failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-export');
+        }
+    }
+    // The file is only checked far enough to post it; the server decides what a valid preset export contains.
+    async function readProfilePresetDocument(file) {
+        if (file.size > PROFILE_PRESET_IMPORT_LIMIT) throw new Error('That file is larger than 256 KB.');
+        let text;
+        try { text = await file.text(); } catch (_error) { throw new Error('That file could not be read.'); }
+        let doc;
+        try { doc = JSON.parse(text); } catch (_error) { throw new Error('That file is not valid JSON.'); }
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('That file is not a preset export.');
+        return doc;
+    }
+    async function importProfilePreset(file) {
+        const fallbackName = String(file.name || 'preset');
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Importing "${fallbackName}"...`, false);
+        try {
+            const doc = await readProfilePresetDocument(file);
+            const data = await profilePresetRequest({ operation: 'import_preset', document: doc });
+            const saved = (data && data.preset) || {};
+            await settleProfilePresetWrite(data, saved.id, `Imported preset "${String(saved.name || fallbackName)}".`);
+        } catch (error) {
+            profilePresetStatus(`Import failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-import');
+        }
+    }
+    // Save and overwrite reuse the Save Profile serializer; core identity, prompt and connectors are left out.
+    function profilePresetMetadata() {
+        try { return serializeProfileMetadata(); } catch (error) { profilePresetStatus(presetError(error), true); return null; }
     }
     function initProfilePresets() {
         const select = byId('profile-preset-select');
@@ -1706,6 +1847,49 @@
                 focusCancel: true,
                 onConfirm: () => { applyProfilePreset(preset).catch(showError); }
             });
+        });
+        byId('profile-preset-save-new').addEventListener('click', () => {
+            if (profilePresetBusy || !selectedProfileId) return;
+            const metadata = profilePresetMetadata();
+            if (!metadata) return;
+            openPresetNameDialog({
+                title: 'Save profile preset',
+                body: `Name this preset. It stores the Profile Settings currently on screen for "${currentProfileLabel()}", including unsaved edits. The profile name, slot, prompt and connector choices are not stored.`,
+                confirmLabel: 'Save preset',
+                onConfirm: (name) => saveProfilePresetAsNew(name, metadata)
+            });
+        });
+        byId('profile-preset-overwrite').addEventListener('click', () => {
+            const preset = selectedProfilePreset();
+            if (!preset || preset.built_in === true || profilePresetBusy || !selectedProfileId) return;
+            const metadata = profilePresetMetadata();
+            if (!metadata) return;
+            openMcmConfirm({
+                title: 'Overwrite profile preset',
+                body: `Overwrite "${String(preset.name || preset.id)}" with the Profile Settings currently on screen, including unsaved edits? The profile name, slot, prompt and connector choices are not stored. The saved preset values are replaced and cannot be recovered.`,
+                confirmLabel: 'Overwrite preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { overwriteProfilePreset(preset, metadata).catch(showError); }
+            });
+        });
+        byId('profile-preset-export').addEventListener('click', () => {
+            const preset = selectedProfilePreset();
+            if (!preset || preset.built_in === true || profilePresetBusy) return;
+            exportProfilePreset(preset).catch(showError);
+        });
+        const file = byId('profile-preset-file');
+        byId('profile-preset-import').addEventListener('click', () => {
+            if (profilePresetBusy) return;
+            // Clearing first keeps change firing when the same file is picked twice.
+            file.value = '';
+            file.click();
+        });
+        file.addEventListener('change', () => {
+            const chosen = file.files && file.files[0];
+            file.value = '';
+            if (!chosen) return;
+            importProfilePreset(chosen).catch(showError);
         });
     }
 

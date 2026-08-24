@@ -71,7 +71,16 @@
                     <div id="profile-preset-row" class="profile-preset-row" hidden>
                         <span id="profile-preset-label" class="profile-preset-label">Profile Preset</span>
                         <select id="profile-preset-select" class="profile-preset-select" aria-labelledby="profile-preset-label" aria-describedby="profile-preset-status"></select>
-                        <button id="profile-preset-apply" class="button profile-preset-apply" type="button" disabled>Apply</button>
+                        <div class="profile-preset-actions">
+                            <button id="profile-preset-apply" class="button profile-preset-apply" type="button" disabled>Apply</button>
+                            <div id="profile-preset-custom-actions" class="profile-preset-custom-actions" hidden>
+                                <button id="profile-preset-save-new" class="button" type="button" disabled>Save as new…</button>
+                                <button id="profile-preset-overwrite" class="button" type="button" disabled>Overwrite…</button>
+                                <button id="profile-preset-export" class="button" type="button" disabled>Export</button>
+                                <button id="profile-preset-import" class="button" type="button">Import</button>
+                            </div>
+                        </div>
+                        <input id="profile-preset-file" class="profile-preset-file" type="file" accept="application/json,.json" tabindex="-1" aria-hidden="true" hidden>
                         <p id="profile-preset-status" class="profile-preset-status" role="status" aria-live="polite"></p>
                     </div>
                     <section class="settings-section">
