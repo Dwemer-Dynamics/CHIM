@@ -162,6 +162,8 @@ textarea { resize: vertical; line-height: 1.35; }
 .relationship-lock { padding: 7px 0; }
 .relationship-list { display: grid; gap: 7px; }
 .relationship-row { display: grid; grid-template-columns: 1.4fr 100px 170px 2fr auto; gap: 7px; align-items: center; padding: 7px; border: 1px solid #3f3f45; border-radius: 5px; background: #242428; }
+.relationship-custom-info-field { grid-column: 1 / -1; display: grid; gap: 5px; color: #d8d5d1; font-size: .76rem; }
+.relationship-custom-info { min-height: 64px; }
 .remove-relationship { width: 32px; height: 32px; border: 1px solid #763c42; border-radius: 4px; background: #542c31; cursor: pointer; }
 .metadata-readonly { border: 1px solid #3d3d42; border-radius: 5px; background: #232327; }
 .metadata-readonly summary { padding: 9px; cursor: pointer; color: #c9c6c2; }
@@ -222,6 +224,7 @@ textarea { resize: vertical; line-height: 1.35; }
     .search-field { min-width: 100%; order: 3; }
     .npc-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
     .relationship-row { grid-template-columns: 1fr 80px 130px auto; }
+    .relationship-row .remove-relationship { grid-column: 4; grid-row: 1; }
     .relationship-row .relationship-note { grid-column: 1 / -1; }
     .editor-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .history-actions { align-items: stretch; flex-direction: column; }
