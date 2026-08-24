@@ -11,6 +11,7 @@
     let selectSequence = 0;
 
     function command(value) { if (window.chimConfigManagerCommand) window.chimConfigManagerCommand(value); }
+    function syncInputCapture() { command(document.activeElement && document.activeElement.matches('input, textarea, select') ? 'input_capture|on' : 'input_capture|off'); }
     function asBool(value) {
         if (typeof value === 'boolean') return value;
         return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -125,7 +126,7 @@
     async function loadGlobals() {
         status('Loading Global Settings...', false);
         globalData = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_global_settings.php`, { cache: 'no-store' }));
-        renderGlobals(); status('Global Settings loaded.', false);
+        renderGlobals(); status('Global Settings loaded.', false); ensurePresets();
     }
     function renderGlobals() {
         const tabs = byId('global-tabs'); tabs.replaceChildren();
@@ -152,8 +153,8 @@
         });
         byId('prompt-context-options').closest('.settings-section').hidden = activeGlobalTab !== 'context-knowledge';
     }
-    async function saveGlobals(event) {
-        event.preventDefault();
+    // Captures the globals form exactly as saveGlobals() posts it, unsaved edits included.
+    function serializeGlobalsForm() {
         const settings = {}; const promptContext = {};
         byId('globals-form').querySelectorAll('[name]').forEach((control) => {
             if (control.name.startsWith('global:')) settings[control.name.slice(7)] = control.type === 'checkbox' ? control.checked : control.value;
@@ -163,8 +164,13 @@
                 if (control.checked) promptContext[bucket].push(id);
             }
         });
+        return { settings: settings, prompt_context_options: promptContext };
+    }
+    async function saveGlobals(event) {
+        event.preventDefault();
+        const payload = serializeGlobalsForm();
         status('Saving Global Settings...', false);
-        await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_global_settings.php`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ settings, prompt_context_options: promptContext }) }));
+        await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_global_settings.php`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ settings: payload.settings, prompt_context_options: payload.prompt_context_options }) }));
         await loadGlobals(); status('Global Settings saved.', false);
     }
 
@@ -1163,6 +1169,7 @@
         if (activeMcmPage === 'ai_agents' && !mcmAgents) command('mcm|agents_refresh');
     }
 
+    let mcmConfirmFocusCancel = false;
     function mcmConfirmFocusable() {
         return Array.from(byId('mcm-confirm-backdrop').querySelectorAll('button:not([disabled])'));
     }
@@ -1178,7 +1185,8 @@
         mcmConfirmAction = typeof options.onConfirm === 'function' ? options.onConfirm : null;
         backdrop.classList.remove('hidden');
         command('input_capture|off');
-        accept.focus();
+        mcmConfirmFocusCancel = !!options.focusCancel;
+        if (mcmConfirmFocusCancel) byId('mcm-confirm-cancel').focus(); else accept.focus();
     }
     function closeMcmConfirm(restoreFocus) {
         const backdrop = byId('mcm-confirm-backdrop');
@@ -1226,7 +1234,7 @@
         });
         document.addEventListener('focusin', (event) => {
             if (backdrop.classList.contains('hidden') || backdrop.contains(event.target)) return;
-            byId('mcm-confirm-accept').focus();
+            byId(mcmConfirmFocusCancel ? 'mcm-confirm-cancel' : 'mcm-confirm-accept').focus();
         });
     }
 
@@ -1283,11 +1291,320 @@
         mcmStatus(message, !ok);
     };
 
+
+    /* ----- Settings Presets: preset- prefixed, only used by #globals-page ----- */
+    const PRESET_ENDPOINT = '/ui/api/chim_settings_presets.php';
+    let presetList = [];
+    let presetCustomCount = 0;
+    let presetsRequested = false;
+    let presetBusy = false;
+    let presetNameBusy = false;
+    let presetNameAction = null;
+    let presetNameInvoker = null;
+
+    function presetStatus(message, error) {
+        const line = byId('preset-status');
+        if (!line) return;
+        line.textContent = message || '';
+        line.classList.toggle('error', !!error);
+    }
+    function presetError(error) {
+        const message = error && error.message ? String(error.message) : String(error || '');
+        return message === '' ? 'Unknown error.' : message;
+    }
+    function findPreset(id) {
+        return presetList.find((preset) => preset && String(preset.id) === String(id)) || null;
+    }
+    function selectedPreset() {
+        const select = byId('preset-select');
+        return select ? findPreset(select.value) : null;
+    }
+    function presetIdleMessage() {
+        const preset = selectedPreset();
+        if (preset && preset.description) return String(preset.description);
+        if (presetList.length === 0) return 'No presets available.';
+        if (presetCustomCount === 0) return 'No custom presets saved yet.';
+        return '';
+    }
+    function syncPresetBar() {
+        const select = byId('preset-select');
+        const preset = selectedPreset();
+        if (select) setControlDisabled(select, presetBusy || presetList.length === 0);
+        byId('preset-apply').disabled = presetBusy || !preset;
+        byId('preset-save-new').disabled = presetBusy;
+        byId('preset-overwrite').disabled = presetBusy || !preset || preset.built_in === true;
+    }
+    function setPresetBusy(busy) {
+        presetBusy = !!busy;
+        syncPresetBar();
+    }
+    // Rebuilt as a fresh element each time so the tile selector never stacks listeners.
+    function renderPresetOptions(preferredId) {
+        const host = document.querySelector('#preset-bar .preset-select-host');
+        if (!host) return;
+        const current = byId('preset-select');
+        const previous = preferredId || (current ? current.value : '');
+        host.replaceChildren();
+        const select = document.createElement('select');
+        select.id = 'preset-select';
+        select.setAttribute('aria-labelledby', 'preset-bar-label');
+        select.setAttribute('aria-describedby', 'preset-status');
+        if (presetList.length === 0) {
+            const placeholder = new Option('No presets available', '');
+            placeholder.disabled = true;
+            select.appendChild(placeholder);
+        } else {
+            const addGroup = (label, items, emptyLabel) => {
+                if (items.length === 0 && !emptyLabel) return;
+                const group = document.createElement('optgroup');
+                group.label = label;
+                if (items.length === 0) {
+                    const empty = new Option(emptyLabel, '');
+                    empty.disabled = true;
+                    group.appendChild(empty);
+                } else {
+                    // The suffix keeps built-ins distinguishable inside the tile menu too.
+                    items.forEach((preset) => group.appendChild(new Option(`${preset.name || preset.id} (${label})`, String(preset.id))));
+                }
+                select.appendChild(group);
+            };
+            addGroup('Built-in', presetList.filter((preset) => preset.built_in === true), null);
+            addGroup('Custom', presetList.filter((preset) => preset.built_in !== true), 'No custom presets yet');
+        }
+        host.appendChild(select);
+        if (previous && findPreset(previous)) select.value = previous;
+        else if (presetList.length > 0) select.value = String(presetList[0].id);
+        // Selecting alone changes nothing beyond button availability and the description.
+        select.addEventListener('change', () => { syncPresetBar(); presetStatus(presetIdleMessage(), false); });
+        const selector = enhanceSelect(select);
+        // Name the tile trigger from the bar label plus its current value, and keep the status line as its description.
+        const value = selector.querySelector('.settings-tile-value');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        if (value) value.id = 'preset-select-value';
+        if (trigger) {
+            trigger.setAttribute('aria-labelledby', 'preset-bar-label preset-select-value');
+            trigger.setAttribute('aria-describedby', 'preset-status');
+        }
+        syncPresetBar();
+    }
+    async function presetRequest(body) {
+        const options = { cache: 'no-store' };
+        if (body) {
+            options.method = 'POST';
+            options.headers = { 'Content-Type': 'application/json' };
+            options.body = JSON.stringify(body);
+        }
+        const response = await fetch(`${serverBaseUrl}${PRESET_ENDPOINT}`, options);
+        let payload;
+        try { payload = await response.json(); } catch (_error) { throw new Error(`Invalid preset response (HTTP ${response.status})`); }
+        if (!response.ok || !payload || payload.success !== true) throw new Error((payload && payload.error) || `HTTP ${response.status}`);
+        return payload.data || payload.result || {};
+    }
+    async function loadPresets(preferredId) {
+        presetStatus('Loading presets...', false);
+        setPresetBusy(true);
+        try {
+            const data = await presetRequest(null);
+            presetList = Array.isArray(data.presets) ? data.presets.filter((preset) => preset && preset.id) : [];
+            const reported = Number(data.custom_count);
+            presetCustomCount = Number.isFinite(reported) ? reported : presetList.filter((preset) => preset.built_in !== true).length;
+            renderPresetOptions(preferredId);
+            presetStatus(presetIdleMessage(), false);
+        } catch (error) {
+            presetList = [];
+            presetCustomCount = 0;
+            renderPresetOptions();
+            presetStatus(`Could not load presets: ${presetError(error)}`, true);
+        } finally {
+            setPresetBusy(false);
+        }
+    }
+    function ensurePresets() {
+        if (presetsRequested) return;
+        presetsRequested = true;
+        loadPresets().catch(() => { presetsRequested = false; });
+    }
+
+    function presetNameFocusable() {
+        return Array.from(byId('preset-name-backdrop').querySelectorAll('button:not([disabled]), input:not([disabled])'));
+    }
+    function setPresetNameError(message) {
+        const line = byId('preset-name-error');
+        line.textContent = message || '';
+        line.hidden = !message;
+    }
+    function setPresetNameBusy(busy, label) {
+        presetNameBusy = !!busy;
+        byId('preset-name-accept').disabled = presetNameBusy;
+        byId('preset-name-cancel').disabled = presetNameBusy;
+        byId('preset-name-input').disabled = presetNameBusy;
+        byId('preset-name-accept').textContent = label || 'Save preset';
+    }
+    function openPresetNameDialog(options) {
+        const backdrop = byId('preset-name-backdrop');
+        presetNameAction = typeof options.onConfirm === 'function' ? options.onConfirm : null;
+        presetNameInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        byId('preset-name-input').value = options.value || '';
+        setPresetNameError('');
+        setPresetNameBusy(false, options.confirmLabel);
+        backdrop.classList.remove('hidden');
+        command('input_capture|off');
+        byId('preset-name-input').focus();
+        byId('preset-name-input').select();
+    }
+    function closePresetNameDialog(restoreFocus) {
+        const backdrop = byId('preset-name-backdrop');
+        if (!backdrop || backdrop.classList.contains('hidden')) return;
+        backdrop.classList.add('hidden');
+        presetNameAction = null;
+        setPresetNameBusy(false, 'Save preset');
+        const invoker = presetNameInvoker;
+        presetNameInvoker = null;
+        if (restoreFocus !== false && invoker && document.contains(invoker) && !invoker.disabled) invoker.focus();
+        syncInputCapture();
+    }
+    function submitPresetNameDialog() {
+        if (presetNameBusy || !presetNameAction) return;
+        const action = presetNameAction;
+        const name = byId('preset-name-input').value.trim();
+        if (name === '') {
+            setPresetNameError('Enter a name for this preset.');
+            byId('preset-name-input').focus();
+            return;
+        }
+        setPresetNameError('');
+        setPresetNameBusy(true, 'Saving...');
+        Promise.resolve()
+            .then(() => action(name))
+            .then(() => closePresetNameDialog())
+            .catch((error) => {
+                setPresetNameBusy(false, 'Save preset');
+                setPresetNameError(presetError(error));
+                byId('preset-name-accept').focus();
+            });
+    }
+
+    function applyPresetConfirmBody(preset) {
+        let body = `Apply "${preset.name || preset.id}"? This saves the settings included in this preset immediately.`;
+        if (preset.affects_profiles) body += ' It also updates context and response limits for all NPC profiles.';
+        return `${body} Unsaved edits on this page will be lost.`;
+    }
+    async function applySelectedPreset(preset) {
+        const name = String(preset.name || preset.id);
+        setPresetBusy(true);
+        presetStatus(`Applying "${name}"...`, false);
+        try {
+            const result = await presetRequest({ operation: 'apply', preset_id: String(preset.id) });
+            const settingsUpdated = Number(result.settings_updated || 0);
+            const profilesUpdated = Number(result.profiles_updated || 0);
+            setPresetBusy(false);
+            await loadGlobals();
+            let message = `Applied "${String(result.name || name)}". ${settingsUpdated} setting${settingsUpdated === 1 ? '' : 's'} updated`;
+            message += profilesUpdated > 0
+                ? `, ${profilesUpdated} NPC profile${profilesUpdated === 1 ? '' : 's'} updated.`
+                : '.';
+            presetStatus(message, false);
+        } catch (error) {
+            setPresetBusy(false);
+            presetStatus(`Apply failed: ${presetError(error)}`, true);
+        }
+    }
+    async function savePresetAsNew(name) {
+        const payload = serializeGlobalsForm();
+        setPresetBusy(true);
+        presetStatus(`Saving "${name}"...`, false);
+        try {
+            const result = await presetRequest({ operation: 'save_new', name: name, settings: payload.settings, prompt_context_options: payload.prompt_context_options });
+            const saved = result.preset || {};
+            setPresetBusy(false);
+            await loadPresets(saved.id ? String(saved.id) : undefined);
+            presetStatus(`Saved preset "${String(saved.name || name)}".`, false);
+        } catch (error) {
+            setPresetBusy(false);
+            presetStatus(`Save failed: ${presetError(error)}`, true);
+            throw error;
+        }
+    }
+    async function overwriteSelectedPreset(preset) {
+        const name = String(preset.name || preset.id);
+        const payload = serializeGlobalsForm();
+        setPresetBusy(true);
+        presetStatus(`Overwriting "${name}"...`, false);
+        try {
+            const result = await presetRequest({ operation: 'overwrite', preset_id: String(preset.id), settings: payload.settings, prompt_context_options: payload.prompt_context_options });
+            const saved = result.preset || {};
+            setPresetBusy(false);
+            await loadPresets(String(saved.id || preset.id));
+            presetStatus(`Overwrote preset "${String(saved.name || name)}".`, false);
+        } catch (error) {
+            setPresetBusy(false);
+            presetStatus(`Overwrite failed: ${presetError(error)}`, true);
+        }
+    }
+
+    function initPresets() {
+        renderPresetOptions();
+        byId('preset-apply').addEventListener('click', () => {
+            const preset = selectedPreset();
+            if (!preset || presetBusy) return;
+            openMcmConfirm({
+                title: 'Apply settings preset',
+                body: applyPresetConfirmBody(preset),
+                confirmLabel: 'Apply preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { applySelectedPreset(preset).catch(showError); }
+            });
+        });
+        byId('preset-save-new').addEventListener('click', () => {
+            if (presetBusy) return;
+            openPresetNameDialog({ confirmLabel: 'Save preset', onConfirm: (name) => savePresetAsNew(name) });
+        });
+        byId('preset-overwrite').addEventListener('click', () => {
+            const preset = selectedPreset();
+            if (!preset || preset.built_in === true || presetBusy) return;
+            openMcmConfirm({
+                title: 'Overwrite settings preset',
+                body: `Overwrite "${preset.name || preset.id}" with the safe Global Settings currently on screen, including unsaved edits? Connector choices and service URLs stay unchanged. The stored preset values are replaced and cannot be recovered.`,
+                confirmLabel: 'Overwrite preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { overwriteSelectedPreset(preset).catch(showError); }
+            });
+        });
+
+        const backdrop = byId('preset-name-backdrop');
+        backdrop.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                if (presetNameBusy) return;
+                event.preventDefault(); event.stopPropagation(); closePresetNameDialog(); return;
+            }
+            if (event.key === 'Enter' && event.target === byId('preset-name-input')) {
+                event.preventDefault(); submitPresetNameDialog(); return;
+            }
+            if (event.key !== 'Tab') return;
+            const focusable = presetNameFocusable();
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        });
+        backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop && !presetNameBusy) closePresetNameDialog(); });
+        byId('preset-name-cancel').addEventListener('click', () => { if (!presetNameBusy) closePresetNameDialog(); });
+        byId('preset-name-accept').addEventListener('click', submitPresetNameDialog);
+        document.addEventListener('focusin', (event) => {
+            if (backdrop.classList.contains('hidden') || backdrop.contains(event.target)) return;
+            byId('preset-name-input').focus();
+        });
+    }
+
     function switchPage(page) {
         if (!SETTINGS_PAGES.includes(page)) page = 'globals';
         stopMcmCapture();
         command('input_capture|off');
         closeMcmConfirm(false);
+        closePresetNameDialog(false);
         document.querySelectorAll('.top-tab').forEach((button) => {
             const active = button.dataset.page === page;
             button.classList.toggle('active', active);
@@ -1305,7 +1622,8 @@
     function init() {
         enhanceSelect(byId('profile-form').elements.slot);
         initMcm();
-        byId('close-button').addEventListener('click', () => { stopMcmCapture(); closeMcmConfirm(false); command('input_capture|off'); command('close'); });
+        initPresets();
+        byId('close-button').addEventListener('click', () => { stopMcmCapture(); closeMcmConfirm(false); closePresetNameDialog(false); command('input_capture|off'); command('close'); });
         const topTabs = Array.from(document.querySelectorAll('.top-tab'));
         topTabs.forEach((button) => button.addEventListener('click', () => switchPage(button.dataset.page)));
         document.querySelector('.top-tabs').addEventListener('keydown', (event) => tabListKeydown(event, topTabs));
@@ -1313,9 +1631,8 @@
         byId('profile-form').addEventListener('submit', (event) => saveProfile(event).catch(showError));
         byId('new-profile').addEventListener('click', () => createProfile().catch(showError));
         byId('delete-profile').addEventListener('click', () => deleteProfile().catch(showError));
-        const updateInputCapture = () => command(document.activeElement && document.activeElement.matches('input, textarea, select') ? 'input_capture|on' : 'input_capture|off');
-        document.addEventListener('focusin', updateInputCapture);
-        document.addEventListener('focusout', () => queueMicrotask(updateInputCapture));
+        document.addEventListener('focusin', syncInputCapture);
+        document.addEventListener('focusout', () => queueMicrotask(syncInputCapture));
         document.addEventListener('click', (event) => { if (!event.target.closest('.settings-tile-selector')) closeTileSelectors(); });
         document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { command('input_capture|off'); command('close'); } });
         command('dom_ready');

@@ -64,6 +64,17 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .context-bucket { border: 1px solid #3d3d3d; border-radius: 7px; padding: 10px; background: #202020; }
 .context-bucket h3 { margin: 0 0 7px; color: #f3bd7e; font-size: .86rem; text-transform: capitalize; }
 
+/* Global Settings presets: preset- prefixed and scoped to #globals-page. */
+#globals-page .preset-bar { display: grid; grid-template-columns: auto minmax(180px, 260px) minmax(0, 1fr); gap: 7px 10px; align-items: center; margin-bottom: 11px; padding: 8px 10px; border: 1px solid #404040; border-radius: 9px; background: var(--panel-soft); }
+#globals-page .preset-bar-label { color: #e8e3db; font-size: .8rem; font-weight: 600; }
+#globals-page .preset-select-host { min-width: 0; }
+#globals-page .preset-actions { display: flex; gap: 7px; justify-content: flex-end; }
+#globals-page .preset-status { grid-column: 1 / -1; min-width: 0; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+#globals-page .preset-status.error { color: #ff9ca4; }
+#globals-page .preset-actions .button:disabled { opacity: .5; cursor: default; }
+.preset-name-field { margin-top: 13px; margin-bottom: 0; }
+.preset-name-error { margin-top: 8px; color: #ff9ca4; font-size: .72rem; }
+
 /* Uses the same tile-menu interaction and visual language as CHIM Chat. */
 .settings-native-select { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; clip-path: inset(50%) !important; white-space: nowrap !important; border: 0 !important; }
 .settings-tile-selector { position: relative; width: 100%; pointer-events: auto; }
@@ -130,6 +141,9 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
     .override-field { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
+    #globals-page .preset-bar { grid-template-columns: 1fr; }
+    #globals-page .preset-actions { flex-wrap: wrap; justify-content: stretch; }
+    #globals-page .preset-actions .button { flex: 1 1 auto; }
     .top-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .sub-tabs:not(.mcm-sub-tabs) { grid-template-columns: 1fr; }
     .mcm-agent-columns, .mcm-slider-controls { grid-template-columns: 1fr; }

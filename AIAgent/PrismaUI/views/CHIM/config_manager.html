@@ -19,9 +19,21 @@
             <button id="tab-npcs" class="top-tab" data-page="npcs" type="button" role="tab" aria-selected="false" aria-controls="npcs-page" tabindex="-1">🧑 CHIM NPCs</button>
             <button id="tab-mcm" class="top-tab" data-page="mcm" type="button" role="tab" aria-selected="false" aria-controls="mcm-page" tabindex="-1">CHIM MCM</button>
         </nav>
-        <div id="status-line" class="status-line">Loading settings...</div>
+        <div id="status-line" class="status-line" role="status" aria-live="polite">Loading settings...</div>
 
         <section id="globals-page" class="page active" role="tabpanel" aria-labelledby="tab-globals">
+            <div id="preset-bar" class="preset-bar">
+                <span id="preset-bar-label" class="preset-bar-label">Settings Preset</span>
+                <div class="preset-select-host">
+                    <select id="preset-select" aria-labelledby="preset-bar-label" aria-describedby="preset-status"></select>
+                </div>
+                <div class="preset-actions">
+                    <button id="preset-apply" class="button primary" type="button" disabled>Apply</button>
+                    <button id="preset-save-new" class="button" type="button" disabled>Save as new…</button>
+                    <button id="preset-overwrite" class="button" type="button" disabled>Overwrite…</button>
+                </div>
+                <p id="preset-status" class="preset-status" role="status" aria-live="polite">Loading presets…</p>
+            </div>
             <div id="global-tabs" class="sub-tabs"></div>
             <form id="globals-form">
                 <div class="settings-content-panel">
@@ -286,6 +298,20 @@
                     <button id="save-button" class="button primary" type="submit">Save NPC</button>
                 </footer>
             </form>
+        </section>
+    </div>
+
+    <div id="preset-name-backdrop" class="mcm-confirm-backdrop hidden" role="presentation">
+        <section class="mcm-confirm" role="dialog" aria-modal="true" aria-labelledby="preset-name-title" aria-describedby="preset-name-body">
+            <h2 id="preset-name-title">Save preset</h2>
+            <p id="preset-name-body">Name this preset. It stores safe Global Settings currently on screen, including context selections and unsaved edits. Connector choices and service URLs stay unchanged.</p>
+            <label class="field preset-name-field" for="preset-name-input"><span>Preset name</span>
+                <input id="preset-name-input" type="text" maxlength="60" autocomplete="off" spellcheck="false"></label>
+            <p id="preset-name-error" class="preset-name-error" hidden></p>
+            <div class="mcm-confirm-actions">
+                <button id="preset-name-cancel" class="button secondary" type="button">Cancel</button>
+                <button id="preset-name-accept" class="button primary" type="button">Save preset</button>
+            </div>
         </section>
     </div>
 
