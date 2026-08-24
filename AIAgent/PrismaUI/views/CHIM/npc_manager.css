@@ -24,6 +24,10 @@ body {
 }
 button, input, select, textarea { font: inherit; }
 button { color: var(--text); }
+.sr-only {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
 
 .manager-shell {
     width: min(1500px, 95vw);
@@ -114,16 +118,53 @@ textarea { resize: vertical; line-height: 1.35; }
     align-content: start; gap: 10px; padding: 10px 14px 14px;
 }
 .npc-card {
+    position: relative;
     min-width: 0; display: grid; grid-template-columns: 76px 1fr; gap: 10px; padding: 9px;
     border: 1px solid #3e3e44; border-radius: 6px; background: #252529; cursor: pointer; text-align: left;
 }
 .npc-card:hover, .npc-card:focus-visible { border-color: var(--accent); background: #2b2928; outline: none; }
 .npc-card img { width: 76px; height: 88px; object-fit: cover; border: 1px solid #55545a; border-radius: 4px; background: #18181b; }
 .npc-card-copy { min-width: 0; }
-.npc-card-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font-weight: 700; }
+.npc-card-name-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.npc-card-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fff; font-weight: 700; }
+.npc-card-dup {
+    flex: 0 0 auto; padding: 1px 6px; border: 1px solid #8a5a1d; border-radius: 9px;
+    background: #4a3418; color: #ffd39c; font-size: .62rem; font-weight: 700;
+}
 .npc-card-meta { margin-top: 5px; color: var(--muted); font-size: .72rem; }
+.npc-card-identity {
+    display: flex; align-items: baseline; gap: 5px; min-width: 0; margin-top: 4px;
+    color: #9aa3ae; font-size: .66rem;
+}
+.npc-card-refid {
+    flex: 0 0 auto; color: #cfd6de; font-family: "Consolas", "Courier New", monospace; letter-spacing: .02em;
+}
+.npc-card-refid.unknown { color: #8b929c; font-style: italic; font-family: inherit; }
+.npc-card-runtime {
+    flex: 0 0 auto; padding: 1px 5px; border-radius: 8px; background: #2c3b46; color: #9fd6ef;
+    font-size: .58rem; text-transform: uppercase; letter-spacing: .05em;
+}
+.npc-card-sep { flex: 0 0 auto; color: #6d747d; }
+.npc-card-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c2b39b; }
+.npc-card-source.unknown { color: #8b929c; font-style: italic; }
 .npc-card-profile { margin-top: 8px; color: #efb678; font-size: .7rem; }
 .npc-card-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+/* Full mod chain stays out of the card body and appears on hover or keyboard focus.
+   Opacity (not display/visibility) keeps it in the accessibility tree at all times. */
+.npc-card-chain {
+    position: absolute; left: 9px; right: 9px; bottom: 9px; z-index: 6;
+    display: grid; gap: 3px; padding: 7px 9px;
+    border: 1px solid var(--accent-soft); border-radius: 5px; background: #16161a;
+    box-shadow: 0 10px 22px rgba(0, 0, 0, .7);
+    color: #d9d4cc; font-size: .62rem; line-height: 1.35;
+    opacity: 0; pointer-events: none; transition: opacity .12s ease;
+}
+.npc-card:hover > .npc-card-chain,
+.npc-card:focus-visible > .npc-card-chain { opacity: 1; }
+.npc-card-chain-title { color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; font-size: .58rem; }
+.npc-card-chain-entry { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.npc-card-chain-mod { min-width: 0; overflow-wrap: anywhere; }
+.npc-card-chain-role { flex: 0 0 auto; color: #93999f; font-size: .56rem; text-transform: uppercase; letter-spacing: .04em; }
 .pill { padding: 2px 6px; border-radius: 9px; background: #3a3a40; color: #d5d3d0; font-size: .62rem; }
 .pill.nearby { background: #3f321f; color: #ffd39c; }
 .pill.good { background: #21462e; color: #a7e8bc; }
@@ -163,6 +204,21 @@ textarea { resize: vertical; line-height: 1.35; }
 .relationship-list { display: grid; gap: 7px; }
 .relationship-row { display: grid; grid-template-columns: 1.4fr 100px 170px 2fr auto; gap: 7px; align-items: center; padding: 7px; border: 1px solid #3f3f45; border-radius: 5px; background: #242428; }
 .remove-relationship { width: 32px; height: 32px; border: 1px solid #763c42; border-radius: 4px; background: #542c31; cursor: pointer; }
+.identity-readonly { display: grid; gap: 8px; padding: 11px 12px; border: 1px solid #3d3d42; border-radius: 5px; background: #232327; }
+.identity-readonly h3 { margin: 0; }
+.identity-subheading { margin: 2px 0 0; color: #f3bd7e; font-size: .76rem; }
+.identity-note { color: var(--muted); font-size: .7rem; }
+.identity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
+.identity-item { min-width: 0; }
+.identity-item dt { color: var(--muted); font-size: .64rem; text-transform: uppercase; letter-spacing: .05em; }
+.identity-item dd { margin: 2px 0 0; color: #e4e0d9; font-size: .78rem; overflow-wrap: anywhere; }
+#identity-refid { font-family: "Consolas", "Courier New", monospace; letter-spacing: .02em; }
+#identity-refid-runtime { background: #2c3b46; color: #9fd6ef; }
+.identity-chain { display: grid; gap: 5px; margin: 0; padding-left: 20px; color: #ddd8d0; font-size: .74rem; }
+.identity-chain li { padding-left: 3px; }
+.identity-chain li::marker { color: var(--muted); font-size: .68rem; }
+.identity-chain-mod { margin-right: 7px; overflow-wrap: anywhere; }
+.identity-chain-empty { list-style: none; margin-left: -20px; color: var(--muted); font-size: .72rem; }
 .metadata-readonly { border: 1px solid #3d3d42; border-radius: 5px; background: #232327; }
 .metadata-readonly summary { padding: 9px; cursor: pointer; color: #c9c6c2; }
 .metadata-readonly pre { max-height: 220px; overflow: auto; margin: 0; padding: 10px; border-top: 1px solid #3d3d42; color: #aaa; white-space: pre-wrap; word-break: break-word; font-size: .68rem; }
@@ -171,9 +227,12 @@ textarea { resize: vertical; line-height: 1.35; }
 .history-recipient-row { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
 .history-recipient-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #6b4a2f; border-radius: 999px; background: #39291f; color: #f4dfca; font-size: .75rem; }
 .history-recipient-chip button { padding: 0; border: 0; background: transparent; color: #f4dfca; cursor: pointer; }
+.history-recipient-refid { color: #bfa78d; font-family: "Consolas", "Courier New", monospace; font-size: .68rem; }
 .history-search-results { display: grid; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 5px; background: #17171a; }
 .history-search-results[hidden] { display: none; }
-.history-search-result { padding: 7px 9px; border: 1px solid transparent; border-radius: 4px; background: #2d2d32; cursor: pointer; text-align: left; }
+.history-search-result { display: grid; gap: 2px; padding: 7px 9px; border: 1px solid transparent; border-radius: 4px; background: #2d2d32; cursor: pointer; text-align: left; }
+.history-search-result-name { color: var(--text); }
+.history-search-result-identity { color: #929dab; font-size: .68rem; overflow-wrap: anywhere; }
 .history-search-result:hover { border-color: var(--accent); }
 .history-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .history-status { color: var(--muted); font-size: .75rem; }
@@ -221,6 +280,7 @@ textarea { resize: vertical; line-height: 1.35; }
     .toolbar { flex-wrap: wrap; }
     .search-field { min-width: 100%; order: 3; }
     .npc-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
+    .identity-grid { grid-template-columns: 1fr; }
     .relationship-row { grid-template-columns: 1fr 80px 130px auto; }
     .relationship-row .relationship-note { grid-column: 1 / -1; }
     .editor-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -229,4 +289,7 @@ textarea { resize: vertical; line-height: 1.35; }
     .history-filterbar select { width: 100%; min-width: 0; }
     .history-table th, .history-table td { padding: 7px 8px; }
     .npc-action-card, .npc-action-card.inception-card { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+    .npc-grid { grid-template-columns: minmax(0, 1fr); }
 }

@@ -19,6 +19,10 @@
         'pitying', 'grateful', 'curious', 'dismissive'
     ];
 
+    const RUNTIME_REFID_PREFIX = 'FF';
+    const NO_REFID_LABEL = 'No RefID';
+    const UNKNOWN_SOURCE_LABEL = 'Unknown source';
+
     let serverBaseUrl = 'http://127.0.0.1:8081/HerikaServer';
     let nearbyTargets = [];
     let scope = 'nearby';
@@ -33,6 +37,65 @@
     let historyEventType = '';
     const historyRecipients = new Map();
     const embeddedInSettings = !!byId('npcs-page');
+
+    // Same-named actors are told apart by RefID and source mod, never by the visible name.
+    function normalizeRefid(value) {
+        const raw = String(value == null ? '' : value).trim().replace(/^0x/i, '').toUpperCase();
+        return /^[0-9A-F]{1,8}$/.test(raw) ? raw.padStart(8, '0') : '';
+    }
+
+    function refidDisplay(value) {
+        const normalized = normalizeRefid(value);
+        if (!normalized) return { text: NO_REFID_LABEL, runtime: false, known: false };
+        return { text: normalized, runtime: normalized.startsWith(RUNTIME_REFID_PREFIX), known: true };
+    }
+
+    // Herika stores metadata.mods ordered: first entry defines the actor, last may override it.
+    function modChain(source) {
+        let raw = null;
+        if (source && typeof source === 'object') {
+            if (Array.isArray(source.mod_chain)) raw = source.mod_chain;
+            else if (Array.isArray(source.mods) || typeof source.mods === 'string') raw = source.mods;
+            else if (source.metadata && typeof source.metadata === 'object') raw = source.metadata.mods;
+        }
+        if (typeof raw === 'string') raw = raw.split(/[#,\r\n]+/);
+        if (!Array.isArray(raw)) return [];
+        return raw
+            .map((entry) => String(entry == null ? '' : entry).trim())
+            .filter(Boolean);
+    }
+
+    function definingMod(source) {
+        const explicit = String((source && source.source_mod) || '').trim();
+        if (explicit) return explicit;
+        const chain = modChain(source);
+        return chain.length ? chain[0] : '';
+    }
+
+    function duplicateCount(npc) {
+        const count = Number(npc && npc.duplicate_count);
+        return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
+    }
+
+    function actorKeyLabel(npc) {
+        const key = String((npc && npc.actor_key) || '').trim();
+        return key || 'Not recorded';
+    }
+
+    // Users type RefIDs either way; the stored column has no 0x prefix.
+    function normalizeSearchTerm(value) {
+        const term = String(value == null ? '' : value).trim();
+        const stripped = term.replace(/^0x/i, '');
+        if (stripped.length !== term.length && /^[0-9A-Fa-f]{1,8}$/.test(stripped)) return stripped;
+        return term;
+    }
+
+    function srOnly(text) {
+        const element = document.createElement('span');
+        element.className = 'sr-only';
+        element.textContent = text;
+        return element;
+    }
 
     function sendCommand(command) {
         if (embeddedInSettings && window.chimConfigManagerCommand) {
@@ -85,13 +148,29 @@
     }
 
     function nearbyLookup() {
-        const map = new Map();
+        const byRefid = new Map();
+        const nameCounts = new Map();
         nearbyTargets.forEach((target) => {
-            const refid = String(target.refid || '').replace(/^0x/i, '').toUpperCase().padStart(8, '0');
-            if (refid) map.set(refid, target);
-            if (target.name) map.set(`name:${String(target.name).toLowerCase()}`, target);
+            const refid = normalizeRefid(target.refid);
+            if (refid) byRefid.set(refid, target);
+            const name = String(target.name || '').trim().toLowerCase();
+            if (name) nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
         });
-        return map;
+        // Only fall back to a name match when that name is unambiguous among nearby actors.
+        const byUniqueName = new Map();
+        nearbyTargets.forEach((target) => {
+            const name = String(target.name || '').trim().toLowerCase();
+            if (name && nameCounts.get(name) === 1) byUniqueName.set(name, target);
+        });
+        return { byRefid, byUniqueName };
+    }
+
+    function findNearbyTarget(lookup, npc) {
+        const refid = normalizeRefid(npc && npc.refid);
+        if (refid && lookup.byRefid.has(refid)) return lookup.byRefid.get(refid);
+        if (duplicateCount(npc) > 1) return null;
+        const name = String((npc && npc.name) || '').trim().toLowerCase();
+        return (name && lookup.byUniqueName.get(name)) || null;
     }
 
     function applyProfiles(nextProfiles) {
@@ -107,7 +186,7 @@
         const generation = ++loadingGeneration;
         setStatus(scope === 'nearby' ? 'Loading nearby NPCs...' : 'Loading NPC profiles...', false);
         const params = new URLSearchParams({ operation: 'list', page: String(page), limit: '48' });
-        const search = byId('search-input').value.trim();
+        const search = normalizeSearchTerm(byId('search-input').value);
         const profileId = byId('profile-filter').value;
         if (search) params.set('search', search);
         if (profileId) params.set('profile_id', profileId);
@@ -149,12 +228,21 @@
         grid.replaceChildren();
         const lookup = nearbyLookup();
         const ordered = Array.from(npcs);
+        const targets = new Map();
+        ordered.forEach((npc) => targets.set(npc, findNearbyTarget(lookup, npc)));
+        const distanceOf = (npc) => {
+            const target = targets.get(npc);
+            return Number((target && target.distance) || 99999);
+        };
         ordered.sort((left, right) => {
-            const leftRef = String(left.refid || '').replace(/^0x/i, '').toUpperCase().padStart(8, '0');
-            const rightRef = String(right.refid || '').replace(/^0x/i, '').toUpperCase().padStart(8, '0');
-            const leftTarget = lookup.get(leftRef) || lookup.get(`name:${String(left.name).toLowerCase()}`);
-            const rightTarget = lookup.get(rightRef) || lookup.get(`name:${String(right.name).toLowerCase()}`);
-            return Number(leftTarget && leftTarget.distance || 99999) - Number(rightTarget && rightTarget.distance || 99999);
+            const byDistance = distanceOf(left) - distanceOf(right);
+            if (byDistance !== 0) return byDistance;
+            // Same-named profiles must keep a stable, identity-based order.
+            const byName = String(left.name || '').localeCompare(String(right.name || ''));
+            if (byName !== 0) return byName;
+            const byRefid = normalizeRefid(left.refid).localeCompare(normalizeRefid(right.refid));
+            if (byRefid !== 0) return byRefid;
+            return Number(left.id || 0) - Number(right.id || 0);
         });
         if (ordered.length === 0) {
             const empty = document.createElement('div');
@@ -167,36 +255,115 @@
         }
 
         ordered.forEach((npc) => {
-            const refid = String(npc.refid || '').replace(/^0x/i, '').toUpperCase().padStart(8, '0');
-            const target = lookup.get(refid) || lookup.get(`name:${String(npc.name).toLowerCase()}`);
+            const target = targets.get(npc);
+            const duplicates = duplicateCount(npc);
             const card = document.createElement('button');
             card.type = 'button';
             card.className = 'npc-card';
+            // Every row action is keyed by the database row id, never by the visible name.
             card.dataset.id = String(npc.id);
             const portrait = document.createElement('img');
             portrait.src = resolveAssetUrl(npc.portrait_url);
             portrait.alt = '';
             const copy = document.createElement('div');
             copy.className = 'npc-card-copy';
+            const nameRow = document.createElement('div');
+            nameRow.className = 'npc-card-name-row';
             const name = document.createElement('div');
             name.className = 'npc-card-name';
             name.textContent = npc.name || 'Unknown NPC';
+            nameRow.appendChild(name);
+            if (duplicates > 1) nameRow.appendChild(duplicateBadge(duplicates));
+            copy.appendChild(nameRow);
             const meta = document.createElement('div');
             meta.className = 'npc-card-meta';
             meta.textContent = [npc.race, npc.gender].filter(Boolean).join(' · ') || 'Unknown race';
+            copy.appendChild(meta);
+            copy.appendChild(buildIdentityLine(npc));
             const profile = document.createElement('div');
             profile.className = 'npc-card-profile';
             profile.textContent = npc.profile_label || 'No Profile';
+            copy.appendChild(profile);
             const flags = document.createElement('div');
             flags.className = 'npc-card-flags';
             if (target) flags.appendChild(pill(`${Number(target.distance || 0).toFixed(1)}m`, 'nearby'));
             if (npc.favorite) flags.appendChild(pill('Favorite', 'good'));
             if (npc.locked) flags.appendChild(pill('Locked'));
-            copy.append(name, meta, profile, flags);
+            copy.appendChild(flags);
             card.append(portrait, copy);
+            const chain = modChain(npc);
+            if (chain.length > 1) card.appendChild(buildChainTooltip(chain));
             card.addEventListener('click', () => openEditor(npc.id));
             grid.appendChild(card);
         });
+    }
+
+    function duplicateBadge(count) {
+        const badge = document.createElement('span');
+        badge.className = 'npc-card-dup';
+        const symbol = document.createElement('span');
+        symbol.setAttribute('aria-hidden', 'true');
+        symbol.textContent = `×${count}`;
+        badge.append(symbol, srOnly(`${count} profiles share this name`));
+        return badge;
+    }
+
+    // Compact identity line: RefID plus the mod that defines this actor.
+    function buildIdentityLine(npc) {
+        const line = document.createElement('div');
+        line.className = 'npc-card-identity';
+        const refid = refidDisplay(npc && npc.refid);
+        const refidElement = document.createElement('span');
+        refidElement.className = `npc-card-refid${refid.known ? '' : ' unknown'}`;
+        refidElement.append(srOnly('Ref ID '), document.createTextNode(refid.text));
+        line.appendChild(refidElement);
+        if (refid.runtime) {
+            const runtime = document.createElement('span');
+            runtime.className = 'npc-card-runtime';
+            runtime.textContent = 'Runtime';
+            runtime.title = 'FF RefIDs are assigned at runtime and can change between saves.';
+            line.appendChild(runtime);
+        }
+        const separator = document.createElement('span');
+        separator.className = 'npc-card-sep';
+        separator.setAttribute('aria-hidden', 'true');
+        separator.textContent = '·';
+        line.appendChild(separator);
+        const chain = modChain(npc);
+        const source = definingMod(npc);
+        const sourceElement = document.createElement('span');
+        sourceElement.className = `npc-card-source${source ? '' : ' unknown'}`;
+        sourceElement.append(srOnly('Source mod '), document.createTextNode(source || UNKNOWN_SOURCE_LABEL));
+        // A single-entry chain gets no tooltip, so keep a native title for truncated names.
+        if (chain.length === 1) sourceElement.title = chain[0];
+        line.appendChild(sourceElement);
+        return line;
+    }
+
+    // Held outside the card body so the full chain stays reachable on hover and focus
+    // without lengthening the card itself.
+    function buildChainTooltip(chain) {
+        const tooltip = document.createElement('span');
+        tooltip.className = 'npc-card-chain';
+        const heading = document.createElement('span');
+        heading.className = 'npc-card-chain-title';
+        heading.textContent = 'Mod chain';
+        tooltip.appendChild(heading);
+        chain.forEach((mod, index) => {
+            const entry = document.createElement('span');
+            entry.className = 'npc-card-chain-entry';
+            const label = document.createElement('span');
+            label.className = 'npc-card-chain-mod';
+            label.textContent = mod;
+            const role = document.createElement('span');
+            role.className = 'npc-card-chain-role';
+            role.textContent = index === 0
+                ? 'defining'
+                : (index === chain.length - 1 ? 'final override' : 'override');
+            entry.append(label, role);
+            tooltip.appendChild(entry);
+        });
+        return tooltip;
     }
 
     function pill(text, className) {
@@ -226,7 +393,7 @@
         const fields = detail.fields || {};
         byId('npc-id').value = String(detail.card.id);
         byId('editor-title').textContent = detail.card.name || 'NPC Profile';
-        byId('editor-subtitle').textContent = [detail.card.race, detail.card.profile_label].filter(Boolean).join(' · ');
+        byId('editor-subtitle').textContent = editorSubtitle(detail.card);
         byId('editor-portrait').src = resolveAssetUrl(detail.card.portrait_url);
         Object.entries(fields).forEach(([name, value]) => {
             const control = form.elements.namedItem(name);
@@ -242,6 +409,7 @@
         renderFeatureToggles(detail.toggles || {});
         renderRelationships(detail.relationships || {});
         byId('relationships-locked').checked = !!detail.relationships_locked;
+        renderIdentityPanel(detail);
         byId('metadata-output').textContent = JSON.stringify(detail.metadata || {}, null, 2);
         renderTeleportAction(detail.metadata && detail.metadata.npc_manager_return_location);
         byId('bgl-inception-idea').value = '';
@@ -255,15 +423,77 @@
         byId('save-status').classList.remove('error');
     }
 
+    // The title stays the visible NPC name, so the subtitle carries the disambiguators.
+    function editorSubtitle(card) {
+        const refid = refidDisplay(card && card.refid);
+        const duplicates = duplicateCount(card);
+        const parts = [card && card.race, card && card.profile_label].filter(Boolean);
+        parts.push(refid.runtime ? `${refid.text} (Runtime)` : refid.text);
+        parts.push(definingMod(card) || UNKNOWN_SOURCE_LABEL);
+        if (duplicates > 1) parts.push(`${duplicates} profiles share this name`);
+        return parts.join(' · ');
+    }
+
+    // RefID, actor key and source metadata are identity, not editable profile data.
+    function renderIdentityPanel(detail) {
+        if (!byId('identity-refid')) return;
+        const card = (detail && detail.card) || {};
+        const metadata = (detail && detail.metadata && typeof detail.metadata === 'object') ? detail.metadata : {};
+        const source = Object.assign({ metadata }, card);
+        if (!source.metadata) source.metadata = metadata;
+        const refid = refidDisplay(card.refid);
+        const duplicates = duplicateCount(card);
+        const chain = modChain(source);
+
+        byId('identity-refid').textContent = refid.text;
+        const runtimeNote = byId('identity-refid-runtime');
+        runtimeNote.hidden = !refid.runtime;
+        byId('identity-actor-key').textContent = actorKeyLabel(card);
+        byId('identity-source').textContent = (String(card.source_mod || '').trim() || chain[0] || '') || UNKNOWN_SOURCE_LABEL;
+        byId('identity-duplicates').textContent = duplicates > 1
+            ? `${duplicates} profiles share the name "${card.name || 'Unknown NPC'}"`
+            : 'This name is unique';
+
+        const list = byId('identity-chain');
+        list.replaceChildren();
+        if (!chain.length) {
+            const empty = document.createElement('li');
+            empty.className = 'identity-chain-empty';
+            empty.textContent = 'No source mod chain recorded for this actor.';
+            list.appendChild(empty);
+            return;
+        }
+        chain.forEach((mod, index) => {
+            const item = document.createElement('li');
+            const label = document.createElement('span');
+            label.className = 'identity-chain-mod';
+            label.textContent = mod;
+            const role = index === 0
+                ? 'Defining'
+                : (index === chain.length - 1 ? 'Final override' : 'Override');
+            item.append(label, pill(role, index === 0 ? 'good' : ''));
+            list.appendChild(item);
+        });
+    }
+
     function setHistoryStatus(message, error) {
         const status = byId('history-status');
         status.textContent = message || '';
         status.classList.toggle('error', !!error);
     }
 
+    function recipientEntry(card) {
+        const refid = refidDisplay(card && card.refid);
+        return {
+            name: String((card && card.name) || 'NPC'),
+            refid: refid.text,
+            source: definingMod(card) || UNKNOWN_SOURCE_LABEL
+        };
+    }
+
     function resetNpcHistory(card) {
         historyRecipients.clear();
-        historyRecipients.set(Number(card.id), String(card.name || 'NPC'));
+        historyRecipients.set(Number(card.id), recipientEntry(card));
         historySearchGeneration += 1;
         clearTimeout(historyRecipientSearchTimer);
         byId('history-recipient-search').value = '';
@@ -289,17 +519,22 @@
         const container = byId('history-recipients');
         const currentNpcId = Number(byId('npc-id').value || 0);
         container.replaceChildren();
-        historyRecipients.forEach((name, id) => {
+        historyRecipients.forEach((entry, id) => {
+            const name = entry && entry.name ? entry.name : String(entry || 'NPC');
+            const refid = (entry && entry.refid) || NO_REFID_LABEL;
             const chip = document.createElement('span');
             chip.className = 'history-recipient-chip';
             const label = document.createElement('span');
             label.textContent = name;
-            chip.appendChild(label);
+            const identity = document.createElement('span');
+            identity.className = 'history-recipient-refid';
+            identity.textContent = refid;
+            chip.append(label, identity);
             if (Number(id) !== currentNpcId) {
                 const remove = document.createElement('button');
                 remove.type = 'button';
                 remove.textContent = 'x';
-                remove.setAttribute('aria-label', `Remove ${name}`);
+                remove.setAttribute('aria-label', `Remove ${name} (${refid})`);
                 remove.addEventListener('click', () => {
                     historyRecipients.delete(id);
                     renderHistoryRecipients();
@@ -319,12 +554,19 @@
             return;
         }
         available.forEach((npc) => {
+            const entry = recipientEntry(npc);
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'history-search-result';
-            button.textContent = npc.name || 'Unknown NPC';
+            const label = document.createElement('span');
+            label.className = 'history-search-result-name';
+            label.textContent = entry.name;
+            const identity = document.createElement('span');
+            identity.className = 'history-search-result-identity';
+            identity.textContent = `${entry.refid} · ${entry.source}`;
+            button.append(label, identity);
             button.addEventListener('click', () => {
-                historyRecipients.set(Number(npc.id), String(npc.name || 'Unknown NPC'));
+                historyRecipients.set(Number(npc.id), entry);
                 byId('history-recipient-search').value = '';
                 container.hidden = true;
                 renderHistoryRecipients();

@@ -4093,6 +4093,7 @@ namespace ProcessorSerialization {
 
     
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
+    inline const auto ActorIdentityRecord = _byteswap_ulong('AIAI');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
 
 
@@ -4103,11 +4104,40 @@ namespace ProcessorSerialization {
         std::uint32_t version;
         
         AIAgentManager& aiam = AIAgentManager::getInstance();
+        std::unordered_map<RE::FormID, std::string> restoredInstanceIds;
         // Ensure that everything is initialized in HTTPManager
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
         while (serde->GetNextRecordInfo(type, version, size)) {
-            if (type == AgentCountRecord) {
+            if (type == ActorIdentityRecord) {
+                std::size_t identityCount = 0;
+                serde->ReadRecordData(&identityCount, sizeof(identityCount));
+                for (; identityCount > 0; --identityCount) {
+                    RE::FormID savedFormId = 0;
+                    std::size_t instanceIdLength = 0;
+                    serde->ReadRecordData(&savedFormId, sizeof(savedFormId));
+                    serde->ReadRecordData(&instanceIdLength, sizeof(instanceIdLength));
+                    if (instanceIdLength > 128) {
+                        logger::warn("Ignoring oversized actor instance identity for {:08X}", savedFormId);
+                        std::array<char, 256> discardBuffer{};
+                        for (std::size_t remaining = instanceIdLength; remaining > 0;) {
+                            const auto chunkSize = static_cast<std::uint32_t>(
+                                std::min<std::size_t>(remaining, discardBuffer.size()));
+                            serde->ReadRecordData(discardBuffer.data(), chunkSize);
+                            remaining -= chunkSize;
+                        }
+                        continue;
+                    }
+                    std::string instanceId(instanceIdLength, '\0');
+                    if (instanceIdLength > 0) {
+                        serde->ReadRecordData(instanceId.data(), static_cast<std::uint32_t>(instanceIdLength));
+                    }
+                    RE::FormID resolvedFormId = 0;
+                    if (serde->ResolveFormID(savedFormId, resolvedFormId) && !instanceId.empty()) {
+                        restoredInstanceIds[resolvedFormId] = std::move(instanceId);
+                    }
+                }
+            } else if (type == AgentCountRecord) {
                 // First read how many items follow in this record, so we know how many times to iterate.
                 std::size_t agentCountsSize;
                 serde->ReadRecordData(&agentCountsSize, sizeof(agentCountsSize));
@@ -4140,7 +4170,7 @@ namespace ProcessorSerialization {
                         logger::info("Actor {} is driven by AI now, formId {:08X}", actor->GetDisplayFullName(),
                                      newActorFormID);
 
-                        auto already = aiam.getAgentByName(actor->GetDisplayFullName());
+                        auto already = aiam.getAgentByFormId(newActorFormID);
                         if (already) {
                             logger::debug("Actor {} already present in AI Agent Manager, skipping",
                                           actor->GetDisplayFullName());
@@ -4148,6 +4178,10 @@ namespace ProcessorSerialization {
                         } else {
                             auto agent = aiam.createAgent();
                             agent->setActor(actor);
+                            if (const auto identity = restoredInstanceIds.find(newActorFormID);
+                                identity != restoredInstanceIds.end()) {
+                                agent->setActorInstanceId(identity->second);
+                            }
                             agent->setAvailable(true);
                             if (actor->GetActorBase()->voiceType) {
                                 agent->setOriginalVoice(actor->GetActorBase()->voiceType);
@@ -4165,8 +4199,40 @@ namespace ProcessorSerialization {
                             }
 
                             // targetActor->AllowPCDialogue(false);
-                            HTTPManager::log(std::format("addnpc|{}|{}|{}@{}", getCurrentTimeMillis(),
-                                                         GetGameTimeStamp(), actor->GetDisplayFullName(), category));
+                            std::vector<std::string> registrationFields(45);
+                            registrationFields[0] = actor->GetDisplayFullName();
+                            registrationFields[1] = category;
+                            registrationFields[2] = actor->GetActorBase()->GetSex() == RE::SEXES::kFemale ? "female" : "male";
+                            registrationFields[3] = actor->GetRace() && actor->GetRace()->GetName()
+                                ? actor->GetRace()->GetName()
+                                : "";
+                            registrationFields[4] = std::format("{:08X}", newActorFormID);
+                            auto* modFiles = actor->sourceFiles.array;
+                            if (!modFiles && actor->GetActorBase()) {
+                                modFiles = actor->GetActorBase()->sourceFiles.array;
+                            }
+                            if (modFiles) {
+                                for (std::uint32_t index = 0; index < modFiles->size(); ++index) {
+                                    auto* file = (*modFiles)[index];
+                                    if (!file) {
+                                        continue;
+                                    }
+                                    if (!registrationFields[41].empty()) {
+                                        registrationFields[41] += "#";
+                                    }
+                                    registrationFields[41] += file->fileName;
+                                }
+                            }
+                            registrationFields[44] = agent->getActorKey();
+                            std::string registrationData;
+                            for (std::size_t index = 0; index < registrationFields.size(); ++index) {
+                                if (index > 0) {
+                                    registrationData += "@";
+                                }
+                                registrationData += registrationFields[index];
+                            }
+                            HTTPManager::log(std::format("addnpc|{}|{}|{}", getCurrentTimeMillis(),
+                                                         GetGameTimeStamp(), registrationData));
                             
                             // Immediately send stats for the new NPC so server has complete info
                             logger::info("[NPC_ADD] Sending initial stats for new NPC: {}", actor->GetDisplayFullName());
@@ -4281,16 +4347,42 @@ namespace ProcessorSerialization {
     }
 
     void OnGameSaved(SKSE::SerializationInterface* serde) {
+        AIAgentManager& aiam = AIAgentManager::getInstance();
+        const auto agents = aiam.getAgents();
+        std::vector<std::shared_ptr<AIAgent>> savedAgents;
+        savedAgents.reserve(agents.size());
+        for (const auto& agent : agents) {
+            if (agent && agent->isManuallyAdded() && agent->getActor()) {
+                savedAgents.push_back(agent);
+            }
+        }
+
+        if (!serde->OpenRecord(ActorIdentityRecord, 1)) {
+            logger::error("Unable to open record ActorIdentityRecord to write cosave data.");
+            return;
+        }
+        const auto identityCount = savedAgents.size();
+        serde->WriteRecordData(&identityCount, sizeof(identityCount));
+        for (const auto& agent : savedAgents) {
+            const auto formId = agent->GetFormId();
+            const auto instanceId = agent->getActorInstanceId();
+            const auto instanceIdLength = instanceId.size();
+            serde->WriteRecordData(&formId, sizeof(formId));
+            serde->WriteRecordData(&instanceIdLength, sizeof(instanceIdLength));
+            if (instanceIdLength > 0) {
+                serde->WriteRecordData(instanceId.data(), static_cast<std::uint32_t>(instanceIdLength));
+            }
+        }
+
         if (!serde->OpenRecord(AgentCountRecord, 0)) {
             logger::error("Unable to open record AgentCountRecord to write cosave data.");
             return;
         }
-        AIAgentManager& aiam = AIAgentManager::getInstance();
-        auto agentCountsSize = aiam.getAgents().size();
+        auto agentCountsSize = savedAgents.size();
         serde->WriteRecordData(&agentCountsSize, sizeof(agentCountsSize));
-        for (const auto& agent : aiam.getAgents()) {
+        for (const auto& agent : savedAgents) {
             auto* actor = agent->getActor();
-            if (agent->isManuallyAdded()) serde->WriteRecordData(&actor->formID, sizeof(actor->formID));
+            serde->WriteRecordData(&actor->formID, sizeof(actor->formID));
         }
 
         if (!serde->OpenRecord(NamesCountRecord, 0)) {

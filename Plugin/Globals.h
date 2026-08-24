@@ -4,11 +4,15 @@
 #include <cctype>
 #include <chrono>
 #include <mutex>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "RE/Skyrim.h"
+#include "ActorIdentityUtils.h"
+#include "ActorTargetIdentifierUtils.h"
+#include "md5.h"
 #include "SpatialAwareness.h"
 
 #define HERIKA_MAX_VISION_RANGE 5000
@@ -123,6 +127,26 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return name;
 
+    }
+
+    std::string getActorIdentifier() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ActorIdentityUtils::BuildPromptIdentifier(name, formID);
+    }
+
+    std::string getActorKey() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return actorKey;
+    }
+
+    std::string getProfileHash() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return profileHash;
+    }
+
+    std::string getActorInstanceId() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return actorInstanceId;
     }
 
     bool isPresent(const std::string& presentActors) {
@@ -262,7 +286,14 @@ public:
         name = actor->GetDisplayFullName();
         name.erase(0, name.find_first_not_of(' '));
         name.erase(name.find_last_not_of(' ') + 1);
+        refreshIdentityUnsafe();
         
+    }
+
+    void setActorInstanceId(const std::string& instanceId) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        actorInstanceId = instanceId;
+        refreshIdentityUnsafe();
     }
 
 
@@ -611,6 +642,32 @@ public:
     }
 
 private:
+    static std::string generateActorInstanceId() {
+        std::random_device randomDevice;
+        std::mt19937_64 generator(randomDevice());
+        std::uniform_int_distribution<std::uint64_t> distribution;
+        return std::format("{:016x}{:016x}", distribution(generator), distribution(generator));
+    }
+
+    void refreshIdentityUnsafe() {
+        if (!actor) {
+            return;
+        }
+
+        const bool isRuntimeReference = (actor->GetFormID() & 0xFF000000) == 0xFF000000;
+        auto* sourceFile = isRuntimeReference ? nullptr : actor->GetFile(0);
+        const std::string pluginName = sourceFile ? std::string(sourceFile->GetFilename()) : std::string{};
+        if (!pluginName.empty()) {
+            actorKey = ActorIdentityUtils::BuildPlacedActorKey(pluginName, actor->GetLocalFormID());
+        } else {
+            if (actorInstanceId.empty()) {
+                actorInstanceId = generateActorInstanceId();
+            }
+            actorKey = ActorIdentityUtils::BuildRuntimeActorKey(actorInstanceId);
+        }
+        profileHash = md5(actorKey, false);
+    }
+
     RE::Actor* resolveActorUnsafe() {
         if (formID == 0) {
             return actor;
@@ -650,6 +707,9 @@ private:
     std::string currentCommand;
     std::string currentAnimation;
     std::string name;
+    std::string actorKey;
+    std::string profileHash;
+    std::string actorInstanceId;
     std::chrono::steady_clock::time_point lastAccessTime = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastTimeTalk = std::chrono::steady_clock::now();
     std::chrono::high_resolution_clock::time_point conversationEndedTime;
@@ -686,28 +746,39 @@ public:
     std::shared_ptr<AIAgent> getAgentByName(const std::string& name) {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // Convert the input name to lower case for case-insensitive comparison
-        // Trim leading and trailing whitespace from the input name
-        std::string lowerName = name;
-        lowerName.erase(0, lowerName.find_first_not_of(" \t\n\r\f\v"));
-        lowerName.erase(lowerName.find_last_not_of(" \t\n\r\f\v") + 1);
+        const auto parsedTarget = ActorTargetIdentifierUtils::Parse(name);
+        if (parsedTarget.hasRefId) {
+            auto exact = std::find_if(agents.begin(), agents.end(), [&parsedTarget](const std::shared_ptr<AIAgent>& agent) {
+                return agent && agent->GetFormId() == parsedTarget.refId;
+            });
+            if (exact != agents.end()) {
+                return *exact;
+            }
+            logger::warn("Actor identifier '{}' referenced unavailable RefID {:08X}", name, parsedTarget.refId);
+            return nullptr;
+        }
+
+        std::string lowerName = parsedTarget.fallbackName;
+        const auto first = lowerName.find_first_not_of(" \t\n\r\f\v");
+        if (first == std::string::npos) {
+            return nullptr;
+        }
+        const auto last = lowerName.find_last_not_of(" \t\n\r\f\v");
+        lowerName = lowerName.substr(first, last - first + 1);
 
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-
-        auto it = std::find_if(agents.begin(), agents.end(), [&lowerName](const std::shared_ptr<AIAgent>& agent) {
+        std::vector<std::shared_ptr<AIAgent>> matches;
+        for (const auto& agent : agents) {
+            if (!agent) {
+                continue;
+            }
             std::string agentName(agent->getActorName());
-            
-
-            // Convert the agent's name to lower case for comparison
             std::transform(agentName.begin(), agentName.end(), agentName.begin(),
                            [](unsigned char c) { return std::tolower(c); });
 
-            //logger::info("Searching agent by name <{}> <{}>", agentName, lowerName);
-
-            // Patch RealNames Extended. Some LLMs are refering to generic NPCs without the brackets.
-            
+            bool matched = agentName == lowerName;
             if (agentName != lowerName) {
                 auto actor = agent->getActorByFormId();
                 if (actor) {
@@ -719,20 +790,25 @@ public:
 
                         if (agentName == fullname) {
                             logger::debug("Matched {} after extending name {}: {}", agentName, lowerName, fullname);
-                            return true;
+                            matched = true;
                         }
                     }
                 }
             }
 
-            return agentName == lowerName;
-        });
-
-        if (it != agents.end()) {
-            return *it;  // Return the found agent
-        } else {
-            return nullptr;  // Return nullptr if agent with given name is not found
+            if (matched) {
+                matches.push_back(agent);
+            }
         }
+
+        if (matches.size() == 1) {
+            return matches.front();
+        }
+        if (matches.size() > 1) {
+            logger::warn("Actor name '{}' is ambiguous across {} active agents; use a RefID identifier", name,
+                         matches.size());
+        }
+        return nullptr;
     }
 
 

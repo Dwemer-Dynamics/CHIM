@@ -23,6 +23,7 @@ namespace
         PlayerConversationRoutingPolicy::Candidate policy;
         std::shared_ptr<AIAgent> agent;
         RE::Actor* actor = nullptr;
+        std::string promptIdentifier;
         std::string automaticBlockReason;
         std::string spatialReason;
     };
@@ -424,6 +425,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
             !agentValue->getActorName().empty()
                 ? agentValue->getActorName()
                 : (actor ? std::string(actor->GetDisplayFullName()) : "");
+        candidate.promptIdentifier = agentValue->getActorIdentifier();
         candidate.policy.trueCrosshair =
             crosshairFormId != 0 && candidate.policy.formId == crosshairFormId;
 
@@ -544,7 +546,11 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     std::unordered_set<std::string> seenAudience;
     if (!result.narrator) {
         for (const auto index : audienceOrder) {
-            AddUniqueAudience(result.audience, seenAudience, runtimeCandidates[index].policy.name);
+            const auto& candidate = runtimeCandidates[index];
+            AddUniqueAudience(
+                result.audience,
+                seenAudience,
+                candidate.promptIdentifier.empty() ? candidate.policy.name : candidate.promptIdentifier);
         }
     }
     AddUniqueAudience(result.audience, seenAudience, player->GetName());
