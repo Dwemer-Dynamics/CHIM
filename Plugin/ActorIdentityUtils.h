@@ -24,7 +24,7 @@ namespace ActorIdentityUtils
         return std::format("skyrim-ref-v1:{}:{:08x}", HexEncode(pluginName), localFormId);
     }
 
-    inline std::string BuildRuntimeActorKey(std::string_view instanceId)
+    inline std::string NormalizeRuntimeInstanceId(std::string_view instanceId)
     {
         std::string normalized(instanceId);
         normalized.erase(std::remove_if(normalized.begin(), normalized.end(), [](unsigned char character) {
@@ -33,7 +33,12 @@ namespace ActorIdentityUtils
         std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char character) {
             return static_cast<char>(std::tolower(character));
         });
-        return "skyrim-runtime-v1:" + normalized;
+        return normalized;
+    }
+
+    inline std::string BuildRuntimeActorKey(std::string_view instanceId)
+    {
+        return "skyrim-runtime-v1:" + NormalizeRuntimeInstanceId(instanceId);
     }
 
     inline std::string BuildPromptIdentifier(std::string_view displayName, std::uint32_t refId)

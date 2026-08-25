@@ -2815,10 +2815,10 @@ private:
 
                         constexpr int kPrecleanerMissingPresenceDeletePasses = 2;
                         constexpr std::size_t kMaxPrecleanerDeletesPerPass = 1;
-                        std::vector<std::string> agentsToDelete;
-                        auto queueAgentDelete = [&](const std::string& agentName) -> bool {
+                        std::vector<std::shared_ptr<AIAgent>> agentsToDelete;
+                        auto queueAgentDelete = [&](const std::shared_ptr<AIAgent>& agent) -> bool {
                             if (agentsToDelete.size() < kMaxPrecleanerDeletesPerPass) {
-                                agentsToDelete.push_back(agentName);
+                                agentsToDelete.push_back(agent);
                                 return true;
                             }
                             return false;
@@ -2830,7 +2830,7 @@ private:
                         if (agent->isPresent(beings)) {
                             agent->resetMissingPresenceCounter();
                             if (agent->mustBeDeleted()) {
-                                if (queueAgentDelete(agent->getActorName())) {
+                                if (queueAgentDelete(agent)) {
                                     logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
                                                   agent->getActorName());
                                 }
@@ -2841,7 +2841,7 @@ private:
                                 if (!actorForm) continue;
                                 auto actor = RE::TESForm::LookupByID(agent->GetFormId())->As<RE::Actor>();
                                 if (actor && actor->IsDead() && !agent->isNarrator()) {
-                                    if (queueAgentDelete(agent->getActorName())) {
+                                    if (queueAgentDelete(agent)) {
                                         logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}",
                                                       agent->getActorName());
                                     }
@@ -2854,7 +2854,7 @@ private:
                             if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
                                 !agent->isManuallyAdded()) {
                                 if (agent->mustBeDeleted()) {
-                                    if (queueAgentDelete(agent->getActorName())) {
+                                    if (queueAgentDelete(agent)) {
                                         logger::debug("[PRECLEANER] Actor is gonna be deleted because auto-managed stale: {}",
                                                       agent->getActorName());
                                     }
@@ -2864,7 +2864,7 @@ private:
                                 agent->increaseMissingPresenceCounter();
                                 const int missingPasses = agent->getMissingPresenceCounter();
                                 if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
-                                    if (queueAgentDelete(agent->getActorName())) {
+                                    if (queueAgentDelete(agent)) {
                                         logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
                                                       missingPasses, agent->getActorName());
                                     }
@@ -2879,9 +2879,9 @@ private:
                 }
 
                 //logger::debug("[CLEANER] Evaluating");
-                // Delete the agents by name after collecting their names
-                for (const auto& name : agentsToDelete) {
-                    aiam.deleteAgentByName(name);
+                // Delete the exact agents collected during this maintenance pass.
+                for (auto& agent : agentsToDelete) {
+                    aiam.deleteAgent(agent);
                 }
 
                 auto agents = maintenanceAgents;
@@ -4104,7 +4104,6 @@ namespace ProcessorSerialization {
         std::uint32_t version;
         
         AIAgentManager& aiam = AIAgentManager::getInstance();
-        std::unordered_map<RE::FormID, std::string> restoredInstanceIds;
         // Ensure that everything is initialized in HTTPManager
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
@@ -4134,7 +4133,7 @@ namespace ProcessorSerialization {
                     }
                     RE::FormID resolvedFormId = 0;
                     if (serde->ResolveFormID(savedFormId, resolvedFormId) && !instanceId.empty()) {
-                        restoredInstanceIds[resolvedFormId] = std::move(instanceId);
+                        AIAgent::restoreRuntimeActorIdentity(resolvedFormId, instanceId);
                     }
                 }
             } else if (type == AgentCountRecord) {
@@ -4178,10 +4177,6 @@ namespace ProcessorSerialization {
                         } else {
                             auto agent = aiam.createAgent();
                             agent->setActor(actor);
-                            if (const auto identity = restoredInstanceIds.find(newActorFormID);
-                                identity != restoredInstanceIds.end()) {
-                                agent->setActorInstanceId(identity->second);
-                            }
                             agent->setAvailable(true);
                             if (actor->GetActorBase()->voiceType) {
                                 agent->setOriginalVoice(actor->GetActorBase()->voiceType);
@@ -4361,11 +4356,10 @@ namespace ProcessorSerialization {
             logger::error("Unable to open record ActorIdentityRecord to write cosave data.");
             return;
         }
-        const auto identityCount = savedAgents.size();
+        const auto runtimeIdentities = AIAgent::getRuntimeActorIdentities();
+        const auto identityCount = runtimeIdentities.size();
         serde->WriteRecordData(&identityCount, sizeof(identityCount));
-        for (const auto& agent : savedAgents) {
-            const auto formId = agent->GetFormId();
-            const auto instanceId = agent->getActorInstanceId();
+        for (const auto& [formId, instanceId] : runtimeIdentities) {
             const auto instanceIdLength = instanceId.size();
             serde->WriteRecordData(&formId, sizeof(formId));
             serde->WriteRecordData(&instanceIdLength, sizeof(instanceIdLength));
@@ -4426,6 +4420,7 @@ namespace ProcessorSerialization {
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
+        AIAgent::clearRuntimeActorIdentities();
 
         
     }
@@ -9456,7 +9451,7 @@ EventHandlers {
                         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
                         
                         AIAgentManager& aiam = AIAgentManager::getInstance();
-                        auto agentPtr = aiam.getAgentByName(topicActor->GetDisplayFullName());
+                        auto agentPtr = aiam.getAgentByFormId(topicActor->GetFormID());
                         /* if (agentPtr)
                             agentPtr->setAvailable(false);*/
 
@@ -9467,7 +9462,7 @@ EventHandlers {
                     auto player = RE::PlayerCharacter::GetSingleton();
                     float minDistance = MIN_DISTANCE;
                     AIAgentManager& aiam = AIAgentManager::getInstance();
-                    auto agentPtr = aiam.getAgentByName(topicActor->GetDisplayFullName());
+                    auto agentPtr = aiam.getAgentByFormId(topicActor->GetFormID());
 
                     if (agentPtr && false) {
                         // We could rechat standard dialogue lines. But that 'argghs' in combat is also a dialogue.
@@ -9555,7 +9550,7 @@ EventHandlers {
                     if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                         auto targetActor = cameraObject.get()->As<RE::Actor>();
                         if (targetActor == topicActor) {
-                            auto existingAgent = aiam.getAgentByName(targetActor->GetDisplayFullName());
+                            auto existingAgent = aiam.getAgentByFormId(targetActor->GetFormID());
                             if (existingAgent) {
                                 // Agent already in framework - check if we need to capture voice sample
                                 if (existingAgent->getNeedsVoiceSample() && source) {
@@ -9812,7 +9807,7 @@ EventHandlers {
                             //logger::info("Added audiofile for {} lenth:{}, queue size: {}", lastSpeaker->As<RE::Actor>()->GetDisplayFullName(), strlen(response->text.c_str()),AudioFilesBufferManager::audioFilesBuffer.size());
 
                             // Check if this speaker is an AI agent that needs a voice sample
-                            auto speakerAgent = aiam.getAgentByName(lastSpeaker->GetDisplayFullName());
+                            auto speakerAgent = aiam.getAgentByFormId(lastSpeaker->GetFormID());
                             if (speakerAgent && speakerAgent->getNeedsVoiceSample() && !responseVoice.empty()) {
                                 std::string voicePath(responseVoice);
                                 replaceAll(voicePath, "Data\\", "");
@@ -9945,7 +9940,7 @@ EventHandlers {
         // Cell streaming fires equip events before 3D settles; periodic refresh catches the final state.
         if (!IsWorldMaintenanceSuppressed()) {
             AIAgentManager& aiam = AIAgentManager::getInstance();
-            auto agent = aiam.getAgentByName(activatorS->GetDisplayFullName());
+            auto agent = aiam.getAgentByFormId(activatorS->GetFormID());
             if (agent) {
                 // Schedule equipment check after short delay (let game update equipment slots)
                 // Hash-based diffing handles duplicate prevention automatically
@@ -10218,7 +10213,7 @@ EventHandlers {
 
             } else {
                 AIAgentManager& aiam = AIAgentManager::getInstance();
-                auto agent = aiam.getAgentByName(event->object->GetDisplayFullName());
+                auto agent = aiam.getAgentByFormId(event->object->GetFormID());
 
                 if (agent) {
                     RE::TESForm* spell = RE::TESForm::LookupByID(event->spell);
@@ -10972,7 +10967,7 @@ EventHandlers {
         }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
-        auto agent = aiam.getAgentByName(actor->GetDisplayFullName());
+        auto agent = aiam.getAgentByFormId(actor->GetFormID());
         if (!agent) {
             return;
         }

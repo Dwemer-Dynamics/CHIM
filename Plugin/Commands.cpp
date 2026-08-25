@@ -1770,7 +1770,7 @@ void parseRoleCommand(std::string rawCommand) {
                                          AIAgentRoleMasterFaction->GetName());
                         }
 
-                        auto agentPtr = aiam.getAgentByName(reference->GetDisplayFullName());
+                        auto agentPtr = aiam.getAgentByFormId(reference->GetFormID());
                         if (agentPtr) {
                             agentPtr->setActor(actor);
                         }
@@ -5524,7 +5524,7 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
 
     auto target = findActorInCell(targetName, cell, actor, 0, false);
     AIAgentManager& aiam = AIAgentManager::getInstance();
-    auto agentPtr = aiam.getAgentByName(actor->GetDisplayFullName());
+    auto agentPtr = aiam.getAgentByFormId(actor->GetFormID());
 
     if (target == nullptr) {
         if (aiam.getPlayerName() == targetName) target = RE::PlayerCharacter::GetSingleton()->AsReference();
@@ -5633,7 +5633,7 @@ bool commandAnimation(std::string anim, RE::Actor* actor) {
     */
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
-    auto npcAgent = aiam.getAgentByName(actor->GetDisplayFullName());
+    auto npcAgent = aiam.getAgentByFormId(actor->GetFormID());
     if (!npcAgent->isAvailableforAnimation()) {
         auto currentcommand = npcAgent->getCurrentCommand();
         auto currentanimation = npcAgent->getCurrentAnimation();

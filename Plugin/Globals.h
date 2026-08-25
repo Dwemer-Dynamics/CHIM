@@ -149,6 +149,30 @@ public:
         return actorInstanceId;
     }
 
+    static std::vector<std::pair<RE::FormID, std::string>> getRuntimeActorIdentities() {
+        std::lock_guard<std::mutex> lock(runtimeIdentityMutex_);
+        std::vector<std::pair<RE::FormID, std::string>> identities(
+            runtimeActorInstanceIds_.begin(), runtimeActorInstanceIds_.end());
+        std::sort(identities.begin(), identities.end(), [](const auto& left, const auto& right) {
+            return left.first < right.first;
+        });
+        return identities;
+    }
+
+    static void restoreRuntimeActorIdentity(RE::FormID formId, const std::string& instanceId) {
+        const auto normalized = ActorIdentityUtils::NormalizeRuntimeInstanceId(instanceId);
+        if (formId == 0 || normalized.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(runtimeIdentityMutex_);
+        runtimeActorInstanceIds_[formId] = normalized;
+    }
+
+    static void clearRuntimeActorIdentities() {
+        std::lock_guard<std::mutex> lock(runtimeIdentityMutex_);
+        runtimeActorInstanceIds_.clear();
+    }
+
     bool isPresent(const std::string& presentActors) {
         std::string actorName = getActorName();
         std::transform(actorName.begin(), actorName.end(), actorName.begin(),
@@ -292,7 +316,7 @@ public:
 
     void setActorInstanceId(const std::string& instanceId) {
         std::lock_guard<std::mutex> lock(mutex_);
-        actorInstanceId = instanceId;
+        actorInstanceId = ActorIdentityUtils::NormalizeRuntimeInstanceId(instanceId);
         refreshIdentityUnsafe();
     }
 
@@ -660,8 +684,15 @@ private:
         if (!pluginName.empty()) {
             actorKey = ActorIdentityUtils::BuildPlacedActorKey(pluginName, actor->GetLocalFormID());
         } else {
-            if (actorInstanceId.empty()) {
-                actorInstanceId = generateActorInstanceId();
+            {
+                std::lock_guard<std::mutex> identityLock(runtimeIdentityMutex_);
+                if (actorInstanceId.empty()) {
+                    const auto savedIdentity = runtimeActorInstanceIds_.find(actor->GetFormID());
+                    actorInstanceId = savedIdentity != runtimeActorInstanceIds_.end()
+                        ? savedIdentity->second
+                        : generateActorInstanceId();
+                }
+                runtimeActorInstanceIds_[actor->GetFormID()] = actorInstanceId;
             }
             actorKey = ActorIdentityUtils::BuildRuntimeActorKey(actorInstanceId);
         }
@@ -710,6 +741,8 @@ private:
     std::string actorKey;
     std::string profileHash;
     std::string actorInstanceId;
+    inline static std::mutex runtimeIdentityMutex_;
+    inline static std::unordered_map<RE::FormID, std::string> runtimeActorInstanceIds_;
     std::chrono::steady_clock::time_point lastAccessTime = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastTimeTalk = std::chrono::steady_clock::now();
     std::chrono::high_resolution_clock::time_point conversationEndedTime;
@@ -835,27 +868,21 @@ public:
         agents.erase(std::remove(agents.begin(), agents.end(), agentToDelete), agents.end());
     }
 
-    void deleteAgentByName(const std::string& name) {
+    void deleteAgentByFormId(RE::FormID formId) {
         std::lock_guard<std::mutex> lock(mutex_);
-
-        // Convert the input name to lower case for case-insensitive comparison
-        std::string lowerName = name;
-        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-
-        auto it = std::find_if(agents.begin(), agents.end(), [&lowerName](const std::shared_ptr<AIAgent>& agent) {
-            std::string agentName = agent->getActorName();
-
-            // Convert the agent's name to lower case for comparison
-            std::transform(agentName.begin(), agentName.end(), agentName.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-
-            return agentName == lowerName;  // Compare in a case-insensitive manner
+        auto it = std::find_if(agents.begin(), agents.end(), [formId](const std::shared_ptr<AIAgent>& agent) {
+            return agent && agent->GetFormId() == formId;
         });
-
         if (it != agents.end()) {
-            logger::info("Delete agent {}", (*it)->getActorName());
-            agents.erase(it);  // Remove the agent from the vector
+            logger::info("Delete agent {} ({:08X})", (*it)->getActorName(), formId);
+            agents.erase(it);
+        }
+    }
+
+    void deleteAgentByName(const std::string& name) {
+        auto agent = getAgentByName(name);
+        if (agent) {
+            deleteAgent(agent);
         }
     }
 
