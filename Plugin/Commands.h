@@ -19,7 +19,8 @@ void commandIdleLookFar();
 bool commandAnimation(std::string anim,RE::Actor *npc);
 void resetAnimation();
 
-void StartAttack(std::string targetName, RE::Actor *actor,bool lethal);
+void StartAttack(std::string targetName, RE::Actor *actor);
+void StartBrawl(std::string targetName, RE::Actor *actor);
 void Follow(std::string targetName);
 void StopCurrent(RE::Actor *npc);
 void StartSneakTo(std::string targetName);

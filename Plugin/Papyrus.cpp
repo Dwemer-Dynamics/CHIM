@@ -2577,6 +2577,20 @@ int Papyrus::commandEndedForActor(RE::BSScript::Internal::VirtualMachine* a_vm, 
         agentPtr.get()->setCurrentCommand("");
         agentPtr.get()->setCommandBusy(false);
         return 0;
+    } else if (command.contains("brawl") || command.contains("Brawl")) {
+        AIAgentManager& aiam = AIAgentManager::getInstance();
+        auto agentPtr = aiam.getAgentByName(npc);
+
+        if (!agentPtr) {
+            logger::info("No AI actor found, can't end brawl command");
+            return -1;
+        }
+
+        logger::info("Releasing actor {} after vanilla brawl outcome", npc);
+        agentPtr->setAttackTarget(nullptr);
+        agentPtr->setCurrentCommand("");
+        agentPtr->setCommandBusy(false);
+        return 0;
     } else {
         EndCommand(command, npc);
         return 0;

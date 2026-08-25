@@ -1099,6 +1099,83 @@ function AttackTarget(Actor npc, ObjectReference akTarget,bool lethal=true) glob
 
 endFunction
 
+; Start and monitor Skyrim's vanilla player-versus-NPC brawl quest.
+function BrawlTarget(Actor npc, Actor opponent) global
+	if (!npc || !opponent || npc == opponent || npc.IsDead() || opponent.IsDead())
+		if (npc)
+			AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		endif
+		return
+	endif
+
+	Actor player = Game.GetPlayer()
+	if (opponent != player)
+		Debug.Trace("[CHIM] BrawlTarget rejected: vanilla Skyrim brawls require the player")
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@Error. Vanilla Skyrim brawls require the player as one participant", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	Quest dialogueFavorGeneric = Game.GetForm(0x0005A6DC) as Quest
+	FavorDialogueScript favorDialogue = dialogueFavorGeneric as FavorDialogueScript
+	Quest vanillaBrawlQuest = Game.GetForm(0x00047AE6) as Quest
+	if (!favorDialogue || !vanillaBrawlQuest || vanillaBrawlQuest.IsRunning())
+		Debug.Trace("[CHIM] BrawlTarget could not start DGIntimidateQuest")
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest is unavailable or already running", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	Debug.Trace("[CHIM] Starting vanilla DGIntimidateQuest for "+npc.GetDisplayName())
+	favorDialogue.Brawl(npc)
+
+	float startWaitBegan = Utility.GetCurrentRealTime()
+	while (!vanillaBrawlQuest.IsRunning() && (Utility.GetCurrentRealTime() - startWaitBegan) < 10.0)
+		Utility.Wait(0.2)
+	endwhile
+
+	if (!vanillaBrawlQuest.IsRunning())
+		Debug.Trace("[CHIM] DGIntimidateQuest did not start for "+npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest did not start", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@"+npc.GetDisplayName()+" starts a vanilla Skyrim brawl with "+player.GetDisplayName(), "funcret", npc.GetDisplayName())
+
+	string outcomeCode = ""
+	string outcomeText = ""
+	float outcomeWaitBegan = Utility.GetCurrentRealTime()
+	while (outcomeCode == "" && (Utility.GetCurrentRealTime() - outcomeWaitBegan) < 600.0)
+		; Vanilla records opponent bleedout at 15, cheating at 150, and player bleedout at 180.
+		; GetStageDone preserves the result after stage 200 performs quest cleanup.
+		if (vanillaBrawlQuest.GetStageDone(150))
+			outcomeCode = "disqualified"
+			outcomeText = "The brawl escalated because Skyrim registered weapon or magic use"
+		elseif (vanillaBrawlQuest.GetStageDone(180))
+			outcomeCode = "npc_won"
+			outcomeText = npc.GetDisplayName()+" won the brawl against "+player.GetDisplayName()
+		elseif (vanillaBrawlQuest.GetStageDone(15))
+			outcomeCode = "player_won"
+			outcomeText = player.GetDisplayName()+" won the brawl against "+npc.GetDisplayName()
+		elseif (!vanillaBrawlQuest.IsRunning())
+			outcomeCode = "aborted"
+			outcomeText = "The vanilla brawl ended without a recorded winner"
+		else
+			Utility.Wait(1.0)
+		endif
+	endwhile
+
+	if (outcomeCode == "")
+		outcomeCode = "timeout"
+		outcomeText = "The brawl outcome was not resolved within ten minutes"
+	endif
+
+	Debug.Trace("[CHIM] Brawl outcome "+outcomeCode+": "+outcomeText)
+	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+endFunction
+
 function RecoverFromCombat(Actor npc) global;Triggers on defeated actor
 
 	
