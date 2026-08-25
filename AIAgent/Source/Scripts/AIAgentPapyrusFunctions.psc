@@ -1594,7 +1594,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					Debug.Trace("[CHIM] SendLocation Using reference cell from caller: "+DecToHex(referenceCell.GetFormID())+","+referenceCell.GetName())
 				endif
 				
-				if (locationCenterMarkerRef.getParentCell())
+				if (locationCenterMarkerRef && locationCenterMarkerRef.getParentCell())
 					localCell = locationCenterMarkerRef.getParentCell()
 					Debug.Trace("[CHIM] SendLocation Using reference cell from locationCenterMarkerRef: "+DecToHex(localCell.GetFormID())+","+localCell.GetName())
 				endif
@@ -1659,7 +1659,10 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				
 				
 				
-				Worldspace cws= locationCenterMarkerRef.GetWorldSpace()
+				Worldspace cws= None 
+				if (!cws && locationCenterMarkerRef)
+					locationCenterMarkerRef.GetWorldSpace()
+				endif
 				if (!cws && insideEntranceMarkerRef)
 					cws= insideEntranceMarkerRef.GetWorldSpace()
 				endif
