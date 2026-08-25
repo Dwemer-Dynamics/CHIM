@@ -1560,6 +1560,13 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             return;
         }
 
+        if (!enable3DAudioPlayback) {
+            // Leave the source centered with no positional attenuation when 3D playback is disabled.
+            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            am.Update(noopPosition, noopPosition, 0.0f);
+            return;
+        }
+
         float headingAngle = 0.0f;
         auto camera = RE::PlayerCamera::GetSingleton();
         if (camera) {
@@ -1576,20 +1583,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
         if (GlobalInvertHeadingState) {
             headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
-        }
-
-        if (!enable3DAudioPlayback) {
-            // This is the legacy behavior.
-            auto speakerPos = speakerActorPointer->GetPosition();
-
-            am.UpdateLegacy(
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
-                headingAngle);
-
-            //const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
-            //am.Update(noopPosition, noopPosition, 0.0f);
-            return;
         }
 
         auto speakerPos = GetActorHeadPosition(speakerActorPointer);
