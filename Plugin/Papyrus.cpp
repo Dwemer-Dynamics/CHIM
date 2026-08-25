@@ -341,6 +341,8 @@ extern int GlobalEndConversationCooldown;
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 extern RE::TESFaction* AIAgentRoleMasterFaction;
 
+extern float GlobalLegacyDistanceScaler;
+
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
 bool GlobalInvertHeadingState = false;
@@ -2002,6 +2004,21 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         GlobalCombatBarksPeriod = static_cast<int>(f_Value);
         logger::info("Setting _combat_barks_period to {}s", GlobalCombatBarksPeriod);
 
+    } else if (code == "_curve_legacy_distance") {
+        
+        float fValueCasted = static_cast<int>(f_Value);
+        if (fValueCasted < 0.01) {
+            AudioManagerController::GetInstance().setLegacyDistanceScaler(1.0);
+            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(true);
+        } else {
+            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(false);
+            GlobalLegacyDistanceScaler = fValueCasted;
+            AudioManagerController::GetInstance().setLegacyDistanceScaler(fValueCasted);
+            
+        }
+
+        logger::info("Setting _curve_legacy_distance to {}", fValueCasted);
+
     } else if (code == "_pause_dialogue_when_menu_open") {
         if (f_Value > 0)
             PauseDialogueWhenMenuOpen = true;
@@ -2985,10 +3002,16 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_openmic_muted") {
         result = OpenMicMuted ? 1 : 0;
 
-    } else {
+    } else if (code == "_combat_barks_period") {
+        result = GlobalCombatBarksPeriod;
+
+    } else if (code == "_curve_legacy_distance") {
+        result = AudioManagerController::GetInstance().getDistanceScaler();
+
+    }  else {
         logger::info("Unknown configuration code: {}", code);
         result=-1;
-    }
+    } 
     return result;
 }
 

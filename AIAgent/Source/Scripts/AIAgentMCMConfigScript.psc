@@ -47,7 +47,7 @@ int			_slider_postclip
 float		_sound_postclip				= 100.0
 
 int			_slider_ds
-float		_sound_ds				= 10.0
+float		_sound_ds				= 2.0
 
 int			_slider_playback_dropoff_inside
 float		_playback_dropoff_inside		= 70.0
@@ -251,7 +251,7 @@ float		_sound_volumeDefault			= 75.0
 float		_head_voice_volumeDefault		= 100.0
 float		_sound_preclipDefault			= 100.0
 float		_sound_postclipDefault			= 0.0
-float		_sound_dsDefault				= 10.0
+float		_sound_dsDefault				= 2.0
 float		_playback_dropoff_insideDefault		= 70.0
 float		_playback_dropoff_outsideDefault	= 70.0
 bool		_toggleState7Default			= true
@@ -282,6 +282,9 @@ int			_overlaystatus_cycle_keyDefault	= -1
 int			_historydiaries_cycle_keyDefault = -1
 
 int _prismaMcmRevision = 0
+
+int _slider_curve_legacy_distance 
+float _curve_legacy_distance = 1.0
 
 event OnPlayerLoadGame()
 	RegisterPrismaMCMEvent()
@@ -342,6 +345,8 @@ event OnPlayerLoadGame()
 	else
 		controlScript.setConf("_camera_based_audio", 0)
 	endIf
+	
+	
 
 endEvent
 
@@ -366,7 +371,7 @@ event OnConfigInit()
 	_lip_res				= 500.0
 	_lip_int				= 1.0
 	if (CurrentVersion>1)
-		_sound_ds					= 10.0
+		_sound_ds					= 2.0
 	endIf
 	if (CurrentVersion<25)
 		_toggleState7= true
@@ -540,13 +545,17 @@ endEvent
 
 int function GetVersion()
 
-	return 69
+	return 70
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
+	if (a_version == 69 && a_version > CurrentVersion)
+		OnConfigInit()
+	endIf
+	
 	if (a_version == 69 && a_version > CurrentVersion)
 		; Version 69: Added independent narrator and player TTS playback volume
 		_head_voice_volume = 100.0
@@ -1250,10 +1259,12 @@ event OnPageReset(string a_page)
 		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}" )
 		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}")
 		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}")
-		_toggleEnable3DAudioPlayback = AddToggleOption("Enable 3D Audio Playback", _enable3daudioplaybackstate)
+		_toggleEnable3DAudioPlayback = AddToggleOption("Enable 3D Advanced Audio Playback", _enable3daudioplaybackstate)
 		_toggleCameraBasedAudio = AddToggleOption("Camera Based Audio", _camera_based_audio_state)
 
-		AddEmptyOption()
+		_slider_curve_legacy_distance = AddSliderOption("Legacy 3D distance scaler", _curve_legacy_distance, "{1}")
+
+		
 		AddHeaderOption("Advanced")
 		AddEmptyOption()
 		_slider_preclip		= AddSliderOption("Skip milliseconds at begining",_sound_preclip,"{0}" )
@@ -1391,7 +1402,7 @@ event OnOptionSliderOpen(int a_option)
 			_sound_ds = 20.0
 		endIf
 		SetSliderDialogStartValue(_sound_ds)
-		SetSliderDialogDefaultValue(8)
+		SetSliderDialogDefaultValue(2)
 		SetSliderDialogRange(0.1, 20.0)
 		SetSliderDialogInterval(0.1)
 	endIf
@@ -1495,6 +1506,13 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogDefaultValue(30.0)
 		SetSliderDialogRange(5.0, 120.0)
 		SetSliderDialogInterval(5.0)
+	endIf
+	
+	if (a_option == _slider_curve_legacy_distance)
+		SetSliderDialogStartValue(_curve_legacy_distance)
+		SetSliderDialogDefaultValue(1.0)
+		SetSliderDialogRange(0.0, 4.0)
+		SetSliderDialogInterval(0.1)
 	endIf
 	
 endEvent
@@ -1615,6 +1633,13 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		controlScript.setConf("_combat_barks_period",_combat_barks_period)
 		SetSliderOptionValue(a_option, a_value, "{0}")
 	endIf
+	
+	if (a_option == _slider_curve_legacy_distance)
+		_curve_legacy_distance = a_value
+		controlScript.setConf("_curve_legacy_distance",_curve_legacy_distance)
+		SetSliderOptionValue(a_option, a_value, "{0}")
+	endIf
+	
 	_prismaMcmRevision += 1
 endEvent
 	
@@ -1667,6 +1692,8 @@ event OnGameReload()
 	a=controlScript.setConf("_spatial_hearing_inside",_spatial_hearing_inside)
 	a=controlScript.setConf("_spatial_hearing_outside",_spatial_hearing_outside)
 	a=controlScript.setConf("_auto_hearing_radius_m",_auto_hearing_radius_m)
+	
+	a=controlScript.setConf("_curve_legacy_distance",_curve_legacy_distance)
 	
 	controlScript.mdi=_max_distance_inside;
 	controlScript.mdo=_max_distance_outside;
@@ -2740,6 +2767,11 @@ event OnOptionHighlight(int a_option)
 	if (a_option == _removeAllAgentsOID)
 		SetInfoText("Remove all active AI agents from the system.")
 	endIf
+
+	if (a_option == _slider_curve_legacy_distance)
+		SetInfoText("Curve distance scale for emmiter. How much attenuate actors based on distance. High Values: Low Attenuation, Lower values: High Attenuation: 0: Plain 2D sound")
+	endIf
+
 	
 	; Help text for individual agent removal options
 	if (_agentToggleOIDs && _currentAgentNames)

@@ -43,6 +43,7 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
+float GlobalLegacyDistanceScaler = 1.0;
 
 constexpr double MIN_SEGMENT_DURATION = 0.080;  // 80 ms
 
@@ -1543,7 +1544,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         
         // Default to 1.0f for non-spatial playback, so that the volume multiplier is not affected by spatial
         // calculations.
-        am.setDistanceScaler(1.0f);
+        am.setDistanceScaler(GlobalLegacyDistanceScaler);
     }
 
     //
@@ -1564,8 +1565,26 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             // This is the legacy behavior.
             auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
             auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
+            auto camera = RE::PlayerCamera::GetSingleton();
+            auto speakerPos = speakerActorPointer->GetPosition();
+
+            if (GlobalCameraBasedAudio && camera) {
+                auto cameraState = camera->currentState.get();
+                if (cameraState) {
+                    RE::NiQuaternion rotation;
+                    cameraState->GetRotation(rotation);
+                    auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
+                    if (std::isfinite(cameraHeadingAngle)) {
+                        headingAngle = cameraHeadingAngle;
+                    }
+                }
+            }
+
+            if (GlobalInvertHeadingState) headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+
+
             am.UpdateLegacy(
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerActorPointer->GetPosition()),
+                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
                 AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
                 headingAngle);
 
