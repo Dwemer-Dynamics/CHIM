@@ -349,7 +349,7 @@ namespace PrismaUIBridge {
                             const std::string& timestamp);
 
     // Send a message typed in the chatbox
-    void SendChatboxMessage(const std::string& message);
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood);
 
     // ===== CHIM Settings Menu Functions =====
 

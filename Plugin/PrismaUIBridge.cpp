@@ -7176,11 +7176,30 @@ R"CHIM(
         } else if (cmd.starts_with("event_deleted|")) {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("send_mood|")) {
+            std::string payload = cmd.substr(10);
+            const auto separator = payload.find('|');
+            std::string playerMood;
+            std::string message = payload;
+            if (separator != std::string::npos) {
+                playerMood = payload.substr(0, separator);
+                message = payload.substr(separator + 1);
+            }
+
+            const bool supportedMood =
+                playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
+                playerMood == "scared" || playerMood == "surprised";
+            if (!supportedMood) {
+                playerMood.clear();
+            }
+            if (!message.empty()) {
+                SendChatboxMessage(message, playerMood);
+            }
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
             if (!message.empty()) {
-                SendChatboxMessage(message);
+                SendChatboxMessage(message, "");
             }
         } else if (cmd == "focus") {
             // Focus the chatbox for typing
@@ -7719,7 +7738,7 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message) {
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood) {
         if (message.empty()) {
             return;
         }
@@ -7749,6 +7768,7 @@ R"CHIM(
         PlayerConversationRoutingContext routingContext{};
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        routingContext.playerMood = playerMood;
         if (submission.symbolOverride) {
             routingContext.symbolRoutingMode = submission.mode;
             routingContext.routingMessage = submission.message;
