@@ -80,9 +80,6 @@ int			_toggle1OID_Rereg
 int			_toggleEnable3DAudioPlayback
 bool		_enable3daudioplaybackstate		= true
 
-int			_toggleCameraBasedAudio
-bool		_camera_based_audio_state		= false
-
 int			_toggleInvertHeading
 bool		_invertheadingstate			= false
 
@@ -260,7 +257,6 @@ float		_lip_intDefault					= 1.0
 float		_timeout_intDefault				= 30.0
 bool		_animationstateDefault			= false
 bool		_enable3daudioplaybackstateDefault	= true
-bool		_camera_based_audio_stateDefault	= false
 bool		_invertheadingstateDefault		= false
 bool		_pauseDialogueStateDefault		= false
 bool		_playerTtsTraditionalDialogueStateDefault = false
@@ -339,12 +335,6 @@ event OnPlayerLoadGame()
 	else
 		controlScript.setConf("_enable_3d_audio_playback", 0)
 	endIf
-
-	if (_camera_based_audio_state)
-		controlScript.setConf("_camera_based_audio", 1)
-	else
-		controlScript.setConf("_camera_based_audio", 0)
-	endIf
 	
 	
 
@@ -405,10 +395,6 @@ event OnConfigInit()
 
 	if (CurrentVersion<59)
 		_enable3daudioplaybackstate = true
-	endIf
-
-	if (CurrentVersion<66)
-		_camera_based_audio_state = false
 	endIf
 	
 	; Load combat dialogue settings
@@ -508,12 +494,6 @@ event OnConfigInit()
 	else
 		controlScript.setConf("_enable_3d_audio_playback", 0)
 	endIf
-
-	if (_camera_based_audio_state)
-		controlScript.setConf("_camera_based_audio", 1)
-	else
-		controlScript.setConf("_camera_based_audio", 0)
-	endIf
 	
 	if (CurrentVersion<38)
 		_toggle_autofocus_on_sit=0
@@ -545,12 +525,17 @@ endEvent
 
 int function GetVersion()
 
-	return 70
+	return 71
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 71 && a_version > CurrentVersion)
+		; Version 71: Removed the Camera Based Audio toggle; 3D voice direction always follows the camera
+		OnConfigInit()
+	endIf
 
 	if (a_version == 69 && a_version > CurrentVersion)
 		OnConfigInit()
@@ -778,7 +763,6 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness.", "slider", _playback_dropoff_inside as String, "25|200|1|%|0|0")
 	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness.", "slider", _playback_dropoff_outside as String, "25|200|1|%|0|0")
 	PublishPrismaMCMEntry("Sound", "Basic", "enable_3d_audio", "Enable 3D Audio Playback", "Play voices from their in-world positions.", "toggle", PrismaMCMBool(_enable3daudioplaybackstate), "0|1|1||0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_preclip", "Skip milliseconds at beginning", "Skip silence at the beginning of generated speech.", "slider", _sound_preclip as String, "0|100|10|ms|0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_postclip", "Skip milliseconds at end", "Skip silence at the end of generated speech.", "slider", _sound_postclip as String, "0|2000|2|ms|0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||0|0")
@@ -1025,9 +1009,6 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "enable_3d_audio"
 		_enable3daudioplaybackstate = enabled
 		controlScript.setConf("_enable_3d_audio_playback", value)
-	elseif keyName == "camera_based_audio"
-		_camera_based_audio_state = enabled
-		controlScript.setConf("_camera_based_audio", value)
 	elseif keyName == "sound_preclip"
 		_sound_preclip = value
 		controlScript.setConf("_sound_preclip", value)
@@ -1260,7 +1241,6 @@ event OnPageReset(string a_page)
 		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}")
 		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}")
 		_toggleEnable3DAudioPlayback = AddToggleOption("Enable 3D Advanced Audio Playback", _enable3daudioplaybackstate)
-		_toggleCameraBasedAudio = AddToggleOption("Camera Based Audio", _camera_based_audio_state)
 
 		_slider_curve_legacy_distance = AddSliderOption("Legacy 3D distance scaler", _curve_legacy_distance, "{1}")
 
@@ -1676,12 +1656,6 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_enable_3d_audio_playback",0)
 	endif
-
-	if (_camera_based_audio_state)
-		a=controlScript.setConf("_camera_based_audio",1)
-	else
-		a=controlScript.setConf("_camera_based_audio",0)
-	endif
 	a=controlScript.setConf("_lip_int",_lip_int)
 	a=controlScript.setConf("_lip_res",_lip_res)
 	a=controlScript.setConf("_timeout",_timeout_int)
@@ -1914,15 +1888,6 @@ event OnOptionDefault(int a_option)
 			controlScript.setConf("_enable_3d_audio_playback", 0)
 		endif
 		SetToggleOptionValue(a_option, _enable3daudioplaybackstate)
-
-	elseif (a_option == _toggleCameraBasedAudio)
-		_camera_based_audio_state = _camera_based_audio_stateDefault
-		if (_camera_based_audio_state)
-			controlScript.setConf("_camera_based_audio", 1)
-		else
-			controlScript.setConf("_camera_based_audio", 0)
-		endif
-		SetToggleOptionValue(a_option, _camera_based_audio_state)
 
 	elseif (a_option == _toggleInvertHeading)
 		_invertheadingstate = _invertheadingstateDefault
@@ -2232,18 +2197,6 @@ event OnOptionSelect(int a_option)
 		endif
 		
 		SetToggleOptionValue(a_option, _enable3daudioplaybackstate)
-	endIf
-
-	if (a_option == _toggleCameraBasedAudio)
-		_camera_based_audio_state = !_camera_based_audio_state
-		
-		if (_camera_based_audio_state)
-			controlScript.setConf("_camera_based_audio",1)
-		else
-			controlScript.setConf("_camera_based_audio",0)
-		endif
-		
-		SetToggleOptionValue(a_option, _camera_based_audio_state)
 	endIf
 
 	if (a_option == _toggleInvertHeading)
@@ -2571,9 +2524,6 @@ event OnOptionHighlight(int a_option)
 	endIf
 	if (a_option == _toggleEnable3DAudioPlayback)
 		SetInfoText("Controls player-heard 3D voice playback only. Disabling this keeps spatial dialogue awareness for who can hear speech, but plays voices back in flat 2D.")
-	endIf
-	if (a_option == _toggleCameraBasedAudio)
-		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default.")
 	endIf
 	if (a_option == _toggle1OID_E)
 		SetInfoText("Enable HD mode for Soulgaze (DirectX backbuffer access, server compression). Disable for in-game screenshots (VR users should disable).")

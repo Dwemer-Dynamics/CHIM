@@ -346,7 +346,6 @@ extern float GlobalLegacyDistanceScaler;
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
 bool GlobalInvertHeadingState = false;
-bool GlobalCameraBasedAudio = false;
 
 bool CombatDialogueEnabled = true;
 bool CancelDialogueOnCombat = true;
@@ -1970,14 +1969,6 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
         logger::info("Setting _enable_3d_audio_playback to {} ", f_Value);
 
-    } else if (code == "_camera_based_audio") {
-        if (f_Value > 0)
-            GlobalCameraBasedAudio = true;
-        else
-            GlobalCameraBasedAudio = false;
-
-        logger::info("Setting _camera_based_audio to {} ", f_Value);
-
     } else if (code == "_combat_dialogue") {
         if (f_Value > 0)
             CombatDialogueEnabled = true;
@@ -2931,9 +2922,6 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
 
     } else if (code == "_enable_3d_audio_playback") {
         result = GlobalEnable3DAudioPlayback ? 1 : 0;
-
-    } else if (code == "_camera_based_audio") {
-        result = GlobalCameraBasedAudio ? 1 : 0;
 
     } else if (code == "_combat_dialogue") {
         result = CombatDialogueEnabled ? 1 : 0;

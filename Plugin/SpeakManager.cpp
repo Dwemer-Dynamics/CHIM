@@ -52,7 +52,6 @@ constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
 extern bool GlobalEnable3DAudioPlayback;
 extern bool GlobalInvertHeadingState;
-extern bool GlobalCameraBasedAudio;
 extern int GlobalConfiguredTimeout;
 extern int GlobalRechatPolicyAsap;
 
@@ -1561,27 +1560,27 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             return;
         }
 
-        if (!enable3DAudioPlayback) {
-            // This is the legacy behavior.
-            auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
-            auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
-            auto camera = RE::PlayerCamera::GetSingleton();
-            auto speakerPos = speakerActorPointer->GetPosition();
-
-            if (GlobalCameraBasedAudio && camera) {
-                auto cameraState = camera->currentState.get();
-                if (cameraState) {
-                    RE::NiQuaternion rotation;
-                    cameraState->GetRotation(rotation);
-                    auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
-                    if (std::isfinite(cameraHeadingAngle)) {
-                        headingAngle = cameraHeadingAngle;
-                    }
+        float headingAngle = 0.0f;
+        auto camera = RE::PlayerCamera::GetSingleton();
+        if (camera) {
+            auto cameraState = camera->currentState.get();
+            if (cameraState) {
+                RE::NiQuaternion rotation;
+                cameraState->GetRotation(rotation);
+                const auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
+                if (std::isfinite(cameraHeadingAngle)) {
+                    headingAngle = cameraHeadingAngle;
                 }
             }
+        }
 
-            if (GlobalInvertHeadingState) headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+        if (GlobalInvertHeadingState) {
+            headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+        }
 
+        if (!enable3DAudioPlayback) {
+            // This is the legacy behavior.
+            auto speakerPos = speakerActorPointer->GetPosition();
 
             am.UpdateLegacy(
                 AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
@@ -1592,24 +1591,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             //am.Update(noopPosition, noopPosition, 0.0f);
             return;
         }
-
-        auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
-        auto camera = RE::PlayerCamera::GetSingleton();
-
-        if (GlobalCameraBasedAudio && camera) {
-            auto cameraState = camera->currentState.get();
-            if (cameraState) {
-                RE::NiQuaternion rotation;
-                cameraState->GetRotation(rotation);
-                auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
-                if (std::isfinite(cameraHeadingAngle)) {
-                    headingAngle = cameraHeadingAngle;
-                }
-            }
-        }
-
-        if (GlobalInvertHeadingState)
-            headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
 
         auto speakerPos = GetActorHeadPosition(speakerActorPointer);
 
