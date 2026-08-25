@@ -4494,15 +4494,22 @@ int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) g
 		npc.SetFactionRank(sandboxFaction,1)
 
 		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
-		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
-		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,1024);
+		if (anchors.length>0)
+			PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
+		endif
+		if (anchors.length == 0)
+			PO3_SKSEFunctions.SetLinkedRef(npc,npc as ObjectReference)
+			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near self")
+		endif
 		if (taskid=="sleep")		
 			SandboxWorkPackage = Game.GetFormFromFile(0x4adf0,"AIAgent.esp") as Package		; Package sandboxSleep	
 		endif
 		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
 		npc.EvaluatePackage();
-		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
-				
+		
+		Debug.Trace("[CHIM] Sandbox START finishes for "+npc.GetDisplayName())		
 	else 
 		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
 		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
@@ -4515,6 +4522,9 @@ int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) g
 			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" should sandbox near "+DecToHex(nearHere.GetFormID()))
 			PO3_SKSEFunctions.SetLinkedRef(npc,nearHere)
 		endif;
+		if (taskid=="sleep")		
+			SandboxWorkPackage = Game.GetFormFromFile(0x4adf0,"AIAgent.esp") as Package		; Package sandboxSleep	
+		endif
 		
 		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100,0)
 		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
