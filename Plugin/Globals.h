@@ -12,7 +12,6 @@
 #include "RE/Skyrim.h"
 #include "ActorIdentityUtils.h"
 #include "ActorTargetIdentifierUtils.h"
-#include "md5.h"
 #include "SpatialAwareness.h"
 
 #define HERIKA_MAX_VISION_RANGE 5000
@@ -132,45 +131,6 @@ public:
     std::string getActorIdentifier() {
         std::lock_guard<std::mutex> lock(mutex_);
         return ActorIdentityUtils::BuildPromptIdentifier(name, formID);
-    }
-
-    std::string getActorKey() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return actorKey;
-    }
-
-    std::string getProfileHash() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return profileHash;
-    }
-
-    std::string getActorInstanceId() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return actorInstanceId;
-    }
-
-    static std::vector<std::pair<RE::FormID, std::string>> getRuntimeActorIdentities() {
-        std::lock_guard<std::mutex> lock(runtimeIdentityMutex_);
-        std::vector<std::pair<RE::FormID, std::string>> identities(
-            runtimeActorInstanceIds_.begin(), runtimeActorInstanceIds_.end());
-        std::sort(identities.begin(), identities.end(), [](const auto& left, const auto& right) {
-            return left.first < right.first;
-        });
-        return identities;
-    }
-
-    static void restoreRuntimeActorIdentity(RE::FormID formId, const std::string& instanceId) {
-        const auto normalized = ActorIdentityUtils::NormalizeRuntimeInstanceId(instanceId);
-        if (formId == 0 || normalized.empty()) {
-            return;
-        }
-        std::lock_guard<std::mutex> lock(runtimeIdentityMutex_);
-        runtimeActorInstanceIds_[formId] = normalized;
-    }
-
-    static void clearRuntimeActorIdentities() {
-        std::lock_guard<std::mutex> lock(runtimeIdentityMutex_);
-        runtimeActorInstanceIds_.clear();
     }
 
     bool isPresent(const std::string& presentActors) {
@@ -310,14 +270,7 @@ public:
         name = actor->GetDisplayFullName();
         name.erase(0, name.find_first_not_of(' '));
         name.erase(name.find_last_not_of(' ') + 1);
-        refreshIdentityUnsafe();
         
-    }
-
-    void setActorInstanceId(const std::string& instanceId) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        actorInstanceId = ActorIdentityUtils::NormalizeRuntimeInstanceId(instanceId);
-        refreshIdentityUnsafe();
     }
 
 
@@ -666,39 +619,6 @@ public:
     }
 
 private:
-    static std::string generateActorInstanceId() {
-        std::random_device randomDevice;
-        std::mt19937_64 generator(randomDevice());
-        std::uniform_int_distribution<std::uint64_t> distribution;
-        return std::format("{:016x}{:016x}", distribution(generator), distribution(generator));
-    }
-
-    void refreshIdentityUnsafe() {
-        if (!actor) {
-            return;
-        }
-
-        const bool isRuntimeReference = (actor->GetFormID() & 0xFF000000) == 0xFF000000;
-        auto* sourceFile = isRuntimeReference ? nullptr : actor->GetFile(0);
-        const std::string pluginName = sourceFile ? std::string(sourceFile->GetFilename()) : std::string{};
-        if (!pluginName.empty()) {
-            actorKey = ActorIdentityUtils::BuildPlacedActorKey(pluginName, actor->GetLocalFormID());
-        } else {
-            {
-                std::lock_guard<std::mutex> identityLock(runtimeIdentityMutex_);
-                if (actorInstanceId.empty()) {
-                    const auto savedIdentity = runtimeActorInstanceIds_.find(actor->GetFormID());
-                    actorInstanceId = savedIdentity != runtimeActorInstanceIds_.end()
-                        ? savedIdentity->second
-                        : generateActorInstanceId();
-                }
-                runtimeActorInstanceIds_[actor->GetFormID()] = actorInstanceId;
-            }
-            actorKey = ActorIdentityUtils::BuildRuntimeActorKey(actorInstanceId);
-        }
-        profileHash = md5(actorKey, false);
-    }
-
     RE::Actor* resolveActorUnsafe() {
         if (formID == 0) {
             return actor;
@@ -738,11 +658,6 @@ private:
     std::string currentCommand;
     std::string currentAnimation;
     std::string name;
-    std::string actorKey;
-    std::string profileHash;
-    std::string actorInstanceId;
-    inline static std::mutex runtimeIdentityMutex_;
-    inline static std::unordered_map<RE::FormID, std::string> runtimeActorInstanceIds_;
     std::chrono::steady_clock::time_point lastAccessTime = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastTimeTalk = std::chrono::steady_clock::now();
     std::chrono::high_resolution_clock::time_point conversationEndedTime;

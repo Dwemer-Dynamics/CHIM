@@ -77,11 +77,6 @@
         return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
     }
 
-    function actorKeyLabel(npc) {
-        const key = String((npc && npc.actor_key) || '').trim();
-        return key || 'Not recorded';
-    }
-
     // Users type RefIDs either way; the stored column has no 0x prefix.
     function normalizeSearchTerm(value) {
         const term = String(value == null ? '' : value).trim();
@@ -434,7 +429,7 @@
         return parts.join(' · ');
     }
 
-    // RefID, actor key and source metadata are identity, not editable profile data.
+    // RefID and source metadata are identity, not editable profile data.
     function renderIdentityPanel(detail) {
         if (!byId('identity-refid')) return;
         const card = (detail && detail.card) || {};
@@ -448,7 +443,6 @@
         byId('identity-refid').textContent = refid.text;
         const runtimeNote = byId('identity-refid-runtime');
         runtimeNote.hidden = !refid.runtime;
-        byId('identity-actor-key').textContent = actorKeyLabel(card);
         byId('identity-source').textContent = (String(card.source_mod || '').trim() || chain[0] || '') || UNKNOWN_SOURCE_LABEL;
         byId('identity-duplicates').textContent = duplicates > 1
             ? `${duplicates} profiles share the name "${card.name || 'Unknown NPC'}"`

@@ -42,10 +42,6 @@ int main()
 
     assert(ActorIdentityUtils::BuildPromptIdentifier("Bandit", 0xFF001234) ==
            "Bandit [RefID: FF001234]");
-    assert(ActorIdentityUtils::BuildPlacedActorKey("Example Bandits.esp", 0x1234) ==
-           "skyrim-ref-v1:4578616d706c652042616e646974732e657370:00001234");
-    assert(ActorIdentityUtils::BuildRuntimeActorKey("ABC-123") == "skyrim-runtime-v1:abc123");
-    assert(ActorIdentityUtils::NormalizeRuntimeInstanceId("ABC-123") == "abc123");
 
     return 0;
 }

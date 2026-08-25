@@ -83,16 +83,6 @@ static bool IsPlayerStreamActor(const std::string& actorName)
 
 static std::string ResolveActorProfileHash(const std::string& actorIdentifier)
 {
-    if (actorIdentifier.empty()) {
-        return "";
-    }
-    auto agent = AIAgentManager::getInstance().getAgentByName(actorIdentifier);
-    if (agent) {
-        const auto profileHash = agent->getProfileHash();
-        if (!profileHash.empty()) {
-            return profileHash;
-        }
-    }
     return md5(actorIdentifier, true);
 }
 
