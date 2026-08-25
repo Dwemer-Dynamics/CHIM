@@ -2586,7 +2586,23 @@ int Papyrus::commandEndedForActor(RE::BSScript::Internal::VirtualMachine* a_vm, 
             return -1;
         }
 
-        logger::info("Releasing actor {} after vanilla brawl outcome", npc);
+        auto* opponent = agentPtr->getAttackTarget();
+        if (opponent) {
+            auto opponentAgent = aiam.getAgentByFormId(opponent->GetFormID());
+            if (opponentAgent &&
+                (opponentAgent->getCurrentCommand().contains("brawl") ||
+                 opponentAgent->getCurrentCommand().contains("Brawl"))) {
+                auto* opponentTarget = opponentAgent->getAttackTarget();
+                if (opponentTarget && opponentTarget->GetFormID() == agentPtr->GetFormId()) {
+                    logger::info("Releasing brawl opponent {}", opponentAgent->getActorName());
+                    opponentAgent->setAttackTarget(nullptr);
+                    opponentAgent->setCurrentCommand("");
+                    opponentAgent->setCommandBusy(false);
+                }
+            }
+        }
+
+        logger::info("Releasing actor {} after brawl outcome", npc);
         agentPtr->setAttackTarget(nullptr);
         agentPtr->setCurrentCommand("");
         agentPtr->setCommandBusy(false);

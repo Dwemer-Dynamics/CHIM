@@ -1099,7 +1099,7 @@ function AttackTarget(Actor npc, ObjectReference akTarget,bool lethal=true) glob
 
 endFunction
 
-; Start and monitor Skyrim's vanilla player-versus-NPC brawl quest.
+; Route player brawls through Skyrim's quest and NPC brawls through CHIM sparring.
 function BrawlTarget(Actor npc, Actor opponent) global
 	if (!npc || !opponent || npc == opponent || npc.IsDead() || opponent.IsDead())
 		if (npc)
@@ -1110,9 +1110,7 @@ function BrawlTarget(Actor npc, Actor opponent) global
 
 	Actor player = Game.GetPlayer()
 	if (opponent != player)
-		Debug.Trace("[CHIM] BrawlTarget rejected: vanilla Skyrim brawls require the player")
-		AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@Error. Vanilla Skyrim brawls require the player as one participant", "funcret", npc.GetDisplayName())
-		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		NpcBrawlTarget(npc, opponent)
 		return
 	endif
 
@@ -1172,6 +1170,132 @@ function BrawlTarget(Actor npc, Actor opponent) global
 	endif
 
 	Debug.Trace("[CHIM] Brawl outcome "+outcomeCode+": "+outcomeText)
+	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+endFunction
+
+; Unequip one recorded hand without removing its item from inventory.
+function ClearNpcBrawlHand(Actor brawler, Form equippedForm, int hand) global
+	if (!brawler || !equippedForm)
+		return
+	endif
+
+	Spell equippedSpell = equippedForm as Spell
+	if (equippedSpell)
+		brawler.UnequipSpell(equippedSpell, hand)
+	elseif (hand == 0)
+		brawler.UnequipItemEx(equippedForm, 2)
+	else
+		brawler.UnequipItemEx(equippedForm, 1)
+	endif
+endFunction
+
+; Restore one recorded hand to the same SKSE equipment slot after a spar.
+function RestoreNpcBrawlHand(Actor brawler, Form equippedForm, int hand) global
+	if (!brawler || !equippedForm)
+		return
+	endif
+
+	Spell equippedSpell = equippedForm as Spell
+	if (equippedSpell)
+		brawler.EquipSpell(equippedSpell, hand)
+	elseif (hand == 0)
+		brawler.EquipItemEx(equippedForm, 2, false, false)
+	else
+		brawler.EquipItemEx(equippedForm, 1, false, false)
+	endif
+endFunction
+
+; Run a bounded, reversible unarmed spar for two non-player actors.
+function NpcBrawlTarget(Actor npc, Actor opponent) global
+	ActorBase npcBase = AIAgentNpcUtil.getProperActorBase(npc)
+	ActorBase opponentBase = AIAgentNpcUtil.getProperActorBase(opponent)
+	if (!npcBase || !opponentBase || npc.IsInCombat() || opponent.IsInCombat())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@Error. NPC brawlers must be valid and out of combat", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	int npcRelationship = npc.GetRelationshipRank(opponent)
+	int opponentRelationship = opponent.GetRelationshipRank(npc)
+	float npcConfidence = npc.GetActorValue("Confidence")
+	float opponentConfidence = opponent.GetActorValue("Confidence")
+	bool npcProtected = npcBase.IsProtected()
+	bool opponentProtected = opponentBase.IsProtected()
+	bool npcNoBleedoutRecovery = npc.GetNoBleedoutRecovery()
+	bool opponentNoBleedoutRecovery = opponent.GetNoBleedoutRecovery()
+	Form npcLeft = npc.GetEquippedObject(0)
+	Form npcRight = npc.GetEquippedObject(1)
+	Form opponentLeft = opponent.GetEquippedObject(0)
+	Form opponentRight = opponent.GetEquippedObject(1)
+	Weapon unarmed = Game.GetForm(0x000001F4) as Weapon
+
+	ClearNpcBrawlHand(npc, npcLeft, 0)
+	ClearNpcBrawlHand(npc, npcRight, 1)
+	ClearNpcBrawlHand(opponent, opponentLeft, 0)
+	ClearNpcBrawlHand(opponent, opponentRight, 1)
+	npc.EquipItem(unarmed, false, true)
+	opponent.EquipItem(unarmed, false, true)
+
+	npcBase.SetProtected(true)
+	opponentBase.SetProtected(true)
+	npc.SetNoBleedoutRecovery(true)
+	opponent.SetNoBleedoutRecovery(true)
+	npc.SetActorValue("Confidence", 4)
+	opponent.SetActorValue("Confidence", 4)
+	npc.SetRelationshipRank(opponent, -3)
+	opponent.SetRelationshipRank(npc, -3)
+	npc.StartCombat(opponent)
+	opponent.StartCombat(npc)
+
+	AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@"+npc.GetDisplayName()+" starts an unarmed spar with "+opponent.GetDisplayName(), "funcret", npc.GetDisplayName())
+
+	string outcomeText = ""
+	float outcomeWaitBegan = Utility.GetCurrentRealTime()
+	Utility.Wait(0.5)
+	while (outcomeText == "" && (Utility.GetCurrentRealTime() - outcomeWaitBegan) < 600.0)
+		if (npc.IsBleedingOut())
+			outcomeText = opponent.GetDisplayName()+" won the brawl against "+npc.GetDisplayName()
+		elseif (opponent.IsBleedingOut())
+			outcomeText = npc.GetDisplayName()+" won the brawl against "+opponent.GetDisplayName()
+		elseif (npc.IsDead() || opponent.IsDead())
+			outcomeText = "The NPC brawl was interrupted because a participant died"
+		elseif (!npc.IsInCombat() && !opponent.IsInCombat())
+			outcomeText = "The NPC brawl ended without a recorded winner"
+		else
+			Utility.Wait(0.5)
+		endif
+	endwhile
+
+	if (outcomeText == "")
+		outcomeText = "The NPC brawl outcome was not resolved within ten minutes"
+	endif
+
+	npc.StopCombat()
+	opponent.StopCombat()
+	npc.SetRelationshipRank(opponent, npcRelationship)
+	opponent.SetRelationshipRank(npc, opponentRelationship)
+	npc.SetActorValue("Confidence", npcConfidence)
+	opponent.SetActorValue("Confidence", opponentConfidence)
+	npc.SetNoBleedoutRecovery(false)
+	opponent.SetNoBleedoutRecovery(false)
+	npc.RestoreActorValue("Health", 20)
+	opponent.RestoreActorValue("Health", 20)
+	Utility.Wait(1.0)
+	npc.SetNoBleedoutRecovery(npcNoBleedoutRecovery)
+	opponent.SetNoBleedoutRecovery(opponentNoBleedoutRecovery)
+	npcBase.SetProtected(npcProtected)
+	opponentBase.SetProtected(opponentProtected)
+	npc.UnequipItem(unarmed, false, true)
+	opponent.UnequipItem(unarmed, false, true)
+	RestoreNpcBrawlHand(npc, npcLeft, 0)
+	RestoreNpcBrawlHand(npc, npcRight, 1)
+	RestoreNpcBrawlHand(opponent, opponentLeft, 0)
+	RestoreNpcBrawlHand(opponent, opponentRight, 1)
+	npc.EvaluatePackage()
+	opponent.EvaluatePackage()
+
+	Debug.Trace("[CHIM] NPC brawl outcome: "+outcomeText)
 	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
 	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
 endFunction

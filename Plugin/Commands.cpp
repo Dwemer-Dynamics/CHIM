@@ -5568,7 +5568,7 @@ void StartAttack(std::string targetName, RE::Actor* actor) {
     }
 }
 
-// Start Skyrim's vanilla player-versus-NPC brawl without mutating actor inventory or relationships.
+// Start a vanilla player brawl or an isolated NPC spar without removing inventory items.
 void StartBrawl(std::string targetName, RE::Actor* actor) {
     if (!actor) {
         logger::warn("StartBrawl: actor is null");
@@ -5603,25 +5603,38 @@ void StartBrawl(std::string targetName, RE::Actor* actor) {
         return;
     }
 
-    if (targetActor != player) {
-        rejectBrawl("vanilla Skyrim brawls require the player as the target",
-                    "[CHIM] Vanilla brawls require the player as one participant.");
+    if (actor->IsInCombat() || targetActor->IsInCombat()) {
+        rejectBrawl("one of the participants is already in combat", "[CHIM] Brawlers must be out of combat.");
         return;
     }
 
-    const float distance = actor->GetPosition().GetDistance(player->GetPosition());
+    std::shared_ptr<AIAgent> targetAgent;
+    if (targetActor != player) {
+        targetAgent = aiam.getAgentByFormId(targetActor->GetFormID());
+        if (targetAgent && targetAgent->isCommandBusy()) {
+            rejectBrawl("target is busy with another command", "[CHIM] Brawl target is busy.");
+            return;
+        }
+    }
+
+    const float distance = actor->GetPosition().GetDistance(targetActor->GetPosition());
     if (distance >= 2048.0f) {
         rejectBrawl("target is too far away to start a brawl", "[CHIM] Brawl target is too far away.");
         return;
     }
 
-    agentPtr->setAttackTarget(player);
+    agentPtr->setAttackTarget(targetActor);
     agentPtr->setCurrentCommand("Brawl");
     agentPtr->setCommandBusy(true);
+    if (targetAgent) {
+        targetAgent->setAttackTarget(actor);
+        targetAgent->setCurrentCommand("Brawl");
+        targetAgent->setCommandBusy(true);
+    }
 
-    const std::string playerName = getPreferredActorDisplayName(player, targetName);
+    const std::string opponentName = getPreferredActorDisplayName(targetActor, targetName);
     RE::DebugNotification(
-        std::format("[CHIM] {} starts a brawl with {}", actor->GetDisplayFullName(), playerName).c_str());
+        std::format("[CHIM] {} starts a brawl with {}", actor->GetDisplayFullName(), opponentName).c_str());
 
     auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
     auto args = RE::MakeFunctionArguments(std::move(actor), std::move(targetActor));
