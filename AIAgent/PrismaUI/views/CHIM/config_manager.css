@@ -66,6 +66,7 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 
 /* Global Settings presets: preset- prefixed and scoped to #globals-page. */
 #globals-page .preset-bar { display: grid; grid-template-columns: auto minmax(180px, 260px) minmax(0, 1fr); gap: 7px 10px; align-items: center; margin-bottom: 11px; padding: 8px 10px; border: 1px solid #404040; border-radius: 9px; background: var(--panel-soft); }
+#globals-page .preset-bar[hidden] { display: none; }
 #globals-page .preset-bar-label { color: #e8e3db; font-size: .8rem; font-weight: 600; }
 #globals-page .preset-select-host { min-width: 0; }
 #globals-page .preset-actions { display: flex; gap: 7px; justify-content: flex-end; }

@@ -40,8 +40,32 @@
             option.setAttribute('aria-selected', active ? 'true' : 'false');
         });
     }
+    // Rebuilds the visible option tiles after a server-driven select changes its options.
+    function refreshTileSelectOptions(select, selector) {
+        const options = selector.querySelector('.settings-tile-options');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        if (!options || !trigger) return;
+        options.replaceChildren();
+        Array.from(select.options).forEach((nativeOption) => {
+            const option = document.createElement('button');
+            option.type = 'button'; option.className = 'settings-tile-option'; option.dataset.value = nativeOption.value;
+            option.disabled = nativeOption.disabled;
+            option.setAttribute('role', 'option'); option.textContent = nativeOption.textContent;
+            option.addEventListener('click', () => {
+                select.value = nativeOption.value;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+                syncTileSelect(select); closeTileSelectors(); trigger.focus();
+            });
+            options.appendChild(option);
+        });
+        syncTileSelect(select);
+    }
     function enhanceSelect(select) {
-        if (select.closest('.settings-tile-selector')) return select.closest('.settings-tile-selector');
+        const existing = select.closest('.settings-tile-selector');
+        if (existing) {
+            refreshTileSelectOptions(select, existing);
+            return existing;
+        }
         const selector = document.createElement('div');
         const trigger = document.createElement('button');
         const value = document.createElement('span');
@@ -53,17 +77,6 @@
         trigger.setAttribute('aria-haspopup', 'listbox'); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', listId);
         value.className = 'settings-tile-value'; arrow.className = 'settings-tile-arrow'; arrow.setAttribute('aria-hidden', 'true');
         options.className = 'settings-tile-options'; options.id = listId; options.setAttribute('role', 'listbox');
-        Array.from(select.options).forEach((nativeOption) => {
-            const option = document.createElement('button');
-            option.type = 'button'; option.className = 'settings-tile-option'; option.dataset.value = nativeOption.value;
-            option.setAttribute('role', 'option'); option.textContent = nativeOption.textContent;
-            option.addEventListener('click', () => {
-                select.value = nativeOption.value;
-                select.dispatchEvent(new Event('change', { bubbles: true }));
-                syncTileSelect(select); closeTileSelectors(); trigger.focus();
-            });
-            options.appendChild(option);
-        });
         trigger.append(value, arrow);
         trigger.addEventListener('click', () => {
             const opening = !selector.classList.contains('expanded');
@@ -79,7 +92,7 @@
         select.parentNode.insertBefore(selector, select);
         selector.append(trigger, options, select);
         select.addEventListener('change', () => syncTileSelect(select));
-        syncTileSelect(select);
+        refreshTileSelectOptions(select, selector);
         return selector;
     }
     function setControlDisabled(control, disabled) {
@@ -1303,7 +1316,6 @@
     /* ----- Settings Presets: preset- prefixed, only used by #globals-page ----- */
     const PRESET_ENDPOINT = '/ui/api/chim_settings_presets.php';
     let presetList = [];
-    let presetCustomCount = 0;
     let presetsRequested = false;
     let presetBusy = false;
     let presetNameBusy = false;
@@ -1332,7 +1344,6 @@
         const preset = selectedPreset();
         if (preset && preset.description) return String(preset.description);
         if (presetList.length === 0) return 'No presets available.';
-        if (presetCustomCount === 0) return 'No custom presets saved yet.';
         return '';
     }
     function syncPresetBar() {
@@ -1363,22 +1374,16 @@
             placeholder.disabled = true;
             select.appendChild(placeholder);
         } else {
-            const addGroup = (label, items, emptyLabel) => {
-                if (items.length === 0 && !emptyLabel) return;
+            const addGroup = (label, items) => {
+                if (items.length === 0) return;
                 const group = document.createElement('optgroup');
                 group.label = label;
-                if (items.length === 0) {
-                    const empty = new Option(emptyLabel, '');
-                    empty.disabled = true;
-                    group.appendChild(empty);
-                } else {
-                    // The suffix keeps built-ins distinguishable inside the tile menu too.
-                    items.forEach((preset) => group.appendChild(new Option(`${preset.name || preset.id} (${label})`, String(preset.id))));
-                }
+                // The suffix keeps built-ins distinguishable inside the tile menu too.
+                items.forEach((preset) => group.appendChild(new Option(`${preset.name || preset.id} (${label})`, String(preset.id))));
                 select.appendChild(group);
             };
-            addGroup('Built-in', presetList.filter((preset) => preset.built_in === true), null);
-            addGroup('Custom', presetList.filter((preset) => preset.built_in !== true), 'No custom presets yet');
+            addGroup('Built-in', presetList.filter((preset) => preset.built_in === true));
+            addGroup('Custom', presetList.filter((preset) => preset.built_in !== true));
         }
         host.appendChild(select);
         if (previous && findPreset(previous)) select.value = previous;
@@ -1410,20 +1415,18 @@
         return payload.data || payload.result || {};
     }
     async function loadPresets(preferredId) {
+        const bar = byId('preset-bar');
         presetStatus('Loading presets...', false);
         setPresetBusy(true);
         try {
             const data = await presetRequest(null);
             presetList = Array.isArray(data.presets) ? data.presets.filter((preset) => preset && preset.id) : [];
-            const reported = Number(data.custom_count);
-            presetCustomCount = Number.isFinite(reported) ? reported : presetList.filter((preset) => preset.built_in !== true).length;
+            if (bar) bar.hidden = false;
             renderPresetOptions(preferredId);
             presetStatus(presetIdleMessage(), false);
         } catch (error) {
             presetList = [];
-            presetCustomCount = 0;
-            renderPresetOptions();
-            presetStatus(`Could not load presets: ${presetError(error)}`, true);
+            if (bar) bar.hidden = true;
         } finally {
             setPresetBusy(false);
         }
@@ -1649,7 +1652,7 @@
         const available = profilePresets().length > 0;
         const preset = selectedProfilePreset();
         const custom = !!preset && preset.built_in !== true;
-        select.disabled = profilePresetBusy || !available;
+        setControlDisabled(select, profilePresetBusy || !available);
         apply.disabled = profilePresetBusy || !available || !selectedProfileId || !preset;
         byId('profile-preset-custom-actions').hidden = !profilePresetsSupportCustom();
         byId('profile-preset-save-new').disabled = profilePresetBusy || !selectedProfileId;
@@ -1666,7 +1669,10 @@
         const preferred = preferredId ? byId(preferredId) : null;
         if (preferred && !preferred.disabled) { preferred.focus(); return; }
         const select = byId('profile-preset-select');
-        if (select && !select.disabled) select.focus();
+        if (select && !select.disabled) {
+            const trigger = select.closest('.settings-tile-selector')?.querySelector('.settings-tile-trigger');
+            (trigger || select).focus();
+        }
     }
     function setProfilePresetBusy(busy) {
         profilePresetBusy = !!busy;
@@ -1689,6 +1695,7 @@
             select.appendChild(option);
         });
         select.value = findProfilePreset(previous) ? String(previous) : '';
+        enhanceSelect(select);
         syncProfilePresetRow();
     }
     function profilePresetConfirmBody(preset) {
