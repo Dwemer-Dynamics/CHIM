@@ -34,6 +34,7 @@
 #include "PrismaUIBridge.h"
 #include "ResourceFileReader.h"
 #include "MusicManager.h"
+#include "NativeDialogueGuard.h"
 #include "RE/D/DialogueMenu.h"
 #include "RE/G/GFxValue.h"
 #include "RE/Skyrim.h"
@@ -2115,6 +2116,11 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
         logger::info("Setting _restrict_onscene to {}, so AllowActorsOnScene is {}", f_Value, AllowActorsOnScene);
 
+    } else if (code == "_wait_for_npc_dialogue") {
+        const bool enabled = f_Value > 0;
+        NativeDialogue::GetGuard().SetEnabled(enabled);
+        logger::info("Setting _wait_for_npc_dialogue to {}", enabled);
+
     } else if (code == "_autoadd_hostile") {
         if (f_Value > 0)
             AutoAddHostile = true;
@@ -2986,6 +2992,8 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_restrict_onscene") {
         
         result = AllowActorsOnScene ? 0 : 1;
+    } else if (code == "_wait_for_npc_dialogue") {
+        result = NativeDialogue::GetGuard().IsEnabled() ? 1 : 0;
     } else if (code == "_godmode") {
         result = GodMode ? 1 : 0;
 

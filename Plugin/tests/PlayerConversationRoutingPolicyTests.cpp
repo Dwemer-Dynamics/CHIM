@@ -1,4 +1,5 @@
 #include "PlayerConversationRoutingPolicy.h"
+#include "NativeDialogueGuard.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -50,6 +51,34 @@ namespace
 int main()
 {
     using namespace PlayerConversationRoutingPolicy;
+
+    {
+        using namespace std::chrono_literals;
+        NativeDialogue::Guard nativeDialogueGuard(1500ms, 2min);
+        const auto start = NativeDialogue::Guard::Clock::now();
+        nativeDialogueGuard.SetEnabled(true);
+        nativeDialogueGuard.RecordStart(0x10, 0x20, start);
+        Check(nativeDialogueGuard.ShouldHold(start), "Native dialogue start did not enable the hold");
+        nativeDialogueGuard.RecordStop(0x10, 0x20, start + 500ms);
+        Check(nativeDialogueGuard.ShouldHold(start + 1900ms), "Native dialogue quiet window ended too early");
+        Check(!nativeDialogueGuard.ShouldHold(start + 2100ms), "Native dialogue quiet window did not end");
+
+        nativeDialogueGuard.RecordStart(0x10, 0x20, start + 3s);
+        nativeDialogueGuard.RecordStart(0x11, 0x21, start + 3100ms);
+        nativeDialogueGuard.RecordStop(0x10, 0x20, start + 3200ms);
+        Check(nativeDialogueGuard.ActiveTopicCount() == 1 && nativeDialogueGuard.ShouldHold(start + 5s),
+              "Overlapping NPC dialogue released the hold before every speaker stopped");
+        nativeDialogueGuard.RecordStop(0x11, 0x21, start + 5100ms);
+        Check(!nativeDialogueGuard.ShouldHold(start + 7s), "Multi-speaker quiet window did not end");
+
+        nativeDialogueGuard.RecordStart(0x12, 0x22, start + 8s);
+        Check(!nativeDialogueGuard.ShouldHold(start + 3min), "Stale native dialogue topic was not pruned");
+        nativeDialogueGuard.RecordStart(0x13, 0x23, start + 4min);
+        nativeDialogueGuard.CancelAndClear();
+        Check(!nativeDialogueGuard.ShouldHold(start + 4min), "Cancelled native dialogue state remained active");
+        nativeDialogueGuard.SetEnabled(false);
+        Check(!nativeDialogueGuard.ShouldHold(start + 3min), "Disabled native dialogue guard remained active");
+    }
 
     Check(IsPlayerInitiatedRequest("inputtext|1|date|Player: hello"),
           "Direct player speech was not recognized");

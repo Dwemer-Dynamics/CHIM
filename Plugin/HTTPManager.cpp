@@ -17,6 +17,7 @@
 #include "Conf.h"
 #include "Globals.h"
 #include "Misc.h"
+#include "NativeDialogueGuard.h"
 #include "PlayerConversationRoutingPolicy.h"
 #include "PlayerConversationRouter.h"
 #include "PrismaUIBridge.h"
@@ -1668,6 +1669,35 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             msg.starts_with("inputtext_s|") || msg.starts_with("inputtext|") ||
             msg.starts_with("ginputtext_s|") || msg.starts_with("ginputtext|");
         const bool unifiedPlayerRouting = playerInputMessage && routingContext != nullptr;
+
+        auto& nativeDialogueGuard = NativeDialogue::GetGuard();
+        if (nativeDialogueGuard.ShouldHold()) {
+            if (!PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(msg)) {
+                logger::info("[NATIVE_DIALOGUE] Suppressing untargeted automatic event while nearby NPC dialogue is active");
+                return;
+            }
+
+            const bool hasRoutingContext = routingContext != nullptr;
+            const PlayerConversationRoutingContext routingContextCopy =
+                hasRoutingContext ? *routingContext : PlayerConversationRoutingContext{};
+            const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+            logger::info("[NATIVE_DIALOGUE] Holding direct player request until nearby NPC dialogue finishes");
+            ThreadPool::getInstance().enqueue(
+                "HTTPStream",
+                [msg, rechatDepth, hasRoutingContext, routingContextCopy, dialogueStopGeneration]() {
+                    const auto cancelled = [dialogueStopGeneration]() {
+                        return PrismaUIBridge::GetDialogueStopGeneration() != dialogueStopGeneration;
+                    };
+                    if (!NativeDialogue::GetGuard().WaitUntilQuiet(cancelled)) {
+                        logger::info("[NATIVE_DIALOGUE] Cancelled held direct player request");
+                        return;
+                    }
+                    streamInternal(msg, rechatDepth, hasRoutingContext ? &routingContextCopy : nullptr);
+                },
+                "player", std::chrono::milliseconds(0));
+            return;
+        }
+
         PlayerConversationRoutingResult playerRoute{};
         std::size_t legacyAudibleActorCount = 0;
         if (!unifiedPlayerRouting) {
@@ -2269,7 +2299,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 }
             }
 
-            QueueInterruptNPC(listenerPtr, agentPointer, listener, !playerInputMessage);
+            if (nativeDialogueGuard.IsEnabled()) {
+                logger::trace("[NATIVE_DIALOGUE] Skipping early dialogue interrupt for {}", listener);
+            } else {
+                QueueInterruptNPC(listenerPtr, agentPointer, listener, !playerInputMessage);
+            }
         }
 
        
@@ -2290,8 +2324,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             return;
         }
 
-        const bool enforceAutomaticEligibility =
-            !PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(msg);
+        const bool playerInitiatedRequest = PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(msg);
+        const bool enforceAutomaticEligibility = !playerInitiatedRequest;
         const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
         
@@ -2314,6 +2348,40 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
         std::string listener = agent ? agent->getActorName() : actor->GetDisplayFullName();
+
+        auto& nativeDialogueGuard = NativeDialogue::GetGuard();
+        if (nativeDialogueGuard.ShouldHold()) {
+            if (!playerInitiatedRequest) {
+                logger::info("[NATIVE_DIALOGUE] Suppressing automatic event for {} while nearby NPC dialogue is active",
+                             listener);
+                return;
+            }
+
+            const auto actorHandle = actor->GetHandle();
+            const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+            logger::info("[NATIVE_DIALOGUE] Holding direct request for {} until nearby NPC dialogue finishes", listener);
+            ThreadPool::getInstance().enqueue(
+                "HTTPStream",
+                [msg, actorHandle, rechatDepth, listener, dialogueStopGeneration]() {
+                    const auto cancelled = [dialogueStopGeneration]() {
+                        return PrismaUIBridge::GetDialogueStopGeneration() != dialogueStopGeneration;
+                    };
+                    if (!NativeDialogue::GetGuard().WaitUntilQuiet(cancelled)) {
+                        logger::info("[NATIVE_DIALOGUE] Cancelled held request for {}", listener);
+                        return;
+                    }
+
+                    auto actorRef = actorHandle.get();
+                    auto* resolvedActor = actorRef ? actorRef.get()->As<RE::Actor>() : nullptr;
+                    if (!resolvedActor || resolvedActor->IsDead()) {
+                        logger::info("[NATIVE_DIALOGUE] Dropping held request for {}; actor is no longer valid", listener);
+                        return;
+                    }
+                    HTTPManager::stream(msg, resolvedActor, rechatDepth);
+                },
+                listener, std::chrono::milliseconds(0));
+            return;
+        }
         
         logger::info("[HTTPStream] Setting dialogue busy for actor: {}, isPlayerTeammate: {}, resolved listener: {}", 
             actor->GetDisplayFullName(), 
@@ -2331,6 +2399,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             if (SpeakManager::getInstance().getCurrentProcessingActorName() == listener)
                 ;  // Don't interrupt if the same actor is already processing speech, to avoid cutting off their current
                    // subtitle line
+            else if (nativeDialogueGuard.IsEnabled())
+                logger::trace("[NATIVE_DIALOGUE] Skipping early dialogue interrupt for {}", listener);
             else
                 QueueInterruptNPC(actor, agent, listener, enforceAutomaticEligibility);
         } else if (isCombatBark) {

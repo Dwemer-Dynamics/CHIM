@@ -138,6 +138,9 @@ bool  		_toggle_usewebsocketstt_state = false
 int 		_toggle_restrict_onscene
 bool  		_toggle_restrict_onscene_state = false
 
+int 		_toggle_wait_for_npc_dialogue
+bool  		_toggle_wait_for_npc_dialogue_state = false
+
 
 int 		_toggle_autoadd_hostile
 bool  		_toggle_autoadd_hostile_state = false
@@ -767,6 +770,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_walk_to_target", "NPCs Walk To Target", "Let speaking NPCs walk toward their target.", "toggle", PrismaMCMBool(_toggle_npc_walk_to_target_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "seat_conversation_camera", "Seat Conversation Camera", "Turn the first-person camera toward speaking NPCs while seated.", "toggle", PrismaMCMBool(_toggle_autofocus_on_sit_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_scene_safety", "NPC Scene Safety", "Prevent traditional dialogue-scene NPCs from responding automatically.", "toggle", PrismaMCMBool(_toggle_restrict_onscene_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_wait_for_dialogue", "Wait For NPC Dialogue", "Delay direct AI replies while nearby NPCs talk; skip automatic chatter.", "toggle", PrismaMCMBool(_toggle_wait_for_npc_dialogue_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "Combat Settings", "combat_dialogue", "Allow combat dialogue", "Allow CHIM dialogue while NPCs are in combat.", "toggle", PrismaMCMBool(_toggle_combatdialogue_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "Combat Settings", "cancel_dialogue_on_combat", "Clear dialogue entering combat", "Cancel active AI dialogue when combat starts.", "toggle", PrismaMCMBool(_toggle_cancel_dialogue_on_combat_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "Combat Settings", "combat_barks", "Enable Combat Barks", "Let combatants periodically shout combat barks.", "toggle", PrismaMCMBool(_toggle_combat_barks_state), "0|1|1||0|0")
@@ -995,6 +999,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "npc_scene_safety"
 		_toggle_restrict_onscene_state = enabled
 		controlScript.setConf("_restrict_onscene", value)
+	elseif keyName == "npc_wait_for_dialogue"
+		_toggle_wait_for_npc_dialogue_state = enabled
+		controlScript.setConf("_wait_for_npc_dialogue", value)
 	elseif keyName == "combat_dialogue"
 		_toggle_combatdialogue_state = enabled
 		controlScript.setConf("_combat_dialogue", value)
@@ -1237,6 +1244,7 @@ event OnPageReset(string a_page)
 		_toggle_autofocus_on_sit	= AddToggleOption("Seat Conversation Camera", _toggle_autofocus_on_sit_state)
 		
 		_toggle_restrict_onscene	= AddToggleOption("NPC Scene Safety", _toggle_restrict_onscene_state)
+		_toggle_wait_for_npc_dialogue	= AddToggleOption("Wait For NPC Dialogue", _toggle_wait_for_npc_dialogue_state)
 		
 		AddEmptyOption()
 		AddHeaderOption("Combat Settings")
@@ -1782,6 +1790,12 @@ event OnGameReload()
 		a=controlScript.setConf("_restrict_onscene",1)
 	else
 		a=controlScript.setConf("_restrict_onscene",0)
+	endif
+
+	if (_toggle_wait_for_npc_dialogue_state)
+		a=controlScript.setConf("_wait_for_npc_dialogue",1)
+	else
+		a=controlScript.setConf("_wait_for_npc_dialogue",0)
 	endif
 	_prismaMcmRevision += 1
 endEvent
@@ -2342,6 +2356,18 @@ event OnOptionSelect(int a_option)
  		SetToggleOptionValue(a_option, _toggle_restrict_onscene_state)
  	endIf
 	
+	if (a_option == _toggle_wait_for_npc_dialogue)
+		_toggle_wait_for_npc_dialogue_state = !_toggle_wait_for_npc_dialogue_state
+
+		if (_toggle_wait_for_npc_dialogue_state)
+			controlScript.setConf("_wait_for_npc_dialogue",1)
+		else
+			controlScript.setConf("_wait_for_npc_dialogue",0)
+		endif
+
+		SetToggleOptionValue(a_option, _toggle_wait_for_npc_dialogue_state)
+	endIf
+
 	if (a_option == _toggle_usewebsocketstt)
  		_toggle_usewebsocketstt_state = !_toggle_usewebsocketstt_state
  
@@ -2659,6 +2685,10 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Prevent AI NPCs in a traditional dialogue scene from responding automatically.")
 	endIf
 	
+	if (a_option == _toggle_wait_for_npc_dialogue)
+		SetInfoText("Waits for nearby radiant and scripted NPC dialogue to finish before playing a direct AI reply. Direct requests are delayed, not discarded; automatic replies are skipped to avoid a backlog. This does not activate merely because the dialogue menu is open.")
+	endIf
+
 	if (a_option == _toggle_usewebsocketstt)
 		SetInfoText("Use WebSocket STT. Overrides CHIM server STT. Must download separately from the mod page. WIP.")
 	endIf

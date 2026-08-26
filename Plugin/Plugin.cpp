@@ -26,6 +26,7 @@
 #include "Globals.h"
 #include "Conf.h"
 #include "Misc.h"
+#include "NativeDialogueGuard.h"
 #include "Papyrus.h"
 #include "RE/Skyrim.h"
 #include "RE/T/TESDataHandler.h"
@@ -2355,7 +2356,16 @@ private:
                     ScriptLine l = SpeakManager::getInstance().getFirstItem();
 
                     if (!l.actor.empty()) {
-                        if (!SpeakManager::getInstance().getProcessing()) {
+                        const bool waitingForNativeDialogue =
+                            !IsPlayerActorName(l.actor) && NativeDialogue::GetGuard().ShouldHold();
+                        if (waitingForNativeDialogue) {
+                            static auto lastNativeDialogueWaitLog = std::chrono::steady_clock::time_point{};
+                            const auto waitLogNow = std::chrono::steady_clock::now();
+                            if (waitLogNow - lastNativeDialogueWaitLog >= std::chrono::seconds(5)) {
+                                logger::info("[NATIVE_DIALOGUE] Holding queued AI reply for {}", l.actor);
+                                lastNativeDialogueWaitLog = waitLogNow;
+                            }
+                        } else if (!SpeakManager::getInstance().getProcessing()) {
                             speakerManagerIsBusyPrinted = false;
                             
                             // Make a copy of the data needed by the thread
@@ -8226,6 +8236,12 @@ EventHandlers {
         } else {
             static RE::FormID staticLastPlayerCellFormId = 0;
             const RE::FormID currentPlayerCellFormId = playerCell->GetFormID();
+            static RE::FormID lastNativeDialoguePlayerCellFormId = 0;
+            if (lastNativeDialoguePlayerCellFormId != 0 &&
+                lastNativeDialoguePlayerCellFormId != currentPlayerCellFormId) {
+                NativeDialogue::GetGuard().CancelAndClear();
+            }
+            lastNativeDialoguePlayerCellFormId = currentPlayerCellFormId;
             if (staticLastPlayerCellFormId == 0) {
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
             } else if (staticLastPlayerCellFormId != currentPlayerCellFormId && false) {
@@ -9299,6 +9315,27 @@ EventHandlers {
             return;
         }
 
+        auto* topicActor = event->speaker;
+        if (topicActor) {
+            auto& nativeDialogueGuard = NativeDialogue::GetGuard();
+            if (event->flag) {
+                nativeDialogueGuard.RecordStop(topicActor->GetFormID(), event->topicInfoID);
+            } else if (nativeDialogueGuard.IsEnabled()) {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto* actorCell = topicActor->GetParentCell();
+                auto* playerCell = player ? player->GetParentCell() : nullptr;
+                const bool sameAttachedCell = actorCell && playerCell && actorCell == playerCell && playerCell->IsAttached();
+                const float distance = player
+                    ? topicActor->GetPosition().GetDistance(SpatialAwareness::GetEffectiveActorPosition(player))
+                    : MIN_DISTANCE + 1.0f;
+                if (player && topicActor != player && sameAttachedCell && distance <= MIN_DISTANCE) {
+                    nativeDialogueGuard.RecordStart(topicActor->GetFormID(), event->topicInfoID);
+                    logger::debug("[NATIVE_DIALOGUE] Topic {:08X} started for {} at {:.0f} units",
+                                  event->topicInfoID, topicActor->GetDisplayFullName(), distance);
+                }
+            }
+        }
+
         auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
         RE::TESTopicInfo* source =
             topicForm && topicForm->GetFormType() == RE::FormType::Info
@@ -9313,8 +9350,6 @@ EventHandlers {
         // Check if im involved
 
         auto lastSpeaker = tm ? tm->speaker.get() : nullptr;
-        auto* topicActor = event->speaker;
-
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
          //if (event->speaker) {
