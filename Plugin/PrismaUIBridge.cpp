@@ -7155,7 +7155,9 @@ R"CHIM(
 
             const bool supportedMood =
                 playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
-                playerMood == "scared" || playerMood == "surprised" || playerMood == "flirty";
+                playerMood == "annoyed" || playerMood == "scared" || playerMood == "surprised" ||
+                playerMood == "confused" || playerMood == "suspicious" || playerMood == "playful" ||
+                playerMood == "flirty";
             if (!supportedMood) {
                 playerMood.clear();
             }

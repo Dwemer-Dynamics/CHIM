@@ -508,7 +508,7 @@
      * Send user message through Prisma bridge
      */
     function normalizePlayerMood(mood) {
-        return ['happy', 'sad', 'angry', 'scared', 'surprised', 'flirty'].indexOf(mood) >= 0 ? mood : '';
+        return ['happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty'].indexOf(mood) >= 0 ? mood : '';
     }
 
     function getSelectedPlayerMood() {

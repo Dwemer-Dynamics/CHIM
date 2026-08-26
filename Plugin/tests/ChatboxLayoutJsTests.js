@@ -203,7 +203,7 @@ test('offers a compact one-shot player mood selector with no mood as the default
 
     const values = [...moodPicker[1].matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
         .map((match) => match[1]);
-    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'scared', 'surprised', 'flirty']);
+    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty']);
     assert.match(moodPicker[1], /value="" aria-label="No mood" checked/);
     assert.match(css, /\.focus-chatbox-mood-input:checked \+ \.focus-chatbox-mood-option/);
     assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option/);
@@ -222,7 +222,7 @@ test('sends validated mood metadata and mirrors the persisted tag in the live st
     assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood\)/);
     assert.match(bridge, /displayMessage \+= " \[mood: " \+ playerMood \+ "\]"/);
     assert.match(bridge, /PushChatboxMessage\(playerName, displayMessage, "", "player"\)/);
-    assert.match(bridge, /playerMood == "surprised" \|\| playerMood == "flirty"/);
+    assert.match(bridge, /const bool supportedMood =[\s\S]*?playerMood == "annoyed"[\s\S]*?playerMood == "surprised"[\s\S]*?playerMood == "confused"[\s\S]*?playerMood == "suspicious"[\s\S]*?playerMood == "playful"[\s\S]*?playerMood == "flirty";/);
     assert.match(bridge, /routingContext\.playerMood = playerMood/);
     assert.match(conversationRouter, /std::string playerMood;/);
     assert.match(httpManager, /audienceSnapshot\["player_mood"\] = routingContext->playerMood/);
