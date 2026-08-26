@@ -61,21 +61,9 @@ namespace
             return false;
         }
 
-        if (actor && actor->AsActorState() &&
-            actor->AsActorState()->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
-            return true;
-        }
-
-        auto furnitureHandle = actor->GetOccupiedFurniture();
-        auto* furnitureReference = furnitureHandle ? furnitureHandle.get().get() : nullptr;
-        if (!furnitureReference) {
-            return false;
-        }
-        auto* furniture = furnitureReference->GetBaseObject()
-            ? furnitureReference->GetBaseObject()->As<RE::TESFurniture>()
-            : nullptr;
-        return furniture &&
-            furniture->furnFlags.any(RE::TESFurniture::ActiveMarker::kCanSleep);
+        auto* actorState = actor->AsActorState();
+        return actorState &&
+            actorState->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping;
     }
 
     bool IsHardEligible(RE::Actor* actor, RE::Actor* player, std::string& reason)
@@ -451,7 +439,6 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
 
         candidate.automaticBlockReason =
             PlayerConversationRouter::GetAutomaticBlockReason(candidate.agent, actor, player);
-        candidate.policy.directEligible = candidate.automaticBlockReason != "cooldown";
         candidate.policy.autoEligible = candidate.automaticBlockReason.empty();
         if (candidate.policy.distance <= result.audienceRadiusUnits) {
             const auto spatial = SpatialAwareness::Evaluate(player, actor, audienceSettings);

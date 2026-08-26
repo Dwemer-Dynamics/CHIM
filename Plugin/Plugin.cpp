@@ -1987,7 +1987,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "dead";
     } else if (isUnconscious) {
         currentAction = "unconscious";
-    } else if (isSleeping || useType == "bed") {
+    } else if (isSleeping) {
         currentAction = "sleeping";
     } else if (isAttacking) {
         currentAction = "attacking";
@@ -1997,7 +1997,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = isLeaningUse ? "leaning" : "using";
     } else if (isSitting || useType == "chair") {
         currentAction = "sitting";
-    } else if (!useType.empty()) {
+    } else if (!useType.empty() && useType != "bed") {
         currentAction = "using";
     } else if (isSneaking) {
         currentAction = "sneaking";
