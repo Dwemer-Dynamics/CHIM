@@ -7697,22 +7697,6 @@ R"CHIM(
         }
     }
 
-    // Mirror the server's default mood phrasing so the optimistic row reads naturally and still
-    // matches the persisted line for story-refresh deduplication.
-    static std::string_view DefaultPlayerMoodSuffix(const std::string& playerMood) {
-        if (playerMood == "happy") return "(speaks in a happy tone.)";
-        if (playerMood == "sad") return "(speaks in a sad tone.)";
-        if (playerMood == "angry") return "(speaks in an angry tone.)";
-        if (playerMood == "annoyed") return "(speaks in an annoyed tone.)";
-        if (playerMood == "scared") return "(speaks in a frightened tone.)";
-        if (playerMood == "surprised") return "(speaks in a surprised tone.)";
-        if (playerMood == "confused") return "(speaks in a confused tone.)";
-        if (playerMood == "suspicious") return "(speaks in a suspicious tone.)";
-        if (playerMood == "playful") return "(speaks in a playful tone.)";
-        if (playerMood == "flirty") return "(speaks in a flirtatious tone.)";
-        return {};
-    }
-
     void SendChatboxMessage(const std::string& message, const std::string& playerMood) {
         if (message.empty()) {
             return;
@@ -7735,18 +7719,9 @@ R"CHIM(
         std::string playerName = player ? player->GetName() : "Player";
         
         // Push to chatbox UI with actual player name
-        // Match the optimistic row to the server's default mood phrasing so refresh deduplication stays stable.
-        std::string displayMessage = message;
-        const std::string_view moodSuffix = DefaultPlayerMoodSuffix(playerMood);
-        if (!moodSuffix.empty()) {
-            const auto lastContent = displayMessage.find_last_not_of(" \t\r\n");
-            if (lastContent != std::string::npos) {
-                displayMessage.erase(lastContent + 1);
-            }
-            displayMessage += " ";
-            displayMessage += moodSuffix;
-        }
-        PushChatboxMessage(playerName, displayMessage, "", "player");
+        // This will show the single message with the correct player name. Mood is routing metadata
+        // only, so the optimistic row stays exactly what the player submitted.
+        PushChatboxMessage(playerName, message, "", "player");
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
