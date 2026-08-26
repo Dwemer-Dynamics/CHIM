@@ -467,7 +467,7 @@ void ProcedureSendShot(char const* a_path) {
 // ---------------------------------------------------------------------------------------------------
 namespace {
     constexpr float       kGazeSeconds        = 6.0f;    // continuous dwell before a gaze fires
-    constexpr float       kGazeDwellGrace     = 0.75f;   // VR: brief target loss (head jitter) that does NOT reset the dwell
+    constexpr float       kGazeDwellGrace     = 3.0f;    // require a deliberate look-away; VR ray jitter must not rearm the same gaze
     constexpr float       kGazeDistance       = 350.0f;  // max player<->target distance (game units)
     constexpr float       kGazeCooldown       = 25.0f;   // matches SHARMAT's default server-side gaze cooldown
     constexpr float       kGazeNodeMaxDist    = 45.0f;   // hit must be within this of a mapped node, else "person"
