@@ -1661,7 +1661,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				
 				Worldspace cws= None 
 				if (!cws && locationCenterMarkerRef)
-					locationCenterMarkerRef.GetWorldSpace()
+					cws = locationCenterMarkerRef.GetWorldSpace()
 				endif
 				if (!cws && insideEntranceMarkerRef)
 					cws= insideEntranceMarkerRef.GetWorldSpace()
