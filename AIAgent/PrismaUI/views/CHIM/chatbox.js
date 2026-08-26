@@ -42,7 +42,6 @@
     const rechatMenuToggleButton = document.getElementById('chatbox-rechat-menu-toggle');
     const rechatOptionsElement = document.getElementById('chatbox-rechat-options');
     const rechatOptionButtons = document.querySelectorAll('#chatbox-rechat-options .chatbox-option-tile');
-    const focusToggleButton = document.getElementById('chatbox-focus-toggle');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
@@ -62,7 +61,6 @@
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
     let quickChatMode = false;
-    let isFocusChatEnabled = false;
     let currentMode = 'STANDARD';
     let currentModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
@@ -631,15 +629,6 @@
                 targetRowsByKey.delete(key);
             }
         });
-    }
-
-    function updateFocusIndicator(enabled) {
-        if (!focusToggleButton) return;
-        focusToggleButton.classList.remove('on', 'off');
-        focusToggleButton.classList.add(enabled ? 'on' : 'off');
-        focusToggleButton.textContent = enabled ? 'ON' : 'OFF';
-        focusToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-        focusToggleButton.title = enabled ? 'Disable Compact Chat' : 'Enable Compact Chat';
     }
 
     function updateFocusPositionButtons() {
@@ -1464,11 +1453,6 @@
         return assigned;
     }
 
-    window.updateChatboxFocus = function(enabled) {
-        isFocusChatEnabled = !!enabled;
-        updateFocusIndicator(isFocusChatEnabled);
-    };
-
     function renderRechatMode(mode) {
         const normalizedMode = ['tight', 'conversational', 'group', 'random'].includes(mode) ? mode : 'random';
         const config = rechatModeConfig[normalizedMode];
@@ -1635,12 +1619,6 @@
         closeAllTileMenus();
     });
 
-    if (focusToggleButton) {
-        focusToggleButton.addEventListener('click', function() {
-            sendControlCommand('focus_chat_toggle');
-        });
-    }
-
     focusPositionButtons.forEach(function(button) {
         button.addEventListener('click', function() {
             const nextPosition = button.dataset.position || 'center';
@@ -1730,7 +1708,6 @@
         });
     }
 
-    updateFocusIndicator(isFocusChatEnabled);
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
     renderRechatMode('random');

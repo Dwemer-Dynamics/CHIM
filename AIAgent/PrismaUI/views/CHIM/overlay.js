@@ -135,7 +135,7 @@
             updateActiveModel(overlay.active_model_slot, overlay.active_model_label, overlay.active_model_name);
             
             // Update Compact Chat
-            updateFocusChat(overlay.focus_chat);
+            updateFocusChat(overlay.compact_chat);
             
             // Update active agents from server only until the DLL starts pushing local spatial truth.
             if (!lastSpatialAgentsAt || Date.now() - lastSpatialAgentsAt > 5000) {
