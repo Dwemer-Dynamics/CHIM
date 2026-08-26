@@ -203,7 +203,7 @@ test('offers a compact one-shot player mood selector with no mood as the default
 
     const values = [...moodPicker[1].matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
         .map((match) => match[1]);
-    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'scared', 'surprised']);
+    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'scared', 'surprised', 'flirty']);
     assert.match(moodPicker[1], /value="" aria-label="No mood" checked/);
     assert.match(css, /\.focus-chatbox-mood-input:checked \+ \.focus-chatbox-mood-option/);
     assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option/);
@@ -217,10 +217,12 @@ test('offers a compact one-shot player mood selector with no mood as the default
     assert.match(script, /window\.clearFocusMessage[\s\S]*?resetPlayerMood\(\)/);
 });
 
-test('sends moods as prompt metadata while preserving the visible player message', () => {
+test('sends validated mood metadata and mirrors the persisted tag in the live story row', () => {
     assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
     assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood\)/);
-    assert.match(bridge, /PushChatboxMessage\(playerName, message, "", "player"\)/);
+    assert.match(bridge, /displayMessage \+= " \[mood: " \+ playerMood \+ "\]"/);
+    assert.match(bridge, /PushChatboxMessage\(playerName, displayMessage, "", "player"\)/);
+    assert.match(bridge, /playerMood == "surprised" \|\| playerMood == "flirty"/);
     assert.match(bridge, /routingContext\.playerMood = playerMood/);
     assert.match(conversationRouter, /std::string playerMood;/);
     assert.match(httpManager, /audienceSnapshot\["player_mood"\] = routingContext->playerMood/);

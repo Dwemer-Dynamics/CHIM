@@ -7155,7 +7155,7 @@ R"CHIM(
 
             const bool supportedMood =
                 playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
-                playerMood == "scared" || playerMood == "surprised";
+                playerMood == "scared" || playerMood == "surprised" || playerMood == "flirty";
             if (!supportedMood) {
                 playerMood.clear();
             }
@@ -7717,8 +7717,16 @@ R"CHIM(
         std::string playerName = player ? player->GetName() : "Player";
         
         // Push to chatbox UI with actual player name
-        // This will show the single message with the correct player name
-        PushChatboxMessage(playerName, message, "", "player");
+        // Match the optimistic row to the server's persisted mood tag so refresh deduplication stays stable.
+        std::string displayMessage = message;
+        if (!playerMood.empty()) {
+            const auto lastContent = displayMessage.find_last_not_of(" \t\r\n");
+            if (lastContent != std::string::npos) {
+                displayMessage.erase(lastContent + 1);
+            }
+            displayMessage += " [mood: " + playerMood + "]";
+        }
+        PushChatboxMessage(playerName, displayMessage, "", "player");
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
