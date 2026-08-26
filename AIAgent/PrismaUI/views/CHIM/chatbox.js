@@ -15,6 +15,7 @@
     const focusModal = document.getElementById('focus-chatbox-modal');
     const focusShellElement = document.querySelector('.focus-chatbox-shell');
     const focusInput = document.getElementById('focus-chatbox-input');
+    const playerMoodInputs = document.querySelectorAll('input[name="chatbox-player-mood"]');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
     const currentModeElement = document.getElementById('chatbox-current-mode');
@@ -506,10 +507,28 @@
     /**
      * Send user message through Prisma bridge
      */
-    function sendMessageToBridge(message) {
+    function normalizePlayerMood(mood) {
+        return ['happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty'].indexOf(mood) >= 0 ? mood : '';
+    }
+
+    function getSelectedPlayerMood() {
+        const selected = Array.prototype.find.call(playerMoodInputs, function(input) {
+            return input.checked;
+        });
+        return normalizePlayerMood(selected ? selected.value : '');
+    }
+
+    function resetPlayerMood() {
+        playerMoodInputs.forEach(function(input) {
+            input.checked = input.value === '';
+        });
+    }
+
+    function sendMessageToBridge(message, playerMood) {
         if (!message || !message.trim()) return;
         if (window.chimChatboxCommand) {
-            window.chimChatboxCommand('send|' + message);
+            const mood = normalizePlayerMood(playerMood);
+            window.chimChatboxCommand(mood ? 'send_mood|' + mood + '|' + message : 'send|' + message);
         }
     }
 
@@ -782,6 +801,7 @@
             showStoryEmpty('Loading recent context...');
         }
         focusInput.value = '';
+        resetPlayerMood();
         renderModeIndicator();
         setTimeout(function() {
             focusInput.focus();
@@ -799,6 +819,7 @@
         focusModal.classList.add('hidden');
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
+        resetPlayerMood();
         renderModeIndicator();
         focusInput.blur();
         setContextPlacement(false);
@@ -818,7 +839,7 @@
         if (!focusInput) return;
         const message = focusInput.value;
         if (!message.trim()) return;
-        sendMessageToBridge(message);
+        sendMessageToBridge(message, getSelectedPlayerMood());
         focusInput.value = '';
         renderModeIndicator();
         window.closeFocusChatbox(true);
@@ -827,6 +848,7 @@
     window.clearFocusMessage = function() {
         if (!focusInput) return;
         focusInput.value = '';
+        resetPlayerMood();
         renderModeIndicator();
         focusInput.focus();
     };

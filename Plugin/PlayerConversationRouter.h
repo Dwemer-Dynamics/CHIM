@@ -32,6 +32,7 @@ struct PlayerConversationRoutingContext
     // Route against stripped content while sending the original shortcut to HerikaServer.
     std::string symbolRoutingMode;
     std::string routingMessage;
+    std::string playerMood;
     bool everyoneMode = false;
     bool narratorMode = false;
 };

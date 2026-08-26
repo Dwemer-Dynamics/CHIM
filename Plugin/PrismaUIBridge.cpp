@@ -7143,11 +7143,32 @@ R"CHIM(
         } else if (cmd.starts_with("event_deleted|")) {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("send_mood|")) {
+            std::string payload = cmd.substr(10);
+            const auto separator = payload.find('|');
+            std::string playerMood;
+            std::string message = payload;
+            if (separator != std::string::npos) {
+                playerMood = payload.substr(0, separator);
+                message = payload.substr(separator + 1);
+            }
+
+            const bool supportedMood =
+                playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
+                playerMood == "annoyed" || playerMood == "scared" || playerMood == "surprised" ||
+                playerMood == "confused" || playerMood == "suspicious" || playerMood == "playful" ||
+                playerMood == "flirty";
+            if (!supportedMood) {
+                playerMood.clear();
+            }
+            if (!message.empty()) {
+                SendChatboxMessage(message, playerMood);
+            }
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
             if (!message.empty()) {
-                SendChatboxMessage(message);
+                SendChatboxMessage(message, "");
             }
         } else if (cmd == "focus") {
             // Focus the chatbox for typing
@@ -7676,7 +7697,7 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message) {
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood) {
         if (message.empty()) {
             return;
         }
@@ -7698,14 +7719,23 @@ R"CHIM(
         std::string playerName = player ? player->GetName() : "Player";
         
         // Push to chatbox UI with actual player name
-        // This will show the single message with the correct player name
-        PushChatboxMessage(playerName, message, "", "player");
+        // Match the optimistic row to the server's persisted mood tag so refresh deduplication stays stable.
+        std::string displayMessage = message;
+        if (!playerMood.empty()) {
+            const auto lastContent = displayMessage.find_last_not_of(" \t\r\n");
+            if (lastContent != std::string::npos) {
+                displayMessage.erase(lastContent + 1);
+            }
+            displayMessage += " [mood: " + playerMood + "]";
+        }
+        PushChatboxMessage(playerName, displayMessage, "", "player");
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
         PlayerConversationRoutingContext routingContext{};
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        routingContext.playerMood = playerMood;
         if (submission.symbolOverride) {
             routingContext.symbolRoutingMode = submission.mode;
             routingContext.routingMessage = submission.message;

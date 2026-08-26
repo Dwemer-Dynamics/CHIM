@@ -12,6 +12,8 @@ const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
 const overlayScript = fs.readFileSync(path.join(viewRoot, 'overlay.js'), 'utf8');
 const overlayCss = fs.readFileSync(path.join(viewRoot, 'overlay.css'), 'utf8');
 const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
+const conversationRouter = fs.readFileSync(path.resolve(__dirname, '../PlayerConversationRouter.h'), 'utf8');
+const httpManager = fs.readFileSync(path.resolve(__dirname, '../HTTPManager.cpp'), 'utf8');
 
 // Evaluate the small pure helper straight out of overlay.js so the mapping itself is tested.
 function loadOverlayFunction(name) {
@@ -193,4 +195,36 @@ test('never leaves the Delete Events button stuck on the confirmation prompt', (
     assert.match(html, /<button id="chatbox-delete-events-confirm"[^>]*type="button"[^>]*title="Delete the selected number of recent events"[^>]*>Delete<\/button>/);
     assert.match(script, /textContent = 'Are you sure\?';\s*deleteEventConfirmButton\.title = 'Press again to delete the selected events'/);
     assert.match(script, /textContent = 'Delete';\s*deleteEventConfirmButton\.title = 'Delete the selected number of recent events'/);
+});
+
+test('offers a compact one-shot player mood selector with no mood as the default', () => {
+    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker">([\s\S]*?)<\/fieldset>/);
+    assert.ok(moodPicker, 'mood picker not found');
+
+    const values = [...moodPicker[1].matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
+        .map((match) => match[1]);
+    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty']);
+    assert.match(moodPicker[1], /value="" aria-label="No mood" checked/);
+    assert.match(css, /\.focus-chatbox-mood-input:checked \+ \.focus-chatbox-mood-option/);
+    assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option/);
+
+    const normalizeMood = loadChatboxFunction('normalizePlayerMood');
+    values.slice(1).forEach((mood) => assert.equal(normalizeMood(mood), mood));
+    ['', 'neutral', 'mood=happy', null, undefined].forEach((mood) => assert.equal(normalizeMood(mood), ''));
+
+    assert.match(script, /window\.openFocusChatbox[\s\S]*?resetPlayerMood\(\)/);
+    assert.match(script, /window\.closeFocusChatbox[\s\S]*?resetPlayerMood\(\)/);
+    assert.match(script, /window\.clearFocusMessage[\s\S]*?resetPlayerMood\(\)/);
+});
+
+test('sends validated mood metadata and mirrors the persisted tag in the live story row', () => {
+    assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
+    assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood\)/);
+    assert.match(bridge, /displayMessage \+= " \[mood: " \+ playerMood \+ "\]"/);
+    assert.match(bridge, /PushChatboxMessage\(playerName, displayMessage, "", "player"\)/);
+    assert.match(bridge, /const bool supportedMood =[\s\S]*?playerMood == "annoyed"[\s\S]*?playerMood == "surprised"[\s\S]*?playerMood == "confused"[\s\S]*?playerMood == "suspicious"[\s\S]*?playerMood == "playful"[\s\S]*?playerMood == "flirty";/);
+    assert.match(bridge, /routingContext\.playerMood = playerMood/);
+    assert.match(conversationRouter, /std::string playerMood;/);
+    assert.match(httpManager, /audienceSnapshot\["player_mood"\] = routingContext->playerMood/);
+    assert.match(httpManager, /requestModeSnapshot\["player_mood"\] = routingContext->playerMood/);
 });
