@@ -12,6 +12,8 @@
 
 using json = nlohmann::json;
 
+struct PlayerConversationRoutingContext;
+
 namespace PrismaUIBridge {
 
     enum class ChatboxTargetMode : std::uint8_t {
@@ -298,6 +300,9 @@ namespace PrismaUIBridge {
 
     // Read the current CHIM mode tracked by the Prisma bridge
     std::string GetCurrentChatboxMode();
+
+    // Apply the mood saved in Prisma Chat to speech-to-text routing.
+    void ApplySavedPlayerMood(PlayerConversationRoutingContext& routingContext);
 
     // Synchronize the native mode state after a Prisma, Papyrus, or server selection.
     // Pass persistToServer=true only when the caller has not already written the

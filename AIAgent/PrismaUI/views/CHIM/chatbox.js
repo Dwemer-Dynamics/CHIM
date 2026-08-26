@@ -63,6 +63,8 @@
     const recentStoryRetentionMs = 60000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
     const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
+    const playerMoodStorageKey = 'chim_chatbox_player_mood';
+    const playerMoodCustomTextStorageKey = 'chim_chatbox_custom_mood';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
     let quickChatMode = false;
@@ -557,7 +559,9 @@
     function selectCustomPlayerMood() {
         if (playerMoodCustomRadio && !playerMoodCustomRadio.checked) {
             playerMoodCustomRadio.checked = true;
+            return true;
         }
+        return false;
     }
 
     function focusCustomPlayerMoodInput() {
@@ -568,14 +572,63 @@
         playerMoodCustomTextInput.selectionEnd = caret;
     }
 
-    function resetPlayerMood() {
+    // A stored value can outlive a roster change, so anything unrecognised falls back to No mood.
+    function normalizeStoredPlayerMood(value) {
+        const stored = value === null || value === undefined ? '' : String(value);
+        return stored === customPlayerMoodValue ? customPlayerMoodValue : normalizePlayerMood(stored);
+    }
+
+    function loadPlayerMoodSelection() {
+        try {
+            return {
+                mood: normalizeStoredPlayerMood(localStorage.getItem(playerMoodStorageKey)),
+                custom: normalizeCustomPlayerMood(localStorage.getItem(playerMoodCustomTextStorageKey))
+            };
+        } catch (_err) {
+            return { mood: '', custom: '' };
+        }
+    }
+
+    function savePlayerMoodSelection() {
+        try {
+            localStorage.setItem(playerMoodStorageKey, normalizeStoredPlayerMood(getSelectedPlayerMoodValue()));
+            localStorage.setItem(playerMoodCustomTextStorageKey, getCustomPlayerMoodText());
+        } catch (_err) {
+            // Keep the current session selection when storage is unavailable.
+        }
+    }
+
+    // JSON keeps '|' and quotes inside custom phrasing from splitting into extra bridge arguments.
+    function buildPlayerMoodCommand(playerMood, customMood) {
+        return 'set_player_mood|' + JSON.stringify({ player_mood: playerMood, custom_mood: customMood });
+    }
+
+    // Native holds the mood for speech-to-text, so Custom with nothing typed has to clear it
+    // rather than leave an older mood attached to the next spoken line.
+    function syncPlayerMoodToNative() {
+        if (!window.chimChatboxCommand) return;
+        const customSelected = isCustomPlayerMoodSelected();
+        const customMood = customSelected ? getCustomPlayerMoodText() : '';
+        const mood = customSelected ? (customMood ? customPlayerMoodValue : '') : getSelectedPlayerMood();
+        window.chimChatboxCommand(buildPlayerMoodCommand(mood, customMood));
+    }
+
+    function persistPlayerMoodSelection() {
+        savePlayerMoodSelection();
+        syncPlayerMoodToNative();
+    }
+
+    // Called on load and on every open so a recreated view re-arms both the picker and native.
+    function restorePlayerMoodSelection() {
+        const stored = loadPlayerMoodSelection();
         playerMoodInputs.forEach(function(input) {
-            input.checked = input.value === '';
+            input.checked = input.value === stored.mood;
         });
         if (playerMoodCustomTextInput) {
-            playerMoodCustomTextInput.value = '';
+            playerMoodCustomTextInput.value = stored.custom;
         }
         setCustomPlayerMoodInvalid(false);
+        syncPlayerMoodToNative();
     }
 
     function sendMessageToBridge(message, playerMood, customMood) {
@@ -859,7 +912,7 @@
             showStoryEmpty('Loading recent context...');
         }
         focusInput.value = '';
-        resetPlayerMood();
+        restorePlayerMoodSelection();
         renderModeIndicator();
         setTimeout(function() {
             focusInput.focus();
@@ -877,7 +930,7 @@
         focusModal.classList.add('hidden');
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
-        resetPlayerMood();
+        setCustomPlayerMoodInvalid(false);
         renderModeIndicator();
         focusInput.blur();
         setContextPlacement(false);
@@ -917,7 +970,7 @@
     window.clearFocusMessage = function() {
         if (!focusInput) return;
         focusInput.value = '';
-        resetPlayerMood();
+        setCustomPlayerMoodInvalid(false);
         renderModeIndicator();
         focusInput.focus();
     };
@@ -1012,20 +1065,27 @@
             if (!input.checked) return;
             if (input.value === customPlayerMoodValue) {
                 focusCustomPlayerMoodInput();
+                persistPlayerMoodSelection();
                 return;
             }
-            // A predefined mood ignores the typed text but keeps it for the rest of this session.
+            // A predefined mood, or No mood, ignores the typed text but keeps it for later reuse.
             setCustomPlayerMoodInvalid(false);
+            persistPlayerMoodSelection();
         });
     });
 
     if (playerMoodCustomTextInput) {
-        playerMoodCustomTextInput.addEventListener('focus', selectCustomPlayerMood);
+        playerMoodCustomTextInput.addEventListener('focus', function() {
+            if (selectCustomPlayerMood()) {
+                persistPlayerMoodSelection();
+            }
+        });
         playerMoodCustomTextInput.addEventListener('input', function() {
             selectCustomPlayerMood();
             if (getCustomPlayerMoodText()) {
                 setCustomPlayerMoodInvalid(false);
             }
+            persistPlayerMoodSelection();
         });
         playerMoodCustomTextInput.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
@@ -1839,6 +1899,7 @@
     applyFocusPosition(loadFocusPosition());
     applyContextCollapsed(loadContextCollapsed());
     setContextPlacement(false);
+    restorePlayerMoodSelection();
 
     console.log('[Chatbox] Initialized - display mode + focus modal input');
 })();
