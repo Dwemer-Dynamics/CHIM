@@ -2815,6 +2815,17 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto npc = herika->getActor();
         auto player = RE::PlayerCharacter::GetSingleton();
 
+        auto* actorState = npc ? npc->AsActorState() : nullptr;
+        if (actorState && actorState->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSleeping) {
+            logger::info("[GoToSleep] {} is already sleeping", herika->getActorName());
+            HTTPManager::log(
+                std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                            "command@" + command + "@" + trim(parameter) +
+                                "@Error: " + herika->getActorName() + " is already sleeping"),
+                npc);
+            return;
+        }
+
         RE::FormID furniture = findFurnitureInCell(player->GetParentCell(), player->As<RE::Actor>(), 1);
 
         if (furniture > 0) {
