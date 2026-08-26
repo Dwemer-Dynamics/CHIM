@@ -2752,42 +2752,59 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         auto npc = herika->getActor();
         auto player = RE::PlayerCharacter::GetSingleton();
 
-        auto* actorState = npc ? npc->AsActorState() : nullptr;
-        if (actorState && actorState->GetSitSleepState() == RE::SIT_SLEEP_STATE::kIsSitting) {
-            logger::info("[TakeASeat] {} is already sitting", herika->getActorName());
-            HTTPManager::log(
-                std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                            "command@" + command + "@" + trim(parameter) +
-                                "@Error: " + herika->getActorName() + " is already sitting"),
-                npc);
-            return;
-        }
-
         RE::FormID furniture = findFurnitureInCell(player->GetParentCell(), player->As<RE::Actor>(), 0);
-        if (furniture > 0) {
-            RE::TESObjectREFR* furnitureForm = RE::TESForm::LookupByID(furniture)->AsReference();
-            logger::info("Furniture: {}", furnitureForm->GetName());
-            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(furnitureForm));
-            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "TakeASeat",
-                                                                                       args, callback);
 
+        auto occupedFurn = herika->getActor()->GetOccupiedFurniture();
+        std::string actualFurn;
+        if (occupedFurn) {
+            // Check if already on seat
+            if (occupedFurn.get())
+                if (occupedFurn.get()->As<RE::TESFurniture>()) 
+                    if (occupedFurn.get()->As<RE::TESFurniture>()->workBenchData.benchType == RE::TESFurniture::WorkBenchData::BenchType::kNone) 
+                        actualFurn.assign(occupedFurn.get()->GetDisplayFullName());
+
+        }
+        if (!actualFurn.empty()) {
             if (GlobalRechatPolicyAsap == 1) {
-                HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                                "command@" + command + "@" + trim(parameter) +
-                                                    "@#HERIKA_NPC1# sits at " + furnitureForm->GetName()),
-                                    npc);
+                HTTPManager::stream(
+                    std::format("funcret|{}|{}|{} ({})", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                "command@" + command + "@" + trim(parameter) +
+                                    "@take a seat error, #HERIKA_NPC1# is currently using " + actualFurn,
+                                npc->GetDisplayFullName()),
+                    npc);
             } else {
-                HTTPManager::log(std::format("infoaction|{}|{}|{} seated now on {} ", getCurrentTimeMillis(),
-                                             GetGameTimeStamp(), npc->GetDisplayFullName(), furnitureForm->GetName()));
+                HTTPManager::log(std::format("infoaction|{}|{}|{} is sitting/using {}", getCurrentTimeMillis(),
+                                             GetGameTimeStamp(), npc->GetDisplayFullName(), actualFurn));
+                logger::info("{} is using furniture {}", npc->GetDisplayFullName(), actualFurn);
             }
         } else {
-            if (GlobalRechatPolicyAsap == 1) {
-                HTTPManager::stream(std::format("funcret|{}|{}|{} ({})", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                                "command@" + command + "@" + trim(parameter) +
-                                                    "@#HERIKA_NPC1# could not find any place to sit",
-                                                npc->GetDisplayFullName()),
-                                    npc);
+            if (furniture > 0) {
+                RE::TESObjectREFR* furnitureForm = RE::TESForm::LookupByID(furniture)->AsReference();
+                logger::info("Furniture: {}", furnitureForm->GetName());
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(npc), std::move(furnitureForm));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "TakeASeat",
+                                                                                           args, callback);
+
+                if (GlobalRechatPolicyAsap == 1) {
+                    HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                    "command@" + command + "@" + trim(parameter) +
+                                                        "@#HERIKA_NPC1# sits at " + furnitureForm->GetName()),
+                                        npc);
+                } else {
+                    HTTPManager::log(std::format("infoaction|{}|{}|{} seated now on {} ", getCurrentTimeMillis(),
+                                                 GetGameTimeStamp(), npc->GetDisplayFullName(),
+                                                 furnitureForm->GetName()));
+                }
+
+            } else {
+                if (GlobalRechatPolicyAsap == 1) {
+                    HTTPManager::stream(std::format("funcret|{}|{}|{} ({})", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                    "command@" + command + "@" + trim(parameter) +
+                                                        "@#HERIKA_NPC1# could not find any place to sit",
+                                                    npc->GetDisplayFullName()),
+                                        npc);
+                }
             }
         }
     } else if (command.contains("GoToSleep")) {
