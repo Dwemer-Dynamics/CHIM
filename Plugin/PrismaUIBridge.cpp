@@ -131,10 +131,6 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_chatboxStoryFetchInProgress{false};
     static std::atomic<int> g_chatboxStoryLastRowId{0};
     static std::atomic<int> g_chatboxStoryLastRelationshipId{0};
-    static std::atomic<bool> g_chatboxFocusChatEnabled{false};
-    static std::atomic<bool> g_chatboxFocusChatInitialized{false};
-    static bool g_chatboxFocusChatSentInitialized = false;
-    static bool g_lastChatboxFocusChatSent = false;
     static bool g_chatboxModeInitialized = false;
     static std::string g_lastChatboxMode = "";
     // Once a valid server or local value is accepted, delayed startup hydration
@@ -345,7 +341,6 @@ namespace PrismaUIBridge {
     static void PushCurrentModeToViews();
     static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
-    static void UpdateChatboxFocusUI(bool focused);
     static void UpdateChatboxRechatModeUI(const std::string& mode);
     static void SyncChatboxStatusFromServerAsync();
     static const char* PrismaConsoleLevelName(PRISMA_UI_API::ConsoleMessageLevel level);
@@ -6574,15 +6569,6 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
-    static void UpdateChatboxFocusUI(bool focused) {
-        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
-            return;
-        }
-
-        std::string jsCall = std::string("window.updateChatboxFocus(") + (focused ? "true" : "false") + ")";
-        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
-    }
-
     static void UpdateChatboxRechatModeUI(const std::string& mode) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
             return;
@@ -6734,16 +6720,6 @@ R"CHIM(
                                 g_chatboxCurrentModelLabel = "Standard";
                                 break;
                             }
-                        }
-                        if (data.contains("focus_chat")) {
-                            bool enabled = false;
-                            if (data["focus_chat"].is_boolean()) {
-                                enabled = data["focus_chat"].get<bool>();
-                            } else if (data["focus_chat"].is_number_integer()) {
-                                enabled = data["focus_chat"].get<int>() != 0;
-                            }
-                            g_chatboxFocusChatEnabled.store(enabled);
-                            g_chatboxFocusChatInitialized.store(true);
                         }
                         if (data.contains("rechat_mode") && data["rechat_mode"].is_string()) {
                             g_chatboxCurrentRechatMode = data["rechat_mode"].get<std::string>();
@@ -7070,15 +7046,6 @@ R"CHIM(
             g_chatboxModelInitialized = true;
         }
 
-        if (g_chatboxFocusChatInitialized.load()) {
-            bool enabled = g_chatboxFocusChatEnabled.load();
-            if (!g_chatboxFocusChatSentInitialized || enabled != g_lastChatboxFocusChatSent) {
-                UpdateChatboxFocusUI(enabled);
-                g_lastChatboxFocusChatSent = enabled;
-                g_chatboxFocusChatSentInitialized = true;
-            }
-        }
-
         if (g_chatboxRechatModeLoaded.load() &&
             (!g_chatboxRechatModeSentInitialized || g_lastChatboxRechatMode != g_chatboxCurrentRechatMode)) {
             UpdateChatboxRechatModeUI(g_chatboxCurrentRechatMode);
@@ -7320,16 +7287,6 @@ R"CHIM(
                     RE::DebugNotification("[CHIM] That target is not currently available.");
                 }
             }
-        } else if (cmd == "focus_chat_toggle") {
-            bool newFocusChatState = !g_chatboxFocusChatEnabled.load();
-            HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@{}",
-                getCurrentTimeMillis(), GetGameTimeStamp(), newFocusChatState ? 1 : 0));
-            g_chatboxFocusChatEnabled.store(newFocusChatState);
-            g_chatboxFocusChatInitialized.store(true);
-            UpdateChatboxFocusUI(newFocusChatState);
-            g_lastChatboxFocusChatSent = newFocusChatState;
-            g_chatboxFocusChatSentInitialized = true;
-            RE::DebugNotification(newFocusChatState ? "[CHIM] Compact Chat enabled." : "[CHIM] Compact Chat disabled.");
         }
     }
 
@@ -7891,15 +7848,6 @@ R"CHIM(
 
         // LLM profile selection
         if (actionId.starts_with("llm_")) {
-            if (actionId == "llm_focus") {
-                // Use HTTPManager::log like the original wheel menus
-                HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@1", 
-                    getCurrentTimeMillis(), GetGameTimeStamp()));
-                logger::info("[Settings Menu] Enabled Compact Chat");
-                RE::DebugNotification("[CHIM] Compact Chat enabled.");
-                HideSettingsMenu();
-                return;
-            }
             ApplyLLMProfileSelection(actionId, "Settings Menu", true);
             HideSettingsMenu();
             return;

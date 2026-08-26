@@ -78,7 +78,7 @@
         updateModelSlot(status.model_slot_label);
         
         // Compact Chat
-        focusIndicator.classList.toggle('active', !!status.focus_chat);
+        focusIndicator.classList.toggle('active', !!status.compact_chat);
     }
     
     /**
