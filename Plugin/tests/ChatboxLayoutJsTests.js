@@ -217,10 +217,38 @@ test('offers a compact one-shot player mood selector with no mood as the default
     assert.match(script, /window\.clearFocusMessage[\s\S]*?resetPlayerMood\(\)/);
 });
 
-test('sends validated mood metadata and mirrors the persisted tag in the live story row', () => {
+test('sends validated mood metadata and mirrors the default mood phrasing in the live story row', () => {
     assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
     assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood\)/);
-    assert.match(bridge, /displayMessage \+= " \[mood: " \+ playerMood \+ "\]"/);
+
+    // The optimistic row reads as prose, matching the server's default suffix so a refresh dedupes it.
+    const moodSuffixes = {
+        happy: '(speaks in a happy tone.)',
+        sad: '(speaks in a sad tone.)',
+        angry: '(speaks in an angry tone.)',
+        annoyed: '(speaks in an annoyed tone.)',
+        scared: '(speaks in a frightened tone.)',
+        surprised: '(speaks in a surprised tone.)',
+        confused: '(speaks in a confused tone.)',
+        suspicious: '(speaks in a suspicious tone.)',
+        playful: '(speaks in a playful tone.)',
+        flirty: '(speaks in a flirtatious tone.)'
+    };
+    Object.keys(moodSuffixes).forEach((mood) => {
+        assert.ok(
+            bridge.includes(`if (playerMood == "${mood}") return "${moodSuffixes[mood]}";`),
+            `default mood phrasing missing for ${mood}`
+        );
+    });
+
+    // Every selectable mood needs phrasing, and no mood must stay untouched.
+    const offeredMoods = [...html.matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
+        .map((match) => match[1])
+        .filter(Boolean);
+    offeredMoods.forEach((mood) => assert.ok(moodSuffixes[mood], `no default phrasing for ${mood}`));
+    assert.match(bridge, /static std::string_view DefaultPlayerMoodSuffix\(const std::string& playerMood\)[\s\S]*?return \{\};/);
+    assert.match(bridge, /const std::string_view moodSuffix = DefaultPlayerMoodSuffix\(playerMood\);\s*if \(!moodSuffix\.empty\(\)\) \{[\s\S]*?displayMessage \+= moodSuffix;/);
+    assert.ok(!bridge.includes('[mood: '), 'raw mood tag must not reach the story row');
     assert.match(bridge, /PushChatboxMessage\(playerName, displayMessage, "", "player"\)/);
     assert.match(bridge, /const bool supportedMood =[\s\S]*?playerMood == "annoyed"[\s\S]*?playerMood == "surprised"[\s\S]*?playerMood == "confused"[\s\S]*?playerMood == "suspicious"[\s\S]*?playerMood == "playful"[\s\S]*?playerMood == "flirty";/);
     assert.match(bridge, /routingContext\.playerMood = playerMood/);
