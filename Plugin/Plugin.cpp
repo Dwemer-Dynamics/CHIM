@@ -1995,9 +1995,9 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "combat";
     } else if (hasNonSeatUse) {
         currentAction = isLeaningUse ? "leaning" : "using";
-    } else if (isSitting || useType == "chair") {
+    } else if (isSitting) {
         currentAction = "sitting";
-    } else if (!useType.empty()) {
+    } else if (!useType.empty() && useType != "chair") {
         currentAction = "using";
     } else if (isSneaking) {
         currentAction = "sneaking";
