@@ -1562,6 +1562,7 @@ body {
 
 .focus-chatbox-mood-options {
     display: flex;
+    flex: 1 1 auto;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
@@ -1610,6 +1611,56 @@ body {
     outline: none;
     border-color: rgb(242, 124, 17);
     box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.28);
+}
+
+/* Custom mood free-text field sits directly beside its pencil icon and wraps with the roster. */
+.focus-chatbox-mood-custom-input {
+    flex: 0 1 140px;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 30px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid rgba(120, 120, 132, 0.34);
+    border-radius: 6px;
+    outline: none;
+    background: rgba(30, 30, 40, 0.9);
+    color: #e8e8e8;
+    font-family: inherit;
+    font-size: 0.82em;
+    line-height: 1;
+}
+
+.focus-chatbox-mood-custom-input::placeholder {
+    color: #83838f;
+    opacity: 1;
+}
+
+.focus-chatbox-mood-custom-input:hover {
+    border-color: rgba(242, 124, 17, 0.55);
+}
+
+.focus-chatbox-mood-custom-input:focus,
+.focus-chatbox-mood-custom-input:focus-visible {
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.28);
+}
+
+.focus-chatbox-mood-custom-input[aria-invalid="true"] {
+    border-color: rgb(214, 78, 66);
+    box-shadow: 0 0 0 2px rgba(214, 78, 66, 0.26);
+}
+
+.focus-chatbox-mood-custom-error {
+    flex: 1 1 100%;
+    min-width: 0;
+    color: #ef9a92;
+    font-size: 0.72em;
+    letter-spacing: 0.3px;
+}
+
+.focus-chatbox-mood-custom-error[hidden] {
+    display: none;
 }
 
 .focus-chatbox-actions {

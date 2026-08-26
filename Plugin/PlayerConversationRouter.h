@@ -33,6 +33,7 @@ struct PlayerConversationRoutingContext
     std::string symbolRoutingMode;
     std::string routingMessage;
     std::string playerMood;
+    std::string customPlayerMood;
     bool everyoneMode = false;
     bool narratorMode = false;
 };

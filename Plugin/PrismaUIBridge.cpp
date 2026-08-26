@@ -7143,6 +7143,25 @@ R"CHIM(
         } else if (cmd.starts_with("event_deleted|")) {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("send_custom_mood|")) {
+            const json payload = json::parse(cmd.substr(17), nullptr, false);
+            if (payload.is_discarded() || !payload.is_object() ||
+                !payload.contains("message") || !payload["message"].is_string() ||
+                !payload.contains("custom_mood") || !payload["custom_mood"].is_string()) {
+                logger::warn("[Chatbox] Ignoring malformed custom mood command");
+                return;
+            }
+
+            const std::string message = payload["message"].get<std::string>();
+            const std::string customPlayerMood = payload["custom_mood"].get<std::string>();
+            if (!message.empty()) {
+                if (customPlayerMood.empty() || customPlayerMood.size() > 320) {
+                    logger::warn("[Chatbox] Sending message without invalid custom mood metadata");
+                    SendChatboxMessage(message, "", "");
+                } else {
+                    SendChatboxMessage(message, "custom", customPlayerMood);
+                }
+            }
         } else if (cmd.starts_with("send_mood|")) {
             std::string payload = cmd.substr(10);
             const auto separator = payload.find('|');
@@ -7162,13 +7181,13 @@ R"CHIM(
                 playerMood.clear();
             }
             if (!message.empty()) {
-                SendChatboxMessage(message, playerMood);
+                SendChatboxMessage(message, playerMood, "");
             }
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
             if (!message.empty()) {
-                SendChatboxMessage(message, "");
+                SendChatboxMessage(message, "", "");
             }
         } else if (cmd == "focus") {
             // Focus the chatbox for typing
@@ -7697,7 +7716,8 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message, const std::string& playerMood) {
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood) {
         if (message.empty()) {
             return;
         }
@@ -7729,6 +7749,7 @@ R"CHIM(
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
         routingContext.playerMood = playerMood;
+        routingContext.customPlayerMood = customPlayerMood;
         if (submission.symbolOverride) {
             routingContext.symbolRoutingMode = submission.mode;
             routingContext.routingMessage = submission.message;

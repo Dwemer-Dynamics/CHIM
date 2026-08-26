@@ -16,6 +16,9 @@
     const focusShellElement = document.querySelector('.focus-chatbox-shell');
     const focusInput = document.getElementById('focus-chatbox-input');
     const playerMoodInputs = document.querySelectorAll('input[name="chatbox-player-mood"]');
+    const playerMoodCustomRadio = document.getElementById('chatbox-mood-custom');
+    const playerMoodCustomTextInput = document.getElementById('chatbox-mood-custom-text');
+    const playerMoodCustomErrorElement = document.getElementById('chatbox-mood-custom-error');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
     const currentModeElement = document.getElementById('chatbox-current-mode');
@@ -54,6 +57,7 @@
 
     // State
     let currentTab = 'chat';
+    const customPlayerMoodValue = 'custom';
     const maxStoryEntries = 150;
     const liveStoryDedupeWindowMs = 15000;
     const recentStoryRetentionMs = 60000;
@@ -511,25 +515,79 @@
         return ['happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty'].indexOf(mood) >= 0 ? mood : '';
     }
 
-    function getSelectedPlayerMood() {
+    // Free-form custom mood: collapse whitespace and cap at the input's maxlength before it leaves the view.
+    function normalizeCustomPlayerMood(text) {
+        return String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 80);
+    }
+
+    // JSON keeps '|' inside player text from splitting into extra bridge arguments.
+    function buildCustomMoodCommand(customMood, message) {
+        return 'send_custom_mood|' + JSON.stringify({ custom_mood: customMood, message: message });
+    }
+
+    function getSelectedPlayerMoodValue() {
         const selected = Array.prototype.find.call(playerMoodInputs, function(input) {
             return input.checked;
         });
-        return normalizePlayerMood(selected ? selected.value : '');
+        return selected ? selected.value : '';
+    }
+
+    function getSelectedPlayerMood() {
+        return normalizePlayerMood(getSelectedPlayerMoodValue());
+    }
+
+    function isCustomPlayerMoodSelected() {
+        return getSelectedPlayerMoodValue() === customPlayerMoodValue;
+    }
+
+    function getCustomPlayerMoodText() {
+        return normalizeCustomPlayerMood(playerMoodCustomTextInput ? playerMoodCustomTextInput.value : '');
+    }
+
+    function setCustomPlayerMoodInvalid(invalid) {
+        if (playerMoodCustomTextInput) {
+            playerMoodCustomTextInput.setAttribute('aria-invalid', invalid ? 'true' : 'false');
+        }
+        if (playerMoodCustomErrorElement) {
+            playerMoodCustomErrorElement.hidden = !invalid;
+        }
+    }
+
+    // Typing in or focusing the field is itself the request for a custom mood.
+    function selectCustomPlayerMood() {
+        if (playerMoodCustomRadio && !playerMoodCustomRadio.checked) {
+            playerMoodCustomRadio.checked = true;
+        }
+    }
+
+    function focusCustomPlayerMoodInput() {
+        if (!playerMoodCustomTextInput) return;
+        playerMoodCustomTextInput.focus();
+        const caret = playerMoodCustomTextInput.value.length;
+        playerMoodCustomTextInput.selectionStart = caret;
+        playerMoodCustomTextInput.selectionEnd = caret;
     }
 
     function resetPlayerMood() {
         playerMoodInputs.forEach(function(input) {
             input.checked = input.value === '';
         });
+        if (playerMoodCustomTextInput) {
+            playerMoodCustomTextInput.value = '';
+        }
+        setCustomPlayerMoodInvalid(false);
     }
 
-    function sendMessageToBridge(message, playerMood) {
+    function sendMessageToBridge(message, playerMood, customMood) {
         if (!message || !message.trim()) return;
-        if (window.chimChatboxCommand) {
-            const mood = normalizePlayerMood(playerMood);
-            window.chimChatboxCommand(mood ? 'send_mood|' + mood + '|' + message : 'send|' + message);
+        if (!window.chimChatboxCommand) return;
+        const custom = normalizeCustomPlayerMood(customMood);
+        if (custom) {
+            window.chimChatboxCommand(buildCustomMoodCommand(custom, message));
+            return;
         }
+        const mood = normalizePlayerMood(playerMood);
+        window.chimChatboxCommand(mood ? 'send_mood|' + mood + '|' + message : 'send|' + message);
     }
 
     function sendControlCommand(command) {
@@ -839,7 +897,18 @@
         if (!focusInput) return;
         const message = focusInput.value;
         if (!message.trim()) return;
-        sendMessageToBridge(message, getSelectedPlayerMood());
+
+        const customSelected = isCustomPlayerMoodSelected();
+        const customMood = customSelected ? getCustomPlayerMoodText() : '';
+        // Custom mood with nothing typed keeps the composer open instead of silently dropping the mood.
+        if (customSelected && !customMood) {
+            setCustomPlayerMoodInvalid(true);
+            focusCustomPlayerMoodInput();
+            return;
+        }
+
+        setCustomPlayerMoodInvalid(false);
+        sendMessageToBridge(message, customSelected ? '' : getSelectedPlayerMood(), customMood);
         focusInput.value = '';
         renderModeIndicator();
         window.closeFocusChatbox(true);
@@ -933,6 +1002,40 @@
                     resetTargetSelectionForModeChange();
                     sendControlCommand('mode_close');
                 }
+                window.sendFocusMessage();
+            }
+        });
+    }
+
+    playerMoodInputs.forEach(function(input) {
+        input.addEventListener('change', function() {
+            if (!input.checked) return;
+            if (input.value === customPlayerMoodValue) {
+                focusCustomPlayerMoodInput();
+                return;
+            }
+            // A predefined mood ignores the typed text but keeps it for the rest of this session.
+            setCustomPlayerMoodInvalid(false);
+        });
+    });
+
+    if (playerMoodCustomTextInput) {
+        playerMoodCustomTextInput.addEventListener('focus', selectCustomPlayerMood);
+        playerMoodCustomTextInput.addEventListener('input', function() {
+            selectCustomPlayerMood();
+            if (getCustomPlayerMoodText()) {
+                setCustomPlayerMoodInvalid(false);
+            }
+        });
+        playerMoodCustomTextInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                window.closeFocusChatbox(true);
+                return;
+            }
+
+            if (e.key === 'Enter') {
+                e.preventDefault();
                 window.sendFocusMessage();
             }
         });

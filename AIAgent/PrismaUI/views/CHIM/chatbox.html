@@ -213,6 +213,20 @@
                                 <label class="focus-chatbox-mood-option" for="chatbox-mood-playful" title="Playful">&#x1F60F;</label>
                                 <input id="chatbox-mood-flirty" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="flirty" aria-label="Flirty">
                                 <label class="focus-chatbox-mood-option" for="chatbox-mood-flirty" title="Flirty">&#x1F618;</label>
+                                <input id="chatbox-mood-custom" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="custom" aria-label="Custom mood">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-custom" title="Custom mood">&#x270F;&#xFE0F;</label>
+                                <input
+                                    id="chatbox-mood-custom-text"
+                                    class="focus-chatbox-mood-custom-input"
+                                    type="text"
+                                    maxlength="80"
+                                    placeholder="e.g. sarcastically"
+                                    aria-label="Custom mood description"
+                                    aria-describedby="chatbox-mood-custom-error"
+                                    aria-invalid="false"
+                                    autocomplete="off"
+                                    spellcheck="false">
+                                <span id="chatbox-mood-custom-error" class="focus-chatbox-mood-custom-error" role="alert" hidden>Describe the custom mood or pick another mood.</span>
                             </div>
                         </fieldset>
                         <div class="focus-chatbox-actions">

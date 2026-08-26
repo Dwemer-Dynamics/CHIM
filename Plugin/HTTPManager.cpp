@@ -2211,6 +2211,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         }
                         if (!routingContext->playerMood.empty()) {
                             audienceSnapshot["player_mood"] = routingContext->playerMood;
+                            if (routingContext->playerMood == "custom" &&
+                                !routingContext->customPlayerMood.empty()) {
+                                audienceSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
+                            }
                         }
                         audienceSnapshot["listener_radius_units"] = playerRoute.listenerRadiusUnits;
                         audienceSnapshot["audience_radius_units"] = playerRoute.audienceRadiusUnits;
@@ -2227,6 +2231,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     }
                     if (!routingContext->playerMood.empty()) {
                         requestModeSnapshot["player_mood"] = routingContext->playerMood;
+                        if (routingContext->playerMood == "custom" &&
+                            !routingContext->customPlayerMood.empty()) {
+                            requestModeSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
+                        }
                     }
                     const std::string snapshotDump = requestModeSnapshot.dump();
                     outboundMsg.append("|");
