@@ -19,6 +19,7 @@
 #pragma comment(lib, "winmm.lib")
 
 #include "AudioManager.h"
+#include "AutoActivateRules.h"
 #include "Commands.h"
 #include "Conf.h"
 #include "Globals.h"
@@ -1818,11 +1819,11 @@ void addAllNPC() {
                 if (!race) {
                     continue;
                 }
-                if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) {
-                    continue;
-                } else if (actor->IsHostileToActor(player) && AutoAddHostile == false) {
-                    continue;
-                } else if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) {
+                const bool legacyEligible =
+                    (race->AllowsPCDialogue() || AutoAddAllRaces) &&
+                    (!actor->IsHostileToActor(player) || AutoAddHostile) &&
+                    (!race->HasKeywordString("ActorTypeCreature") || AutoAddAllRaces);
+                if (!AutoActivateRules::ShouldAutoActivate(actor, player, legacyEligible)) {
                     continue;
                 }
 
@@ -1886,9 +1887,11 @@ bool promoteCrosshairTargetToAI() {
 
     auto* race = actor->GetRace();
     if (!race) return false;
-    if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) return false;
-    if (actor->IsHostileToActor(player) && AutoAddHostile == false) return false;
-    if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) return false;
+    const bool legacyEligible =
+        (race->AllowsPCDialogue() || AutoAddAllRaces) &&
+        (!actor->IsHostileToActor(player) || AutoAddHostile) &&
+        (!race->HasKeywordString("ActorTypeCreature") || AutoAddAllRaces);
+    if (!AutoActivateRules::ShouldAutoActivate(actor, player, legacyEligible)) return false;
 
     const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
     const float distance = player->GetPosition().GetDistance(actor->GetPosition());

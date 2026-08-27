@@ -285,16 +285,17 @@
         await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({operation:'delete',id:selectedProfileId}) }));
         selectedProfileId = 0; await loadProfiles();
     }
-    /* ----- CHIM MCM (mirrors the six SkyUI MCM pages, rendered from native state) ----- */
+    /* ----- CHIM MCM (mirrors SkyUI settings and adds Prisma-only runtime tools) ----- */
     const MCM_PAGES = [
         { id: 'hotkeys', label: 'Hotkeys' },
         { id: 'auto_activate', label: 'Auto Activate' },
+        { id: 'auto_rules', label: 'Auto Activate Rules' },
         { id: 'behavior', label: 'Behavior' },
         { id: 'sound', label: 'Sound' },
         { id: 'ai_agents', label: 'AI Agents' },
         { id: 'tools', label: 'Tools' }
     ];
-    const MCM_PAGE_ALIASES = { hotkey: 'hotkeys', keys: 'hotkeys', keymaps: 'hotkeys', auto: 'auto_activate', autoactivate: 'auto_activate', agents: 'ai_agents', aiagents: 'ai_agents', audio: 'sound', tool: 'tools' };
+    const MCM_PAGE_ALIASES = { hotkey: 'hotkeys', keys: 'hotkeys', keymaps: 'hotkeys', auto: 'auto_activate', autoactivate: 'auto_activate', autorules: 'auto_rules', agents: 'ai_agents', aiagents: 'ai_agents', audio: 'sound', tool: 'tools' };
     /* DirectInput (DIK) scan codes used by Skyrim and SkyUI keymaps.
        Rows are [scan code, KeyboardEvent.code ('' when the device cannot be captured in-view), display name]. */
     const MCM_KEY_CODES = [
@@ -359,6 +360,13 @@
         if (!MCM_KEY_FROM_KEY.has(alias)) MCM_KEY_FROM_KEY.set(alias, row[0]);
     });
     const MCM_SAVE_TIMEOUT_MS = 12000;
+    const MCM_AUTO_RULES_KEY = '__auto_rules';
+    const MCM_AUTO_RULE_LIMIT = 32;
+    const MCM_AUTO_RULE_TEXT_LIMIT = 64;
+    const MCM_AUTO_RULE_FLAGS = [
+        ['can_talk', 'Can Talk'], ['unique', 'Unique'], ['guard', 'Guard'],
+        ['follower', 'Follower'], ['hostile', 'Hostile'], ['creature', 'Creature']
+    ];
     let mcmState = null;
     let mcmAgents = null;
     let mcmRequested = false;
@@ -372,6 +380,12 @@
     const mcmSaveErrors = new Map();
     let mcmSaving = false;
     let mcmCapture = null;
+    let mcmAutoRulesBase = null;
+    let mcmAutoRulesDraft = null;
+    let mcmAutoRulesDirty = false;
+    let mcmAutoRulesTarget = null;
+    let mcmAutoRulesRevision = -1;
+    const mcmAutoRulesOpen = new Set();
 
     function mcmStatus(message, error) {
         const line = byId('mcm-status');
@@ -551,18 +565,85 @@
         refreshMcmSaveBar();
     }
 
+    function cloneAutoRules(rules) {
+        return JSON.parse(JSON.stringify(Array.isArray(rules) ? rules : []));
+    }
+    function normalizeAutoRule(value, index) {
+        const source = value && typeof value === 'object' ? value : {};
+        const triState = (key) => ['yes', 'no'].includes(String(source[key] || '').toLowerCase()) ? String(source[key]).toLowerCase() : 'any';
+        return {
+            id: String(source.id || `rule-${Date.now()}-${index}`).slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            name: String(source.name || '').slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            enabled: source.enabled !== false,
+            decision: String(source.decision || '').toLowerCase() === 'include' ? 'include' : 'exclude',
+            priority: Math.max(0, Math.min(100, Math.round(Number(source.priority) || 0))),
+            npc_name: String(source.npc_name || '').slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            base_actor: String(source.base_actor || '').slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            race: String(source.race || '').slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            faction: String(source.faction || '').slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            source_mod: String(source.source_mod || '').slice(0, MCM_AUTO_RULE_TEXT_LIMIT),
+            can_talk: triState('can_talk'),
+            unique: triState('unique'),
+            guard: triState('guard'),
+            follower: triState('follower'),
+            hostile: triState('hostile'),
+            creature: triState('creature')
+        };
+    }
+    function canonicalAutoRules(rules) {
+        return cloneAutoRules(rules).map(normalizeAutoRule).sort((left, right) => left.id.localeCompare(right.id));
+    }
+    function autoRulesEqual(left, right) {
+        return JSON.stringify(canonicalAutoRules(left)) === JSON.stringify(canonicalAutoRules(right));
+    }
+    function autoRuleHasCondition(rule) {
+        return ['npc_name', 'base_actor', 'race', 'faction', 'source_mod'].some((key) => String(rule[key] || '').trim()) ||
+            MCM_AUTO_RULE_FLAGS.some((definition) => String(rule[definition[0]] || 'any') !== 'any');
+    }
+    function validateAutoRules() {
+        const rules = Array.isArray(mcmAutoRulesDraft) ? mcmAutoRulesDraft : [];
+        if (rules.length > MCM_AUTO_RULE_LIMIT) return { id: '', message: `Rule limit reached (${MCM_AUTO_RULE_LIMIT}).` };
+        const ids = new Set();
+        for (let index = 0; index < rules.length; index += 1) {
+            const rule = rules[index];
+            if (!rule.id || ids.has(rule.id)) return { id: rule.id || '', message: `Rule ${index + 1} has an invalid ID.` };
+            ids.add(rule.id);
+            if (!autoRuleHasCondition(rule)) return { id: rule.id, message: 'Add at least one condition.' };
+            if (!Number.isInteger(Number(rule.priority)) || Number(rule.priority) < 0 || Number(rule.priority) > 100) {
+                return { id: rule.id, message: 'Priority must be from 0 to 100.' };
+            }
+            const tooLong = ['name', 'npc_name', 'base_actor', 'race', 'faction', 'source_mod']
+                .find((key) => String(rule[key] || '').length > MCM_AUTO_RULE_TEXT_LIMIT);
+            if (tooLong) return { id: rule.id, message: `Text is limited to ${MCM_AUTO_RULE_TEXT_LIMIT} characters.` };
+        }
+        return null;
+    }
+    function autoRulesChangeCount() {
+        return mcmStaged.size + (mcmAutoRulesDirty ? 1 : 0);
+    }
+    function stageAutoRules(card) {
+        mcmAutoRulesDirty = !autoRulesEqual(mcmAutoRulesDraft, mcmAutoRulesBase);
+        mcmSaveErrors.delete(MCM_AUTO_RULES_KEY);
+        if (card) {
+            const rule = (mcmAutoRulesDraft || []).find((candidate) => candidate.id === card.dataset.ruleId);
+            card.classList.toggle('is-staged', !!rule && autoRuleDirty(rule));
+        }
+        refreshMcmSaveBar();
+    }
+
     /* ----- Staged edits: dirty state, ordered save, explicit discard ----- */
     function refreshMcmSaveBar() {
         const bar = byId('mcm-save-bar');
         if (!bar) return;
-        const count = mcmStaged.size;
+        const count = autoRulesChangeCount();
         bar.dataset.staged = count ? 'true' : 'false';
         bar.dataset.saving = mcmSaving ? 'true' : 'false';
         const summary = byId('mcm-staged-summary');
         if (summary) {
-            summary.textContent = mcmSaving
-                ? 'Applying staged settings...'
-                : (count ? `${count} setting${count === 1 ? '' : 's'} staged, not applied yet` : 'No unsaved changes');
+            if (mcmSaving) summary.textContent = 'Applying staged changes...';
+            else if (mcmStaged.size && mcmAutoRulesDirty) summary.textContent = `${mcmStaged.size} setting${mcmStaged.size === 1 ? '' : 's'} and rule changes staged`;
+            else if (mcmAutoRulesDirty) summary.textContent = 'Rule changes staged, not applied yet';
+            else summary.textContent = count ? `${count} setting${count === 1 ? '' : 's'} staged, not applied yet` : 'No unsaved changes';
         }
         const save = byId('mcm-save');
         if (save) {
@@ -594,15 +675,32 @@
             seen.add(key);
             queue.push({ key: key, label: key, value: value });
         });
+        if (mcmAutoRulesDirty) queue.push({ key: MCM_AUTO_RULES_KEY, label: 'Auto Activate Rules', kind: 'rules' });
         return queue;
     }
     function mcmFocusEntryControl(key) {
+        if (key === MCM_AUTO_RULES_KEY) {
+            switchMcmPage('auto_rules');
+            const target = document.querySelector('.mcm-rule-card.has-error summary, .mcm-rule-card summary');
+            if (target) target.focus();
+            return;
+        }
         const candidates = ['toggle', 'range', 'keycap'].map((kind) => byId(mcmControlId(kind, key))).filter(Boolean);
         const target = candidates.find((node) => !node.disabled) || candidates[0];
         if (target) target.focus();
     }
     function saveMcmChanges() {
-        if (mcmSaving || !mcmStaged.size) return;
+        if (mcmSaving || !autoRulesChangeCount()) return;
+        const ruleError = mcmAutoRulesDirty ? validateAutoRules() : null;
+        if (ruleError) {
+            mcmSaveErrors.set(MCM_AUTO_RULES_KEY, ruleError.message);
+            if (ruleError.id) mcmAutoRulesOpen.add(ruleError.id);
+            renderMcmPanel('auto_rules');
+            mcmSaveNote(ruleError.message, 'error');
+            mcmStatus(ruleError.message, true);
+            mcmFocusEntryControl(MCM_AUTO_RULES_KEY);
+            return;
+        }
         stopMcmCapture();
         const queue = mcmStagedQueue();
         const failures = [];
@@ -618,7 +716,7 @@
             renderMcmPanel(activeMcmPage);
             const applied = queue.length - failures.length;
             if (!failures.length) {
-                const done = `Applied ${applied} setting${applied === 1 ? '' : 's'}.`;
+                const done = `Applied ${applied} staged change${applied === 1 ? '' : 's'}.`;
                 mcmSaveNote(done, 'ok');
                 mcmStatus(done, false);
                 const save = byId('mcm-save');
@@ -635,11 +733,17 @@
             const item = queue[index];
             const position = `${index + 1} of ${queue.length}`;
             mcmSaveNote(`Applying ${position}: ${item.label}...`, 'busy');
-            sendMcmCommand(`mcm|set|${item.key}|${mcmNumberText(item.value)}`, {
+            const request = item.kind === 'rules'
+                ? `mcm|auto_rules_save|${JSON.stringify({ rules: mcmAutoRulesDraft })}`
+                : `mcm|set|${item.key}|${mcmNumberText(item.value)}`;
+            sendMcmCommand(request, {
                 pendingMessage: `Applying ${item.label} (${position})...`,
                 timeoutMs: MCM_SAVE_TIMEOUT_MS,
                 onResult: (ok, message) => {
-                    if (ok) mcmStaged.delete(item.key);
+                    if (ok && item.kind === 'rules') {
+                        mcmAutoRulesBase = cloneAutoRules(mcmAutoRulesDraft);
+                        mcmAutoRulesDirty = false;
+                    } else if (ok) mcmStaged.delete(item.key);
                     else failures.push({ key: item.key, label: item.label, message: message || 'The game rejected this value.' });
                     index += 1;
                     step();
@@ -651,13 +755,15 @@
     function discardMcmChanges(note) {
         stopMcmCapture();
         mcmStaged.clear();
+        mcmAutoRulesDraft = cloneAutoRules(mcmAutoRulesBase);
+        mcmAutoRulesDirty = false;
         mcmSaveErrors.clear();
         refreshMcmSaveBar();
         renderMcmPanel(activeMcmPage);
         mcmSaveNote(note === undefined ? 'Staged changes discarded.' : note, 'idle');
     }
     function confirmDiscardMcmChanges(options) {
-        const count = mcmStaged.size;
+        const count = autoRulesChangeCount();
         openMcmConfirm({
             title: options.title,
             body: `${options.body} ${count} staged change${count === 1 ? '' : 's'} will be lost. Use Save first to keep them.`,
@@ -934,6 +1040,288 @@
         });
         panel.appendChild(grid);
     }
+    function autoRuleDirty(rule) {
+        const baseline = (mcmAutoRulesBase || []).find((candidate) => candidate.id === rule.id);
+        return !baseline || !autoRulesEqual([rule], [baseline]);
+    }
+    function autoRuleDigest(rule) {
+        const parts = [];
+        const labels = { npc_name: 'NPC', base_actor: 'Base', race: 'Race', faction: 'Faction', source_mod: 'Mod' };
+        Object.keys(labels).forEach((key) => { if (String(rule[key] || '').trim()) parts.push(`${labels[key]}: ${rule[key]}`); });
+        MCM_AUTO_RULE_FLAGS.forEach((definition) => {
+            const value = String(rule[definition[0]] || 'any');
+            if (value !== 'any') parts.push(`${definition[1]}: ${value === 'yes' ? 'Yes' : 'No'}`);
+        });
+        return parts.length ? parts.join(' · ') : 'No conditions';
+    }
+    function autoRuleField(rule, key, labelText, type, onChange) {
+        const field = document.createElement('label');
+        field.className = 'field mcm-rule-field';
+        const label = document.createElement('span');
+        label.textContent = labelText;
+        const input = document.createElement('input');
+        input.type = type || 'text';
+        input.value = String(rule[key] === undefined ? '' : rule[key]);
+        if (type !== 'number') input.maxLength = MCM_AUTO_RULE_TEXT_LIMIT;
+        const placeholders = {
+            npc_name: 'Exact display name',
+            base_actor: 'EditorID or Plugin.esp/00000000',
+            race: 'Race name, EditorID, or stable ID',
+            faction: 'Faction name, EditorID, or stable ID',
+            source_mod: 'Plugin filename, including extension'
+        };
+        if (placeholders[key]) input.placeholder = placeholders[key];
+        input.disabled = mcmSaving;
+        input.dataset.ruleField = key;
+        if (type === 'number') { input.min = '0'; input.max = '100'; input.step = '1'; }
+        input.addEventListener('input', () => {
+            rule[key] = type === 'number' ? Number(input.value) : input.value;
+            onChange();
+        });
+        field.append(label, input);
+        return field;
+    }
+    function autoRuleTriState(rule, key, labelText, onChange) {
+        const field = document.createElement('fieldset');
+        field.className = 'mcm-rule-flag';
+        const legend = document.createElement('legend');
+        legend.textContent = labelText;
+        const group = document.createElement('div');
+        group.className = 'mcm-tristate';
+        group.setAttribute('role', 'radiogroup');
+        group.setAttribute('aria-label', labelText);
+        const buttons = [];
+        [['any', 'Any'], ['yes', 'Yes'], ['no', 'No']].forEach((option) => {
+            const button = document.createElement('button');
+            const active = String(rule[key] || 'any') === option[0];
+            button.type = 'button';
+            button.className = `mcm-tristate-button${active ? ' active' : ''}`;
+            button.textContent = option[1];
+            button.disabled = mcmSaving;
+            button.setAttribute('role', 'radio');
+            button.setAttribute('aria-checked', active ? 'true' : 'false');
+            button.tabIndex = active ? 0 : -1;
+            button.addEventListener('click', () => {
+                rule[key] = option[0];
+                buttons.forEach((candidate) => {
+                    const selected = candidate === button;
+                    candidate.classList.toggle('active', selected);
+                    candidate.setAttribute('aria-checked', selected ? 'true' : 'false');
+                    candidate.tabIndex = selected ? 0 : -1;
+                });
+                onChange();
+            });
+            buttons.push(button);
+            group.appendChild(button);
+        });
+        group.addEventListener('keydown', (event) => {
+            const previous = document.activeElement;
+            tabListKeydown(event, buttons);
+            if (document.activeElement !== previous) document.activeElement.click();
+        });
+        field.append(legend, group);
+        return field;
+    }
+    function buildAutoRuleCard(rule, position) {
+        const card = document.createElement('details');
+        card.className = 'mcm-rule-card';
+        card.dataset.ruleId = rule.id;
+        card.open = mcmAutoRulesOpen.has(rule.id);
+        card.classList.toggle('is-staged', autoRuleDirty(rule));
+        card.addEventListener('toggle', () => {
+            if (card.open) mcmAutoRulesOpen.add(rule.id);
+            else mcmAutoRulesOpen.delete(rule.id);
+        });
+
+        const summary = document.createElement('summary');
+        summary.className = 'mcm-rule-summary';
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = rule.enabled !== false;
+        enabled.disabled = mcmSaving;
+        enabled.setAttribute('aria-label', `Enable ${rule.name || `rule ${position + 1}`}`);
+        enabled.addEventListener('click', (event) => event.stopPropagation());
+        const decision = document.createElement('span');
+        const identity = document.createElement('span');
+        identity.className = 'mcm-rule-identity';
+        const name = document.createElement('strong');
+        const digest = document.createElement('small');
+        const priority = document.createElement('span');
+        priority.className = 'mcm-rule-priority';
+        const syncSummary = () => {
+            decision.className = `mcm-rule-decision is-${rule.decision}`;
+            decision.textContent = rule.decision === 'include' ? 'Include' : 'Exclude';
+            name.textContent = rule.name || `Rule ${position + 1}`;
+            digest.textContent = autoRuleDigest(rule);
+            priority.textContent = `P${Math.max(0, Math.min(100, Math.round(Number(rule.priority) || 0)))}`;
+            card.classList.toggle('is-staged', autoRuleDirty(rule));
+            const localError = !autoRuleHasCondition(rule) ? 'Add at least one condition.' : '';
+            error.textContent = localError;
+            error.hidden = !localError;
+            card.classList.toggle('has-error', !!localError);
+        };
+        enabled.addEventListener('change', () => { rule.enabled = enabled.checked; stageAutoRules(card); syncSummary(); });
+        identity.append(name, digest);
+        summary.append(enabled, decision, identity, priority);
+        summary.addEventListener('click', (event) => {
+            if (event.target.closest('input, button')) event.preventDefault();
+        });
+
+        const body = document.createElement('div');
+        body.className = 'mcm-rule-body';
+        const grid = document.createElement('div');
+        grid.className = 'mcm-rule-grid';
+        const changed = () => { stageAutoRules(card); syncSummary(); };
+        grid.append(
+            autoRuleField(rule, 'name', 'Rule Name', 'text', changed),
+            autoRuleField(rule, 'priority', 'Priority', 'number', changed)
+        );
+        const decisionField = document.createElement('label');
+        decisionField.className = 'field mcm-rule-field';
+        const decisionLabel = document.createElement('span');
+        decisionLabel.textContent = 'Decision';
+        const decisionSelect = document.createElement('select');
+        decisionSelect.disabled = mcmSaving;
+        decisionSelect.append(new Option('Exclude', 'exclude'), new Option('Include', 'include'));
+        decisionSelect.value = rule.decision;
+        decisionSelect.addEventListener('change', () => { rule.decision = decisionSelect.value; changed(); });
+        decisionField.append(decisionLabel, decisionSelect);
+        grid.append(
+            decisionField,
+            autoRuleField(rule, 'npc_name', 'NPC Name', 'text', changed),
+            autoRuleField(rule, 'base_actor', 'Base Actor', 'text', changed),
+            autoRuleField(rule, 'race', 'Race', 'text', changed),
+            autoRuleField(rule, 'faction', 'Faction', 'text', changed),
+            autoRuleField(rule, 'source_mod', 'Source Mod', 'text', changed)
+        );
+        body.appendChild(grid);
+        enhanceSelect(decisionSelect);
+
+        const flags = document.createElement('div');
+        flags.className = 'mcm-rule-flags';
+        MCM_AUTO_RULE_FLAGS.forEach((definition) => flags.appendChild(autoRuleTriState(rule, definition[0], definition[1], changed)));
+        body.appendChild(flags);
+        const footer = document.createElement('div');
+        footer.className = 'mcm-rule-footer';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'button danger compact';
+        remove.textContent = 'Delete Rule';
+        remove.disabled = mcmSaving;
+        remove.addEventListener('click', () => openMcmConfirm({
+            title: 'Delete Auto Activate rule?',
+            body: `Delete ${rule.name || `Rule ${position + 1}`}? The deletion is not applied until you use Save.`,
+            confirmLabel: 'Delete Rule',
+            danger: true,
+            onConfirm: () => {
+                mcmAutoRulesDraft = mcmAutoRulesDraft.filter((candidate) => candidate.id !== rule.id);
+                mcmAutoRulesOpen.delete(rule.id);
+                stageAutoRules();
+                renderMcmPanel('auto_rules');
+            }
+        }));
+        footer.appendChild(remove);
+        const error = document.createElement('p');
+        error.className = 'mcm-row-error';
+        error.hidden = true;
+        body.append(footer, error);
+        card.append(summary, body);
+        syncSummary();
+        return card;
+    }
+    function renderAutoRulesTarget(panel) {
+        const target = mcmAutoRulesTarget;
+        const card = document.createElement('section');
+        card.className = 'settings-section mcm-section mcm-target-section';
+        const title = document.createElement('h2');
+        title.textContent = 'Current Target';
+        card.appendChild(title);
+        if (!target) {
+            card.appendChild(mcmNote('Look at an NPC, then use Refresh to inspect its rule values.'));
+            panel.appendChild(card);
+            return;
+        }
+        const factions = Array.isArray(target.factions) ? target.factions.map((item) => item.stable_id || item.editor_id || item.name).filter(Boolean).join(', ') : '';
+        const values = [
+            ['NPC Name', target.name], ['Base Actor', target.base_actor_stable_id || target.base_actor],
+            ['Race', target.race_stable_id || target.race], ['Faction', factions], ['Source Mod', target.source_mod]
+        ];
+        const grid = document.createElement('div');
+        grid.className = 'mcm-target-grid';
+        values.forEach((definition) => {
+            if (!definition[1]) return;
+            const row = document.createElement('div');
+            row.className = 'mcm-row-readonly';
+            const label = document.createElement('span');
+            label.className = 'mcm-label';
+            label.textContent = definition[0];
+            const value = document.createElement('span');
+            value.className = 'mcm-readonly-value';
+            value.textContent = String(definition[1]);
+            row.append(label, value);
+            grid.appendChild(row);
+        });
+        card.appendChild(grid);
+        panel.appendChild(card);
+    }
+    function renderAutoRulesPanel(panel) {
+        if (mcmAutoRulesBase === null || mcmAutoRulesDraft === null) {
+            panel.appendChild(mcmNote('Loading Auto Activate rules from the game...'));
+            return;
+        }
+        renderAutoRulesTarget(panel);
+        const section = document.createElement('section');
+        section.className = 'settings-section mcm-section mcm-rules-section';
+        const toolbar = document.createElement('div');
+        toolbar.className = 'mcm-rules-toolbar';
+        const title = document.createElement('h2');
+        title.textContent = `Rules (${mcmAutoRulesDraft.length})`;
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'button secondary compact';
+        add.textContent = 'Add Rule';
+        add.disabled = mcmSaving || mcmAutoRulesDraft.length >= MCM_AUTO_RULE_LIMIT;
+        add.addEventListener('click', () => {
+            const highest = mcmAutoRulesDraft.reduce((value, rule) => Math.max(value, Number(rule.priority) || 0), 40);
+            const rule = normalizeAutoRule({
+                id: `rule-${Date.now()}-${++mcmSequence}`,
+                enabled: true,
+                decision: 'exclude',
+                priority: Math.min(100, highest + 10)
+            }, mcmAutoRulesDraft.length);
+            mcmAutoRulesDraft.push(rule);
+            mcmAutoRulesOpen.add(rule.id);
+            stageAutoRules();
+            renderMcmPanel('auto_rules');
+            const card = Array.from(document.querySelectorAll('.mcm-rule-card')).find((item) => item.dataset.ruleId === rule.id);
+            const input = card ? card.querySelector('[data-rule-field="name"]') : null;
+            if (input) input.focus();
+        });
+        toolbar.append(title, add);
+        const helpId = mcmHelp(toolbar, { description: 'Conditions in one rule are combined. Text uses exact, case-insensitive matching. Highest priority wins; Exclude wins ties. NPCs matching no rule use the Auto Activate settings.' });
+        if (helpId) add.setAttribute('aria-describedby', helpId);
+        section.appendChild(toolbar);
+        const documentError = mcmSaveErrors.get(MCM_AUTO_RULES_KEY) || '';
+        if (documentError) {
+            const error = document.createElement('p');
+            error.className = 'mcm-row-error mcm-rules-error';
+            error.textContent = documentError;
+            section.appendChild(error);
+        }
+        if (!mcmAutoRulesDraft.length) section.appendChild(mcmNote('No rules. Every NPC uses the Auto Activate settings.'));
+        const list = document.createElement('div');
+        list.className = 'mcm-rule-list';
+        mcmAutoRulesDraft.slice().sort((left, right) => {
+            const priorityDifference = Number(right.priority) - Number(left.priority);
+            if (priorityDifference) return priorityDifference;
+            if (left.decision !== right.decision) return left.decision === 'exclude' ? -1 : 1;
+            return String(left.name).localeCompare(String(right.name));
+        })
+            .forEach((rule, index) => list.appendChild(buildAutoRuleCard(rule, index)));
+        section.appendChild(list);
+        if (mcmAutoRulesDraft.length >= MCM_AUTO_RULE_LIMIT) section.appendChild(mcmNote(`Rule limit reached (${MCM_AUTO_RULE_LIMIT}).`));
+        panel.appendChild(section);
+    }
     function mcmAgentRow(agent, mode) {
         const row = document.createElement('div');
         row.className = 'mcm-agent-row';
@@ -1090,7 +1478,8 @@
         const panel = byId(`mcm-panel-${pageId}`);
         if (!panel) return;
         panel.replaceChildren();
-        if (pageId === 'ai_agents') renderMcmAgentsPanel(panel);
+        if (pageId === 'auto_rules') renderAutoRulesPanel(panel);
+        else if (pageId === 'ai_agents') renderMcmAgentsPanel(panel);
         else if (pageId === 'tools') renderMcmToolsPanel(panel);
         else renderMcmSettingsPanel(pageId, panel);
     }
@@ -1193,11 +1582,11 @@
         buildMcmTabs();
         byId('mcm-refresh').addEventListener('click', () => {
             requestMcmSnapshot();
-            if (mcmStaged.size) mcmSaveNote('Refreshing game values; your unsaved changes remain staged.', 'busy');
+            if (autoRulesChangeCount()) mcmSaveNote('Refreshing game values; your unsaved changes remain staged.', 'busy');
         });
         byId('mcm-save').addEventListener('click', saveMcmChanges);
         byId('mcm-discard').addEventListener('click', () => {
-            if (!mcmStaged.size || mcmSaving) return;
+            if (!autoRulesChangeCount() || mcmSaving) return;
             confirmDiscardMcmChanges({
                 title: 'Discard unsaved changes?',
                 body: 'Discard the edits in this CHIM MCM tab?',
@@ -1248,10 +1637,28 @@
             if (!MCM_PAGES.some((known) => known.id === page)) unknown.add(String(entry.page || 'unknown'));
         });
         renderMcmPanel(activeMcmPage);
-        const retained = mcmStaged.size ? ` ${mcmStaged.size} unsaved change${mcmStaged.size === 1 ? '' : 's'} retained.` : '';
+        const retainedCount = autoRulesChangeCount();
+        const retained = retainedCount ? ` ${retainedCount} unsaved change${retainedCount === 1 ? '' : 's'} retained.` : '';
         const summary = `${mcmState.entries.length} settings loaded.${retained}`;
         if (unknown.size) mcmStatus(`${summary} Unrecognised page(s) not shown: ${Array.from(unknown).join(', ')}.`, true);
         else mcmStatus(summary, false);
+    };
+    window.updateChimAutoRules = (payload) => {
+        const data = parseMcmPayload(payload);
+        if (!data || !Array.isArray(data.rules)) {
+            mcmStatus('Auto Activate rules payload could not be read.', true);
+            return;
+        }
+        const revision = Number(data.revision);
+        if (Number.isFinite(revision) && Number.isFinite(mcmAutoRulesRevision) && revision < mcmAutoRulesRevision) return;
+        const incoming = data.rules.map(normalizeAutoRule).slice(0, MCM_AUTO_RULE_LIMIT);
+        mcmAutoRulesRevision = Number.isFinite(revision) ? revision : mcmAutoRulesRevision;
+        mcmAutoRulesTarget = data.target && typeof data.target === 'object' ? data.target : null;
+        mcmAutoRulesBase = cloneAutoRules(incoming);
+        if (mcmAutoRulesDraft === null || !mcmAutoRulesDirty) mcmAutoRulesDraft = cloneAutoRules(incoming);
+        mcmAutoRulesDirty = !autoRulesEqual(mcmAutoRulesDraft, mcmAutoRulesBase);
+        refreshMcmSaveBar();
+        if (activeMcmPage === 'auto_rules') renderMcmPanel('auto_rules');
     };
     window.updateChimMcmAgents = (payload) => {
         const data = parseMcmPayload(payload);

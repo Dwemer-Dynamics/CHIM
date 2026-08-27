@@ -6,6 +6,7 @@
 #include "Papyrus.h"
 #include "HTTPManager.h"
 #include "AudioManager.h"
+#include "AutoActivateRules.h"
 #include "Globals.h"
 #include "SpeakManager.h"
 #include "SPGResponse.h"
@@ -3887,6 +3888,17 @@ R"CHIM(
             return;
         }
 
+        constexpr std::string_view autoRulesSavePrefix = "auto_rules_save|";
+        if (command.starts_with(autoRulesSavePrefix)) {
+            std::string error;
+            if (!AutoActivateRules::ReplaceFromJsonText(command.substr(autoRulesSavePrefix.size()), error)) {
+                PublishChimMcmCommandResult("auto_rules_save", false, error);
+                return;
+            }
+            PublishChimMcmCommandResult("auto_rules_save", true, "Auto Activate rules saved.");
+            return;
+        }
+
         constexpr std::string_view addPrefix = "agent_add|";
         constexpr std::string_view removePrefix = "agent_remove|";
         if (command.starts_with(addPrefix) || command.starts_with(removePrefix)) {
@@ -4064,6 +4076,10 @@ R"CHIM(
         }
         const std::string call = "window.updateChimMcmState && window.updateChimMcmState(" + payload.dump() + ")";
         g_prismaUI->Invoke(g_configManagerView, call.c_str(), nullptr);
+        const std::string rulesCall =
+            "window.updateChimAutoRules && window.updateChimAutoRules(" +
+            AutoActivateRules::BuildPrismaSnapshot().dump() + ")";
+        g_prismaUI->Invoke(g_configManagerView, rulesCall.c_str(), nullptr);
     }
 
     void BeginChimMcmAgents() {

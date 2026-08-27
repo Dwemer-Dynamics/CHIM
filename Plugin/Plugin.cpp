@@ -43,6 +43,7 @@
 #include "HTTPUploader.h"
 #include "SPGResponse.h"
 #include "AudioManager.h"
+#include "AutoActivateRules.h"
 #include "md5.h"
 #include "PrismaUIBridge.h"
 #include "ResourceFileReader.h"
@@ -4094,6 +4095,7 @@ namespace ProcessorSerialization {
     
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
+    inline const auto AutoActivateRulesRecord = _byteswap_ulong('AIAR');
 
 
     void OnGameLoaded(SKSE::SerializationInterface* serde) {
@@ -4103,6 +4105,7 @@ namespace ProcessorSerialization {
         std::uint32_t version;
         
         AIAgentManager& aiam = AIAgentManager::getInstance();
+        AutoActivateRules::Clear();
         // Ensure that everything is initialized in HTTPManager
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
@@ -4273,6 +4276,32 @@ namespace ProcessorSerialization {
                     }
                 }
                 
+            } else if (type == AutoActivateRulesRecord) {
+                if (version != 1) {
+                    logger::warn("Unsupported Auto Activate rules cosave version: {}.", version);
+                    continue;
+                }
+                if (size < sizeof(std::uint32_t)) {
+                    logger::warn("Auto Activate rules cosave record is truncated.");
+                    continue;
+                }
+                std::uint32_t payloadSize = 0;
+                serde->ReadRecordData(&payloadSize, sizeof(payloadSize));
+                if (payloadSize > AutoActivateRules::kMaxSerializedBytes ||
+                    payloadSize > size - sizeof(payloadSize)) {
+                    logger::warn("Auto Activate rules cosave payload has an invalid size: {}.", payloadSize);
+                    continue;
+                }
+                std::string payload(payloadSize, '\0');
+                if (payloadSize > 0) {
+                    serde->ReadRecordData(payload.data(), payloadSize);
+                }
+                std::string error;
+                if (!AutoActivateRules::ReplaceFromJsonText(payload, error)) {
+                    logger::warn("Could not load Auto Activate rules: {}", error);
+                } else {
+                    logger::info("Loaded Auto Activate rules from cosave.");
+                }
             } else  {
                 logger::warn("Unknown record type in cosave.");
             }
@@ -4328,12 +4357,24 @@ namespace ProcessorSerialization {
                 logger::error("[COSAVE] Storing as CHIM-marked NPC {}. {}", entry.second.data(), modName);
             }
         }
+
+        if (!serde->OpenRecord(AutoActivateRulesRecord, 1)) {
+            logger::error("Unable to open Auto Activate rules record to write cosave data.");
+            return;
+        }
+        const std::string rulesPayload = AutoActivateRules::Serialize();
+        const auto rulesPayloadSize = static_cast<std::uint32_t>(rulesPayload.size());
+        serde->WriteRecordData(&rulesPayloadSize, sizeof(rulesPayloadSize));
+        if (rulesPayloadSize > 0) {
+            serde->WriteRecordData(rulesPayload.data(), rulesPayloadSize);
+        }
     }
 
     void OnRevert(SKSE::SerializationInterface*) {
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
+        AutoActivateRules::Clear();
 
         
     }
