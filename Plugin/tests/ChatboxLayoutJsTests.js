@@ -198,7 +198,7 @@ test('never leaves the Delete Events button stuck on the confirmation prompt', (
 });
 
 test('offers a compact player mood selector with no mood as the default', () => {
-    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker">([\s\S]*?)<\/fieldset>/);
+    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker"[^>]*>([\s\S]*?)<\/fieldset>/);
     assert.ok(moodPicker, 'mood picker not found');
 
     const values = [...moodPicker[1].matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
@@ -219,7 +219,7 @@ test('offers a compact player mood selector with no mood as the default', () => 
 });
 
 test('keeps every mood icon-only, with Custom last and its field beside the pencil', () => {
-    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker">([\s\S]*?)<\/fieldset>/);
+    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker"[^>]*>([\s\S]*?)<\/fieldset>/);
     assert.ok(moodPicker, 'mood picker not found');
 
     // Each option keeps its icon visible and its concise mood name hidden until hover/focus.
