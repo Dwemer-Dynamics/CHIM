@@ -1654,7 +1654,7 @@ body {
 
 /* Custom mood free-text field sits directly beside its pencil icon and wraps with the roster. */
 .focus-chatbox-mood-custom-input {
-    flex: 0 1 140px;
+    flex: 0 1 196px;
     min-width: 0;
     box-sizing: border-box;
     height: 30px;
@@ -1668,11 +1668,6 @@ body {
     font-family: inherit;
     font-size: 0.82em;
     line-height: 1;
-}
-
-.focus-chatbox-mood-custom-input::placeholder {
-    color: #83838f;
-    opacity: 1;
 }
 
 .focus-chatbox-mood-custom-input:hover {

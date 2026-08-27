@@ -259,7 +259,7 @@ test('keeps every mood icon-only, with Custom last and its field beside the penc
     assert.ok(customText, 'custom mood text input not found');
     assert.match(customText[0], /type="text"/);
     assert.match(customText[0], /maxlength="80"/);
-    assert.match(customText[0], /placeholder="e\.g\. sarcastically"/);
+    assert.ok(!/placeholder=/.test(customText[0]), 'custom mood input should not carry example placeholder text');
     assert.match(customText[0], /aria-label="Custom mood description"/);
     assert.match(customText[0], /aria-describedby="chatbox-mood-custom-error"/);
     assert.match(customText[0], /aria-invalid="false"/);
@@ -268,6 +268,7 @@ test('keeps every mood icon-only, with Custom last and its field beside the penc
     assert.match(css, /\.focus-chatbox-mood-options\s*\{[\s\S]*?flex-wrap:\s*wrap/);
     const customTextRule = css.match(/\.focus-chatbox-mood-custom-input\s*\{([\s\S]*?)\}/);
     assert.ok(customTextRule, 'custom mood input styles not found');
+    assert.match(customTextRule[1], /flex:\s*0 1 196px/);
     assert.match(customTextRule[1], /min-width:\s*0/);
     assert.match(customTextRule[1], /height:\s*30px/);
     assert.match(css, /\.focus-chatbox-mood-custom-input:focus,\s*\.focus-chatbox-mood-custom-input:focus-visible\s*\{/);
