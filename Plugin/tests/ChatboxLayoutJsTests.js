@@ -197,34 +197,240 @@ test('never leaves the Delete Events button stuck on the confirmation prompt', (
     assert.match(script, /textContent = 'Delete';\s*deleteEventConfirmButton\.title = 'Delete the selected number of recent events'/);
 });
 
-test('offers a compact one-shot player mood selector with no mood as the default', () => {
+test('offers a compact player mood selector with no mood as the default', () => {
     const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker">([\s\S]*?)<\/fieldset>/);
     assert.ok(moodPicker, 'mood picker not found');
 
     const values = [...moodPicker[1].matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
         .map((match) => match[1]);
-    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty']);
+    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty', 'custom']);
     assert.match(moodPicker[1], /value="" aria-label="No mood" checked/);
     assert.match(css, /\.focus-chatbox-mood-input:checked \+ \.focus-chatbox-mood-option/);
     assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option/);
 
+    // Custom carries its own free text, so it must not widen the validated predefined roster.
     const normalizeMood = loadChatboxFunction('normalizePlayerMood');
-    values.slice(1).forEach((mood) => assert.equal(normalizeMood(mood), mood));
-    ['', 'neutral', 'mood=happy', null, undefined].forEach((mood) => assert.equal(normalizeMood(mood), ''));
+    values.slice(1, -1).forEach((mood) => assert.equal(normalizeMood(mood), mood));
+    ['', 'custom', 'neutral', 'mood=happy', null, undefined].forEach((mood) => assert.equal(normalizeMood(mood), ''));
 
-    assert.match(script, /window\.openFocusChatbox[\s\S]*?resetPlayerMood\(\)/);
-    assert.match(script, /window\.closeFocusChatbox[\s\S]*?resetPlayerMood\(\)/);
-    assert.match(script, /window\.clearFocusMessage[\s\S]*?resetPlayerMood\(\)/);
+    // No mood is the fallback for an empty store, not a reset applied on every open.
+    assert.match(script, /function normalizeStoredPlayerMood\(value\)[\s\S]*?return stored === customPlayerMoodValue \? customPlayerMoodValue : normalizePlayerMood\(stored\)/);
+    assert.doesNotMatch(script, /resetPlayerMood/);
 });
 
-test('sends validated mood metadata and mirrors the persisted tag in the live story row', () => {
+test('keeps every mood icon-only, with Custom last and its field beside the pencil', () => {
+    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker">([\s\S]*?)<\/fieldset>/);
+    assert.ok(moodPicker, 'mood picker not found');
+
+    // Each option keeps its icon visible and its concise mood name hidden until hover/focus.
+    const labels = [...moodPicker[1].matchAll(
+        /<label class="focus-chatbox-mood-option" for="chatbox-mood-([a-z]+)">((?:&#[0-9A-Fa-fx]+;)+)<span class="focus-chatbox-mood-tip" aria-hidden="true">([^<]+)<\/span><\/label>/g
+    )].map((match) => ({ id: match[1], icon: match[2], mood: match[3] }));
+    assert.equal(labels.length, 12, 'every mood radio needs an icon-only label');
+    assert.equal(labels[labels.length - 2].id, 'flirty');
+    assert.equal(labels[labels.length - 1].id, 'custom', 'Custom belongs directly after Flirty');
+    assert.equal(labels[labels.length - 1].icon, '&#x270F;&#xFE0F;', 'Custom uses the pencil icon');
+    assert.deepEqual(labels.map((label) => label.mood), [
+        'No mood', 'Happy', 'Sad', 'Angry', 'Annoyed', 'Scared',
+        'Surprised', 'Confused', 'Suspicious', 'Playful', 'Flirty', 'Custom'
+    ]);
+    assert.match(moodPicker[1], /id="chatbox-mood-custom"[^>]*value="custom" aria-label="Custom mood"/);
+    assert.doesNotMatch(moodPicker[1], /title="/, 'native tooltips must not duplicate the Prisma mood label');
+    assert.match(css, /\.focus-chatbox-mood-option:hover \.focus-chatbox-mood-tip/);
+    assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option \.focus-chatbox-mood-tip/);
+
+    // At rest the row is icons only, and the tip floats above the icon without swallowing the click.
+    const moodTipRule = css.match(/\.focus-chatbox-mood-tip\s*\{([\s\S]*?)\}/);
+    assert.ok(moodTipRule, 'mood tooltip styles not found');
+    assert.match(moodTipRule[1], /position:\s*absolute/);
+    assert.match(moodTipRule[1], /visibility:\s*hidden/);
+    assert.match(moodTipRule[1], /pointer-events:\s*none/);
+    assert.match(moodTipRule[1], /white-space:\s*nowrap/);
+    assert.match(css, /\.focus-chatbox-mood-option\s*\{[\s\S]*?position:\s*relative/);
+
+    // The free-text field sits immediately to the right of the pencil, inside the same wrapping row.
+    const customRadioIndex = moodPicker[1].indexOf('id="chatbox-mood-custom"');
+    const customLabelIndex = moodPicker[1].indexOf('for="chatbox-mood-custom"');
+    const customTextIndex = moodPicker[1].indexOf('id="chatbox-mood-custom-text"');
+    assert.ok(customRadioIndex !== -1 && customLabelIndex !== -1 && customTextIndex !== -1);
+    assert.ok(customRadioIndex < customLabelIndex && customLabelIndex < customTextIndex);
+
+    const customText = moodPicker[1].match(/<input\s+id="chatbox-mood-custom-text"[\s\S]*?>/);
+    assert.ok(customText, 'custom mood text input not found');
+    assert.match(customText[0], /type="text"/);
+    assert.match(customText[0], /maxlength="80"/);
+    assert.ok(!/placeholder=/.test(customText[0]), 'custom mood input should not carry example placeholder text');
+    assert.match(customText[0], /aria-label="Custom mood description"/);
+    assert.match(customText[0], /aria-describedby="chatbox-mood-custom-error"/);
+    assert.match(customText[0], /aria-invalid="false"/);
+
+    // Compact, keyboard-visible, and allowed to wrap rather than overflow the shell.
+    assert.match(css, /\.focus-chatbox-mood-options\s*\{[\s\S]*?flex-wrap:\s*wrap/);
+    const customTextRule = css.match(/\.focus-chatbox-mood-custom-input\s*\{([\s\S]*?)\}/);
+    assert.ok(customTextRule, 'custom mood input styles not found');
+    assert.match(customTextRule[1], /flex:\s*0 1 196px/);
+    assert.match(customTextRule[1], /min-width:\s*0/);
+    assert.match(customTextRule[1], /height:\s*30px/);
+    assert.match(css, /\.focus-chatbox-mood-custom-input:focus,\s*\.focus-chatbox-mood-custom-input:focus-visible\s*\{/);
+    assert.match(css, /\.focus-chatbox-mood-custom-input\[aria-invalid="true"\]\s*\{/);
+});
+
+test('ties the Custom mood radio and its text field to a single selection', () => {
+    // Picking Custom drops the caret in the field; focusing or typing in the field picks Custom.
+    assert.match(script, /if \(input\.value === customPlayerMoodValue\) \{\s*focusCustomPlayerMoodInput\(\);/);
+    assert.match(script, /playerMoodCustomTextInput\.addEventListener\('focus', function\(\) \{\s*if \(selectCustomPlayerMood\(\)\) \{/);
+    assert.match(script, /playerMoodCustomTextInput\.addEventListener\('input', function\(\) \{\s*selectCustomPlayerMood\(\);/);
+    assert.match(script, /function selectCustomPlayerMood\(\)[\s\S]*?playerMoodCustomRadio\.checked = true/);
+
+    // A predefined mood ignores the typed text without wiping it mid-session.
+    const predefinedBranch = script.match(/input\.addEventListener\('change', function\(\) \{[\s\S]*?\n        \}\);/);
+    assert.ok(predefinedBranch, 'mood change handler not found');
+    assert.doesNotMatch(predefinedBranch[0], /playerMoodCustomTextInput\.value = ''/);
+    assert.match(predefinedBranch[0], /setCustomPlayerMoodInvalid\(false\);/);
+
+    // Skyrim input behaviour: the field keeps Enter-to-send and Escape-to-close like the composer.
+    assert.match(script, /playerMoodCustomTextInput\.addEventListener\('keydown'[\s\S]*?'Escape'[\s\S]*?window\.closeFocusChatbox\(true\)[\s\S]*?'Enter'[\s\S]*?window\.sendFocusMessage\(\)/);
+
+    // Restoring re-checks the saved radio and refills the field instead of blanking both.
+    assert.match(script, /function restorePlayerMoodSelection\(\)[\s\S]*?input\.checked = input\.value === stored\.mood[\s\S]*?playerMoodCustomTextInput\.value = stored\.custom[\s\S]*?setCustomPlayerMoodInvalid\(false\)/);
+    assert.match(script, /window\.sendFocusMessage[\s\S]*?window\.closeFocusChatbox\(true\)/);
+});
+
+test('normalizes and caps the custom mood text at the field maxlength', () => {
+    const maxLength = Number(html.match(/id="chatbox-mood-custom-text"[\s\S]*?maxlength="(\d+)"/)[1]);
+    assert.equal(maxLength, 80);
+
+    const normalizeCustom = loadChatboxFunction('normalizeCustomPlayerMood');
+    assert.equal(normalizeCustom('  sarcastically  '), 'sarcastically');
+    assert.equal(normalizeCustom('very\n\tslowly   and   flatly'), 'very slowly and flatly');
+    assert.equal(normalizeCustom('a'.repeat(maxLength + 40)).length, maxLength);
+
+    // Blank-ish input is never a mood, so the send guard can rely on this alone.
+    ['', '   ', '\t', '\n', '  \r\n ', null, undefined].forEach((text) => {
+        assert.equal(normalizeCustom(text), '', JSON.stringify(text));
+    });
+});
+
+test('refuses to send a blank Custom mood and exposes the invalid state', () => {
+    // The composer stays open, the field takes focus, and the failure is announced.
+    assert.match(script, /if \(customSelected && !customMood\) \{\s*setCustomPlayerMoodInvalid\(true\);\s*focusCustomPlayerMoodInput\(\);\s*return;/);
+    assert.match(script, /function setCustomPlayerMoodInvalid\(invalid\)[\s\S]*?setAttribute\('aria-invalid', invalid \? 'true' : 'false'\)[\s\S]*?playerMoodCustomErrorElement\.hidden = !invalid/);
+    assert.match(html, /<span id="chatbox-mood-custom-error"[^>]*role="alert"[^>]*hidden>/);
+
+    // Typing clears the error instead of leaving a stale alert on screen.
+    assert.match(script, /if \(getCustomPlayerMoodText\(\)\) \{\s*setCustomPlayerMoodInvalid\(false\);/);
+
+    // The blank-custom bail happens before anything reaches the bridge.
+    const sendBody = script.match(/window\.sendFocusMessage = function\(\) \{[\s\S]*?\n    \};/);
+    assert.ok(sendBody, 'sendFocusMessage not found');
+    assert.ok(
+        sendBody[0].indexOf('setCustomPlayerMoodInvalid(true)') < sendBody[0].indexOf('sendMessageToBridge('),
+        'blank custom mood must bail out before sending'
+    );
+});
+
+test('sends the custom mood as JSON so pipes in player text stay intact', () => {
+    const buildCustomMoodCommand = loadChatboxFunction('buildCustomMoodCommand');
+    const command = buildCustomMoodCommand('sarcastically | dryly', 'Are you sure | about that?');
+
+    assert.ok(command.startsWith('send_custom_mood|'), 'custom mood needs its own bridge command');
+    // Everything after the single structural pipe is one JSON document, pipes and all.
+    const payload = JSON.parse(command.slice('send_custom_mood|'.length));
+    assert.deepEqual(payload, { custom_mood: 'sarcastically | dryly', message: 'Are you sure | about that?' });
+    assert.deepEqual(Object.keys(payload), ['custom_mood', 'message']);
+
+    // Quotes, newlines, and braces survive the same way.
+    const tricky = buildCustomMoodCommand('with "air quotes"', 'line one\nline "two" {}');
+    assert.deepEqual(JSON.parse(tricky.slice('send_custom_mood|'.length)), {
+        custom_mood: 'with "air quotes"',
+        message: 'line one\nline "two" {}'
+    });
+
+    // Predefined and no-mood transports are untouched, and custom never rides on send_mood|.
     assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
-    assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood\)/);
-    assert.match(bridge, /displayMessage \+= " \[mood: " \+ playerMood \+ "\]"/);
-    assert.match(bridge, /PushChatboxMessage\(playerName, displayMessage, "", "player"\)/);
-    assert.match(bridge, /const bool supportedMood =[\s\S]*?playerMood == "annoyed"[\s\S]*?playerMood == "surprised"[\s\S]*?playerMood == "confused"[\s\S]*?playerMood == "suspicious"[\s\S]*?playerMood == "playful"[\s\S]*?playerMood == "flirty";/);
+    assert.match(script, /function sendMessageToBridge\(message, playerMood, customMood\)[\s\S]*?if \(custom\) \{[\s\S]*?buildCustomMoodCommand\(custom, message\)/);
+    assert.match(script, /sendMessageToBridge\(message, customSelected \? '' : getSelectedPlayerMood\(\), customMood\)/);
+
+    // The optimistic row shows the typed message only; custom mood text travels out of band.
+    assert.doesNotMatch(script, /pushChatMessage\([^)]*customMood/);
+    assert.doesNotMatch(script, /customMood \+ /);
+
+    // The bridge parses the JSON at a fixed offset, so the prefix length has to agree with it.
+    const prefixLength = Number(bridge.match(/cmd\.starts_with\("send_custom_mood\|"\)[\s\S]*?json::parse\(cmd\.substr\((\d+)\)/)[1]);
+    assert.equal(prefixLength, 'send_custom_mood|'.length);
+    assert.match(bridge, /payload\.contains\("message"\)[\s\S]*?payload\.contains\("custom_mood"\)/);
+    assert.match(bridge, /SendChatboxMessage\(message, "custom", customPlayerMood\)/);
+
+    // The view caps text well under the plugin's own limit, so nothing typed can be silently rejected.
+    const bridgeCap = Number(bridge.match(/customPlayerMood\.size\(\) > (\d+)/)[1]);
+    const fieldMaxLength = Number(html.match(/id="chatbox-mood-custom-text"[\s\S]*?maxlength="(\d+)"/)[1]);
+    assert.ok(fieldMaxLength <= bridgeCap, `field maxlength ${fieldMaxLength} exceeds bridge cap ${bridgeCap}`);
+
+    // 'custom' rides as the mood sentinel with the phrasing in its own field, never as a predefined mood.
+    assert.match(httpManager, /audienceSnapshot\["player_mood_custom"\] = routingContext->customPlayerMood/);
+    assert.match(httpManager, /requestModeSnapshot\["player_mood_custom"\] = routingContext->customPlayerMood/);
+    assert.match(conversationRouter, /std::string customPlayerMood;/);
+});
+
+test('sends validated mood metadata and leaves the live story row undecorated', () => {
+    assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
+    assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood, ""\)/);
+    assert.match(bridge, /cmd\.starts_with\("send\|"\)[\s\S]*?SendChatboxMessage\(message, "", ""\)/);
+
+    // The optimistic row renders the submitted text verbatim; mood phrasing belongs to the server.
+    assert.match(bridge, /PushChatboxMessage\(playerName, message, "", "player"\)/);
+    assert.ok(!bridge.includes('displayMessage'), 'story row must not rewrite the submitted message');
+    assert.ok(!bridge.includes('[mood: '), 'raw mood tag must not reach the story row');
+    assert.ok(!bridge.includes('DefaultPlayerMoodSuffix'), 'plugin must not build mood phrasing');
+    assert.ok(!bridge.includes('speaks in a'), 'plugin must not build mood phrasing');
+
+    // Mood still travels as routing metadata, and every selectable mood must survive validation.
+    const supportedMood = bridge.match(/static bool IsSupportedFixedPlayerMood\(const std::string& playerMood\) \{\s*return([\s\S]*?);/);
+    assert.ok(supportedMood, 'mood allowlist not found');
+    // One allowlist covers both the typed send and the mood saved for speech-to-text.
+    assert.equal(bridge.match(/IsSupportedFixedPlayerMood\(playerMood\)/g).length, 2);
+    // 'custom' is resolved from its own JSON command, so it is deliberately absent from this allowlist.
+    const offeredMoods = [...html.matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
+        .map((match) => match[1])
+        .filter((mood) => mood && mood !== 'custom');
+    assert.ok(offeredMoods.length >= 10, 'expected the full mood roster to be offered');
+    offeredMoods.forEach((mood) => assert.ok(
+        supportedMood[1].includes(`playerMood == "${mood}"`),
+        `mood allowlist missing ${mood}`
+    ));
     assert.match(bridge, /routingContext\.playerMood = playerMood/);
     assert.match(conversationRouter, /std::string playerMood;/);
     assert.match(httpManager, /audienceSnapshot\["player_mood"\] = routingContext->playerMood/);
     assert.match(httpManager, /requestModeSnapshot\["player_mood"\] = routingContext->playerMood/);
+});
+
+test('persists player mood and synchronizes it for speech-to-text', () => {
+    assert.match(script, /const playerMoodStorageKey = 'chim_chatbox_player_mood'/);
+    assert.match(script, /const playerMoodCustomTextStorageKey = 'chim_chatbox_custom_mood'/);
+    assert.match(script, /function loadPlayerMoodSelection\(\)[\s\S]*?try \{[\s\S]*?localStorage\.getItem\(playerMoodStorageKey\)[\s\S]*?catch \(_err\) \{/);
+    assert.match(script, /function savePlayerMoodSelection\(\)[\s\S]*?try \{[\s\S]*?localStorage\.setItem\(playerMoodStorageKey[\s\S]*?catch \(_err\) \{/);
+    assert.match(script, /function restorePlayerMoodSelection\(\)[\s\S]*?input\.checked = input\.value === stored\.mood[\s\S]*?playerMoodCustomTextInput\.value = stored\.custom[\s\S]*?syncPlayerMoodToNative\(\)/);
+    assert.match(script, /window\.openFocusChatbox[\s\S]*?restorePlayerMoodSelection\(\)/);
+    assert.match(script, /setContextPlacement\(false\);\s*restorePlayerMoodSelection\(\);/);
+    assert.match(script, /persistPlayerMoodSelection\(\)[\s\S]*?savePlayerMoodSelection\(\);\s*syncPlayerMoodToNative\(\)/);
+    assert.doesNotMatch(script, /resetPlayerMood/);
+
+    const buildPlayerMoodCommand = loadChatboxFunction('buildPlayerMoodCommand');
+    const command = buildPlayerMoodCommand('custom', 'dryly | with "quotes"');
+    assert.ok(command.startsWith('set_player_mood|'));
+    assert.deepEqual(JSON.parse(command.slice('set_player_mood|'.length)), {
+        player_mood: 'custom',
+        custom_mood: 'dryly | with "quotes"'
+    });
+    const prefixLength = Number(bridge.match(/cmd\.starts_with\("set_player_mood\|"\)[\s\S]*?json::parse\(cmd\.substr\((\d+)\)/)[1]);
+    assert.equal(prefixLength, 'set_player_mood|'.length);
+    assert.match(script, /const mood = customSelected \? \(customMood \? customPlayerMoodValue : ''\) : getSelectedPlayerMood\(\)/);
+    assert.match(bridge, /void ApplySavedPlayerMood\(PlayerConversationRoutingContext& routingContext\)[\s\S]*?routingContext\.playerMood = g_savedPlayerMood/);
+});
+
+test('applies the saved Prisma mood to both speech-to-text paths', () => {
+    const voicerec = fs.readFileSync(path.resolve(__dirname, '../Voicerec.cpp'), 'utf8');
+    const commands = fs.readFileSync(path.resolve(__dirname, '../Commands.cpp'), 'utf8');
+    assert.match(voicerec, /routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?HTTPManager::streamPlayer/);
+    assert.match(commands, /command\.contains\("ImpersonatePlayer"\)[\s\S]*?routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?sendMessageReal\(message, messageType, routingContext\)/);
 });

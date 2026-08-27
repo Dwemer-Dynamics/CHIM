@@ -1616,7 +1616,10 @@ void parseRoleCommand(std::string rawCommand) {
             const std::string messageType = splitResult[1];
             // Browser STT commands arrive on the manager worker, while routing reads live Skyrim objects.
             SKSE::GetTaskInterface()->AddTask([message, messageType]() {
-                sendMessageReal(message, messageType);
+                PlayerConversationRoutingContext routingContext{};
+                routingContext.source = PlayerConversationInputSource::Voice;
+                PrismaUIBridge::ApplySavedPlayerMood(routingContext);
+                sendMessageReal(message, messageType, routingContext);
             });
         }
     } else if (command.contains("QuestNotifySound")) {

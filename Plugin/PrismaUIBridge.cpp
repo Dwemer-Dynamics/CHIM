@@ -118,6 +118,17 @@ namespace PrismaUIBridge {
 
     // CHIM chatbox control state
     static std::string g_chatboxCurrentMode = "STANDARD";
+    static std::mutex g_savedPlayerMoodMutex;
+    static std::string g_savedPlayerMood;
+    static std::string g_savedCustomPlayerMood;
+
+    // Keep native mood validation synchronized for saved state and typed chat sends.
+    static bool IsSupportedFixedPlayerMood(const std::string& playerMood) {
+        return playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
+               playerMood == "annoyed" || playerMood == "scared" || playerMood == "surprised" ||
+               playerMood == "confused" || playerMood == "suspicious" || playerMood == "playful" ||
+               playerMood == "flirty";
+    }
     static std::string g_lastChatboxTarget = "";
     static uint32_t g_lastChatboxTargetFormId = 0;
     static ChatboxTargetMode g_chatboxTargetMode = ChatboxTargetMode::Auto;
@@ -7143,6 +7154,53 @@ R"CHIM(
         } else if (cmd.starts_with("event_deleted|")) {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("set_player_mood|")) {
+            const json payload = json::parse(cmd.substr(16), nullptr, false);
+            if (payload.is_discarded() || !payload.is_object() ||
+                !payload.contains("player_mood") || !payload["player_mood"].is_string() ||
+                !payload.contains("custom_mood") || !payload["custom_mood"].is_string()) {
+                logger::warn("[Chatbox] Ignoring malformed saved player mood command");
+                return;
+            }
+
+            std::string playerMood = payload["player_mood"].get<std::string>();
+            std::string customPlayerMood = payload["custom_mood"].get<std::string>();
+            if (playerMood == "custom") {
+                if (customPlayerMood.empty() || customPlayerMood.size() > 320) {
+                    playerMood.clear();
+                    customPlayerMood.clear();
+                }
+            } else {
+                customPlayerMood.clear();
+                if (!IsSupportedFixedPlayerMood(playerMood)) {
+                    playerMood.clear();
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_savedPlayerMoodMutex);
+                g_savedPlayerMood = std::move(playerMood);
+                g_savedCustomPlayerMood = std::move(customPlayerMood);
+            }
+        } else if (cmd.starts_with("send_custom_mood|")) {
+            const json payload = json::parse(cmd.substr(17), nullptr, false);
+            if (payload.is_discarded() || !payload.is_object() ||
+                !payload.contains("message") || !payload["message"].is_string() ||
+                !payload.contains("custom_mood") || !payload["custom_mood"].is_string()) {
+                logger::warn("[Chatbox] Ignoring malformed custom mood command");
+                return;
+            }
+
+            const std::string message = payload["message"].get<std::string>();
+            const std::string customPlayerMood = payload["custom_mood"].get<std::string>();
+            if (!message.empty()) {
+                if (customPlayerMood.empty() || customPlayerMood.size() > 320) {
+                    logger::warn("[Chatbox] Sending message without invalid custom mood metadata");
+                    SendChatboxMessage(message, "", "");
+                } else {
+                    SendChatboxMessage(message, "custom", customPlayerMood);
+                }
+            }
         } else if (cmd.starts_with("send_mood|")) {
             std::string payload = cmd.substr(10);
             const auto separator = payload.find('|');
@@ -7153,22 +7211,17 @@ R"CHIM(
                 message = payload.substr(separator + 1);
             }
 
-            const bool supportedMood =
-                playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
-                playerMood == "annoyed" || playerMood == "scared" || playerMood == "surprised" ||
-                playerMood == "confused" || playerMood == "suspicious" || playerMood == "playful" ||
-                playerMood == "flirty";
-            if (!supportedMood) {
+            if (!IsSupportedFixedPlayerMood(playerMood)) {
                 playerMood.clear();
             }
             if (!message.empty()) {
-                SendChatboxMessage(message, playerMood);
+                SendChatboxMessage(message, playerMood, "");
             }
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
             if (!message.empty()) {
-                SendChatboxMessage(message, "");
+                SendChatboxMessage(message, "", "");
             }
         } else if (cmd == "focus") {
             // Focus the chatbox for typing
@@ -7559,6 +7612,12 @@ R"CHIM(
         return g_chatboxCurrentMode;
     }
 
+    void ApplySavedPlayerMood(PlayerConversationRoutingContext& routingContext) {
+        std::lock_guard<std::mutex> lock(g_savedPlayerMoodMutex);
+        routingContext.playerMood = g_savedPlayerMood;
+        routingContext.customPlayerMood = g_savedCustomPlayerMood;
+    }
+
     float GetPlayerSpeechDistanceMultiplier() {
         float multiplier = 1.0f;
         if (g_chatboxCurrentMode == "WHISPER") {
@@ -7697,7 +7756,8 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message, const std::string& playerMood) {
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood) {
         if (message.empty()) {
             return;
         }
@@ -7719,16 +7779,9 @@ R"CHIM(
         std::string playerName = player ? player->GetName() : "Player";
         
         // Push to chatbox UI with actual player name
-        // Match the optimistic row to the server's persisted mood tag so refresh deduplication stays stable.
-        std::string displayMessage = message;
-        if (!playerMood.empty()) {
-            const auto lastContent = displayMessage.find_last_not_of(" \t\r\n");
-            if (lastContent != std::string::npos) {
-                displayMessage.erase(lastContent + 1);
-            }
-            displayMessage += " [mood: " + playerMood + "]";
-        }
-        PushChatboxMessage(playerName, displayMessage, "", "player");
+        // This will show the single message with the correct player name. Mood is routing metadata
+        // only, so the optimistic row stays exactly what the player submitted.
+        PushChatboxMessage(playerName, message, "", "player");
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
@@ -7736,6 +7789,7 @@ R"CHIM(
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
         routingContext.playerMood = playerMood;
+        routingContext.customPlayerMood = customPlayerMood;
         if (submission.symbolOverride) {
             routingContext.symbolRoutingMode = submission.mode;
             routingContext.routingMessage = submission.message;
