@@ -291,6 +291,7 @@ std::string DialogueLastStringResponse;
 
 const long parameterMaxDistanceToListen = 1000000;
 const int CLEANING_TIMEOUT = 4;
+const int MAINTENANCE_TIMEOUT = 4;
 
 bool NewActionMode = false;
 
@@ -2164,7 +2165,7 @@ private:
     void threadFunction() {
         logger::info("[ManagerMainQueue] Thread function started");
         auto lastHealthCheck = std::chrono::high_resolution_clock::now();
-        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
+        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(MAINTENANCE_TIMEOUT);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
         auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
@@ -2769,6 +2770,8 @@ private:
 
                 const auto maintenanceNow = std::chrono::steady_clock::now();
                 bool ranAgentMaintenance = false;
+
+                //const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                 const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                 const bool speechProcessing = SpeakManager::getInstance().getProcessing();
                 const bool deferHeavyAgentMaintenance =
@@ -2777,15 +2780,15 @@ private:
                 if (deferHeavyAgentMaintenance) {
                     if (maintenanceNow - lastAgentMaintenanceDeferLogAt >= std::chrono::seconds(5)) {
                         lastAgentMaintenanceDeferLogAt = maintenanceNow;
-                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={}",
+                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={},recordingActive={}",
                                       speechMaintenanceSuppressed,
-                                      speechProcessing,
-                                      worldMaintenanceSuppressed);
+                                      speechProcessing, worldMaintenanceSuppressed,
+                                      recordingActive);
                     }
                 } else {  // Run agent maintenance only when player/NPC speech is not active.
                     // Heavy cleanup touches actor state, packages, and voice types. Keep it slower and budgeted;
                     // cheap auto-add below stays responsive so NPC detection does not depend on this pass.
-                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(20)) {
+                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(MAINTENANCE_TIMEOUT)) {
                         lastAgentMaintenanceAt = maintenanceNow;
                         ranAgentMaintenance = true;
                         AIAgentManager& aiam = AIAgentManager::getInstance();

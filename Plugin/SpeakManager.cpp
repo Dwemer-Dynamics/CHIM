@@ -3783,7 +3783,10 @@ void SpeakManager::process(AIAgent *agent) {
 
         setProcessing(false);
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // Speaker Manager sets a time stamp on agent to know when it finishes talking.
+            // 15 seconds are a too high value. Recommended is to have a MCM/Prisma setting to adjust MAINTENANCE_TIMEOUT
+            // and let user decide.
+            // ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15)); 
         }
 
         // Narrator cleanup MUST run before checking for more queue items.
@@ -3875,7 +3878,13 @@ void SpeakManager::processPlayer() {
             clearVisibleSubtitles();
         }
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // 15 seconds is too high if using fast llm.
+            //ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            auto aproximatedTimeToSupressMaintenance = trimmedSubtitle.length() * 0.2f;  // 0.1 seconds per character
+            long roundedTimeToSupressMaintenance = static_cast<long>(aproximatedTimeToSupressMaintenance);
+            logger::info("Maintenance suppression for {} seconds", roundedTimeToSupressMaintenance);
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(roundedTimeToSupressMaintenance));
+
         }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
