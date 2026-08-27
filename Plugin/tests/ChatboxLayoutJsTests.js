@@ -222,16 +222,31 @@ test('keeps every mood icon-only, with Custom last and its field beside the penc
     const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker">([\s\S]*?)<\/fieldset>/);
     assert.ok(moodPicker, 'mood picker not found');
 
-    // Each visible option is character entities only; no mood spells itself out in the compact row.
+    // Each option keeps its icon visible and its concise mood name hidden until hover/focus.
     const labels = [...moodPicker[1].matchAll(
-        /<label class="focus-chatbox-mood-option" for="chatbox-mood-([a-z]+)" title="([^"]+)">((?:&#[0-9A-Fa-fx]+;)+)<\/label>/g
-    )].map((match) => ({ id: match[1], title: match[2], icon: match[3] }));
+        /<label class="focus-chatbox-mood-option" for="chatbox-mood-([a-z]+)">((?:&#[0-9A-Fa-fx]+;)+)<span class="focus-chatbox-mood-tip" aria-hidden="true">([^<]+)<\/span><\/label>/g
+    )].map((match) => ({ id: match[1], icon: match[2], mood: match[3] }));
     assert.equal(labels.length, 12, 'every mood radio needs an icon-only label');
     assert.equal(labels[labels.length - 2].id, 'flirty');
     assert.equal(labels[labels.length - 1].id, 'custom', 'Custom belongs directly after Flirty');
     assert.equal(labels[labels.length - 1].icon, '&#x270F;&#xFE0F;', 'Custom uses the pencil icon');
-    assert.equal(labels[labels.length - 1].title, 'Custom mood');
+    assert.deepEqual(labels.map((label) => label.mood), [
+        'No mood', 'Happy', 'Sad', 'Angry', 'Annoyed', 'Scared',
+        'Surprised', 'Confused', 'Suspicious', 'Playful', 'Flirty', 'Custom'
+    ]);
     assert.match(moodPicker[1], /id="chatbox-mood-custom"[^>]*value="custom" aria-label="Custom mood"/);
+    assert.doesNotMatch(moodPicker[1], /title="/, 'native tooltips must not duplicate the Prisma mood label');
+    assert.match(css, /\.focus-chatbox-mood-option:hover \.focus-chatbox-mood-tip/);
+    assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option \.focus-chatbox-mood-tip/);
+
+    // At rest the row is icons only, and the tip floats above the icon without swallowing the click.
+    const moodTipRule = css.match(/\.focus-chatbox-mood-tip\s*\{([\s\S]*?)\}/);
+    assert.ok(moodTipRule, 'mood tooltip styles not found');
+    assert.match(moodTipRule[1], /position:\s*absolute/);
+    assert.match(moodTipRule[1], /visibility:\s*hidden/);
+    assert.match(moodTipRule[1], /pointer-events:\s*none/);
+    assert.match(moodTipRule[1], /white-space:\s*nowrap/);
+    assert.match(css, /\.focus-chatbox-mood-option\s*\{[\s\S]*?position:\s*relative/);
 
     // The free-text field sits immediately to the right of the pencil, inside the same wrapping row.
     const customRadioIndex = moodPicker[1].indexOf('id="chatbox-mood-custom"');
