@@ -166,12 +166,13 @@
                 <div class="editor-content">
                     <section class="tab-panel active" data-panel="general">
                         <section id="sharing-panel" class="sharing-panel" aria-labelledby="sharing-heading" hidden>
-                            <h3 id="sharing-heading"><span aria-hidden="true">&#128279;</span> Shared profile</h3>
+                            <h3 id="sharing-heading"><span aria-hidden="true">&#128279;</span> Shared profile <span id="sharing-auto" class="pill shared" hidden>Linked automatically</span></h3>
                             <p id="sharing-explainer" class="sharing-explainer"></p>
                             <h4 class="sharing-subheading">Actors sharing this profile</h4>
                             <ul id="sharing-members" class="sharing-members"></ul>
-                            <p class="sharing-note">Actions, injected events and speech still target the actor you opened. Merging and unlinking are done from the CHIM NPC page in a browser.</p>
+                            <p class="sharing-note">Actions, injected events and speech still target the actor you opened. Unlinking separates every actor listed here at once; merging and unlinking are done from the CHIM NPC page in a browser.</p>
                         </section>
+                        <p id="sharing-auto-off" class="sharing-auto-off" role="note" hidden>Automatic linking is switched off for this character for the rest of this playthrough. Same-name actors can still be merged by hand from the CHIM NPC page in a browser.</p>
                         <div class="form-grid two-columns">
                             <label class="form-field"><span>Name</span><input name="npc_name" required></label>
                             <label class="form-field"><span>Profile</span><select name="profile_id" required></select></label>

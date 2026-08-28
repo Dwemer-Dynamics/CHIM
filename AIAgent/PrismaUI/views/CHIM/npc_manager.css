@@ -222,7 +222,11 @@ textarea { resize: vertical; line-height: 1.35; }
 .pill.shared { background: #153228; color: #a7e8bc; }
 .editor-shared { margin: 4px 0 0; }
 .sharing-panel { display: grid; gap: 8px; margin-bottom: 12px; padding: 11px 12px; border: 1px solid #2f6f57; border-radius: 5px; background: #1c2723; }
+/* This sheet has no global [hidden] reset, so display:grid above would otherwise defeat it. */
+.sharing-panel[hidden], .sharing-auto-off[hidden] { display: none; }
 .sharing-panel h3 { margin: 0; color: #a7e8bc; }
+.sharing-panel h3 .pill { margin-left: 4px; vertical-align: middle; font-weight: 400; }
+.sharing-auto-off { margin: 0 0 12px; padding: 8px 10px; border: 1px solid #4a5a7d; border-radius: 4px; background: #1c2130; color: #c6d4ee; font-size: .7rem; line-height: 1.4; }
 .sharing-subheading { margin: 2px 0 0; color: #f3bd7e; font-size: .76rem; }
 .sharing-explainer { margin: 0; color: #dcefe2; font-size: .76rem; line-height: 1.45; }
 .sharing-note { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.4; }

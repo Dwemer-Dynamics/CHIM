@@ -77,16 +77,24 @@
         return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
     }
 
-    // Sharing state rides along with both list cards and the detail payload.
+    // Sharing state rides along with both list cards and the detail payload. A group can be linked
+    // automatically by the server, and auto_link_disabled outlives the link itself, so it is read
+    // even when the row is no longer shared.
     function sharingState(source) {
         const sharing = source && source.profile_sharing;
-        if (!sharing || typeof sharing !== 'object' || !sharing.linked) {
-            return { linked: false, ownerId: 0, members: [] };
+        if (!sharing || typeof sharing !== 'object') {
+            return { linked: false, ownerId: 0, members: [], automatic: false, autoLinkDisabled: false };
+        }
+        const autoLinkDisabled = !!sharing.auto_link_disabled;
+        if (!sharing.linked) {
+            return { linked: false, ownerId: 0, members: [], automatic: false, autoLinkDisabled };
         }
         return {
             linked: true,
             ownerId: Number(sharing.owner_id || 0),
-            members: Array.isArray(sharing.members) ? sharing.members : []
+            members: Array.isArray(sharing.members) ? sharing.members : [],
+            automatic: !!sharing.automatic,
+            autoLinkDisabled
         };
     }
 
@@ -508,12 +516,16 @@
     function renderSharingPanel(detail) {
         const panel = byId('sharing-panel');
         const banner = byId('editor-shared');
+        const autoBadge = byId('sharing-auto');
+        const autoOff = byId('sharing-auto-off');
         if (!panel) return;
         const card = (detail && detail.card) || {};
         const sharing = sharingState(detail);
         if (banner) banner.hidden = !sharing.linked;
+        if (autoBadge) autoBadge.hidden = !(sharing.linked && sharing.automatic);
+        if (autoOff) autoOff.hidden = !sharing.autoLinkDisabled;
         panel.hidden = !sharing.linked;
-        // A shared name is what binds the actors together, so the server refuses to rename one.
+        // Renaming one linked actor would invalidate its stored identity, so the server refuses it.
         // Say so on the control instead of letting the save fail.
         const nameField = form.elements.namedItem('npc_name');
         if (nameField) {
@@ -530,7 +542,12 @@
         const lands = isOwner
             ? 'Biography, personality, goals, voice, relationships and personal memory are shared. Physical details, RefID, favorite and lock stay with this actor.'
             : `Biography, personality, goals, voice, relationships and personal memory use ${ownerName}'s kept profile (${ownerRefid}). Physical details, RefID, favorite and lock stay with this actor.`;
-        byId('sharing-explainer').textContent = `${lands} The name is locked while the profile is shared.`;
+        // Members of an automatic group can be recorded under different names, so each row below is
+        // labelled with the name the server reported for it.
+        const automaticLine = sharing.automatic
+            ? 'These references are known to be one character, so CHIM linked them automatically to the kept profile. '
+            : '';
+        byId('sharing-explainer').textContent = `${automaticLine}${lands} The name is locked while the profile is shared.`;
 
         const list = byId('sharing-members');
         list.replaceChildren();
