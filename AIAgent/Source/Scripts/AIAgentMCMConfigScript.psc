@@ -758,8 +758,8 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_outside", "Exterior Spatial Hearing Distance", "Set outdoor conversation hearing distance.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Hearing", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_creature_npcs", "Add Creature NPCs", "Allow Auto Activate for a set group of creatures such as dragons, giants, Falmer, undead and animal followers. Hostile ones still need Add Hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_creature_npcs_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
 
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
 	PublishPrismaMCMEntry("Behavior", "Timers", "dynamic_profile_period", "Dynamic Profile Timer", "Period for automatic dynamic profile updates.", "slider", _dynamic_profile_period as String, "5|120|1|minutes|0|0")
@@ -1218,9 +1218,9 @@ event OnPageReset(string a_page)
 		
 		_toggle_autoadd_hostile	= AddToggleOption("Add Hostile NPCs", _toggle_autoadd_hostile_state)
 		AddEmptyOption() 
-		_toggle_autoadd_allraces	= AddToggleOption("Add All races", _toggle_autoadd_allraces_state)
-		AddEmptyOption()
 		_toggle_autoadd_creature_npcs	= AddToggleOption("Add Creature NPCs", _toggle_autoadd_creature_npcs_state)
+		AddEmptyOption()
+		_toggle_autoadd_allraces	= AddToggleOption("Add All races", _toggle_autoadd_allraces_state)
 		
 	endif
 
