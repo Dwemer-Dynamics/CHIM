@@ -147,6 +147,10 @@ int 		_toggle_autoadd_allraces
 bool  		_toggle_autoadd_allraces_state = false
 
 
+int 		_toggle_autoadd_creature_npcs
+bool  		_toggle_autoadd_creature_npcs_state = false
+
+
 ; Open Mic functionality
 int			_toggle_openmic
 bool		_toggle_openmic_state			= false
@@ -755,6 +759,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Auto Activate", "Hearing", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_creature_npcs", "Add Creature NPCs", "Allow Auto Activate for a set group of creatures such as dragons, giants, Falmer, undead and animal followers. Hostile ones still need Add Hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_creature_npcs_state), "0|1|1||0|0")
 
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
 	PublishPrismaMCMEntry("Behavior", "Timers", "dynamic_profile_period", "Dynamic Profile Timer", "Period for automatic dynamic profile updates.", "slider", _dynamic_profile_period as String, "5|120|1|minutes|0|0")
@@ -962,6 +967,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "autoadd_allraces"
 		_toggle_autoadd_allraces_state = enabled
 		controlScript.setConf("_autoadd_allraces", value)
+	elseif keyName == "autoadd_creature_npcs"
+		_toggle_autoadd_creature_npcs_state = enabled
+		controlScript.setConf("_autoadd_creature_npcs", value)
 	elseif keyName == "bored_period"
 		_bored_period = value
 		controlScript.setConf("_bored_period", value)
@@ -1211,6 +1219,8 @@ event OnPageReset(string a_page)
 		_toggle_autoadd_hostile	= AddToggleOption("Add Hostile NPCs", _toggle_autoadd_hostile_state)
 		AddEmptyOption() 
 		_toggle_autoadd_allraces	= AddToggleOption("Add All races", _toggle_autoadd_allraces_state)
+		AddEmptyOption()
+		_toggle_autoadd_creature_npcs	= AddToggleOption("Add Creature NPCs", _toggle_autoadd_creature_npcs_state)
 		
 	endif
 
@@ -1742,6 +1752,12 @@ event OnGameReload()
 		a=controlScript.setConf("_autoadd_allraces",0)
 	endif
 	
+	if (_toggle_autoadd_creature_npcs_state)
+		a=controlScript.setConf("_autoadd_creature_npcs",1)
+	else
+		a=controlScript.setConf("_autoadd_creature_npcs",0)
+	endif
+
 	a=controlScript.setSoulgazeModeNative(_toggleState7 as Int)
 	
 	a=controlScript.setConf("_godmode",0)
@@ -1954,6 +1970,11 @@ event OnOptionDefault(int a_option)
 		_openmic_mute_key = _openmic_mute_keyDefault
 		SetKeymapOptionValue(a_option, _openmic_mute_key)
 		controlScript.doBinding9(_openmic_mute_key)
+
+	elseif (a_option == _toggle_autoadd_creature_npcs)
+		_toggle_autoadd_creature_npcs_state = false
+		controlScript.setConf("_autoadd_creature_npcs", 0)
+		SetToggleOptionValue(a_option, _toggle_autoadd_creature_npcs_state)
 	endIf
 	
 endEvent
@@ -2378,6 +2399,18 @@ event OnOptionSelect(int a_option)
  		SetToggleOptionValue(a_option, _toggle_autoadd_allraces_state)
  	endIf
 	
+	if (a_option == _toggle_autoadd_creature_npcs)
+		_toggle_autoadd_creature_npcs_state = !_toggle_autoadd_creature_npcs_state
+
+		if (_toggle_autoadd_creature_npcs_state)
+			controlScript.setConf("_autoadd_creature_npcs",1)
+		else
+			controlScript.setConf("_autoadd_creature_npcs",0)
+		endif
+
+		SetToggleOptionValue(a_option, _toggle_autoadd_creature_npcs_state)
+	endIf
+
 	if (a_option == _toggle_openmic)
  		_toggle_openmic_state = !_toggle_openmic_state
  
@@ -2715,6 +2748,10 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Auto Activate policy. By default, it applies to non-hostile NPCs whose race allows player dialogue (PC Dialogue = 1). Check this option to allow Auto Activate for all races - including animals like rabbits, deer, foxes, etc. Note: Enabling this may cause instability.")
 	endIf
 	
+	if (a_option == _toggle_autoadd_creature_npcs)
+		SetInfoText("Auto Activate policy. Adds a set group of creatures: dragons, hagravens, giants, Falmer, spriggans, werewolves, undead, dwarven automatons and animal followers. Ordinary wildlife and unrecognized modded creatures stay excluded. Hostile ones are only added if Add Hostile NPCs is also on. Add All races still overrides this.")
+	endIf
+
 	if (a_option == _actionSendLocations)
 		SetInfoText("Send faction,location and unique NPCs info to the server. This can take 3-5 minutes and only needs to be done once per playthrough.")
 	endIf

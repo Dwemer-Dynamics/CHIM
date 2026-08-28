@@ -64,6 +64,7 @@ extern bool AllowActorsOnScene;
 extern bool GodMode;
 extern bool AutoAddHostile;
 extern bool AutoAddAllRaces;
+extern bool AutoAddCreatureNPCs;
 extern void ResetQuestProgressionBridgeState();
 extern void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory);
 
