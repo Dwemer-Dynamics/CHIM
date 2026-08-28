@@ -832,6 +832,8 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
 EndFunction
 
+; Prisma label only. The native MCM uses the "$chim_soulgaze_hotkey" translation key so
+; SkyUI resolves the casing in Scaleform instead of relying on the Papyrus string table.
 ; Build the label at runtime so the assembler cannot merge it with the "soulgaze" ID.
 ; A local variable prevents the optimizer from folding the concatenation into a literal.
 String Function SoulGazeDisplayName()
@@ -1224,7 +1226,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_soulgaze = AddKeyMapOption(SoulGazeDisplayName(), _soulgaze_key)
+		_keymap_soulgaze = AddKeyMapOption("$chim_soulgaze_hotkey", _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
