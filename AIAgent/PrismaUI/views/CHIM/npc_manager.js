@@ -77,6 +77,37 @@
         return Number.isFinite(count) && count > 1 ? Math.floor(count) : 1;
     }
 
+    // Sharing state rides along with both list cards and the detail payload.
+    function sharingState(source) {
+        const sharing = source && source.profile_sharing;
+        if (!sharing || typeof sharing !== 'object' || !sharing.linked) {
+            return { linked: false, ownerId: 0, members: [] };
+        }
+        return {
+            linked: true,
+            ownerId: Number(sharing.owner_id || 0),
+            members: Array.isArray(sharing.members) ? sharing.members : []
+        };
+    }
+
+    // The reference origin is the plugin recorded in refid_source, not the first entry of
+    // metadata.mods: a later plugin can override an actor without owning its reference.
+    function referenceOrigin(value) {
+        const raw = String(value == null ? '' : value).trim();
+        if (!raw) return '';
+        // refid_source is "<plugin>|<local form id>"; the RefID is already shown beside it, so
+        // the origin reads as the plugin that owns the reference.
+        const match = raw.match(/^([^/\\|@#:]+\.es[mpl])(?:[/|][0-9A-Fa-f]{1,8})?$/);
+        return match ? match[1] : raw;
+    }
+
+    // Every action, injected event and speech target stays bound to the physical actor the
+    // operator opened, even when that actor only borrows a shared profile.
+    function selectedActor() {
+        const card = (currentDetail && currentDetail.card) || {};
+        return { id: Number(byId('npc-id').value || 0), refid: normalizeRefid(card.refid) };
+    }
+
     // Users type RefIDs either way; the stored column has no 0x prefix.
     function normalizeSearchTerm(value) {
         const term = String(value == null ? '' : value).trim();
@@ -284,6 +315,7 @@
             if (target) flags.appendChild(pill(`${Number(target.distance || 0).toFixed(1)}m`, 'nearby'));
             if (npc.favorite) flags.appendChild(pill('Favorite', 'good'));
             if (npc.locked) flags.appendChild(pill('Locked'));
+            if (sharingState(npc).linked) flags.appendChild(pill('Shared profile', 'shared'));
             copy.appendChild(flags);
             card.append(portrait, copy);
             const chain = modChain(npc);
@@ -405,6 +437,7 @@
         renderRelationships(detail.relationships || {});
         byId('relationships-locked').checked = !!detail.relationships_locked;
         renderIdentityPanel(detail);
+        renderSharingPanel(detail);
         byId('metadata-output').textContent = JSON.stringify(detail.metadata || {}, null, 2);
         renderTeleportAction(detail.metadata && detail.metadata.npc_manager_return_location);
         byId('bgl-inception-idea').value = '';
@@ -466,6 +499,69 @@
                 ? 'Defining'
                 : (index === chain.length - 1 ? 'Final override' : 'Override');
             item.append(label, pill(role, index === 0 ? 'good' : ''));
+            list.appendChild(item);
+        });
+    }
+
+    // Prisma v1 cannot merge or unlink. It states that the profile is shared and, more
+    // importantly, which profile an edit saved here actually lands in.
+    function renderSharingPanel(detail) {
+        const panel = byId('sharing-panel');
+        const banner = byId('editor-shared');
+        if (!panel) return;
+        const card = (detail && detail.card) || {};
+        const sharing = sharingState(detail);
+        if (banner) banner.hidden = !sharing.linked;
+        panel.hidden = !sharing.linked;
+        // A shared name is what binds the actors together, so the server refuses to rename one.
+        // Say so on the control instead of letting the save fail.
+        const nameField = form.elements.namedItem('npc_name');
+        if (nameField) {
+            nameField.readOnly = sharing.linked;
+            if (sharing.linked) nameField.title = 'Locked while this profile is shared. Unlink the profiles to rename this actor.';
+            else nameField.removeAttribute('title');
+        }
+        if (!sharing.linked) return;
+
+        const isOwner = sharing.ownerId === Number(card.id || 0);
+        const owner = sharing.members.find((member) => Number(member.id) === sharing.ownerId);
+        const ownerName = String((owner && owner.name) || card.name || '').trim() || 'another actor';
+        const ownerRefid = refidDisplay(owner && owner.refid).text;
+        const lands = isOwner
+            ? 'Biography, personality, goals, voice, relationships and personal memory are shared. Physical details, RefID, favorite and lock stay with this actor.'
+            : `Biography, personality, goals, voice, relationships and personal memory use ${ownerName}'s kept profile (${ownerRefid}). Physical details, RefID, favorite and lock stay with this actor.`;
+        byId('sharing-explainer').textContent = `${lands} The name is locked while the profile is shared.`;
+
+        const list = byId('sharing-members');
+        list.replaceChildren();
+        if (!sharing.members.length) {
+            const empty = document.createElement('li');
+            empty.className = 'sharing-empty';
+            empty.textContent = 'No actors are listed for this shared profile.';
+            list.appendChild(empty);
+            return;
+        }
+        sharing.members.forEach((member) => {
+            const item = document.createElement('li');
+            item.className = 'sharing-member';
+            const name = document.createElement('span');
+            name.className = 'sharing-member-name';
+            name.textContent = String(member.name || 'Unknown NPC');
+            item.appendChild(name);
+            if (Number(member.id) === sharing.ownerId) item.appendChild(pill('Kept profile', 'good'));
+            if (Number(member.id) === Number(card.id || 0)) item.appendChild(pill('This actor', 'nearby'));
+            const identity = document.createElement('span');
+            identity.className = 'sharing-member-identity';
+            const refid = refidDisplay(member.refid);
+            const refidNode = document.createElement('span');
+            refidNode.className = `sharing-member-refid${refid.known ? '' : ' unknown'}`;
+            refidNode.append(srOnly('Ref ID '), document.createTextNode(refid.text));
+            const origin = referenceOrigin(member.refid_source);
+            const originNode = document.createElement('span');
+            originNode.className = `sharing-member-origin${origin ? '' : ' unknown'}`;
+            originNode.append(srOnly('Reference origin '), document.createTextNode(origin || 'Unknown plugin'));
+            identity.append(refidNode, originNode);
+            item.appendChild(identity);
             list.appendChild(item);
         });
     }
@@ -713,6 +809,7 @@
             byId('history-event-text').focus();
             return;
         }
+        const actor = selectedActor();
         const injectButton = byId('history-inject');
         injectButton.disabled = true;
         setHistoryStatus('Injecting event...', false);
@@ -722,7 +819,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     operation: 'inject_event',
-                    id: Number(byId('npc-id').value),
+                    id: actor.id,
+                    refid: actor.refid,
                     event: text,
                     recipient_ids: Array.from(historyRecipients.keys())
                 })
@@ -867,6 +965,7 @@
     async function saveNpc(event) {
         event.preventDefault();
         if (!currentDetail) return;
+        const actor = selectedActor();
         const saveButton = byId('save-button');
         saveButton.disabled = true;
         byId('save-status').textContent = 'Saving NPC profile...';
@@ -876,7 +975,9 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    id: Number(byId('npc-id').value),
+                    id: actor.id,
+                    refid: actor.refid,
+                    profile_revision: String((currentDetail && currentDetail.profile_revision) || ''),
                     fields: collectFields(),
                     overrides: collectOverrides(),
                     relationships: collectRelationships(),
@@ -904,6 +1005,7 @@
             return;
         }
 
+        const actor = selectedActor();
         button.disabled = true;
         status.textContent = 'Sending action...';
         status.classList.remove('error');
@@ -914,7 +1016,8 @@
                 body: JSON.stringify({
                     operation: 'action',
                     action,
-                    id: Number(byId('npc-id').value),
+                    id: actor.id,
+                    refid: actor.refid,
                     idea
                 })
             }));

@@ -145,6 +145,7 @@
                     <div>
                         <h2 id="editor-title">NPC Profile</h2>
                         <p id="editor-subtitle"></p>
+                        <p id="editor-shared" class="editor-shared" hidden><span class="pill shared"><span aria-hidden="true">&#128279;</span> Shared profile</span></p>
                     </div>
                 </div>
                 <button id="editor-close" class="icon-button" type="button" aria-label="Close editor">×</button>
@@ -164,6 +165,13 @@
                 <input id="npc-id" type="hidden">
                 <div class="editor-content">
                     <section class="tab-panel active" data-panel="general">
+                        <section id="sharing-panel" class="sharing-panel" aria-labelledby="sharing-heading" hidden>
+                            <h3 id="sharing-heading"><span aria-hidden="true">&#128279;</span> Shared profile</h3>
+                            <p id="sharing-explainer" class="sharing-explainer"></p>
+                            <h4 class="sharing-subheading">Actors sharing this profile</h4>
+                            <ul id="sharing-members" class="sharing-members"></ul>
+                            <p class="sharing-note">Actions, injected events and speech still target the actor you opened. Merging and unlinking are done from the CHIM NPC page in a browser.</p>
+                        </section>
                         <div class="form-grid two-columns">
                             <label class="form-field"><span>Name</span><input name="npc_name" required></label>
                             <label class="form-field"><span>Profile</span><select name="profile_id" required></select></label>
