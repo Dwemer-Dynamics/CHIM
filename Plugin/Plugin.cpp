@@ -448,7 +448,7 @@ namespace
         });
     }
 
-    bool PostLoadedPluginManifest()
+    bool PostLoadedPluginManifest(bool waitForCompletion = false)
     {
         logger::info("[LOADED_PLUGINS] Preparing plugin manifest sync");
 
@@ -487,6 +487,10 @@ namespace
             return false;
         }
 
+        if (waitForCompletion) {
+            // Restored agents must not register against the previous load order.
+            return trim(HTTPManager::postGameDataResponse("gamedata.php", payload, 3000)) == "OK";
+        }
         HTTPManager::postGameData("gamedata.php", payload);
         logger::info("[LOADED_PLUGINS] Synced {} loaded plugins", payload["plugins"].size());
         return true;
@@ -4106,6 +4110,10 @@ namespace ProcessorSerialization {
         // Ensure that everything is initialized in HTTPManager
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
+        if (!PostLoadedPluginManifest(true)) {
+            logger::warn("[LOADED_PLUGINS] Pre-restore manifest sync failed; normal load sync will retry");
+        }
+
         while (serde->GetNextRecordInfo(type, version, size)) {
             if (type == AgentCountRecord) {
                 // First read how many items follow in this record, so we know how many times to iterate.
@@ -4165,7 +4173,8 @@ namespace ProcessorSerialization {
                             }
 
                             // targetActor->AllowPCDialogue(false);
-                            std::vector<std::string> registrationFields(44);
+                            std::vector<std::string> registrationFields(45);
+                            registrationFields[44] = BuildActorReferenceSource(actor);
                             registrationFields[0] = actor->GetDisplayFullName();
                             registrationFields[1] = category;
                             registrationFields[2] = actor->GetActorBase()->GetSex() == RE::SEXES::kFemale ? "female" : "male";

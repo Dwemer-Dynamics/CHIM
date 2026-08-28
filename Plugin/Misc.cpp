@@ -20,6 +20,27 @@
 
 using json = nlohmann::json;
 
+// Use the reference's load index, never an override file or the actor's NPC base.
+std::string BuildActorReferenceSource(RE::Actor* actor)
+{
+    auto* dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!actor || !dataHandler) {
+        return {};
+    }
+    const auto refId = actor->GetFormID();
+    if (refId == 0 || refId >= 0xFF000000) {
+        return {};
+    }
+    const RE::TESFile* file = nullptr;
+    if (refId >= 0xFE000000 && !REL::Module::IsVR()) {
+        file = dataHandler->LookupLoadedLightModByIndex((refId >> 12) & 0xFFF);
+    } else {
+        file = dataHandler->LookupLoadedModByIndex(refId >> 24);
+    }
+    return file ? ActorIdentityUtils::BuildReferenceSource(file->GetFilename(), refId, file->IsLight() && !REL::Module::IsVR())
+                : std::string{};
+}
+
 namespace logger = SKSE::log;
 
 

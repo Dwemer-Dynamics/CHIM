@@ -25,6 +25,7 @@ void ResetGameTimeStamp();
 
 std::string GetPlayerLocation();
 std::string GetPlayerName();
+std::string BuildActorReferenceSource(RE::Actor* actor);
 std::string GetCurrentWeatherDescription();
 std::string BuildCurrentWorldContextDetails();
 
