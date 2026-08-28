@@ -350,7 +350,6 @@ namespace PrismaUIBridge {
     static void UpdateChatboxModeUI(const std::string& mode);
     static void UpdateOverlayModeUI(const std::string& mode);
     static void PushCurrentModeToViews();
-    static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
     static void UpdateChatboxRechatModeUI(const std::string& mode);
     static void SyncChatboxStatusFromServerAsync();
@@ -7848,7 +7847,7 @@ R"CHIM(
         }
     }
 
-    static void StopAllDialogueNow(const char* sourceTag) {
+    void StopAllDialogueNow(const char* sourceTag) {
         logger::info("[{}] Stop All Dialogue requested", sourceTag);
         g_dialogueStopGeneration.fetch_add(1, std::memory_order_relaxed);
 

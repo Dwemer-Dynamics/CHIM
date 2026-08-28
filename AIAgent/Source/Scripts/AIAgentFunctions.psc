@@ -9,6 +9,9 @@ int function commandEndedForActor(String command,string npc)  Global Native
 
 int function recordSoundEx(int bindedKey)  Global Native
 int function stopRecording(int bindedKey)  Global Native
+; Stop speech and pending replies without changing NPC actions or conversation history.
+int function stopAllDialogue() Global Native
+bool function isGameFocused() Global Native
 int function startOpenMicMonitoring()  Global Native
 int function stopOpenMicMonitoring()  Global Native
 int function setOpenMicMuted(bool muted)  Global Native
