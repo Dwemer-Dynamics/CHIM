@@ -84,6 +84,12 @@ namespace PlayerConversationRoutingPolicy
         bool trueCrosshair = false;
     };
 
+    // Hearing is independent of which eligible NPC is selected to reply.
+    inline bool IsAudienceMember(const Candidate& candidate, bool selected, float radius)
+    {
+        return selected || (candidate.hardEligible && candidate.audible && candidate.distance <= radius);
+    }
+
     struct Request
     {
         std::string utterance;
