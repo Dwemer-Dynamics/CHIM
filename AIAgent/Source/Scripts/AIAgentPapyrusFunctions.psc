@@ -25,12 +25,21 @@ int 		_currentChatboxKey
 int 		_currentChatboxFocusKey
 int 		_currentSettingsMenuKey
 int 		_currentMasterMenuKey
+int 		_currentSoulgazeKey
 bool property _currentGodmodeStatus  auto
 bool		currentTTSStatus= false
 bool		_diaryKeyPressed= false ; Track if diary key is currently pressed
 bool		_chatboxFocusHotkeySuppressed = false
 bool		_playerMenuTTSPending = false
 bool		_vrikVoiceRecordingActive = false
+bool		_soulgazeKeyPressed = false
+bool		_soulgazeHoldTriggered = false
+bool		_soulgazeSingleTapPending = false
+bool		_soulgazeSecondTapCandidate = false
+float		_soulgazePressedAt = 0.0
+float		_soulgazeFirstTapReleasedAt = 0.0
+float		_soulgazeHoldThreshold = 0.7
+float		_soulgazeDoubleTapWindow = 0.35
 
 ; VRIK gesture actions mirror the Main page CHIM hotkeys.
 String		_vrikActionTextChat = "CHIM_VRIK_TextChat"
@@ -243,14 +252,16 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		; Soulgaze actions (check if starts with "sg_")
 		int mode = AIAgentFunctions.get_conf_i("_sgmode")
 		if (actionId == "sg_soulgaze")
-			AIAgentSoulGazeEffect.Soulgaze(mode)
+			TriggerSoulgazeDescribe()
 		elseif (actionId == "sg_photo_zoom")
-			AIAgentSoulGazeEffect.SendProfilePicture(mode, true)
+			TriggerSoulgazePortrait()
 		elseif (actionId == "sg_photo")
 			AIAgentSoulGazeEffect.SendProfilePicture(mode, false)
 		elseif (actionId == "sg_upload")
 			; Use JustUpload like the original wheel menu
 			AIAgentSoulGazeEffect.JustUpload(mode)
+		elseif (actionId == "sg_context")
+			TriggerSoulgazeContext()
 		endif
 	endif
 	
@@ -300,6 +311,24 @@ Event OnKeyUp(int keyCode, float holdTime)
 			_vrikVoiceRecordingActive = false
 			;WebSocketSTT.StopRecordVoice(_currentKeyVoice);
 			Debug.Notification("[CHIM] Recording end");
+		endif
+	endif
+
+	If (keyCode == _currentSoulgazeKey && _soulgazeKeyPressed)
+		_soulgazeKeyPressed = false
+		if (_soulgazeHoldTriggered)
+			_soulgazeHoldTriggered = false
+			_soulgazeSecondTapCandidate = false
+			Return
+		endif
+
+		if (_soulgazeSecondTapCandidate)
+			_soulgazeSecondTapCandidate = false
+			_soulgazeSingleTapPending = false
+			TriggerSoulgazePortrait()
+		else
+			_soulgazeSingleTapPending = true
+			_soulgazeFirstTapReleasedAt = Utility.GetCurrentRealTime()
 		endif
 	endif
 	
@@ -370,6 +399,22 @@ Event OnKeyDown(int keyCode)
 		
     EndIf
   EndIf
+
+	If (keyCode == _currentSoulgazeKey)
+		If !SafeProcess()
+			Return
+		EndIf
+
+		float now = Utility.GetCurrentRealTime()
+		if (_soulgazeSingleTapPending && (now - _soulgazeFirstTapReleasedAt) > _soulgazeDoubleTapWindow)
+			_soulgazeSingleTapPending = false
+			TriggerSoulgazeContext()
+		endif
+		_soulgazeKeyPressed = true
+		_soulgazeHoldTriggered = false
+		_soulgazeSecondTapCandidate = _soulgazeSingleTapPending && (now - _soulgazeFirstTapReleasedAt) <= _soulgazeDoubleTapWindow
+		_soulgazePressedAt = now
+	EndIf
    If(keyCode == _currentKeyVoice)
    
 	if (UI.IsMenuOpen("Book Menu"))
@@ -544,6 +589,22 @@ Event OnUpdate()
 	if (pendingAction != "")
 		ProcessPendingSettingsAction(pendingAction)
 	endif
+
+	if (_soulgazeKeyPressed && !_soulgazeHoldTriggered && Input.IsKeyPressed(_currentSoulgazeKey))
+		if ((Utility.GetCurrentRealTime() - _soulgazePressedAt) >= _soulgazeHoldThreshold)
+			_soulgazeHoldTriggered = true
+			_soulgazeSingleTapPending = false
+			_soulgazeSecondTapCandidate = false
+			TriggerSoulgazeDescribe()
+		endif
+	endif
+
+	if (_soulgazeSingleTapPending && !_soulgazeKeyPressed)
+		if ((Utility.GetCurrentRealTime() - _soulgazeFirstTapReleasedAt) > _soulgazeDoubleTapWindow)
+			_soulgazeSingleTapPending = false
+			TriggerSoulgazeContext()
+		endif
+	endif
 	
 	; Continue polling
 	RegisterForSingleUpdate(0.1)
@@ -633,6 +694,45 @@ Function TriggerHaltAction()
 	else
 		HaltAllNearbyAgents()
 	endif
+EndFunction
+
+Function TriggerSoulgazeContext()
+	Debug.Trace("[CHIM] Soulgaze tap requested a visual context capture")
+	AIAgentSoulGazeEffect.CaptureContext(AIAgentFunctions.get_conf_i("_sgmode"))
+EndFunction
+
+Function TriggerSoulgazePortrait()
+	Actor targetActor = Game.GetCurrentCrosshairRef() as Actor
+	bool isActivatedTarget = false
+	if (targetActor)
+		Actor[] nearbyAgents = AIAgentFunctions.findAllNearbyAgents()
+		int index = 0
+		while index < nearbyAgents.Length && !isActivatedTarget
+			isActivatedTarget = nearbyAgents[index] == targetActor
+			index += 1
+		endwhile
+	endif
+
+	if (!isActivatedTarget)
+		Debug.Trace("[CHIM] Soulgaze double tap rejected because the crosshair target is not an activated AI NPC")
+		Debug.Notification("[CHIM] Target an AI NPC before double-tapping Soulgaze.")
+		Return
+	endif
+
+	Debug.Trace("[CHIM] Soulgaze double tap requested a portrait for " + targetActor.GetDisplayName())
+	AIAgentSoulGazeEffect.CapturePortrait(AIAgentFunctions.get_conf_i("_sgmode"), targetActor)
+EndFunction
+
+Function TriggerSoulgazeDescribe()
+	Actor targetActor = AIAgentFunctions.getClosestAgent()
+	if (!targetActor)
+		Debug.Trace("[CHIM] Soulgaze hold rejected because no activated NPC is nearby")
+		Debug.Notification("[CHIM] No activated NPC is nearby.")
+		Return
+	endif
+
+	Debug.Trace("[CHIM] Soulgaze hold requested a scene description from " + targetActor.GetDisplayName())
+	AIAgentSoulGazeEffect.DescribeScene(AIAgentFunctions.get_conf_i("_sgmode"), targetActor)
 EndFunction
 
 Function ToggleChatboxFocusAction(int keyCode = -1)
@@ -790,6 +890,11 @@ EndFunction
 Function doBinding19(int keycode) 
 	
 	_currentMasterMenuKey=keycode
+	RegisterForKey(keycode)
+EndFunction
+
+Function doBinding20(int keycode)
+	_currentSoulgazeKey = keycode
 	RegisterForKey(keycode)
 EndFunction
 

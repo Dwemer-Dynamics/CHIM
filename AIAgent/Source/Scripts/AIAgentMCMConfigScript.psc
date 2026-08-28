@@ -200,6 +200,10 @@ int			_settingsmenu_key				= -1
 int			_keymap_mastermenu
 int			_mastermenu_key					= -1
 
+; Gesture-driven Soulgaze capture
+int			_keymap_soulgaze
+int			_soulgaze_key					= -1
+
 ; CHIM Overlay/Status Cycle (Single hotkey)
 int			_keymap_overlaystatus_cycle
 int			_overlaystatus_cycle_key		= -1
@@ -273,6 +277,7 @@ bool		_toggle_openmic_stateDefault	= false
 float		_openmic_sensitivityDefault		= 1000.0
 float		_openmic_enddelayDefault		= 1.0
 int			_openmic_mute_keyDefault		= -1
+int			_soulgaze_keyDefault			= -1
 bool		_toggle_cancel_dialogue_on_combat_stateDefault = true
 bool		_toggle_combat_barks_stateDefault	= true
 float		_combat_barks_periodDefault		= 30.0
@@ -556,6 +561,12 @@ endFunction
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
+	if (a_version == 70 && a_version > CurrentVersion)
+		; Version 70: Added the independent gesture-driven Soulgaze hotkey.
+		_soulgaze_key = -1
+		OnConfigInit()
+	endIf
+
 	if (a_version == 69 && a_version > CurrentVersion)
 		OnConfigInit()
 	endIf
@@ -738,6 +749,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "manual_ai_activate", "Manual AI Activate", "Activate or deactivate AI control for the targeted NPC.", "keymap", _myKey7 as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "soulgaze", "Soulgaze", "Tap to capture visual context, double-tap an AI NPC for a portrait, or hold for a nearby NPC to describe the scene.", "keymap", _soulgaze_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Legacy text chat input. Use Text Chat instead.", "keymap", _myKey as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "chatbox_view", "Chatbox View", "Toggle the live Prisma Chatbox View.", "keymap", _chatbox_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "actions_menu", "Actions Menu", "Open the Prisma AI actions panel.", "keymap", _settingsmenu_key as String, "0|0|0||0|0")
@@ -801,7 +813,7 @@ Function PublishPrismaMCMState()
 EndFunction
 
 bool Function IsPrismaMCMKeySetting(String keyName)
-	return keyName == "text_chat" || keyName == "voice_chat" || keyName == "halt_ai_actions" || keyName == "master_menu" || keyName == "manual_ai_activate" || keyName == "text_chat_deprecated" || keyName == "chatbox_view" || keyName == "actions_menu" || keyName == "overlay_status_cycle" || keyName == "history_diaries_cycle" || keyName == "browser" || keyName == "logs_view" || keyName == "master_wheel" || keyName == "roleplay_wheel" || keyName == "settings_wheel" || keyName == "mode_wheel" || keyName == "soulgaze_wheel" || keyName == "openmic_mute"
+	return keyName == "text_chat" || keyName == "voice_chat" || keyName == "halt_ai_actions" || keyName == "master_menu" || keyName == "manual_ai_activate" || keyName == "soulgaze" || keyName == "text_chat_deprecated" || keyName == "chatbox_view" || keyName == "actions_menu" || keyName == "overlay_status_cycle" || keyName == "history_diaries_cycle" || keyName == "browser" || keyName == "logs_view" || keyName == "master_wheel" || keyName == "roleplay_wheel" || keyName == "settings_wheel" || keyName == "mode_wheel" || keyName == "soulgaze_wheel" || keyName == "openmic_mute"
 EndFunction
 
 bool Function IsPrismaMCMValueValid(String keyName, float value)
@@ -871,6 +883,10 @@ bool Function ApplyPrismaMCMKeySetting(String keyName, int keyCode)
 		controlScript.removeBinding(_myKey7)
 		_myKey7 = keyCode
 		controlScript.doBinding7(keyCode)
+	elseif keyName == "soulgaze"
+		controlScript.removeBinding(_soulgaze_key)
+		_soulgaze_key = keyCode
+		controlScript.doBinding20(keyCode)
 	elseif keyName == "text_chat_deprecated"
 		controlScript.removeBinding(_myKey)
 		_myKey = keyCode
@@ -1181,6 +1197,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
+		_keymap_soulgaze = AddKeyMapOption("Soulgaze", _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
@@ -1845,6 +1862,12 @@ event OnOptionDefault(int a_option)
 		SetKeymapOptionValue(a_option, _myKey7)
 		controlScript.doBinding7(_myKey7)
 
+	elseif (a_option == _keymap_soulgaze)
+		controlScript.removeBinding(_soulgaze_key)
+		_soulgaze_key = _soulgaze_keyDefault
+		SetKeymapOptionValue(a_option, _soulgaze_key)
+		controlScript.doBinding20(_soulgaze_key)
+
 	elseif (a_option == _toggle1OID_C)
 		_toggleState2 = _toggleState2Default
 		SetToggleOptionValue(a_option, _toggleState2)
@@ -2070,6 +2093,15 @@ event OnOptionKeyMapChange(int a_option, int a_keyCode, string a_conflictControl
 			controlScript.removeBinding(_myKey7)
 			_myKey7 = a_keyCode
 			controlScript.doBinding7(a_keyCode)
+			if (a_keyCode == -1)
+				ForcePageReset()
+			else
+				SetKeymapOptionValue(a_option, a_keyCode)
+			endif
+		elseif (a_option == _keymap_soulgaze)
+			controlScript.removeBinding(_soulgaze_key)
+			_soulgaze_key = a_keyCode
+			controlScript.doBinding20(_soulgaze_key)
 			if (a_keyCode == -1)
 				ForcePageReset()
 			else
@@ -2738,6 +2770,10 @@ event OnOptionHighlight(int a_option)
 	
 	if (a_option == _keymap_mastermenu)
 		SetInfoText("Open the CHIM Master Menu. Quick launcher for all Prisma UI panels. Game pauses when open. Select a panel to toggle it. Requires Prisma UI.")
+	endIf
+
+	if (a_option == _keymap_soulgaze)
+		SetInfoText("Tap to capture visual context without speech. Double-tap while aiming at an activated AI NPC to update their portrait. Hold to ask the nearest activated NPC to describe the scene.")
 	endIf
 	
 	if (a_option == _toggle_autoadd_hostile)
