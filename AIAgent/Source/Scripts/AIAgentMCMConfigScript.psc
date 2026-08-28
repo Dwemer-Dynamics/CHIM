@@ -769,7 +769,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "manual_ai_activate", "Manual AI Activate", "Activate or deactivate AI control for the targeted NPC.", "keymap", _myKey7 as String, "0|0|0||0|0")
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "soulgaze", "SoulGaze", "Tap to capture visual context, double-tap an AI NPC for a portrait, or hold for a nearby NPC to describe the scene.", "keymap", _soulgaze_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "soulgaze", SoulGazeDisplayName(), "Tap to capture visual context, double-tap an AI NPC for a portrait, or hold for a nearby NPC to describe the scene.", "keymap", _soulgaze_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Legacy text chat input. Use Text Chat instead.", "keymap", _myKey as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "chatbox_view", "Chatbox View", "Toggle the live Prisma Chatbox View.", "keymap", _chatbox_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "actions_menu", "Actions Menu", "Open the Prisma AI actions panel.", "keymap", _settingsmenu_key as String, "0|0|0||0|0")
@@ -830,6 +830,13 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Sound", "Recording Device", "current_recording_device", "Current Device", "Windows recording device currently resolved by CHIM.", "text", AIAgentFunctions.getCurrentRecordingDeviceName(), "0|0|0||1|0")
 
 	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
+EndFunction
+
+; Build the label at runtime so the assembler cannot merge it with the "soulgaze" ID.
+; A local variable prevents the optimizer from folding the concatenation into a literal.
+String Function SoulGazeDisplayName()
+	String prefix = "Soul"
+	return prefix + "Gaze"
 EndFunction
 
 bool Function IsPrismaMCMKeySetting(String keyName)
@@ -1217,7 +1224,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_soulgaze = AddKeyMapOption("SoulGaze", _soulgaze_key)
+		_keymap_soulgaze = AddKeyMapOption(SoulGazeDisplayName(), _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
