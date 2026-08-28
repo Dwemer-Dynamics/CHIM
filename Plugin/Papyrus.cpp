@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <chrono>
 #include <cmath>
@@ -361,6 +362,7 @@ bool GodMode = false;
 bool AutoAddHostile = false;
 
 bool AutoAddAllRaces = false;
+bool AutoAddCreatureNPCs = false;
 
 // Open Mic functionality
 bool OpenMicEnabled = false;
@@ -1757,6 +1759,33 @@ int sendMessageReal(
 
 }
 
+// Share the race gate between proximity activation and crosshair promotion.
+static bool isAutoActivationRaceAllowed(RE::Actor* actor, RE::TESRace* race) {
+    if (AutoAddAllRaces || (race->AllowsPCDialogue() && !race->HasKeywordString("ActorTypeCreature"))) {
+        return true;
+    }
+    if (!AutoAddCreatureNPCs) {
+        return false;
+    }
+
+    if (race->HasKeywordString("ActorTypeDragon") || race->HasKeywordString("ActorTypeDwarven") ||
+        (race->HasKeywordString("ActorTypeUndead") && race->HasKeywordString("ActorTypeCreature")) ||
+        (race->HasKeywordString("ActorTypeAnimal") && actor->IsPlayerTeammate())) {
+        return true;
+    }
+
+    // These vanilla/DLC races have no distinct actor-type keyword. Match exact
+    // editor IDs, never display names or partial names that could admit other creatures.
+    const std::string_view editorID{race->GetFormEditorID()};
+    return editorID == "HagravenRace" || editorID == "GiantRace" ||
+           editorID == "C00GiantOutsideWhiterunRace" || editorID == "DLC2GhostFrostGiantRace" ||
+           editorID == "FalmerRace" || editorID == "FalmerFrozenVampRace" ||
+           editorID == "SprigganRace" || editorID == "SprigganMatronRace" ||
+           editorID == "SprigganSwarmRace" || editorID == "SprigganEarthMotherRace" ||
+           editorID == "DLC2SprigganBurntRace" || editorID == "WerewolfBeastRace" ||
+           editorID == "dlc2SpectralDragonRace" || editorID == "DLC2RigidSkeletonRace";
+}
+
 void addAllNPC() {
     static std::mutex mtx;
     std::lock_guard<std::mutex> lock(mtx);  // Lock the function, unlocks at the end
@@ -1818,11 +1847,9 @@ void addAllNPC() {
                 if (!race) {
                     continue;
                 }
-                if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) {
+                if (!isAutoActivationRaceAllowed(actor, race)) {
                     continue;
                 } else if (actor->IsHostileToActor(player) && AutoAddHostile == false) {
-                    continue;
-                } else if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) {
                     continue;
                 }
 
@@ -1886,9 +1913,8 @@ bool promoteCrosshairTargetToAI() {
 
     auto* race = actor->GetRace();
     if (!race) return false;
-    if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) return false;
+    if (!isAutoActivationRaceAllowed(actor, race)) return false;
     if (actor->IsHostileToActor(player) && AutoAddHostile == false) return false;
-    if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) return false;
 
     const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
     const float distance = player->GetPosition().GetDistance(actor->GetPosition());
@@ -2122,6 +2148,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
             AutoAddHostile = false;
 
         logger::info("Setting _autoadd_hostile to {} ", AutoAddHostile);
+
+    } else if (code == "_autoadd_creature_npcs") {
+        AutoAddCreatureNPCs = f_Value > 0;
+        logger::info("Setting _autoadd_creature_npcs to {} ", AutoAddCreatureNPCs);
 
     } else if (code == "_autoadd_allraces") {
         if (f_Value > 0)
