@@ -86,11 +86,13 @@ namespace {
                 subjectType = VisualSubjectType(reference.get());
 
                 if (auto* baseObject = reference->GetBaseObject()) {
-                    baseId = FormIdText(baseObject->GetLocalFormID());
                     if (auto* sourceFile = baseObject->GetFile(0)) {
+                        baseId = FormIdText(baseObject->GetLocalFormID());
                         pluginName = sourceFile->GetFilename();
+                        subjectKey = subjectType + ":" + pluginName + ":" + baseId;
+                    } else {
+                        subjectKey = subjectType + ":" + refId;
                     }
-                    subjectKey = subjectType + ":" + pluginName + ":" + baseId;
                 } else {
                     subjectKey = subjectType + ":" + refId;
                 }
@@ -188,10 +190,11 @@ namespace {
                 {"dead", actor->IsDead()},
             };
             if (auto* baseObject = actor->GetBaseObject()) {
-                candidate["base_id"] = FormIdText(baseObject->GetLocalFormID());
                 if (auto* sourceFile = baseObject->GetFile(0)) {
+                    candidate["base_id"] = FormIdText(baseObject->GetLocalFormID());
                     candidate["plugin"] = sourceFile->GetFilename();
-                }
+                } else 
+                    candidate["base_id"] = FormIdText(baseObject->GetFormID());
             }
 
             const float deltaX = screenX - 0.5f;
