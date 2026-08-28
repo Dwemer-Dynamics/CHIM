@@ -554,12 +554,32 @@ endEvent
 
 int function GetVersion()
 
-	return 70
+	return 71
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 71 && a_version > CurrentVersion)
+		; Version 71: Refresh the SoulGaze hotkey entry for saves already on 70. Keeps every
+		; stored setting, including _soulgaze_key, so OnConfigInit is deliberately not called.
+		if (CurrentVersion < 70)
+			; Saves that never reached 70 still need the original SoulGaze setup and the
+			; OnConfigInit catch-up the version 70 block used to give them.
+			_soulgaze_key = -1
+			OnConfigInit()
+		endIf
+		RegisterPrismaMCMEvent()
+		if (_soulgaze_key != -1)
+			controlScript.doBinding20(_soulgaze_key)
+		endIf
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		if (UI.IsMenuOpen("Journal Menu"))
+			ForcePageReset()
+		endIf
+	endIf
 
 	if (a_version == 70 && a_version > CurrentVersion)
 		; Version 70: Added the independent gesture-driven Soulgaze hotkey.

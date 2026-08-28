@@ -218,14 +218,33 @@ namespace {
         return payload.dump();
     }
 
+    struct SoulgazeCaptureRequest {
+        int sendMode{0};
+        RE::ActorHandle actor;
+        std::string actorName;
+    };
+
+    std::atomic_bool g_soulgazeCaptureInFlight{false};
+    std::mutex g_soulgazeCaptureMutex;
+    SoulgazeCaptureRequest g_soulgazeCaptureRequest;
+
     // Freeze all camera-derived metadata before screenshot processing moves to a worker thread.
-    std::string BuildVisualCaptureHints() {
+    std::string BuildVisualCaptureHints(int sendMode) {
         std::string hints = "&vc=" + EncodeVisualQueryValue(globalHints);
         hints.append(BuildVisualCaptureMetadata());
 
         const std::string actorCandidates = BuildVisualActorCandidates();
         if (actorCandidates != "[]") {
             hints.append("&visual_actor_candidates=" + EncodeVisualQueryValue(actorCandidates));
+        }
+
+        if (sendMode == 1) {
+            std::scoped_lock lock(g_soulgazeCaptureMutex);
+            if (g_soulgazeCaptureRequest.sendMode == 1) {
+                // Portrait zoom can clear or change the crosshair; keep the actor selected before capture.
+                hints.append("&fg=" + EncodeVisualQueryValue(g_soulgazeCaptureRequest.actorName));
+                return hints;
+            }
         }
 
         auto* crosshairData = RE::CrosshairPickData::GetSingleton();
@@ -238,16 +257,6 @@ namespace {
         }
         return hints;
     }
-
-    struct SoulgazeCaptureRequest {
-        int sendMode{0};
-        RE::ActorHandle actor;
-        std::string actorName;
-    };
-
-    std::atomic_bool g_soulgazeCaptureInFlight{false};
-    std::mutex g_soulgazeCaptureMutex;
-    SoulgazeCaptureRequest g_soulgazeCaptureRequest;
 
     bool IsActivatedAiActor(RE::Actor* actor) {
         if (!actor) {
@@ -312,7 +321,7 @@ namespace {
 
             if (request.sendMode == 1) {
                 logger::info("[SOULGAZE] Portrait capture completed actor={}", request.actorName);
-                RE::DebugNotification(std::format("[CHIM] {} portrait updated.", request.actorName).c_str());
+                RE::DebugNotification(std::format("[CHIM] Update Profile Picture for {}", request.actorName).c_str());
                 return;
             }
 
@@ -619,7 +628,7 @@ void ProcedureTakeShot() {
     }
 
     else {
-        std::string captureHints = BuildVisualCaptureHints();
+        std::string captureHints = BuildVisualCaptureHints(sendMode);
         ThreadPool::getInstance().enqueue("ProcessScreenshot", [id, captureHints = std::move(captureHints), sendMode]() {
             /* std::ofstream outputFile("eyeShot.bmp", std::ios::out | std::ios::binary);
             if (outputFile.is_open()) {
@@ -659,7 +668,7 @@ void ProcedureSendShot(char const* a_path) {
     const int sendMode = MutexGetScreenShotSendMode();
     MutexSetScreenShotSendMode(0);
     const std::string screenshotPath = a_path ? a_path : "";
-    std::string captureHints = BuildVisualCaptureHints();
+    std::string captureHints = BuildVisualCaptureHints(sendMode);
     ThreadPool::getInstance().enqueue("UploadScreenshot", [screenshotPath, captureHints = std::move(captureHints), sendMode]() {
         logger::info(" HTTPUploader::getInstance()");
 
