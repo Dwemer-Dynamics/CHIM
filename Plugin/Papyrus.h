@@ -88,6 +88,8 @@ namespace Papyrus {
                       int bindedKey);
     int stopRecording(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       int bindedKey);
+    int stopAllDialogue(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
+    bool isGameFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int startOpenMicMonitoring(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                RE::StaticFunctionTag*);

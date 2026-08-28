@@ -299,6 +299,10 @@ int _slider_maintenance_period
 float _maintenance_period = 4.0
 
 event OnPlayerLoadGame()
+	; The quest's pending key state is saved; do not replay a gesture from the loaded save.
+	if (controlScript)
+		controlScript.ResetChatHotkeys()
+	endif
 	RegisterPrismaMCMEvent()
 	; Re-apply combat settings on every game load since C++ plugin doesn't persist them
 	Debug.Trace("[CHIM] OnPlayerLoadGame")
@@ -771,13 +775,13 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.beginChimMcmSnapshot()
 
 	; Prisma captures DirectInput key codes and applies them only when Save is pressed.
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Open Prisma Text Chat and type a message.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Push to talk with AI NPCs or summarize an open book.", "keymap", _myKey2 as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Tap to type a message. Hold to make the NPC in your crosshair wait here.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Hold to talk. Tap to stop current and queued dialogue, or double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it.", "keymap", _myKey2 as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "manual_ai_activate", "Manual AI Activate", "Activate or deactivate AI control for the targeted NPC.", "keymap", _myKey7 as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "soulgaze", SoulGazeDisplayName(), "Tap to capture visual context, double-tap an AI NPC for a portrait, or hold for a nearby NPC to describe the scene.", "keymap", _soulgaze_key as String, "0|0|0||0|0")
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Legacy text chat input. Use Text Chat instead.", "keymap", _myKey as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Tap to type a message in the legacy textbox. Hold to make the NPC in your crosshair wait here. Use Text Chat for Prisma UI.", "keymap", _myKey as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "chatbox_view", "Chatbox View", "Toggle the live Prisma Chatbox View.", "keymap", _chatbox_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "actions_menu", "Actions Menu", "Open the Prisma AI actions panel.", "keymap", _settingsmenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "overlay_status_cycle", "Status, Minihud, Terminator Views", "Cycle through the Prisma status views.", "keymap", _overlaystatus_cycle_key as String, "0|0|0||0|0")
@@ -2637,13 +2641,13 @@ event OnOptionHighlight(int a_option)
 	{Called when the user highlights an option}
 	
 	if (a_option == _keymapOID_K)
-		SetInfoText("Deprecated text chat input. Use Text Chat for the Prisma UI chat input when available.")
+		SetInfoText("Deprecated text chat input. Tap to type a message. Hold to make the NPC in your crosshair wait here. Use Text Chat for Prisma UI.")
 	endIf
 	if (a_option == _toggle1OID_B)
 		SetInfoText("Enables Text-to-Speech for AI NPCs.")
 	endIf
 	if (a_option == _keymapOID_K2)
-		SetInfoText("Push-to-Talk: Speak with AI NPCs or summarize open books. CHIM records from the current Windows default recording device shown below.")
+		SetInfoText("Hold to talk. Tap to stop current and queued dialogue without halting NPC actions. Double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it. CHIM uses the Windows default recording device shown below.")
 	endIf
 	if (a_option == _toggle1OID_C)
 		SetInfoText("Enable AI to perform actions.")
@@ -2814,7 +2818,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _keymap_chatbox_focus)
-		SetInfoText("Open Text Chat in Prisma UI so you can type and send a message, or summarize an open book, then return control to the game.")
+		SetInfoText("Tap to type a message in Prisma UI. Hold to make the NPC in your crosshair wait here. With a book open, press to summarize it.")
 	endIf
 	
 	if (a_option == _keymap_settingsmenu)

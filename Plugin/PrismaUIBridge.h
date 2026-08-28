@@ -344,6 +344,9 @@ namespace PrismaUIBridge {
     std::uint64_t GetDialogueStopGeneration();
     void BumpDialogueStopGeneration();
 
+    // Shared by the chatbox and voice hotkey; does not require a Prisma view.
+    void StopAllDialogueNow(const char* sourceTag);
+
     // Push a new chat message to the chatbox (real-time)
     void PushChatboxMessage(const std::string& speaker, const std::string& text, 
                             const std::string& timestamp, const std::string& type,

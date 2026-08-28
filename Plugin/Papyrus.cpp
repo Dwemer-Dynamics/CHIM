@@ -2679,6 +2679,19 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     return 0;
 }
 
+bool Papyrus::isGameFocused(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                           RE::StaticFunctionTag*) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &processId);
+    return processId != 0 && processId == GetCurrentProcessId();
+}
+
+int Papyrus::stopAllDialogue(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                            RE::StaticFunctionTag*) {
+    PrismaUIBridge::StopAllDialogueNow("Voice hotkey");
+    return 0;
+}
+
 int Papyrus::stopRecording(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                            RE::StaticFunctionTag*, int bindedKey) {
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
@@ -5424,6 +5437,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("requestArrestConfirmation", "AIAgentFunctions", requestArrestConfirmation, false);
     a_vm->RegisterFunction("sendRequest", "AIAgentFunctions", sendRequest, false);
     a_vm->RegisterFunction("stopRecording", "AIAgentFunctions", stopRecording, false);
+    a_vm->RegisterFunction("stopAllDialogue", "AIAgentFunctions", stopAllDialogue, false);
+    a_vm->RegisterFunction("isGameFocused", "AIAgentFunctions", isGameFocused, false);
     a_vm->RegisterFunction("startOpenMicMonitoring", "AIAgentFunctions", startOpenMicMonitoring, false);
     a_vm->RegisterFunction("stopOpenMicMonitoring", "AIAgentFunctions", stopOpenMicMonitoring, false);
     a_vm->RegisterFunction("setOpenMicMuted", "AIAgentFunctions", setOpenMicMuted, false);
