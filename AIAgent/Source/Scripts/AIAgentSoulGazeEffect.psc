@@ -178,7 +178,7 @@ int function CaptureContext(int mode) global
 endFunction
 
 int function CapturePortrait(int mode, Actor target) global
-	return StartGestureCapture(mode, 1, target, true)
+	return StartGestureCapture(mode, 1, target, false)
 endFunction
 
 int function DescribeScene(int mode, Actor target) global
