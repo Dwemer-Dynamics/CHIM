@@ -149,7 +149,7 @@
             : config.label;
         currentModeElement.title = symbolMode
             ? `One-shot ${config.label}; saved mode remains ${modeConfig[currentMode].label}.`
-            : (config.label === 'Close' ? 'Private, close-range conversation' : '');
+            : (config.label === 'Close' ? 'Close-range talk the nearby group can hear' : '');
     }
 
     const modelConfig = {

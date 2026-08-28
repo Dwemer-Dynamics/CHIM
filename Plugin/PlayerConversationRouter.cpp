@@ -505,10 +505,8 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     audienceOrder.reserve(runtimeCandidates.size());
     for (std::size_t index = 0; index < runtimeCandidates.size(); ++index) {
         const auto& candidate = runtimeCandidates[index];
-        if (index == selectedIndex ||
-            (context.mode != PlayerConversationSpeechMode::Close &&
-             candidate.policy.hardEligible && candidate.policy.audible &&
-             candidate.policy.distance <= result.audienceRadiusUnits)) {
+        if (PlayerConversationRoutingPolicy::IsAudienceMember(
+                candidate.policy, index == selectedIndex, result.audienceRadiusUnits)) {
             audienceOrder.push_back(index);
         }
     }
