@@ -295,6 +295,9 @@ int _prismaMcmRevision = 0
 int _slider_curve_legacy_distance 
 float _curve_legacy_distance = 1.0
 
+int _slider_maintenance_period
+float _maintenance_period = 4.0
+
 event OnPlayerLoadGame()
 	RegisterPrismaMCMEvent()
 	; Re-apply combat settings on every game load since C++ plugin doesn't persist them
@@ -554,13 +557,17 @@ endEvent
 
 int function GetVersion()
 
-	return 71
+	return 72
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
+	if (a_version == 72 && a_version > CurrentVersion)
+		OnConfigInit()
+	endif
+	
 	if (a_version == 71 && a_version > CurrentVersion)
 		; Version 71: Refresh the SoulGaze hotkey entry for saves already on 70. Keeps every
 		; stored setting, including _soulgaze_key, so OnConfigInit is deliberately not called.
@@ -1239,7 +1246,7 @@ event OnPageReset(string a_page)
 		_keymap_browser = AddKeyMapOption("Browser Beta", _browser_key)
 		_keymap_debugger = AddKeyMapOption("Logs View (Beta)", _debugger_key)
 
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("Wheel Menus (Deprecated)")
 		AddEmptyOption()
 		_keymap_masterwheel = AddKeyMapOption("Master Wheel", _masterwheel_key)
@@ -1274,7 +1281,7 @@ event OnPageReset(string a_page)
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
 		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("General Behavior")
 		AddEmptyOption()
 
@@ -1283,8 +1290,9 @@ event OnPageReset(string a_page)
 		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
 		_toggle1OID_E = AddToggleOption("Soulgaze HD Mode", _toggleState7)
 		_slider_timeout = AddSliderOption("Connection Timeout (seconds)", _timeout_int, "{1}")
+		_slider_maintenance_period = AddSliderOption("Maintenance period", _maintenance_period, "{0}")
 
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("NPC Behavior")
 		AddEmptyOption()
 		
@@ -1294,13 +1302,13 @@ event OnPageReset(string a_page)
 		
 		_toggle_restrict_onscene	= AddToggleOption("NPC Scene Safety", _toggle_restrict_onscene_state)
 		
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("Combat Settings")
 		AddEmptyOption()
 		
 		_toggle_combatdialogue	= AddToggleOption("Allow combat dialogue", _toggle_combatdialogue_state)
 		_toggle_cancel_dialogue_on_combat = AddToggleOption("Clear dialogue entering combat", _toggle_cancel_dialogue_on_combat_state)
-		AddEmptyOption()
+		;ººAddEmptyOption()
 		_toggle_combat_barks = AddToggleOption("Enable Combat Barks", _toggle_combat_barks_state)
 		_slider_combat_barks_period = AddSliderOption("Combat Bark Timer (seconds)", _combat_barks_period, "{0}")
 		
@@ -1571,6 +1579,14 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogInterval(0.1)
 	endIf
 	
+	if (a_option == _slider_maintenance_period)
+		SetSliderDialogStartValue(_maintenance_period)
+		SetSliderDialogDefaultValue(4)
+		SetSliderDialogRange(4, 60)
+		SetSliderDialogInterval(1)
+	endIf
+	
+
 endEvent
 
 event OnOptionSliderAccept(int a_option, float a_value)
@@ -1696,6 +1712,13 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		SetSliderOptionValue(a_option, a_value, "{0}")
 	endIf
 	
+	if (a_option == _slider_maintenance_period)
+		_maintenance_period = a_value
+		controlScript.setConf("_maintenance_period",_maintenance_period)
+		SetSliderOptionValue(a_option, a_value, "{0}")
+	endIf
+	
+	
 	_prismaMcmRevision += 1
 endEvent
 	
@@ -1750,6 +1773,7 @@ event OnGameReload()
 	a=controlScript.setConf("_auto_hearing_radius_m",_auto_hearing_radius_m)
 	
 	a=controlScript.setConf("_curve_legacy_distance",_curve_legacy_distance)
+	a=controlScript.setConf("_maintenance_period",_maintenance_period)
 	
 	controlScript.mdi=_max_distance_inside;
 	controlScript.mdo=_max_distance_outside;
@@ -2874,6 +2898,9 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Curve distance scale for emmiter. How much attenuate actors based on distance. High Values: Low Attenuation, Lower values: High Attenuation: 0: Plain 2D sound")
 	endIf
 
+	if (a_option == _slider_maintenance_period)
+		SetInfoText("How often run maintenance (restore voices, delete unussed agents). In seconds")
+	endIf
 	
 	; Help text for individual agent removal options
 	if (_agentToggleOIDs && _currentAgentNames)

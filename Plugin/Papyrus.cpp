@@ -376,7 +376,9 @@ std::thread openMicThread;
 std::atomic<bool> openMicMonitoringActive{false};
 std::atomic<bool> openMicCurrentlyRecording{false};
 
-// Helper function to trigger open mic recording start
+extern int MAINTENANCE_TIMEOUT;
+
+    // Helper function to trigger open mic recording start
 void triggerOpenMicRecording() {
     if (OpenMicEnabled && !OpenMicMuted) {
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
@@ -2044,6 +2046,13 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         }
 
         logger::info("Setting _curve_legacy_distance to {}", fValueCasted);
+
+    } else if (code == "_maintenance_period") {
+        int fValueCasted = static_cast<int>(f_Value);
+        
+        MAINTENANCE_TIMEOUT = fValueCasted;
+
+        logger::info("Setting _maintenance_period to {}", fValueCasted);
 
     } else if (code == "_pause_dialogue_when_menu_open") {
         if (f_Value > 0)
