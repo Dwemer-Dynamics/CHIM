@@ -333,6 +333,7 @@ std::mutex Papyrus::papyrusMutex;
 extern void MutexSetMakeShotActive(bool newVal);
 extern void MutexSetMakeShotNativeActive(bool newVal);
 extern void MutexSetScreenShotSendMode(int newVal);
+extern int BeginSoulgazeCapture(int captureType, RE::Actor* actor);
 
 extern std::string globalHints;
 extern bool NewActionMode;
@@ -3735,6 +3736,29 @@ int Papyrus::shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     return 0;
 }
 
+int Papyrus::startSoulgazeCapture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                  RE::StaticFunctionTag*, std::string hints, int captureType, int renderMode,
+                                  RE::Actor* target) {
+    ScopedPapyrusLock lock("startSoulgazeCapture");
+    const int sendMode = BeginSoulgazeCapture(captureType, target);
+    if (sendMode <= 0) {
+        return sendMode;
+    }
+
+    logger::info("startSoulgazeCapture fired, captureType={} renderMode={} target={}", captureType, renderMode,
+                 target ? target->GetDisplayFullName() : "");
+    globalHints.assign(hints);
+    MutexSetScreenShotSendMode(sendMode);
+
+    if (REL::Module::GetRuntime() == REL::Module::Runtime::VR || renderMode == 0) {
+        MutexSetMakeShotNativeActive(true);
+        RE::MenuControls::GetSingleton()->screenshotHandler->screenshotQueued = true;
+    } else {
+        MutexSetMakeShotActive(true);
+    }
+    return 1;
+}
+
 int Papyrus::isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("isGameVR");
     int result = ((REL::Module::GetRuntime() == REL::Module::Runtime::VR)) ? 1 : 0;
@@ -5408,6 +5432,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
     a_vm->RegisterFunction("hardResetExpression", "AIAgentFunctions", hardResetExpression, false);
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
+    a_vm->RegisterFunction("startSoulgazeCapture", "AIAgentFunctions", startSoulgazeCapture, false);
     a_vm->RegisterFunction("isGameVR", "AIAgentFunctions", isGameVR, false);
     a_vm->RegisterFunction("setConf", "AIAgentFunctions", setConf, false);
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);

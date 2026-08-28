@@ -53,7 +53,7 @@ window.showDescription = function(text) {
 window.clearDescription = function() {
     const descElement = document.getElementById('hover-description');
     if (descElement) {
-        descElement.textContent = 'Hover over any option to see details';
+        descElement.textContent = 'Hover or focus any option to see details';
         descElement.style.color = '#999';
     }
 };
@@ -73,6 +73,27 @@ function initSettingsMenu() {
     
     // Add keyboard listener for ESC key to close menu
     document.addEventListener('keydown', handleKeyDown);
+
+    // Mirror hover help onto keyboard focus
+    bindKeyboardHelp();
+}
+
+// Reuse each option's hover help for keyboard focus so focused controls report
+// the same text in the polite footer status region.
+function bindKeyboardHelp() {
+    document.querySelectorAll('.setting-btn').forEach(function(button) {
+        button.addEventListener('focus', function(event) {
+            if (typeof button.onmouseenter === 'function') {
+                button.onmouseenter(event);
+            }
+        });
+
+        button.addEventListener('blur', function(event) {
+            if (typeof button.onmouseleave === 'function') {
+                button.onmouseleave(event);
+            }
+        });
+    });
 }
 
 // Handle keyboard events
