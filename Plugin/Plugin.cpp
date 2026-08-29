@@ -1952,6 +1952,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     auto sitSleepState = actorState ? actorState->GetSitSleepState() : RE::SIT_SLEEP_STATE::kNormal;
     const bool isSitting = sitSleepState == RE::SIT_SLEEP_STATE::kIsSitting;
     const bool isSleeping = sitSleepState == RE::SIT_SLEEP_STATE::kIsSleeping;
+    const bool isRestrained = actorState ? actorState->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained : false;
     const bool isMoving = !isDead && IsActorMovingForStatus(npc, isRunning, actorState);
 
     std::string furnitureName;
@@ -2038,6 +2039,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     payload["is_unconscious"] = isUnconscious;
     payload["is_dead"] = isDead;
     payload["is_weapon_drawn"] = isWeaponDrawn;
+    payload["is_restrained"] = isRestrained;
 
     if (!attackTargetName.empty()) {
         payload["attack_target"] = attackTargetName;
