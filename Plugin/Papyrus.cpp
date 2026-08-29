@@ -2617,6 +2617,36 @@ int Papyrus::commandEndedForActor(RE::BSScript::Internal::VirtualMachine* a_vm, 
         agentPtr.get()->setCurrentCommand("");
         agentPtr.get()->setCommandBusy(false);
         return 0;
+    } else if (command.contains("brawl") || command.contains("Brawl")) {
+        AIAgentManager& aiam = AIAgentManager::getInstance();
+        auto agentPtr = aiam.getAgentByName(npc);
+
+        if (!agentPtr) {
+            logger::info("No AI actor found, can't end brawl command");
+            return -1;
+        }
+
+        auto* opponent = agentPtr->getAttackTarget();
+        if (opponent) {
+            auto opponentAgent = aiam.getAgentByFormId(opponent->GetFormID());
+            if (opponentAgent &&
+                (opponentAgent->getCurrentCommand().contains("brawl") ||
+                 opponentAgent->getCurrentCommand().contains("Brawl"))) {
+                auto* opponentTarget = opponentAgent->getAttackTarget();
+                if (opponentTarget && opponentTarget->GetFormID() == agentPtr->GetFormId()) {
+                    logger::info("Releasing brawl opponent {}", opponentAgent->getActorName());
+                    opponentAgent->setAttackTarget(nullptr);
+                    opponentAgent->setCurrentCommand("");
+                    opponentAgent->setCommandBusy(false);
+                }
+            }
+        }
+
+        logger::info("Releasing actor {} after brawl outcome", npc);
+        agentPtr->setAttackTarget(nullptr);
+        agentPtr->setCurrentCommand("");
+        agentPtr->setCommandBusy(false);
+        return 0;
     } else {
         EndCommand(command, npc);
         return 0;

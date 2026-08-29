@@ -2171,18 +2171,18 @@ void parseCommand(std::string rawCommand, std::string actorname) {
     } else if (command.contains("Attack")) {
         if (agentPtr.get()->isCommandBusy()) return;
         logger::info("Start Attack: Target:{} Actor:{} ", parameter, targetActor->GetDisplayFullName());
-        StartAttack(trim(parameter), targetActor, true);
+        StartAttack(trim(parameter), targetActor);
         responsePop("command");
 
         // HTTPLogger->error("info|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), "Herika: ");
     } else if (command.contains("Brawl")) {
         if (agentPtr.get()->isCommandBusy()) {
-            logger::info("Start Attack: Target:{} Actor:{}, busy with command: {} ", parameter,
+            logger::info("Start Brawl: Target:{} Actor:{}, busy with command: {} ", parameter,
                          targetActor->GetDisplayFullName(), agentPtr.get()->getCurrentCommand());
             return;
         }
-        logger::info("Start Attack: Target:{} Actor:{} ", parameter, targetActor->GetDisplayFullName());
-        StartAttack(trim(parameter), targetActor, false);
+        logger::info("Start Brawl: Target:{} Actor:{} ", parameter, targetActor->GetDisplayFullName());
+        StartBrawl(trim(parameter), targetActor);
         responsePop("command");
 
         // HTTPLogger->error("info|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), "Herika: ");
@@ -5512,7 +5512,7 @@ RE::Actor* findClosestAgent() {
     }
 }
 
-void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
+void StartAttack(std::string targetName, RE::Actor* actor) {
     if (!actor) {
         logger::warn("StartAttack: actor is null");
         return;
@@ -5536,11 +5536,11 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
         std::string resolvedTargetName = targetActor ? targetActor->GetDisplayFullName() : targetName;
         if (resolvedTargetName.empty()) resolvedTargetName = targetName;
         const std::string notificationText =
-            lethal ? std::format("[CHIM] {} attacks {}", actor->GetDisplayFullName(), resolvedTargetName)
-                   : std::format("[CHIM] {} brawls with {}", actor->GetDisplayFullName(), resolvedTargetName);
+            std::format("[CHIM] {} attacks {}", actor->GetDisplayFullName(), resolvedTargetName);
         RE::DebugNotification(notificationText.c_str());
 
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+        bool lethal = true;
         auto args = RE::MakeFunctionArguments(std::move(actor), std::move(target->AsReference()), std::move(lethal));
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "AttackTarget",
                                                                                    args, callback);
@@ -5555,20 +5555,90 @@ void StartAttack(std::string targetName, RE::Actor* actor, bool lethal) {
             "combat|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
             "(Context: Herika issued {Attack(" + targetName + " )})( Herika cannot see " + targetName + ", target not
            found)");*/
-        if (!lethal)
-            HTTPManager::stream(
-                std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                            "command@Brawl@" + targetName + "@Error. target " + targetName + " not found "),
-                agentPtr->getActor());
-        else
-            HTTPManager::stream(
-                std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                            "command@Attack@" + targetName + "@Error. target " + targetName + " not found "),
-                agentPtr->getActor());
+        HTTPManager::stream(
+            std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                        "command@Attack@" + targetName + "@Error. target " + targetName + " not found "),
+            agentPtr->getActor());
 
         RE::DebugNotification(std::string("[CHIM] Target not found: ").append(targetName).append(".").c_str());
         EndCommandError("Attack", actor->GetDisplayFullName());
     }
+}
+
+// Start a vanilla player brawl or an isolated NPC spar without removing inventory items.
+void StartBrawl(std::string targetName, RE::Actor* actor) {
+    if (!actor) {
+        logger::warn("StartBrawl: actor is null");
+        return;
+    }
+
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    auto agentPtr = aiam.getAgentByName(actor->GetDisplayFullName());
+    if (!agentPtr) {
+        logger::warn("StartBrawl: agentptr is null for {}", actor->GetDisplayFullName());
+        return;
+    }
+
+    const auto rejectBrawl = [&](const std::string& reason, const std::string& notification) {
+        logger::warn("StartBrawl rejected for {}: {}", actor->GetDisplayFullName(), reason);
+        HTTPManager::stream(
+            std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                        "command@Brawl@" + targetName + "@Error. " + reason),
+            actor);
+        RE::DebugNotification(notification.c_str());
+    };
+
+    if (isNarratorRoleTargetName(targetName)) {
+        rejectBrawl("The Narrator is not a physical brawl target", "[CHIM] The Narrator cannot be a brawl target.");
+        return;
+    }
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* targetActor = resolveActionActorTarget(targetName, actor, 2048.0f, false);
+    if (!player || !targetActor || targetActor == actor || actor->IsDead() || targetActor->IsDead()) {
+        rejectBrawl("target is missing, dead, or is the initiating actor", "[CHIM] Brawl target is not valid.");
+        return;
+    }
+
+    if (actor->IsInCombat() || targetActor->IsInCombat()) {
+        rejectBrawl("one of the participants is already in combat", "[CHIM] Brawlers must be out of combat.");
+        return;
+    }
+
+    std::shared_ptr<AIAgent> targetAgent;
+    if (targetActor != player) {
+        targetAgent = aiam.getAgentByFormId(targetActor->GetFormID());
+        if (targetAgent && targetAgent->isCommandBusy()) {
+            rejectBrawl("target is busy with another command", "[CHIM] Brawl target is busy.");
+            return;
+        }
+    }
+
+    const float distance = actor->GetPosition().GetDistance(targetActor->GetPosition());
+    if (distance >= 2048.0f) {
+        rejectBrawl("target is too far away to start a brawl", "[CHIM] Brawl target is too far away.");
+        return;
+    }
+
+    agentPtr->setAttackTarget(targetActor);
+    agentPtr->setCurrentCommand("Brawl");
+    agentPtr->setCommandBusy(true);
+    if (targetAgent) {
+        targetAgent->setAttackTarget(actor);
+        targetAgent->setCurrentCommand("Brawl");
+        targetAgent->setCommandBusy(true);
+    }
+
+    const std::string opponentName = getPreferredActorDisplayName(targetActor, targetName);
+    RE::DebugNotification(
+        std::format("[CHIM] {} starts a brawl with {}", actor->GetDisplayFullName(), opponentName).c_str());
+
+    auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+    auto args = RE::MakeFunctionArguments(std::move(actor), std::move(targetActor));
+    RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+        "AIAgentAIMind", "BrawlTarget", args, callback);
+
+    SpeakManager::getInstance().deleteQueue();
 }
 
 void Follow(std::string targetName) {}
