@@ -2209,16 +2209,33 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         if (!routingContext->symbolRoutingMode.empty()) {
                             audienceSnapshot["chat_shortcut_routed"] = true;
                         }
+                        if (!routingContext->playerMood.empty()) {
+                            audienceSnapshot["player_mood"] = routingContext->playerMood;
+                            if (routingContext->playerMood == "custom" &&
+                                !routingContext->customPlayerMood.empty()) {
+                                audienceSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
+                            }
+                        }
                         audienceSnapshot["listener_radius_units"] = playerRoute.listenerRadiusUnits;
                         audienceSnapshot["audience_radius_units"] = playerRoute.audienceRadiusUnits;
                     }
                     const std::string snapshotDump = audienceSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
-                } else if (unifiedPlayerRouting && !routingContext->symbolRoutingMode.empty()) {
+                } else if (unifiedPlayerRouting &&
+                           (!routingContext->symbolRoutingMode.empty() || !routingContext->playerMood.empty())) {
                     json requestModeSnapshot;
                     requestModeSnapshot["source"] = "plugin_player_routing_v2";
-                    requestModeSnapshot["chat_shortcut_routed"] = true;
+                    if (!routingContext->symbolRoutingMode.empty()) {
+                        requestModeSnapshot["chat_shortcut_routed"] = true;
+                    }
+                    if (!routingContext->playerMood.empty()) {
+                        requestModeSnapshot["player_mood"] = routingContext->playerMood;
+                        if (routingContext->playerMood == "custom" &&
+                            !routingContext->customPlayerMood.empty()) {
+                            requestModeSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
+                        }
+                    }
                     const std::string snapshotDump = requestModeSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));

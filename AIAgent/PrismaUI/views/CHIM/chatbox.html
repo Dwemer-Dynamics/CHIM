@@ -82,7 +82,7 @@
                                         <div id="chatbox-mode-options" class="chatbox-tile-options hidden" role="listbox" aria-label="Mode">
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_standard">Standard</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_whisper">Whisper</button>
-                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_close" title="Private, close-range conversation">Close</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_close" title="Close-range talk the nearby group can hear">Close</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_shout">Shout</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_narrator">Narrator</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_director">Director</button>
@@ -128,13 +128,6 @@
                                             <button class="chatbox-option-tile" type="button" role="option" data-mode="random">Random</button>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
-
-                            <div class="chatbox-control-block focus-stack">
-                                <div class="chatbox-control-label">Compact Chat</div>
-                                <div class="chatbox-control-value">
-                                    <button id="chatbox-focus-toggle" class="chatbox-focus-toggle off" type="button" aria-pressed="false">OFF</button>
                                 </div>
                             </div>
                             </div>
@@ -195,6 +188,45 @@
                             rows="2"
                             placeholder="Enter message here, press Enter to send"
                             spellcheck="false"></textarea>
+                        <fieldset class="focus-chatbox-mood-picker" aria-label="Mood">
+                            <div class="focus-chatbox-mood-options">
+                                <input id="chatbox-mood-none" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="" aria-label="No mood" checked>
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-none">&#8212;<span class="focus-chatbox-mood-tip" aria-hidden="true">No mood</span></label>
+                                <input id="chatbox-mood-happy" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="happy" aria-label="Happy">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-happy">&#x1F60A;<span class="focus-chatbox-mood-tip" aria-hidden="true">Happy</span></label>
+                                <input id="chatbox-mood-sad" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="sad" aria-label="Sad">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-sad">&#x1F641;<span class="focus-chatbox-mood-tip" aria-hidden="true">Sad</span></label>
+                                <input id="chatbox-mood-angry" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="angry" aria-label="Angry">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-angry">&#x1F620;<span class="focus-chatbox-mood-tip" aria-hidden="true">Angry</span></label>
+                                <input id="chatbox-mood-annoyed" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="annoyed" aria-label="Annoyed">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-annoyed">&#x1F612;<span class="focus-chatbox-mood-tip" aria-hidden="true">Annoyed</span></label>
+                                <input id="chatbox-mood-scared" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="scared" aria-label="Scared">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-scared">&#x1F628;<span class="focus-chatbox-mood-tip" aria-hidden="true">Scared</span></label>
+                                <input id="chatbox-mood-surprised" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="surprised" aria-label="Surprised">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-surprised">&#x1F62E;<span class="focus-chatbox-mood-tip" aria-hidden="true">Surprised</span></label>
+                                <input id="chatbox-mood-confused" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="confused" aria-label="Confused">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-confused">&#x1F914;<span class="focus-chatbox-mood-tip" aria-hidden="true">Confused</span></label>
+                                <input id="chatbox-mood-suspicious" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="suspicious" aria-label="Suspicious">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-suspicious">&#x1F928;<span class="focus-chatbox-mood-tip" aria-hidden="true">Suspicious</span></label>
+                                <input id="chatbox-mood-playful" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="playful" aria-label="Playful">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-playful">&#x1F60F;<span class="focus-chatbox-mood-tip" aria-hidden="true">Playful</span></label>
+                                <input id="chatbox-mood-flirty" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="flirty" aria-label="Flirty">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-flirty">&#x1F618;<span class="focus-chatbox-mood-tip" aria-hidden="true">Flirty</span></label>
+                                <input id="chatbox-mood-custom" class="focus-chatbox-mood-input" type="radio" name="chatbox-player-mood" value="custom" aria-label="Custom mood">
+                                <label class="focus-chatbox-mood-option" for="chatbox-mood-custom">&#x270F;&#xFE0F;<span class="focus-chatbox-mood-tip" aria-hidden="true">Custom</span></label>
+                                <input
+                                    id="chatbox-mood-custom-text"
+                                    class="focus-chatbox-mood-custom-input"
+                                    type="text"
+                                    maxlength="80"
+                                    aria-label="Custom mood description"
+                                    aria-describedby="chatbox-mood-custom-error"
+                                    aria-invalid="false"
+                                    autocomplete="off"
+                                    spellcheck="false">
+                                <span id="chatbox-mood-custom-error" class="focus-chatbox-mood-custom-error" role="alert" hidden>Describe the custom mood or pick another mood.</span>
+                            </div>
+                        </fieldset>
                         <div class="focus-chatbox-actions">
                             <div class="focus-chatbox-actions-row focus-chatbox-actions-row-primary">
                                 <div class="focus-chatbox-position-picker">
@@ -212,6 +244,21 @@
                                 <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
                             </div>
                             <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
+                                <div class="focus-chatbox-soulgaze-controls">
+                                    <div id="chatbox-soulgaze-selector" class="focus-chatbox-soulgaze">
+                                        <button id="chatbox-soulgaze-menu-toggle" class="focus-btn focus-btn-soulgaze" type="button" aria-expanded="false" aria-controls="chatbox-soulgaze-options" title="Soulgaze. No visual description stored for the current location." aria-label="Soulgaze. No visual description stored for the current location.">
+                                            <span>Soulgaze</span>
+                                            <span id="chatbox-soulgaze-status-dot" class="soulgaze-status-dot is-missing" aria-hidden="true"></span>
+                                            <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
+                                        </button>
+                                        <span id="chatbox-soulgaze-status-text" class="soulgaze-status-text" aria-live="polite">No visual description stored for the current location.</span>
+                                        <div id="chatbox-soulgaze-options" class="chatbox-tile-options soulgaze-options hidden" role="group" aria-label="Soulgaze actions">
+                                            <button id="chatbox-soulgaze-context-option" class="chatbox-option-tile" type="button" data-soulgaze-action="context" title="Store a visual description of the current location.">Capture Visual Description</button>
+                                            <button class="chatbox-option-tile" type="button" data-soulgaze-action="portrait" title="Refresh the portrait of the NPC you are looking at">Update Targeted NPC Portrait</button>
+                                            <button class="chatbox-option-tile" type="button" data-soulgaze-action="describe" title="Describe what you are looking at right now">Describe Scene</button>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div class="focus-chatbox-event-controls">
                                     <label class="focus-chatbox-delete-label" for="chatbox-delete-events-select">Delete Events</label>
                                     <div class="focus-chatbox-delete-controls">

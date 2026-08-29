@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.2.6"
-#define PLUGIN_RELEASE_DATE "2026-08-23"
+#define PLUGIN_VERSION "3.3.0"
+#define PLUGIN_RELEASE_DATE "2026-08-28"
 
 const char* GetPluginVersion()
 {
@@ -291,6 +291,7 @@ std::string DialogueLastStringResponse;
 
 const long parameterMaxDistanceToListen = 1000000;
 const int CLEANING_TIMEOUT = 4;
+int MAINTENANCE_TIMEOUT = 4;
 
 bool NewActionMode = false;
 
@@ -1987,7 +1988,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "dead";
     } else if (isUnconscious) {
         currentAction = "unconscious";
-    } else if (isSleeping || useType == "bed") {
+    } else if (isSleeping) {
         currentAction = "sleeping";
     } else if (isAttacking) {
         currentAction = "attacking";
@@ -1995,9 +1996,9 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "combat";
     } else if (hasNonSeatUse) {
         currentAction = isLeaningUse ? "leaning" : "using";
-    } else if (isSitting || useType == "chair") {
+    } else if (isSitting) {
         currentAction = "sitting";
-    } else if (!useType.empty()) {
+    } else if (!useType.empty() && useType != "bed" && useType != "chair") {
         currentAction = "using";
     } else if (isSneaking) {
         currentAction = "sneaking";
@@ -2164,7 +2165,7 @@ private:
     void threadFunction() {
         logger::info("[ManagerMainQueue] Thread function started");
         auto lastHealthCheck = std::chrono::high_resolution_clock::now();
-        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
+        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(MAINTENANCE_TIMEOUT);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
         auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
@@ -2769,6 +2770,8 @@ private:
 
                 const auto maintenanceNow = std::chrono::steady_clock::now();
                 bool ranAgentMaintenance = false;
+
+                //const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                 const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                 const bool speechProcessing = SpeakManager::getInstance().getProcessing();
                 const bool deferHeavyAgentMaintenance =
@@ -2777,15 +2780,15 @@ private:
                 if (deferHeavyAgentMaintenance) {
                     if (maintenanceNow - lastAgentMaintenanceDeferLogAt >= std::chrono::seconds(5)) {
                         lastAgentMaintenanceDeferLogAt = maintenanceNow;
-                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={}",
+                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={},recordingActive={}",
                                       speechMaintenanceSuppressed,
-                                      speechProcessing,
-                                      worldMaintenanceSuppressed);
+                                      speechProcessing, worldMaintenanceSuppressed,
+                                      recordingActive);
                     }
                 } else {  // Run agent maintenance only when player/NPC speech is not active.
                     // Heavy cleanup touches actor state, packages, and voice types. Keep it slower and budgeted;
                     // cheap auto-add below stays responsive so NPC detection does not depend on this pass.
-                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(20)) {
+                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(MAINTENANCE_TIMEOUT)) {
                         lastAgentMaintenanceAt = maintenanceNow;
                         ranAgentMaintenance = true;
                         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -2793,7 +2796,7 @@ private:
                                                                   DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
                         auto allAgentsForMaintenance = aiam.getAgents();
                         std::vector<std::shared_ptr<AIAgent>> maintenanceAgents;
-                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 8;
+                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 32;
                         if (!allAgentsForMaintenance.empty()) {
                             if (agentMaintenanceCursor >= allAgentsForMaintenance.size()) {
                                 agentMaintenanceCursor = 0;
@@ -2824,271 +2827,273 @@ private:
                             return false;
                         };
 
-                // Delete dead actors
-                //logger::debug("[PRECLEANER] Evaluating");
-                for (const auto& agent : maintenanceAgents) {
-                        if (agent->isPresent(beings)) {
-                            agent->resetMissingPresenceCounter();
-                            if (agent->mustBeDeleted()) {
-                                if (queueAgentDelete(agent->getActorName())) {
-                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
-                                                  agent->getActorName());
-                                }
-                        } else {
-                            if (agent->getActor()) {
-                                // We must ensure actor is really dead
-                                auto actorForm = RE::TESForm::LookupByID(agent->GetFormId());
-                                if (!actorForm) continue;
-                                auto actor = RE::TESForm::LookupByID(agent->GetFormId())->As<RE::Actor>();
-                                if (actor && actor->IsDead() && !agent->isNarrator()) {
-                                    if (queueAgentDelete(agent->getActorName())) {
-                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}",
-                                                      agent->getActorName());
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Delete non present actors
-                        if (ENABLE_AUTOADDNPC) {
-                            if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
-                                !agent->isManuallyAdded()) {
-                                if (agent->mustBeDeleted()) {
-                                    if (queueAgentDelete(agent->getActorName())) {
-                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because auto-managed stale: {}",
-                                                      agent->getActorName());
-                                    }
-                                    continue;
-                                }
-
-                                agent->increaseMissingPresenceCounter();
-                                const int missingPasses = agent->getMissingPresenceCounter();
-                                if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
-                                    if (queueAgentDelete(agent->getActorName())) {
-                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
-                                                      missingPasses, agent->getActorName());
-                                    }
-                                } else if (missingPasses == 1 || missingPasses % 30 == 0) {
-                                    logger::debug("[PRECLEANER] Actor not present yet retained ({}/{}): {}",
-                                                  missingPasses, kPrecleanerMissingPresenceDeletePasses,
-                                                  agent->getActorName());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                //logger::debug("[CLEANER] Evaluating");
-                // Delete the agents by name after collecting their names
-                for (const auto& name : agentsToDelete) {
-                    aiam.deleteAgentByName(name);
-                }
-
-                auto agents = maintenanceAgents;
-                bool performedActorCleanupThisPass = !agentsToDelete.empty();
-
-                //logger::debug("[RESTORE] Evaluating {} agents ", agents.size());
-                for (const auto& agent : agents) {
-                    //logger::debug("Checking agent");
-                    if (!agent) {
-                        logger::warn("Null agent encountered in thread function");
-                        continue;
-                    }
-
-                    try {
-                        // Verify agent pointer is valid
-                        if (!agent.get()) {
-                            logger::warn("Invalid agent pointer");
-                            continue;
-                        }
-
-                        // Add timeout to avoid deadlocks
-                        bool isTalking = false;
-                        bool isClean = false;
-                        bool isRestored = false;
-
-                        
-                        
-                        try {
-                            // logger::debug("Checking agent {}", agent->getActorName());
-                            /* isTalking is only used here. Better use isClean, as it has a timeout.
-                            * 
-                            isTalking = agent->isTalking();
-                            if (isTalking) continue;
-                            */
-                            
-                            auto elapsed =
-                                std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
-
-                            isRestored=agent->isRestored();
-                            isClean = agent->isClean();
-                           
-                            if (isClean && !isRestored) {
-                                if (performedActorCleanupThisPass) {
-                                    agent->SetLastTimeTalk();
-                                    continue;
-                                }
-                                if (!game->GameIsPaused()) {    // We're gonna call some papyrus functions, make sure game is running
-                                    if (elapsed >=
-                                        std::chrono::seconds(91)) {  // To restore packages override after 30 seconds of no speech
-                                        logger::debug("[RESTORE] Throwing out of the conversation : {}",
-                                                      agent->getActorName());
-
-                                        auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
-                                        if (actorByForm) {
-                                            auto actor = actorByForm->As<RE::Actor>();
-
-                                            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                                            auto args = RE::MakeFunctionArguments(std::move(actor));
-                                            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
-                                                "AIAgentAIMind", "ReleaseFromConversation", args, callback);
-
-                                            if (agent->getWasOnScene()) {
-                                                // Try to restore scene
-                                                
-                                                logger::debug(
-                                                    "[RESTORE] Calling papyrus function for EndDialogueClearScene");
-                                                auto callback =
-                                                    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                                                auto args = RE::MakeFunctionArguments(std::move(actor));
-                                                RE::BSScript::Internal::VirtualMachine::GetSingleton()
-                                                    ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClearScene", args,
-                                                                         callback);
-
-                                            } else {
-                                                logger::debug(
-                                                    "[RESTORE] Calling papyrus function for EndDialogueClear");
-                                                auto callback =
-                                                    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                                                auto args = RE::MakeFunctionArguments(std::move(actor));
-                                                RE::BSScript::Internal::VirtualMachine::GetSingleton()
-                                                    ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClear", args,
-                                                                         callback);
-                                            }
-                                        } else {
-                                            logger::debug("[RESTORE] Unable to restore: {}", agent->getActorName());
+                        // Delete dead actors
+                        //logger::debug("[PRECLEANER] Evaluating");
+                        for (const auto& agent : maintenanceAgents) {
+                            if (agent->isPresent(beings)) {
+                                agent->resetMissingPresenceCounter();
+                                    if (agent->mustBeDeleted()) {
+                                        if (queueAgentDelete(agent->getActorName())) {
+                                            logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
+                                                          agent->getActorName());
                                         }
-                                        agent->setOnScene(false);
-                                        agent->setRestored(true);
+                                    } else {
+                                        if (agent->getActor()) {
+                                            // We must ensure actor is really dead
+                                            auto actorForm = RE::TESForm::LookupByID(agent->GetFormId());
+                                            if (!actorForm) continue;
+                                            auto actor = RE::TESForm::LookupByID(agent->GetFormId())->As<RE::Actor>();
+                                            if (actor && actor->IsDead() && !agent->isNarrator()) {
+                                                if (queueAgentDelete(agent->getActorName())) {
+                                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}",
+                                                                  agent->getActorName());
+                                                }
+                                            }
+                                        }
                                     }
-                                    continue;
-                                }
-                            }
-                            
-                            if (isClean) 
-                                continue;
-
-                        } catch (const std::exception& e) {
-                            logger::error("Error checking agent state: {}", e.what());
-                            continue;
-                        }
-
-                        auto now = std::chrono::high_resolution_clock::now();
-                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
-
-                        if (elapsed <= std::chrono::seconds( CLEANING_TIMEOUT)) {
-                            continue;
-                        } else {
-                            if (agent->isNarrator()) {
-                                agent->setClean(true);
-                                agent->setRestored(true);
-
                             } else {
-                                if (agent->isPresent(beings)) {
-                                    if (performedActorCleanupThisPass) {
-                                        agent->SetLastTimeTalk();
-                                        continue;
-                                    }
-                                    performedActorCleanupThisPass = true;
-
-                                    if (agent->getActor()) {
-                                        if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
-                                            auto fgen = agent->getActor()->GetFaceGenAnimationData();
-                                            if (fgen) {
-                                                RE::BSSpinLockGuard locker(fgen->lock);
-
-                                                fgen->ClearExpressionOverride();
-                                                // fgen->Reset(0.0f, true, true, true, false);
-                                                for (int i = 0; i <= 15; i++) fgen->phenomeKeyFrame.SetValue(i, 0.0f);
-
-                                                /*
-                                                agent->getActor()->GetActorRuntimeData().currentProcess->Update3DModel(
-                                                    agent->getActor());
-                                                */
+                                // Delete non present actors
+                                if (ENABLE_AUTOADDNPC) {
+                                    if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
+                                        !agent->isManuallyAdded()) {
+                                        if (agent->mustBeDeleted()) {
+                                            if (queueAgentDelete(agent->getActorName())) {
+                                                logger::debug("[PRECLEANER] Actor is gonna be deleted because auto-managed stale: {}",
+                                                              agent->getActorName());
                                             }
-
+                                            continue;
                                         }
 
-                                        agent->getActor()->AllowPCDialogue(true);
-
-                                        // Moved here 1.0.13
-                                        if (agent->getActor() && !agent->isNarrator()) {
-                                            if (agent->getActor()->IsDead()) {
-                                                agent->markToBeDeleted();
-                                                continue;
+                                        agent->increaseMissingPresenceCounter();
+                                        const int missingPasses = agent->getMissingPresenceCounter();
+                                        if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
+                                            if (queueAgentDelete(agent->getActorName())) {
+                                                logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
+                                                              missingPasses, agent->getActorName());
                                             }
+                                        } else if (missingPasses == 1 || missingPasses % 30 == 0) {
+                                            logger::debug("[PRECLEANER] Actor not present yet retained ({}/{}): {}",
+                                                          missingPasses, kPrecleanerMissingPresenceDeletePasses,
+                                                          agent->getActorName());
                                         }
                                     }
-                                    agent->setClean(true);
-                                    agent->setAvailable(true);
-                                    auto npc = agent->getActor();
-                                    if (npc) {
-                                        npc->AllowPCDialogue(true);
-                                    }
-                                    agent->resetForgetCleanCounter();  // 1,0.14 Forget about this actor
-                                    // agent->getActor()->EndDialogue(); // 1.0.13
-                                    if (agent->getOriginalVoice() != nullptr) {
-                                        agent->getActor()->GetActorBase()->voiceType = agent->getOriginalVoice();
-                                    }
+                                }
+                            }
+                        }
 
-                                    logger::info("[CLEANER] Clean: Restoring voice for {} {:#x} ",
-                                                 npc->GetDisplayFullName(), agent->getOriginalVoice()->formID);
+                        //logger::debug("[CLEANER] Evaluating");
+                        // Delete the agents by name after collecting their names
+                        for (const auto& name : agentsToDelete) {
+                            aiam.deleteAgentByName(name);
+                        }
 
-                                } else {  // Actor not present
+                        auto agents = maintenanceAgents;
+                        bool performedActorCleanupThisPass = !agentsToDelete.empty();
 
-                                    agent->increaseForgetCleanCounter();
-                                    if (agent->getForgetCleanCounter() > 12) {  // Dirty clean
+                        //logger::debug("[RESTORE] Evaluating {} agents ", agents.size());
+                        for (const auto& agent : agents) {
+                            //logger::debug("Checking agent");
+                            if (!agent) {
+                                logger::warn("Null agent encountered in thread function");
+                                continue;
+                            }
+
+                            try {
+                                // Verify agent pointer is valid
+                                if (!agent.get()) {
+                                    logger::warn("Invalid agent pointer");
+                                    continue;
+                                }
+
+                                // Add timeout to avoid deadlocks
+                                bool isTalking = false;
+                                bool isClean = false;
+                                bool isRestored = false;
+
+                        
+                        
+                                try {
+                                    // logger::debug("Checking agent {}", agent->getActorName());
+                                    /* isTalking is only used here. Better use isClean, as it has a timeout.
+                                    * 
+                                    isTalking = agent->isTalking();
+                                    if (isTalking) continue;
+                                    */
+                            
+                                    auto elapsed =
+                                        std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
+
+                                    isRestored=agent->isRestored();
+                                    isClean = agent->isClean();
+                           
+                                    if (isClean && !isRestored) {
                                         if (performedActorCleanupThisPass) {
                                             agent->SetLastTimeTalk();
                                             continue;
                                         }
-                                        performedActorCleanupThisPass = true;
+                                        if (!game->GameIsPaused()) {    // We're gonna call some papyrus functions, make sure game is running
+                                            if (elapsed >=
+                                                std::chrono::seconds(91)) {  // To restore packages override after 30 seconds of no speech
+                                                logger::debug("[RESTORE] Throwing out of the conversation : {}",
+                                                              agent->getActorName());
 
-                                        logger::info("[CLEANER] Dirty clean {}, not present. ", agent->getActorName());
-                                        auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
-                                        if (actorByForm) {
-                                            auto actor = actorByForm->As<RE::Actor>();
-                                            if (actor) {
-                                                if (agent->getOriginalVoice() != nullptr) {
-                                                    logger::info("[CLEANER] Dirty: Restoring voice for {} {:#x} ",
-                                                                 actor->GetDisplayFullName(),
-                                                                 agent->getOriginalVoice()->formID);
-                                                    actor->GetActorBase()->voiceType = agent->getOriginalVoice();
-                                                    actor->AllowPCDialogue(true);
+                                                auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
+                                                if (actorByForm) {
+                                                    auto actor = actorByForm->As<RE::Actor>();
+
+                                                    auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                                                    auto args = RE::MakeFunctionArguments(std::move(actor));
+                                                    RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                                                        "AIAgentAIMind", "ReleaseFromConversation", args, callback);
+
+                                                    if (agent->getWasOnScene()) {
+                                                        // Try to restore scene
+                                                
+                                                        logger::debug(
+                                                            "[RESTORE] Calling papyrus function for EndDialogueClearScene");
+                                                        auto callback =
+                                                            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                                                        auto args = RE::MakeFunctionArguments(std::move(actor));
+                                                        RE::BSScript::Internal::VirtualMachine::GetSingleton()
+                                                            ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClearScene", args,
+                                                                                 callback);
+
+                                                    } else {
+                                                        logger::debug(
+                                                            "[RESTORE] Calling papyrus function for EndDialogueClear");
+                                                        auto callback =
+                                                            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                                                        auto args = RE::MakeFunctionArguments(std::move(actor));
+                                                        RE::BSScript::Internal::VirtualMachine::GetSingleton()
+                                                            ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClear", args,
+                                                                                 callback);
+                                                    }
+                                                } else {
+                                                    logger::debug("[RESTORE] Unable to restore: {}", agent->getActorName());
                                                 }
+                                                agent->setOnScene(false);
+                                                agent->setRestored(true);
                                             }
+                                            continue;
                                         }
+                                    }
+                            
+                                    if (isClean) 
+                                        continue;
 
+                                } catch (const std::exception& e) {
+                                    logger::error("Error checking agent state: {}", e.what());
+                                    continue;
+                                }
+
+                                auto now = std::chrono::high_resolution_clock::now();
+                                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
+
+                                if (elapsed <= std::chrono::seconds( CLEANING_TIMEOUT)) {
+                                    continue;
+                                } else {
+                                    if (agent->isNarrator()) {
                                         agent->setClean(true);
-                                        //agent->setRestored(true);
-                                        agent->setAvailable(true);
+                                        agent->setRestored(true);
 
                                     } else {
-                                        logger::info("[CLEANER]  NOT Cleaning state for {}, not present. Will do later",
-                                                     agent->getActorName());
-                                        agent->SetLastTimeTalk();  // Will check again in CLEANING_TIMEOUT secs.
+                                        if (agent->isPresent(beings)) {
+                                            if (performedActorCleanupThisPass) {
+                                                agent->SetLastTimeTalk();
+                                                continue;
+                                            }
+                                           
+                                            // This  makes the cleanup happen only once per maintenance pass, 
+                                            // performedActorCleanupThisPass = true;
+
+                                            if (agent->getActor()) {
+                                                if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
+                                                    auto fgen = agent->getActor()->GetFaceGenAnimationData();
+                                                    if (fgen) {
+                                                        RE::BSSpinLockGuard locker(fgen->lock);
+
+                                                        fgen->ClearExpressionOverride();
+                                                        // fgen->Reset(0.0f, true, true, true, false);
+                                                        for (int i = 0; i <= 15; i++) fgen->phenomeKeyFrame.SetValue(i, 0.0f);
+
+                                                        /*
+                                                        agent->getActor()->GetActorRuntimeData().currentProcess->Update3DModel(
+                                                            agent->getActor());
+                                                        */
+                                                    }
+
+                                                }
+
+                                                agent->getActor()->AllowPCDialogue(true);
+
+                                                // Moved here 1.0.13
+                                                if (agent->getActor() && !agent->isNarrator()) {
+                                                    if (agent->getActor()->IsDead()) {
+                                                        agent->markToBeDeleted();
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                            agent->setClean(true);
+                                            agent->setAvailable(true);
+                                            auto npc = agent->getActor();
+                                            if (npc) {
+                                                npc->AllowPCDialogue(true);
+                                            }
+                                            agent->resetForgetCleanCounter();  // 1,0.14 Forget about this actor
+                                            // agent->getActor()->EndDialogue(); // 1.0.13
+                                            if (agent->getOriginalVoice() != nullptr) {
+                                                agent->getActor()->GetActorBase()->voiceType = agent->getOriginalVoice();
+                                            }
+
+                                            logger::info("[CLEANER] Clean: Restoring voice for {} {:#x} ",
+                                                         npc->GetDisplayFullName(), agent->getOriginalVoice()->formID);
+
+                                        } else {  // Actor not present
+
+                                            agent->increaseForgetCleanCounter();
+                                            if (agent->getForgetCleanCounter() > 12) {  // Dirty clean
+                                                if (performedActorCleanupThisPass) {
+                                                    agent->SetLastTimeTalk();
+                                                    continue;
+                                                }
+                                                performedActorCleanupThisPass = true;
+
+                                                logger::info("[CLEANER] Dirty clean {}, not present. ", agent->getActorName());
+                                                auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
+                                                if (actorByForm) {
+                                                    auto actor = actorByForm->As<RE::Actor>();
+                                                    if (actor) {
+                                                        if (agent->getOriginalVoice() != nullptr) {
+                                                            logger::info("[CLEANER] Dirty: Restoring voice for {} {:#x} ",
+                                                                         actor->GetDisplayFullName(),
+                                                                         agent->getOriginalVoice()->formID);
+                                                            actor->GetActorBase()->voiceType = agent->getOriginalVoice();
+                                                            actor->AllowPCDialogue(true);
+                                                        }
+                                                    }
+                                                }
+
+                                                agent->setClean(true);
+                                                //agent->setRestored(true);
+                                                agent->setAvailable(true);
+
+                                            } else {
+                                                logger::info("[CLEANER]  NOT Cleaning state for {}, not present. Will do later",
+                                                             agent->getActorName());
+                                                agent->SetLastTimeTalk();  // Will check again in CLEANING_TIMEOUT secs.
+                                            }
+                                        }
                                     }
-                                }
+                                }  // agent->getActor()->EvaluatePackage(false, false);
+
+                            } catch (const std::exception& e) {
+                                logger::error("Error processing agent: {}", e.what());
+                                continue;
                             }
-                        }  // agent->getActor()->EvaluatePackage(false, false);
+                        }
 
-                    } catch (const std::exception& e) {
-                        logger::error("Error processing agent: {}", e.what());
-                        continue;
                     }
-                }
-
-                }
 
                 }  // !deferHeavyAgentMaintenance
 

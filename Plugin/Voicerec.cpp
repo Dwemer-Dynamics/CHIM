@@ -321,6 +321,7 @@ static void ProcessSTTResponseOnGameThread(std::string buffer) {
      const std::string currentConversationMode = PrismaUIBridge::GetCurrentChatboxMode();
      routingContext.mode = PlayerConversationRouter::ParseSpeechMode(currentConversationMode);
      routingContext.narratorMode = currentConversationMode == "NARRATOR";
+     PrismaUIBridge::ApplySavedPlayerMood(routingContext);
      HTTPManager::streamPlayer(
          std::format("{}|{}|{}|{}:{}", typeRevised, getCurrentTimeMillis(), GetGameTimeStamp(),
                      player->GetName(), buffer),

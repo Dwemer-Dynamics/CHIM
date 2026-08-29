@@ -118,6 +118,17 @@ namespace PrismaUIBridge {
 
     // CHIM chatbox control state
     static std::string g_chatboxCurrentMode = "STANDARD";
+    static std::mutex g_savedPlayerMoodMutex;
+    static std::string g_savedPlayerMood;
+    static std::string g_savedCustomPlayerMood;
+
+    // Keep native mood validation synchronized for saved state and typed chat sends.
+    static bool IsSupportedFixedPlayerMood(const std::string& playerMood) {
+        return playerMood == "happy" || playerMood == "sad" || playerMood == "angry" ||
+               playerMood == "annoyed" || playerMood == "scared" || playerMood == "surprised" ||
+               playerMood == "confused" || playerMood == "suspicious" || playerMood == "playful" ||
+               playerMood == "flirty";
+    }
     static std::string g_lastChatboxTarget = "";
     static uint32_t g_lastChatboxTargetFormId = 0;
     static ChatboxTargetMode g_chatboxTargetMode = ChatboxTargetMode::Auto;
@@ -131,10 +142,6 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_chatboxStoryFetchInProgress{false};
     static std::atomic<int> g_chatboxStoryLastRowId{0};
     static std::atomic<int> g_chatboxStoryLastRelationshipId{0};
-    static std::atomic<bool> g_chatboxFocusChatEnabled{false};
-    static std::atomic<bool> g_chatboxFocusChatInitialized{false};
-    static bool g_chatboxFocusChatSentInitialized = false;
-    static bool g_lastChatboxFocusChatSent = false;
     static bool g_chatboxModeInitialized = false;
     static std::string g_lastChatboxMode = "";
     // Once a valid server or local value is accepted, delayed startup hydration
@@ -343,9 +350,7 @@ namespace PrismaUIBridge {
     static void UpdateChatboxModeUI(const std::string& mode);
     static void UpdateOverlayModeUI(const std::string& mode);
     static void PushCurrentModeToViews();
-    static void StopAllDialogueNow(const char* sourceTag);
     static void UpdateChatboxModelUI(const std::string& modelLabel);
-    static void UpdateChatboxFocusUI(bool focused);
     static void UpdateChatboxRechatModeUI(const std::string& mode);
     static void SyncChatboxStatusFromServerAsync();
     static const char* PrismaConsoleLevelName(PRISMA_UI_API::ConsoleMessageLevel level);
@@ -6574,15 +6579,6 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
-    static void UpdateChatboxFocusUI(bool focused) {
-        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
-            return;
-        }
-
-        std::string jsCall = std::string("window.updateChatboxFocus(") + (focused ? "true" : "false") + ")";
-        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
-    }
-
     static void UpdateChatboxRechatModeUI(const std::string& mode) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
             return;
@@ -6590,6 +6586,16 @@ R"CHIM(
 
         const std::string normalizedMode = mode.empty() ? "random" : mode;
         const std::string jsCall = "window.updateChatboxRechatMode('" + EscapeForJS(normalizedMode) + "')";
+        g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
+    }
+
+    static void UpdateChatboxVisualContextUI(bool available, const std::string& locationName) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load()) {
+            return;
+        }
+
+        const std::string jsCall = std::string("window.updateChatboxVisualContext && window.updateChatboxVisualContext(") +
+            (available ? "true" : "false") + ", '" + EscapeForJS(locationName) + "')";
         g_prismaUI->Invoke(g_chatboxView, jsCall.c_str(), nullptr);
     }
 
@@ -6735,19 +6741,18 @@ R"CHIM(
                                 break;
                             }
                         }
-                        if (data.contains("focus_chat")) {
-                            bool enabled = false;
-                            if (data["focus_chat"].is_boolean()) {
-                                enabled = data["focus_chat"].get<bool>();
-                            } else if (data["focus_chat"].is_number_integer()) {
-                                enabled = data["focus_chat"].get<int>() != 0;
-                            }
-                            g_chatboxFocusChatEnabled.store(enabled);
-                            g_chatboxFocusChatInitialized.store(true);
-                        }
                         if (data.contains("rechat_mode") && data["rechat_mode"].is_string()) {
                             g_chatboxCurrentRechatMode = data["rechat_mode"].get<std::string>();
                             g_chatboxRechatModeLoaded.store(true);
+                        }
+                        if (data.contains("visual_context_available") &&
+                            data["visual_context_available"].is_boolean()) {
+                            const bool available = data["visual_context_available"].get<bool>();
+                            const std::string locationName =
+                                data.contains("visual_context_location") && data["visual_context_location"].is_string()
+                                    ? data["visual_context_location"].get<std::string>()
+                                    : "";
+                            UpdateChatboxVisualContextUI(available, locationName);
                         }
                     }
                 } catch (...) {
@@ -7070,15 +7075,6 @@ R"CHIM(
             g_chatboxModelInitialized = true;
         }
 
-        if (g_chatboxFocusChatInitialized.load()) {
-            bool enabled = g_chatboxFocusChatEnabled.load();
-            if (!g_chatboxFocusChatSentInitialized || enabled != g_lastChatboxFocusChatSent) {
-                UpdateChatboxFocusUI(enabled);
-                g_lastChatboxFocusChatSent = enabled;
-                g_chatboxFocusChatSentInitialized = true;
-            }
-        }
-
         if (g_chatboxRechatModeLoaded.load() &&
             (!g_chatboxRechatModeSentInitialized || g_lastChatboxRechatMode != g_chatboxCurrentRechatMode)) {
             UpdateChatboxRechatModeUI(g_chatboxCurrentRechatMode);
@@ -7176,11 +7172,74 @@ R"CHIM(
         } else if (cmd.starts_with("event_deleted|")) {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
+        } else if (cmd.starts_with("set_player_mood|")) {
+            const json payload = json::parse(cmd.substr(16), nullptr, false);
+            if (payload.is_discarded() || !payload.is_object() ||
+                !payload.contains("player_mood") || !payload["player_mood"].is_string() ||
+                !payload.contains("custom_mood") || !payload["custom_mood"].is_string()) {
+                logger::warn("[Chatbox] Ignoring malformed saved player mood command");
+                return;
+            }
+
+            std::string playerMood = payload["player_mood"].get<std::string>();
+            std::string customPlayerMood = payload["custom_mood"].get<std::string>();
+            if (playerMood == "custom") {
+                if (customPlayerMood.empty() || customPlayerMood.size() > 320) {
+                    playerMood.clear();
+                    customPlayerMood.clear();
+                }
+            } else {
+                customPlayerMood.clear();
+                if (!IsSupportedFixedPlayerMood(playerMood)) {
+                    playerMood.clear();
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_savedPlayerMoodMutex);
+                g_savedPlayerMood = std::move(playerMood);
+                g_savedCustomPlayerMood = std::move(customPlayerMood);
+            }
+        } else if (cmd.starts_with("send_custom_mood|")) {
+            const json payload = json::parse(cmd.substr(17), nullptr, false);
+            if (payload.is_discarded() || !payload.is_object() ||
+                !payload.contains("message") || !payload["message"].is_string() ||
+                !payload.contains("custom_mood") || !payload["custom_mood"].is_string()) {
+                logger::warn("[Chatbox] Ignoring malformed custom mood command");
+                return;
+            }
+
+            const std::string message = payload["message"].get<std::string>();
+            const std::string customPlayerMood = payload["custom_mood"].get<std::string>();
+            if (!message.empty()) {
+                if (customPlayerMood.empty() || customPlayerMood.size() > 320) {
+                    logger::warn("[Chatbox] Sending message without invalid custom mood metadata");
+                    SendChatboxMessage(message, "", "");
+                } else {
+                    SendChatboxMessage(message, "custom", customPlayerMood);
+                }
+            }
+        } else if (cmd.starts_with("send_mood|")) {
+            std::string payload = cmd.substr(10);
+            const auto separator = payload.find('|');
+            std::string playerMood;
+            std::string message = payload;
+            if (separator != std::string::npos) {
+                playerMood = payload.substr(0, separator);
+                message = payload.substr(separator + 1);
+            }
+
+            if (!IsSupportedFixedPlayerMood(playerMood)) {
+                playerMood.clear();
+            }
+            if (!message.empty()) {
+                SendChatboxMessage(message, playerMood, "");
+            }
         } else if (cmd.starts_with("send|")) {
             // Extract message after "send|"
             std::string message = cmd.substr(5);
             if (!message.empty()) {
-                SendChatboxMessage(message);
+                SendChatboxMessage(message, "", "");
             }
         } else if (cmd == "focus") {
             // Focus the chatbox for typing
@@ -7231,6 +7290,24 @@ R"CHIM(
             }
 
             logger::info("[Chatbox] Queued global halt AI action");
+        } else if (cmd == "soulgaze_describe") {
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = "sg_soulgaze";
+            }
+            logger::info("[Chatbox] Queued Soulgaze scene description");
+        } else if (cmd == "soulgaze_portrait") {
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = "sg_photo_zoom";
+            }
+            logger::info("[Chatbox] Queued Soulgaze targeted NPC portrait capture");
+        } else if (cmd == "soulgaze_context") {
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = "sg_context";
+            }
+            logger::info("[Chatbox] Queued Soulgaze visual context capture");
         } else if (cmd.starts_with("debug_notify|")) {
             std::string message = cmd.substr(13);
             if (!message.empty()) {
@@ -7301,16 +7378,6 @@ R"CHIM(
                     RE::DebugNotification("[CHIM] That target is not currently available.");
                 }
             }
-        } else if (cmd == "focus_chat_toggle") {
-            bool newFocusChatState = !g_chatboxFocusChatEnabled.load();
-            HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@{}",
-                getCurrentTimeMillis(), GetGameTimeStamp(), newFocusChatState ? 1 : 0));
-            g_chatboxFocusChatEnabled.store(newFocusChatState);
-            g_chatboxFocusChatInitialized.store(true);
-            UpdateChatboxFocusUI(newFocusChatState);
-            g_lastChatboxFocusChatSent = newFocusChatState;
-            g_chatboxFocusChatSentInitialized = true;
-            RE::DebugNotification(newFocusChatState ? "[CHIM] Compact Chat enabled." : "[CHIM] Compact Chat disabled.");
         }
     }
 
@@ -7581,6 +7648,12 @@ R"CHIM(
         return g_chatboxCurrentMode;
     }
 
+    void ApplySavedPlayerMood(PlayerConversationRoutingContext& routingContext) {
+        std::lock_guard<std::mutex> lock(g_savedPlayerMoodMutex);
+        routingContext.playerMood = g_savedPlayerMood;
+        routingContext.customPlayerMood = g_savedCustomPlayerMood;
+    }
+
     float GetPlayerSpeechDistanceMultiplier() {
         float multiplier = 1.0f;
         if (g_chatboxCurrentMode == "WHISPER") {
@@ -7719,7 +7792,8 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message) {
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood) {
         if (message.empty()) {
             return;
         }
@@ -7741,7 +7815,8 @@ R"CHIM(
         std::string playerName = player ? player->GetName() : "Player";
         
         // Push to chatbox UI with actual player name
-        // This will show the single message with the correct player name
+        // This will show the single message with the correct player name. Mood is routing metadata
+        // only, so the optimistic row stays exactly what the player submitted.
         PushChatboxMessage(playerName, message, "", "player");
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
@@ -7749,6 +7824,8 @@ R"CHIM(
         PlayerConversationRoutingContext routingContext{};
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        routingContext.playerMood = playerMood;
+        routingContext.customPlayerMood = customPlayerMood;
         if (submission.symbolOverride) {
             routingContext.symbolRoutingMode = submission.mode;
             routingContext.routingMessage = submission.message;
@@ -7770,7 +7847,7 @@ R"CHIM(
         }
     }
 
-    static void StopAllDialogueNow(const char* sourceTag) {
+    void StopAllDialogueNow(const char* sourceTag) {
         logger::info("[{}] Stop All Dialogue requested", sourceTag);
         g_dialogueStopGeneration.fetch_add(1, std::memory_order_relaxed);
 
@@ -7871,15 +7948,6 @@ R"CHIM(
 
         // LLM profile selection
         if (actionId.starts_with("llm_")) {
-            if (actionId == "llm_focus") {
-                // Use HTTPManager::log like the original wheel menus
-                HTTPManager::log(std::format("setconf|{}|{}|chim_context_mode@1", 
-                    getCurrentTimeMillis(), GetGameTimeStamp()));
-                logger::info("[Settings Menu] Enabled Compact Chat");
-                RE::DebugNotification("[CHIM] Compact Chat enabled.");
-                HideSettingsMenu();
-                return;
-            }
             ApplyLLMProfileSelection(actionId, "Settings Menu", true);
             HideSettingsMenu();
             return;

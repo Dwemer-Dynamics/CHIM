@@ -97,8 +97,8 @@ an explicit NPC form ID when the user chooses a target.
 
 `Everyone` is not offered in Whisper mode. Whisper must resolve exactly one
 private target: an explicit NPC selection is preferred, while Auto may resolve
-one specific eligible NPC when no explicit selection is active. Close mode is
-also private and retains the same single-target restriction.
+one specific eligible NPC when no explicit selection is active. Close mode also
+selects one responder, but other eligible audible NPCs in its radius can hear.
 
 ## Mode Contract
 
@@ -106,7 +106,7 @@ also private and retains the same single-target restriction.
 | --- | --- | --- | --- |
 | Standard | Configured base auto-hearing radius | Responder plus eligible audible NPCs | Normal speech |
 | Whisper | Base radius multiplied by 0.35 | Plugin snapshot is reduced; server narrows context to player and responder | Quiet/private speech treatment |
-| Close | Fixed 200 Skyrim units | Player and resolved responder only | Private close-range speech |
+| Close | Fixed 200 Skyrim units | Player, responder, and eligible audible NPCs in the radius | Close-range group speech |
 | Shout | Base radius multiplied by 2.0 | Responder plus eligible audible NPCs inside the expanded radius | Loud speech treatment |
 
 Sneaking multiplies the effective radius by 0.5 after the mode policy is
@@ -195,9 +195,9 @@ candidate snapshot:
 
 - the player is always included;
 - the resolved NPC responder is included;
-- in Standard, Whisper, and Shout, other hard-eligible and physically audible
+- in Standard, Whisper, Close, and Shout, other hard-eligible and physically audible
   NPCs inside the effective radius are included;
-- in Close mode, no incidental NPC is included; and
+- Whisper's server context still narrows to player and responder; and
 - Narrator requests do not add nearby NPCs.
 
 The responder is ordered first, followed by incidental audience members sorted
@@ -205,6 +205,9 @@ by distance and form ID. Duplicate names are removed.
 
 Audience membership supplies context only. It does not cause every audience
 member to generate a response.
+
+Close rechat uses the recorded audience, without widening to other nearby NPCs.
+Random Narrator interjections remain disabled in Close and Whisper.
 
 ## Physical Presence
 
@@ -346,7 +349,8 @@ privacy, and spatial-audibility reports.
 8. The skyward gesture selects the Narrator before proximity fallback.
 9. Standard speech includes eligible audible nearby NPCs as context.
 10. Whisper and sneaking reduce both responder and audience scope.
-11. Close mode at 200 units includes only player and responder.
+11. Close mode at 200 units includes the player, responder, and all other eligible
+    audible NPCs in that radius, regardless of which NPC is targeted.
 12. Close mode while sneaking uses a 100-unit boundary.
 13. `Everyone` cannot remain active after switching to Whisper or Close mode.
 14. Ctrl+Enter selects persistent Close mode in Prisma and legacy text.

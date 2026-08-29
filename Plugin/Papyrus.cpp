@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <chrono>
 #include <cmath>
@@ -332,6 +333,7 @@ std::mutex Papyrus::papyrusMutex;
 extern void MutexSetMakeShotActive(bool newVal);
 extern void MutexSetMakeShotNativeActive(bool newVal);
 extern void MutexSetScreenShotSendMode(int newVal);
+extern int BeginSoulgazeCapture(int captureType, RE::Actor* actor);
 
 extern std::string globalHints;
 extern bool NewActionMode;
@@ -340,6 +342,8 @@ extern int GlobalDynamicProfileTimeOut;
 extern int GlobalEndConversationCooldown;
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 extern RE::TESFaction* AIAgentRoleMasterFaction;
+
+extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
@@ -359,6 +363,7 @@ bool GodMode = false;
 bool AutoAddHostile = false;
 
 bool AutoAddAllRaces = false;
+bool AutoAddCreatureNPCs = false;
 
 // Open Mic functionality
 bool OpenMicEnabled = false;
@@ -371,7 +376,9 @@ std::thread openMicThread;
 std::atomic<bool> openMicMonitoringActive{false};
 std::atomic<bool> openMicCurrentlyRecording{false};
 
-// Helper function to trigger open mic recording start
+extern int MAINTENANCE_TIMEOUT;
+
+    // Helper function to trigger open mic recording start
 void triggerOpenMicRecording() {
     if (OpenMicEnabled && !OpenMicMuted) {
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
@@ -1755,6 +1762,33 @@ int sendMessageReal(
 
 }
 
+// Share the race gate between proximity activation and crosshair promotion.
+static bool isAutoActivationRaceAllowed(RE::Actor* actor, RE::TESRace* race) {
+    if (AutoAddAllRaces || (race->AllowsPCDialogue() && !race->HasKeywordString("ActorTypeCreature"))) {
+        return true;
+    }
+    if (!AutoAddCreatureNPCs) {
+        return false;
+    }
+
+    if (race->HasKeywordString("ActorTypeDragon") || race->HasKeywordString("ActorTypeDwarven") ||
+        (race->HasKeywordString("ActorTypeUndead") && race->HasKeywordString("ActorTypeCreature")) ||
+        (race->HasKeywordString("ActorTypeAnimal") && actor->IsPlayerTeammate())) {
+        return true;
+    }
+
+    // These vanilla/DLC races have no distinct actor-type keyword. Match exact
+    // editor IDs, never display names or partial names that could admit other creatures.
+    const std::string_view editorID{race->GetFormEditorID()};
+    return editorID == "HagravenRace" || editorID == "GiantRace" ||
+           editorID == "C00GiantOutsideWhiterunRace" || editorID == "DLC2GhostFrostGiantRace" ||
+           editorID == "FalmerRace" || editorID == "FalmerFrozenVampRace" ||
+           editorID == "SprigganRace" || editorID == "SprigganMatronRace" ||
+           editorID == "SprigganSwarmRace" || editorID == "SprigganEarthMotherRace" ||
+           editorID == "DLC2SprigganBurntRace" || editorID == "WerewolfBeastRace" ||
+           editorID == "dlc2SpectralDragonRace" || editorID == "DLC2RigidSkeletonRace";
+}
+
 void addAllNPC() {
     static std::mutex mtx;
     std::lock_guard<std::mutex> lock(mtx);  // Lock the function, unlocks at the end
@@ -1816,11 +1850,9 @@ void addAllNPC() {
                 if (!race) {
                     continue;
                 }
-                if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) {
+                if (!isAutoActivationRaceAllowed(actor, race)) {
                     continue;
                 } else if (actor->IsHostileToActor(player) && AutoAddHostile == false) {
-                    continue;
-                } else if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) {
                     continue;
                 }
 
@@ -1884,9 +1916,8 @@ bool promoteCrosshairTargetToAI() {
 
     auto* race = actor->GetRace();
     if (!race) return false;
-    if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) return false;
+    if (!isAutoActivationRaceAllowed(actor, race)) return false;
     if (actor->IsHostileToActor(player) && AutoAddHostile == false) return false;
-    if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) return false;
 
     const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
     const float distance = player->GetPosition().GetDistance(actor->GetPosition());
@@ -2001,6 +2032,28 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         GlobalCombatBarksPeriod = static_cast<int>(f_Value);
         logger::info("Setting _combat_barks_period to {}s", GlobalCombatBarksPeriod);
 
+    } else if (code == "_curve_legacy_distance") {
+        
+        float fValueCasted = static_cast<int>(f_Value);
+        if (fValueCasted < 0.01) {
+            AudioManagerController::GetInstance().setLegacyDistanceScaler(1.0);
+            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(true);
+        } else {
+            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(false);
+            GlobalLegacyDistanceScaler = fValueCasted;
+            AudioManagerController::GetInstance().setLegacyDistanceScaler(fValueCasted);
+            
+        }
+
+        logger::info("Setting _curve_legacy_distance to {}", fValueCasted);
+
+    } else if (code == "_maintenance_period") {
+        int fValueCasted = static_cast<int>(f_Value);
+        
+        MAINTENANCE_TIMEOUT = fValueCasted;
+
+        logger::info("Setting _maintenance_period to {}", fValueCasted);
+
     } else if (code == "_pause_dialogue_when_menu_open") {
         if (f_Value > 0)
             PauseDialogueWhenMenuOpen = true;
@@ -2105,6 +2158,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
             AutoAddHostile = false;
 
         logger::info("Setting _autoadd_hostile to {} ", AutoAddHostile);
+
+    } else if (code == "_autoadd_creature_npcs") {
+        AutoAddCreatureNPCs = f_Value > 0;
+        logger::info("Setting _autoadd_creature_npcs to {} ", AutoAddCreatureNPCs);
 
     } else if (code == "_autoadd_allraces") {
         if (f_Value > 0)
@@ -2622,6 +2679,19 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     return 0;
 }
 
+bool Papyrus::isGameFocused(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                           RE::StaticFunctionTag*) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &processId);
+    return processId != 0 && processId == GetCurrentProcessId();
+}
+
+int Papyrus::stopAllDialogue(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                            RE::StaticFunctionTag*) {
+    PrismaUIBridge::StopAllDialogueNow("Voice hotkey");
+    return 0;
+}
+
 int Papyrus::stopRecording(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                            RE::StaticFunctionTag*, int bindedKey) {
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
@@ -2984,10 +3054,16 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_openmic_muted") {
         result = OpenMicMuted ? 1 : 0;
 
-    } else {
+    } else if (code == "_combat_barks_period") {
+        result = GlobalCombatBarksPeriod;
+
+    } else if (code == "_curve_legacy_distance") {
+        result = AudioManagerController::GetInstance().getDistanceScaler();
+
+    }  else {
         logger::info("Unknown configuration code: {}", code);
         result=-1;
-    }
+    } 
     return result;
 }
 
@@ -3680,6 +3756,29 @@ int Papyrus::shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
         MutexSetMakeShotActive(true);
     }  
     return 0;
+}
+
+int Papyrus::startSoulgazeCapture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                  RE::StaticFunctionTag*, std::string hints, int captureType, int renderMode,
+                                  RE::Actor* target) {
+    ScopedPapyrusLock lock("startSoulgazeCapture");
+    const int sendMode = BeginSoulgazeCapture(captureType, target);
+    if (sendMode <= 0) {
+        return sendMode;
+    }
+
+    logger::info("startSoulgazeCapture fired, captureType={} renderMode={} target={}", captureType, renderMode,
+                 target ? target->GetDisplayFullName() : "");
+    globalHints.assign(hints);
+    MutexSetScreenShotSendMode(sendMode);
+
+    if (REL::Module::GetRuntime() == REL::Module::Runtime::VR || renderMode == 0) {
+        MutexSetMakeShotNativeActive(true);
+        RE::MenuControls::GetSingleton()->screenshotHandler->screenshotQueued = true;
+    } else {
+        MutexSetMakeShotActive(true);
+    }
+    return 1;
 }
 
 int Papyrus::isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
@@ -5338,6 +5437,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("requestArrestConfirmation", "AIAgentFunctions", requestArrestConfirmation, false);
     a_vm->RegisterFunction("sendRequest", "AIAgentFunctions", sendRequest, false);
     a_vm->RegisterFunction("stopRecording", "AIAgentFunctions", stopRecording, false);
+    a_vm->RegisterFunction("stopAllDialogue", "AIAgentFunctions", stopAllDialogue, false);
+    a_vm->RegisterFunction("isGameFocused", "AIAgentFunctions", isGameFocused, false);
     a_vm->RegisterFunction("startOpenMicMonitoring", "AIAgentFunctions", startOpenMicMonitoring, false);
     a_vm->RegisterFunction("stopOpenMicMonitoring", "AIAgentFunctions", stopOpenMicMonitoring, false);
     a_vm->RegisterFunction("setOpenMicMuted", "AIAgentFunctions", setOpenMicMuted, false);
@@ -5355,6 +5456,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
     a_vm->RegisterFunction("hardResetExpression", "AIAgentFunctions", hardResetExpression, false);
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
+    a_vm->RegisterFunction("startSoulgazeCapture", "AIAgentFunctions", startSoulgazeCapture, false);
     a_vm->RegisterFunction("isGameVR", "AIAgentFunctions", isGameVR, false);
     a_vm->RegisterFunction("setConf", "AIAgentFunctions", setConf, false);
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);

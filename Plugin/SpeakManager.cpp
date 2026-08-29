@@ -43,6 +43,7 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
+float GlobalLegacyDistanceScaler = 1.0;
 
 constexpr double MIN_SEGMENT_DURATION = 0.080;  // 80 ms
 
@@ -1543,7 +1544,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         
         // Default to 1.0f for non-spatial playback, so that the volume multiplier is not affected by spatial
         // calculations.
-        am.setDistanceScaler(1.0f);
+        am.setDistanceScaler(GlobalLegacyDistanceScaler);
     }
 
     //
@@ -1564,8 +1565,26 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             // This is the legacy behavior.
             auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
             auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
+            auto camera = RE::PlayerCamera::GetSingleton();
+            auto speakerPos = speakerActorPointer->GetPosition();
+
+            if (GlobalCameraBasedAudio && camera) {
+                auto cameraState = camera->currentState.get();
+                if (cameraState) {
+                    RE::NiQuaternion rotation;
+                    cameraState->GetRotation(rotation);
+                    auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
+                    if (std::isfinite(cameraHeadingAngle)) {
+                        headingAngle = cameraHeadingAngle;
+                    }
+                }
+            }
+
+            if (GlobalInvertHeadingState) headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+
+
             am.UpdateLegacy(
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerActorPointer->GetPosition()),
+                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
                 AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
                 headingAngle);
 
@@ -3764,7 +3783,10 @@ void SpeakManager::process(AIAgent *agent) {
 
         setProcessing(false);
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // Speaker Manager sets a time stamp on agent to know when it finishes talking.
+            // 15 seconds are a too high value. Recommended is to have a MCM/Prisma setting to adjust MAINTENANCE_TIMEOUT
+            // and let user decide.
+            // ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15)); 
         }
 
         // Narrator cleanup MUST run before checking for more queue items.
@@ -3856,7 +3878,13 @@ void SpeakManager::processPlayer() {
             clearVisibleSubtitles();
         }
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // 15 seconds is too high if using fast llm.
+            //ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            auto aproximatedTimeToSupressMaintenance = trimmedSubtitle.length() * 0.2f;  // 0.1 seconds per character
+            long roundedTimeToSupressMaintenance = static_cast<long>(aproximatedTimeToSupressMaintenance);
+            logger::info("Maintenance suppression for {} seconds", roundedTimeToSupressMaintenance);
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(roundedTimeToSupressMaintenance));
+
         }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();

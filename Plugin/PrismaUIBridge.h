@@ -12,6 +12,8 @@
 
 using json = nlohmann::json;
 
+struct PlayerConversationRoutingContext;
+
 namespace PrismaUIBridge {
 
     enum class ChatboxTargetMode : std::uint8_t {
@@ -299,6 +301,9 @@ namespace PrismaUIBridge {
     // Read the current CHIM mode tracked by the Prisma bridge
     std::string GetCurrentChatboxMode();
 
+    // Apply the mood saved in Prisma Chat to speech-to-text routing.
+    void ApplySavedPlayerMood(PlayerConversationRoutingContext& routingContext);
+
     // Synchronize the native mode state after a Prisma, Papyrus, or server selection.
     // Pass persistToServer=true only when the caller has not already written the
     // matching chim_mode setconf entry itself. Server hydration is startup-only.
@@ -339,6 +344,9 @@ namespace PrismaUIBridge {
     std::uint64_t GetDialogueStopGeneration();
     void BumpDialogueStopGeneration();
 
+    // Shared by the chatbox and voice hotkey; does not require a Prisma view.
+    void StopAllDialogueNow(const char* sourceTag);
+
     // Push a new chat message to the chatbox (real-time)
     void PushChatboxMessage(const std::string& speaker, const std::string& text, 
                             const std::string& timestamp, const std::string& type,
@@ -349,7 +357,8 @@ namespace PrismaUIBridge {
                             const std::string& timestamp);
 
     // Send a message typed in the chatbox
-    void SendChatboxMessage(const std::string& message);
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood);
 
     // ===== CHIM Settings Menu Functions =====
 

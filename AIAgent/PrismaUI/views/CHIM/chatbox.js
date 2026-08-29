@@ -15,6 +15,10 @@
     const focusModal = document.getElementById('focus-chatbox-modal');
     const focusShellElement = document.querySelector('.focus-chatbox-shell');
     const focusInput = document.getElementById('focus-chatbox-input');
+    const playerMoodInputs = document.querySelectorAll('input[name="chatbox-player-mood"]');
+    const playerMoodCustomRadio = document.getElementById('chatbox-mood-custom');
+    const playerMoodCustomTextInput = document.getElementById('chatbox-mood-custom-text');
+    const playerMoodCustomErrorElement = document.getElementById('chatbox-mood-custom-error');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
     const currentModeElement = document.getElementById('chatbox-current-mode');
@@ -42,7 +46,13 @@
     const rechatMenuToggleButton = document.getElementById('chatbox-rechat-menu-toggle');
     const rechatOptionsElement = document.getElementById('chatbox-rechat-options');
     const rechatOptionButtons = document.querySelectorAll('#chatbox-rechat-options .chatbox-option-tile');
-    const focusToggleButton = document.getElementById('chatbox-focus-toggle');
+    const soulgazeSelectorElement = document.getElementById('chatbox-soulgaze-selector');
+    const soulgazeMenuToggleButton = document.getElementById('chatbox-soulgaze-menu-toggle');
+    const soulgazeOptionsElement = document.getElementById('chatbox-soulgaze-options');
+    const soulgazeOptionButtons = document.querySelectorAll('#chatbox-soulgaze-options .chatbox-option-tile');
+    const soulgazeStatusDotElement = document.getElementById('chatbox-soulgaze-status-dot');
+    const soulgazeStatusTextElement = document.getElementById('chatbox-soulgaze-status-text');
+    const soulgazeContextOptionButton = document.getElementById('chatbox-soulgaze-context-option');
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
@@ -54,15 +64,17 @@
 
     // State
     let currentTab = 'chat';
+    const customPlayerMoodValue = 'custom';
     const maxStoryEntries = 150;
     const liveStoryDedupeWindowMs = 15000;
     const recentStoryRetentionMs = 60000;
     const focusPositionStorageKey = 'chim_focus_chat_position';
     const contextCollapsedStorageKey = 'chim_recent_context_collapsed';
+    const playerMoodStorageKey = 'chim_chatbox_player_mood';
+    const playerMoodCustomTextStorageKey = 'chim_chatbox_custom_mood';
     const focusPositionClasses = ['focus-position-center', 'focus-position-top', 'focus-position-bottom'];
     let isChatFocused = false;
     let quickChatMode = false;
-    let isFocusChatEnabled = false;
     let currentMode = 'STANDARD';
     let currentModeAction = 'mode_standard';
     let currentModelAction = 'llm_standard';
@@ -77,6 +89,8 @@
     let currentRechatMode = 'random';
     let rechatModeSaveInProgress = false;
     let currentFocusPosition = 'center';
+    let visualContextAvailable = false;
+    let visualContextLocationName = '';
     let currentTargetName = '';
     let currentTargetFormId = 0;
     let currentTargetIsNarrator = false;
@@ -135,7 +149,7 @@
             : config.label;
         currentModeElement.title = symbolMode
             ? `One-shot ${config.label}; saved mode remains ${modeConfig[currentMode].label}.`
-            : (config.label === 'Close' ? 'Private, close-range conversation' : '');
+            : (config.label === 'Close' ? 'Close-range talk the nearby group can hear' : '');
     }
 
     const modelConfig = {
@@ -456,7 +470,8 @@
         [
             [modeMenuToggleButton, modeOptionsElement],
             [modelMenuToggleButton, modelOptionsElement],
-            [rechatMenuToggleButton, rechatOptionsElement]
+            [rechatMenuToggleButton, rechatOptionsElement],
+            [soulgazeMenuToggleButton, soulgazeOptionsElement]
         ].forEach(function(selector) {
             if (selector[1] !== exceptOptionsElement) {
                 closeTileMenu(selector[0], selector[1]);
@@ -508,11 +523,134 @@
     /**
      * Send user message through Prisma bridge
      */
-    function sendMessageToBridge(message) {
-        if (!message || !message.trim()) return;
-        if (window.chimChatboxCommand) {
-            window.chimChatboxCommand('send|' + message);
+    function normalizePlayerMood(mood) {
+        return ['happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty'].indexOf(mood) >= 0 ? mood : '';
+    }
+
+    // Free-form custom mood: collapse whitespace and cap at the input's maxlength before it leaves the view.
+    function normalizeCustomPlayerMood(text) {
+        return String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 80);
+    }
+
+    // JSON keeps '|' inside player text from splitting into extra bridge arguments.
+    function buildCustomMoodCommand(customMood, message) {
+        return 'send_custom_mood|' + JSON.stringify({ custom_mood: customMood, message: message });
+    }
+
+    function getSelectedPlayerMoodValue() {
+        const selected = Array.prototype.find.call(playerMoodInputs, function(input) {
+            return input.checked;
+        });
+        return selected ? selected.value : '';
+    }
+
+    function getSelectedPlayerMood() {
+        return normalizePlayerMood(getSelectedPlayerMoodValue());
+    }
+
+    function isCustomPlayerMoodSelected() {
+        return getSelectedPlayerMoodValue() === customPlayerMoodValue;
+    }
+
+    function getCustomPlayerMoodText() {
+        return normalizeCustomPlayerMood(playerMoodCustomTextInput ? playerMoodCustomTextInput.value : '');
+    }
+
+    function setCustomPlayerMoodInvalid(invalid) {
+        if (playerMoodCustomTextInput) {
+            playerMoodCustomTextInput.setAttribute('aria-invalid', invalid ? 'true' : 'false');
         }
+        if (playerMoodCustomErrorElement) {
+            playerMoodCustomErrorElement.hidden = !invalid;
+        }
+    }
+
+    // Typing in or focusing the field is itself the request for a custom mood.
+    function selectCustomPlayerMood() {
+        if (playerMoodCustomRadio && !playerMoodCustomRadio.checked) {
+            playerMoodCustomRadio.checked = true;
+            return true;
+        }
+        return false;
+    }
+
+    function focusCustomPlayerMoodInput() {
+        if (!playerMoodCustomTextInput) return;
+        playerMoodCustomTextInput.focus();
+        const caret = playerMoodCustomTextInput.value.length;
+        playerMoodCustomTextInput.selectionStart = caret;
+        playerMoodCustomTextInput.selectionEnd = caret;
+    }
+
+    // A stored value can outlive a roster change, so anything unrecognised falls back to No mood.
+    function normalizeStoredPlayerMood(value) {
+        const stored = value === null || value === undefined ? '' : String(value);
+        return stored === customPlayerMoodValue ? customPlayerMoodValue : normalizePlayerMood(stored);
+    }
+
+    function loadPlayerMoodSelection() {
+        try {
+            return {
+                mood: normalizeStoredPlayerMood(localStorage.getItem(playerMoodStorageKey)),
+                custom: normalizeCustomPlayerMood(localStorage.getItem(playerMoodCustomTextStorageKey))
+            };
+        } catch (_err) {
+            return { mood: '', custom: '' };
+        }
+    }
+
+    function savePlayerMoodSelection() {
+        try {
+            localStorage.setItem(playerMoodStorageKey, normalizeStoredPlayerMood(getSelectedPlayerMoodValue()));
+            localStorage.setItem(playerMoodCustomTextStorageKey, getCustomPlayerMoodText());
+        } catch (_err) {
+            // Keep the current session selection when storage is unavailable.
+        }
+    }
+
+    // JSON keeps '|' and quotes inside custom phrasing from splitting into extra bridge arguments.
+    function buildPlayerMoodCommand(playerMood, customMood) {
+        return 'set_player_mood|' + JSON.stringify({ player_mood: playerMood, custom_mood: customMood });
+    }
+
+    // Native holds the mood for speech-to-text, so Custom with nothing typed has to clear it
+    // rather than leave an older mood attached to the next spoken line.
+    function syncPlayerMoodToNative() {
+        if (!window.chimChatboxCommand) return;
+        const customSelected = isCustomPlayerMoodSelected();
+        const customMood = customSelected ? getCustomPlayerMoodText() : '';
+        const mood = customSelected ? (customMood ? customPlayerMoodValue : '') : getSelectedPlayerMood();
+        window.chimChatboxCommand(buildPlayerMoodCommand(mood, customMood));
+    }
+
+    function persistPlayerMoodSelection() {
+        savePlayerMoodSelection();
+        syncPlayerMoodToNative();
+    }
+
+    // Called on load and on every open so a recreated view re-arms both the picker and native.
+    function restorePlayerMoodSelection() {
+        const stored = loadPlayerMoodSelection();
+        playerMoodInputs.forEach(function(input) {
+            input.checked = input.value === stored.mood;
+        });
+        if (playerMoodCustomTextInput) {
+            playerMoodCustomTextInput.value = stored.custom;
+        }
+        setCustomPlayerMoodInvalid(false);
+        syncPlayerMoodToNative();
+    }
+
+    function sendMessageToBridge(message, playerMood, customMood) {
+        if (!message || !message.trim()) return;
+        if (!window.chimChatboxCommand) return;
+        const custom = normalizeCustomPlayerMood(customMood);
+        if (custom) {
+            window.chimChatboxCommand(buildCustomMoodCommand(custom, message));
+            return;
+        }
+        const mood = normalizePlayerMood(playerMood);
+        window.chimChatboxCommand(mood ? 'send_mood|' + mood + '|' + message : 'send|' + message);
     }
 
     function sendControlCommand(command) {
@@ -631,15 +769,6 @@
                 targetRowsByKey.delete(key);
             }
         });
-    }
-
-    function updateFocusIndicator(enabled) {
-        if (!focusToggleButton) return;
-        focusToggleButton.classList.remove('on', 'off');
-        focusToggleButton.classList.add(enabled ? 'on' : 'off');
-        focusToggleButton.textContent = enabled ? 'ON' : 'OFF';
-        focusToggleButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-        focusToggleButton.title = enabled ? 'Disable Compact Chat' : 'Enable Compact Chat';
     }
 
     function updateFocusPositionButtons() {
@@ -793,6 +922,7 @@
             showStoryEmpty('Loading recent context...');
         }
         focusInput.value = '';
+        restorePlayerMoodSelection();
         renderModeIndicator();
         setTimeout(function() {
             focusInput.focus();
@@ -810,6 +940,7 @@
         focusModal.classList.add('hidden');
         focusModal.setAttribute('aria-hidden', 'true');
         focusInput.value = '';
+        setCustomPlayerMoodInvalid(false);
         renderModeIndicator();
         focusInput.blur();
         setContextPlacement(false);
@@ -829,7 +960,18 @@
         if (!focusInput) return;
         const message = focusInput.value;
         if (!message.trim()) return;
-        sendMessageToBridge(message);
+
+        const customSelected = isCustomPlayerMoodSelected();
+        const customMood = customSelected ? getCustomPlayerMoodText() : '';
+        // Custom mood with nothing typed keeps the composer open instead of silently dropping the mood.
+        if (customSelected && !customMood) {
+            setCustomPlayerMoodInvalid(true);
+            focusCustomPlayerMoodInput();
+            return;
+        }
+
+        setCustomPlayerMoodInvalid(false);
+        sendMessageToBridge(message, customSelected ? '' : getSelectedPlayerMood(), customMood);
         focusInput.value = '';
         renderModeIndicator();
         window.closeFocusChatbox(true);
@@ -838,6 +980,7 @@
     window.clearFocusMessage = function() {
         if (!focusInput) return;
         focusInput.value = '';
+        setCustomPlayerMoodInvalid(false);
         renderModeIndicator();
         focusInput.focus();
     };
@@ -858,6 +1001,84 @@
 
     window.triggerHaltAIActions = function() {
         sendControlCommand('halt_ai_actions');
+    };
+
+    /**
+     * Soulgaze the current view. The modal is dismissed immediately so the
+     * delayed capture frames the scene rather than the chat UI.
+     */
+    window.triggerSoulgazeDescribe = function() {
+        closeSoulgazeMenu();
+        sendControlCommand('soulgaze_describe');
+        window.closeFocusChatbox(true);
+    };
+
+    /**
+     * Capture or refresh the stored visual description for the current
+     * location. Always actionable, whether or not one is already saved.
+     */
+    window.triggerSoulgazeVisualContext = function() {
+        closeSoulgazeMenu();
+        sendControlCommand('soulgaze_context');
+        window.closeFocusChatbox(true);
+    };
+
+    /**
+     * Refresh the portrait of the NPC currently being looked at. Same
+     * dismiss-first behaviour so the capture frames the NPC, not the chat UI.
+     */
+    window.triggerSoulgazePortrait = function() {
+        closeSoulgazeMenu();
+        sendControlCommand('soulgaze_portrait');
+        window.closeFocusChatbox(true);
+    };
+
+    function closeSoulgazeMenu() {
+        closeTileMenu(soulgazeMenuToggleButton, soulgazeOptionsElement);
+    }
+
+    function isSoulgazeMenuOpen() {
+        return !!soulgazeOptionsElement && !soulgazeOptionsElement.classList.contains('hidden');
+    }
+
+    /**
+     * The visible trigger always reads "Soulgaze"; stored-context state is
+     * carried by the status dot plus the title/aria-label and the wording of
+     * the location option.
+     */
+    function renderSoulgazeControl() {
+        const locationLabel = visualContextLocationName || 'the current location';
+        const status = visualContextAvailable
+            ? `Visual description stored for ${locationLabel}. Capture again to refresh it.`
+            : `No visual description stored for ${locationLabel}. Capture one now.`;
+
+        if (soulgazeMenuToggleButton) {
+            soulgazeMenuToggleButton.title = `Soulgaze. ${status}`;
+            soulgazeMenuToggleButton.setAttribute('aria-label', `Soulgaze. ${status}`);
+        }
+
+        setClassNameIfChanged(
+            soulgazeStatusDotElement,
+            'soulgaze-status-dot ' + (visualContextAvailable ? 'is-saved' : 'is-missing')
+        );
+        setTextIfChanged(soulgazeStatusTextElement, status);
+
+        if (soulgazeContextOptionButton) {
+            setTextIfChanged(
+                soulgazeContextOptionButton,
+                visualContextAvailable ? 'Refresh Visual Description' : 'Capture Visual Description'
+            );
+            soulgazeContextOptionButton.title = status;
+        }
+    }
+
+    /**
+     * Visual context availability push (called from C++ via Invoke)
+     */
+    window.updateChatboxVisualContext = function(available, locationName) {
+        visualContextAvailable = !!available;
+        visualContextLocationName = typeof locationName === 'string' ? locationName.trim() : '';
+        renderSoulgazeControl();
     };
 
     window.deleteRecentEvents = async function(count) {
@@ -922,6 +1143,47 @@
                     resetTargetSelectionForModeChange();
                     sendControlCommand('mode_close');
                 }
+                window.sendFocusMessage();
+            }
+        });
+    }
+
+    playerMoodInputs.forEach(function(input) {
+        input.addEventListener('change', function() {
+            if (!input.checked) return;
+            if (input.value === customPlayerMoodValue) {
+                focusCustomPlayerMoodInput();
+                persistPlayerMoodSelection();
+                return;
+            }
+            // A predefined mood, or No mood, ignores the typed text but keeps it for later reuse.
+            setCustomPlayerMoodInvalid(false);
+            persistPlayerMoodSelection();
+        });
+    });
+
+    if (playerMoodCustomTextInput) {
+        playerMoodCustomTextInput.addEventListener('focus', function() {
+            if (selectCustomPlayerMood()) {
+                persistPlayerMoodSelection();
+            }
+        });
+        playerMoodCustomTextInput.addEventListener('input', function() {
+            selectCustomPlayerMood();
+            if (getCustomPlayerMoodText()) {
+                setCustomPlayerMoodInvalid(false);
+            }
+            persistPlayerMoodSelection();
+        });
+        playerMoodCustomTextInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                window.closeFocusChatbox(true);
+                return;
+            }
+
+            if (e.key === 'Enter') {
+                e.preventDefault();
                 window.sendFocusMessage();
             }
         });
@@ -1464,11 +1726,6 @@
         return assigned;
     }
 
-    window.updateChatboxFocus = function(enabled) {
-        isFocusChatEnabled = !!enabled;
-        updateFocusIndicator(isFocusChatEnabled);
-    };
-
     function renderRechatMode(mode) {
         const normalizedMode = ['tight', 'conversational', 'group', 'random'].includes(mode) ? mode : 'random';
         const config = rechatModeConfig[normalizedMode];
@@ -1635,12 +1892,6 @@
         closeAllTileMenus();
     });
 
-    if (focusToggleButton) {
-        focusToggleButton.addEventListener('click', function() {
-            sendControlCommand('focus_chat_toggle');
-        });
-    }
-
     focusPositionButtons.forEach(function(button) {
         button.addEventListener('click', function() {
             const nextPosition = button.dataset.position || 'center';
@@ -1662,6 +1913,39 @@
             }
 
             armDeleteConfirmation(deleteCount);
+        });
+    }
+
+    if (soulgazeMenuToggleButton) {
+        soulgazeMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(soulgazeMenuToggleButton, soulgazeOptionsElement);
+        });
+    }
+
+    const soulgazeActionHandlers = {
+        context: function() { window.triggerSoulgazeVisualContext(); },
+        portrait: function() { window.triggerSoulgazePortrait(); },
+        describe: function() { window.triggerSoulgazeDescribe(); }
+    };
+
+    soulgazeOptionButtons.forEach(function(button) {
+        button.addEventListener('click', function(event) {
+            event.stopPropagation();
+            const handler = soulgazeActionHandlers[button.dataset.soulgazeAction];
+            if (handler) handler();
+        });
+    });
+
+    if (soulgazeSelectorElement) {
+        // Escape from the trigger or any option closes the menu without
+        // dismissing the chat, and hands focus back to the trigger.
+        soulgazeSelectorElement.addEventListener('keydown', function(event) {
+            if (event.key !== 'Escape' || !isSoulgazeMenuOpen()) return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeSoulgazeMenu();
+            if (soulgazeMenuToggleButton) soulgazeMenuToggleButton.focus();
         });
     }
 
@@ -1730,13 +2014,14 @@
         });
     }
 
-    updateFocusIndicator(isFocusChatEnabled);
+    renderSoulgazeControl();
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
     renderRechatMode('random');
     applyFocusPosition(loadFocusPosition());
     applyContextCollapsed(loadContextCollapsed());
     setContextPlacement(false);
+    restorePlayerMoodSelection();
 
     console.log('[Chatbox] Initialized - display mode + focus modal input');
 })();

@@ -108,11 +108,6 @@ int main()
     Check(result.candidateIndex == 0 && result.reason == "true_crosshair",
           "True crosshair did not bypass soft eligibility");
 
-    candidates[0].directEligible = false;
-    result = Select("Normal speech", candidates);
-    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
-          "Conversation cooldown did not block the crosshair target");
-
     Request cooldownTargetRequest{};
     cooldownTargetRequest.utterance = "Normal speech";
     cooldownTargetRequest.explicitTargetFormId = 0x10;
@@ -120,12 +115,17 @@ int main()
     cooldownTargetRequest.directAddressRadius = 1000.0f;
     cooldownTargetRequest.interactionRadius = 560.0f;
     result = PlayerConversationRoutingPolicy::Select(cooldownTargetRequest, candidates);
-    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
-          "Conversation cooldown did not block the explicit UI target");
+    Check(result.candidateIndex == 0 && result.reason == "explicit_ui_target",
+          "Explicit player input did not bypass conversation cooldown");
 
     result = Select("Hey Camilla Valerius", candidates);
+    Check(result.candidateIndex == 0 && result.reason == "explicit_npc_name",
+          "Named player input did not bypass conversation cooldown");
+
+    candidates[0].trueCrosshair = false;
+    result = Select("Normal speech", candidates);
     Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
-          "Conversation cooldown did not block the named target");
+          "Conversation cooldown did not block automatic selection");
 
     candidates[0].hardEligible = false;
     result = Select("Hey", candidates);
@@ -269,6 +269,38 @@ int main()
     result = Select("Hey Lydia", distantNamedTarget);
     Check(result.kind == SelectionKind::Narrator,
           "Named target outside direct-address radius was incorrectly selected");
+
+    std::vector<Candidate> closeCandidates{
+        MakeCandidate(0x90, "Lydia", 80.0f, true, true, true, 1.0f, true),
+        MakeCandidate(0x91, "Alvor", 100.0f, true, true, true, -1.0f),
+        MakeCandidate(0x92, "Gerdur", 200.0f, true, false),
+        MakeCandidate(0x93, "Distant NPC", 201.0f),
+        MakeCandidate(0x94, "Blocked NPC", 50.0f, true, true, false),
+        MakeCandidate(0x95, "Ineligible NPC", 40.0f, false),
+    };
+    Request closeRequest{};
+    closeRequest.utterance = "Hello";
+    closeRequest.directAddressRadius = 200.0f;
+    closeRequest.interactionRadius = 200.0f;
+    result = Select(closeRequest, closeCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0,
+          "Close speech did not retain the crosshair responder");
+
+    std::vector<std::size_t> closeAudience;
+    std::vector<std::size_t> sneakingAudience;
+    for (std::size_t index = 0; index < closeCandidates.size(); ++index) {
+        const bool selected = index == result.candidateIndex;
+        if (IsAudienceMember(closeCandidates[index], selected, 200.0f)) {
+            closeAudience.push_back(index);
+        }
+        if (IsAudienceMember(closeCandidates[index], selected, 100.0f)) {
+            sneakingAudience.push_back(index);
+        }
+    }
+    Check(closeAudience == std::vector<std::size_t>({0, 1, 2}),
+          "Close audience lost nearby hearers or admitted distant, blocked or ineligible NPCs");
+    Check(sneakingAudience == std::vector<std::size_t>({0, 1}),
+          "Sneaking Close audience did not respect the reduced radius");
 
     std::vector<PresenceCandidate> presentCandidates{
         { 0x100, "Alvor", 200.0f, true, true, false },
