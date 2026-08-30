@@ -233,8 +233,11 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		Debug.Notification("[CHIM] Updating dynamic profile for The Narrator")
 		AIAgentFunctions.logMessage("The Narrator", "updateprofile_narrator")
 	elseif (actionId == "rp_write_diary" && targetActor)
-		Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
-		AIAgentFunctions.requestMessageForActor("Please, update your diary", "diary", targetActor.GetDisplayName())
+		; The native call reports the rejection itself when the target is asleep.
+		int diaryStatus = AIAgentFunctions.requestMessageForActor("Please, update your diary", "diary", targetActor.GetDisplayName())
+		if (diaryStatus > 0)
+			Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
+		endif
 	elseif (actionId == "rp_update_npc" && targetActor)
 		Debug.Trace("[CHIM] Updating dynamic profile for " + targetActor.GetDisplayName())
 		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async")
@@ -1417,8 +1420,11 @@ Function OpenRoleplayWheel()
 		If (targetName != "")
 			Actor targetActor = crosshairRef as Actor
 			If (targetActor)
-				Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
-				AIAgentFunctions.requestMessageForActor("Please, update your diary","diary", targetActor.GetDisplayName())
+				; The native call reports the rejection itself when the target is asleep.
+				int diaryStatus = AIAgentFunctions.requestMessageForActor("Please, update your diary","diary", targetActor.GetDisplayName())
+				If (diaryStatus > 0)
+					Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
+				EndIf
 			Else
 				Debug.Notification("[CHIM] You must look at a target to generate a Diary Entry.")
 			EndIf

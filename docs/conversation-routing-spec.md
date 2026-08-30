@@ -146,6 +146,44 @@ An explicit Prisma target, exact named target, or true crosshair target may
 bypass soft eligibility. This permits a dialogue response only; it does not
 authorize a package, animation, scene, quest, or gameplay-action interruption.
 
+### Sleeping direct targets
+
+Sleep is the one soft blocker that direct address cannot silently bypass. An
+actor counts as sleeping only when its exact Skyrim sit/sleep state is
+`kIsSleeping`. Furniture keywords and idle markers are not used.
+
+In Standard, Whisper, and Close modes, a direct request aimed at a sleeping
+actor is rejected before any HTTP dispatch. The request is not rerouted to
+another NPC and not rerouted to the Narrator. The player sees:
+
+```
+[CHIM] <Name> is asleep. Use Shout mode to reach them.
+```
+
+Shout mode is the documented exception: a direct Shout request reaches a
+sleeping target exactly as before.
+
+Direct intent is preserved before the rejection is raised. An explicit FormID
+is authoritative, so a sleeping exact target is rejected even when an awake
+actor shares its display name. For name-only targeting, the resolver prefers an
+eligible same-name actor and only rejects when every matching actor is asleep.
+The addressed name still decides who was meant, so a longer exact name match
+that is asleep rejects rather than falling back to a shorter awake name.
+
+Automatic routing is unchanged. Sleeping actors remain excluded from
+field-of-view and proximity selection, so an untargeted utterance still reaches
+the nearest eligible awake NPC or the Narrator.
+
+A diary request aimed at a sleeping actor is rejected on the same sleep state,
+before HTTP dispatch, and reports:
+
+```
+[CHIM] <Name> is asleep and cannot write a diary entry.
+```
+
+The Papyrus diary callers show their "is writing diary entry" notification only
+after the native request reports an accepted status.
+
 ## Responder Priority
 
 The resolver evaluates these rules in order:
@@ -161,6 +199,10 @@ The resolver evaluates these rules in order:
 8. A bare `Hey` selects the best eligible field-of-view candidate.
 9. Otherwise, the nearest eligible and physically audible NPC is selected.
 10. If no eligible NPC exists, the Narrator is selected.
+
+Rules 4, 5, and 6 stop with an explicit rejection instead of continuing to the
+next rule when the intended direct actor is asleep and the mode is not Shout.
+`HTTPManager` reports that rejection once and does not open a request.
 
 The true crosshair is the game crosshair reference. A forward-cone fallback is
 not represented as a crosshair target.
@@ -307,6 +349,11 @@ Each routed player utterance logs one `[PLAYER-ROUTING]` record with:
 - physical-presence and inactive-presence counts; and
 - rejected candidates with reasons.
 
+A rejected sleeping direct target logs a shorter `[PLAYER-ROUTING]` record with
+the input source, mode, normalized utterance, rejected target name, and the
+`direct_target_sleeping` reason. No audience or presence snapshot is built for a
+rejected request.
+
 This record is the primary evidence for target, range, cooldown, loading,
 privacy, and spatial-audibility reports.
 
@@ -341,8 +388,10 @@ privacy, and spatial-audibility reports.
    action using RefID with name fallback.
 3. Creatures are excluded unless **Add All races** is enabled, and duplicate
    generic creature names collapse to one entry.
-4. An explicit sleeping or scene-bound NPC can answer without a gameplay
-   package interruption.
+4. An explicit scene-bound NPC can answer without a gameplay package
+   interruption. An explicit sleeping NPC answers in Shout mode; in Standard,
+   Whisper, and Close the request is rejected with the sleeping notification
+   and is not rerouted.
 5. `Hey Lydia` resolves the closest present exact Lydia.
 6. Bare `Hey` selects a deterministic eligible FOV candidate.
 7. No crosshair and no special phrase selects the nearest eligible audible NPC.
@@ -362,6 +411,8 @@ privacy, and spatial-audibility reports.
     standard player audience.
 19. NPC-to-NPC, Background Life, scripted dialogue, diaries, vision,
     instructions, and action callbacks continue through their existing routes.
+20. A diary request aimed at a sleeping NPC is rejected with the diary sleeping
+    notification, and the "is writing diary entry" notification is not shown.
 
 ## Source References
 
@@ -373,7 +424,8 @@ privacy, and spatial-audibility reports.
   actor action targeting with name fallback.
 - `Plugin/SpatialAwareness.cpp`: request-local physical audibility.
 - `Plugin/PrismaUIBridge.cpp`: Prisma mode/target transport and target display.
-- `Plugin/Papyrus.cpp`: legacy text routing and mode synchronization.
+- `Plugin/Papyrus.cpp`: legacy text routing, mode synchronization, and the
+  sleeping diary-target rejection with its accepted-status return value.
 - `Plugin/Voicerec.cpp`: voice/STT routing context.
 - `AIAgent/PrismaUI/views/CHIM/chatbox.js`: Prisma controls and Ctrl+Enter.
 - `AIAgent/Source/Scripts/AIAgentPapyrusFunctions.psc`: legacy controls and mode

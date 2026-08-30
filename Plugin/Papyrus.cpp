@@ -2348,10 +2348,32 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     // Route through sendMessageReal which includes camera pitch detection for Narrator
     if (type == "diary" && (npc.empty() || trim(npc).empty())) {
         logger::info("[requestMessageForActor] Diary request with no target, routing through sendMessageReal");
-        return sendMessageReal(msg, type);
+        const int untargetedResult = sendMessageReal(msg, type);
+        return untargetedResult == 0 ? 1 : untargetedResult;
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+
+    // A sleeping NPC cannot write a diary entry; reject before any server dispatch.
+    if (type == "diary" && actorPtr) {
+        auto* diaryActor = actorPtr->getActor();
+        if (!diaryActor) {
+            diaryActor = actorPtr->getActorByFormId();
+        }
+        if (PlayerConversationRouter::IsActorSleeping(diaryActor)) {
+            const char* diaryDisplayName = diaryActor->GetDisplayFullName();
+            std::string diaryTargetName = diaryDisplayName ? diaryDisplayName : "";
+            if (diaryTargetName.empty()) {
+                diaryTargetName = actorPtr->getActorName();
+            }
+            logger::info("[requestMessageForActor] Rejecting diary request: '{}' is asleep", diaryTargetName);
+            std::string sleepingMsg =
+                std::format("[CHIM] {} is asleep and cannot write a diary entry.", diaryTargetName);
+            RE::DebugNotification(sleepingMsg.c_str());
+            return 0;
+        }
+    }
+
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg
@@ -2376,7 +2398,7 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                         GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
-    return 0;
+    return 1;
 }
 
 int Papyrus::setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
