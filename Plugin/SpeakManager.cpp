@@ -3001,6 +3001,17 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
+        json activeAgents = json::array();
+        for (const auto& activeAgent : aiam.getAgents()) {
+            if (!activeAgent || activeAgent->isNarrator()) {
+                continue;
+            }
+            const std::string activeAgentName = trim(activeAgent->getActorName());
+            if (!activeAgentName.empty()) {
+                activeAgents.push_back(activeAgentName);
+            }
+        }
+        rechatPayload["active_agents"] = activeAgents;
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
