@@ -1676,6 +1676,14 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             legacyAudibleActorCount = spatialSnapshot.audibleActors.size();
         } else {
             playerRoute = PlayerConversationRouter::Resolve(msg, *routingContext);
+            if (playerRoute.rejected) {
+                logger::info("[LISTENER-RESOLVE] Player request rejected before dispatch: target='{}' reason={}",
+                             playerRoute.rejectedTargetName, playerRoute.reason);
+                std::string rejectedMsg = std::format("[CHIM] {} is asleep. Use Shout mode to reach them.",
+                                                      playerRoute.rejectedTargetName);
+                RE::DebugNotification(rejectedMsg.c_str());
+                return;
+            }
         }
         float minDistance = (std::numeric_limits<float>::max)();
         bool directedChat = false;
