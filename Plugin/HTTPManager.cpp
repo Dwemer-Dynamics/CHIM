@@ -951,15 +951,26 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         }
 
                         AIAgentManager& responseAgentManager = AIAgentManager::getInstance();
-                        auto responseAgent = responseAgentManager.getAgentByName(trim(lineParts[0]));
+                        const std::string responseActorName = trim(lineParts[0]);
+                        auto responseAgent = responseAgentManager.getAgentByName(responseActorName);
                         RE::Actor* responseActor = responseAgent ? responseAgent->getActor() : nullptr;
-                        const std::string responseBlockReason =
-                            AutomaticResponseBlockReason(decodedMsg, responseAgent, responseActor);
+                        const bool unknownAutomaticActor =
+                            !PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(decodedMsg) &&
+                            !IsPlayerStreamActor(responseActorName) && !responseAgent;
+                        const std::string responseBlockReason = unknownAutomaticActor
+                            ? "not_managed"
+                            : AutomaticResponseBlockReason(decodedMsg, responseAgent, responseActor);
                         if (!responseBlockReason.empty()) {
                             logger::info(
                                 "[AUTO_ELIGIBILITY] Dropping automatic streamed response for {} "
                                 "(event={}, reason={})",
-                                trim(lineParts[0]), requestEventType, responseBlockReason);
+                                responseActorName, requestEventType, responseBlockReason);
+                            if (rechatDepth > 0 && unknownAutomaticActor) {
+                                SpeakManager::getInstance().cancelRechatChain();
+                                closeReason = "inactive_response_actor";
+                                breakloop = true;
+                                break;
+                            }
                             continue;
                         }
 
