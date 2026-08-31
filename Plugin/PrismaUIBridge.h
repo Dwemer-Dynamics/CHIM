@@ -270,6 +270,9 @@ namespace PrismaUIBridge {
     // Create the CHIM chatbox panel
     void CreateChatboxPanel();
 
+    // Publish the authoritative per-save background-chat capture state to Prisma Chat.
+    void PublishCaptureBackgroundChatState(bool enabled);
+
     // Toggle the chatbox panel visibility
     void ToggleChatboxPanel();
 

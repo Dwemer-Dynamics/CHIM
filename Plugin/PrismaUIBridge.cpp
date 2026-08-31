@@ -3800,6 +3800,9 @@ R"CHIM(
         auto* taskInterface = SKSE::GetTaskInterface();
         if (!taskInterface) {
             PublishChimMcmCommandResult(payload, false, "Game task interface is unavailable.");
+            if (payload == "set|capture_background_chat") {
+                PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
+            }
             return;
         }
 
@@ -3807,6 +3810,9 @@ R"CHIM(
             auto* eventSource = SKSE::GetModCallbackEventSource();
             if (!eventSource) {
                 PublishChimMcmCommandResult(payload, false, "Papyrus event interface is unavailable.");
+                if (payload == "set|capture_background_chat") {
+                    PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
+                }
                 return;
             }
 
@@ -7129,6 +7135,18 @@ R"CHIM(
         logger::info("[PrismaUIBridge] Chatbox panel created successfully");
     }
 
+    void PublishCaptureBackgroundChatState(bool enabled) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+            !g_prismaUI->IsValid(g_chatboxView)) {
+            return;
+        }
+
+        const std::string call = std::format(
+            "window.setCaptureBackgroundChatState && window.setCaptureBackgroundChatState({})",
+            enabled ? "true" : "false");
+        g_prismaUI->Invoke(g_chatboxView, call.c_str(), nullptr);
+    }
+
     static void OnChatboxDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Chatbox panel DOM ready");
         g_chatboxDomReady.store(true);
@@ -7149,6 +7167,7 @@ R"CHIM(
         
         PushSystemLogEntry("info", welcomeMsg, std::string(timeDateString));
         PushCurrentModeToViews();
+        PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
         SyncChatboxStatusFromServerAsync();
         FetchAndUpdateChatboxStory(true);
         logger::info("[PrismaUIBridge] Pushed welcome message to chatbox");
@@ -7166,6 +7185,10 @@ R"CHIM(
                 g_prismaUI->Unfocus(g_chatboxView);
             }
             HideChatboxPanel();
+        } else if (cmd == "capture_background_chat|request") {
+            PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
+        } else if (cmd == "capture_background_chat|toggle") {
+            QueueChimMcmEvent("set|capture_background_chat", CaptureBackgroundChatEnabled ? 0.0f : 1.0f);
         } else if (cmd == "story_refresh") {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
