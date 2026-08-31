@@ -1520,6 +1520,8 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    if (!CaptureBackgroundChatEnabled) return;
+
     // Cell transitions can storm scene/subtitle events; skip until world maintenance settles.
     if (IsWorldMaintenanceSuppressed()) return;
 

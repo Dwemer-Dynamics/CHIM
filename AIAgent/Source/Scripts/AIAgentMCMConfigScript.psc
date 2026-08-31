@@ -92,6 +92,9 @@ bool		_pauseDialogueState			= false
 int			_togglePlayerTtsTraditionalDialogue
 bool		_playerTtsTraditionalDialogueState	= false
 
+int			_toggleCaptureBackgroundChat
+bool		_captureBackgroundChatState		= true
+
 
 ; Auto Activate related
 
@@ -272,6 +275,7 @@ bool		_camera_based_audio_stateDefault	= false
 bool		_invertheadingstateDefault		= false
 bool		_pauseDialogueStateDefault		= false
 bool		_playerTtsTraditionalDialogueStateDefault = false
+bool		_captureBackgroundChatStateDefault	= true
 bool 		_rechat_policy_asap_default		= true
 bool		_toggle_openmic_stateDefault	= false
 float		_openmic_sensitivityDefault		= 1000.0
@@ -350,6 +354,12 @@ event OnPlayerLoadGame()
 		controlScript.setConf("_player_tts_traditional_dialogue", 0)
 	endIf
 
+	if (_captureBackgroundChatState)
+		controlScript.setConf("_capture_background_chat", 1)
+	else
+		controlScript.setConf("_capture_background_chat", 0)
+	endIf
+
 	if (_enable3daudioplaybackstate)
 		controlScript.setConf("_enable_3d_audio_playback", 1)
 	else
@@ -426,6 +436,10 @@ event OnConfigInit()
 	if (CurrentVersion<66)
 		_camera_based_audio_state = false
 	endIf
+
+	if (CurrentVersion<73)
+		_captureBackgroundChatState = true
+	endIf
 	
 	; Load combat dialogue settings
 	int combatDialogueValue = AIAgentFunctions.get_conf_i("_combat_dialogue")
@@ -473,6 +487,12 @@ event OnConfigInit()
 	else
 		_playerTtsTraditionalDialogueState = false
 		controlScript.setConf("_player_tts_traditional_dialogue", 0)
+	endIf
+
+	if (_captureBackgroundChatState)
+		controlScript.setConf("_capture_background_chat", 1)
+	else
+		controlScript.setConf("_capture_background_chat", 0)
 	endIf
 
 	; Load spatial hearing distance settings
@@ -561,12 +581,16 @@ endEvent
 
 int function GetVersion()
 
-	return 72
+	return 73
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 73 && a_version > CurrentVersion)
+		OnConfigInit()
+	endif
 
 	if (a_version == 72 && a_version > CurrentVersion)
 		OnConfigInit()
@@ -809,6 +833,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "animations", "Enable Animations", "Allow AI NPCs to perform animations.", "toggle", PrismaMCMBool(_animationstate), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "player_tts_traditional_dialogue", "Player TTS for Traditional Dialogue", "Play configured Player TTS for traditional dialogue choices.", "toggle", PrismaMCMBool(_playerTtsTraditionalDialogueState), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "capture_background_chat", "Capture Background Chat", "When on, nearby vanilla NPC dialogue is added to AI context. Subtitles still appear when off.", "toggle", PrismaMCMBool(_captureBackgroundChatState), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "soulgaze_hd", "Soulgaze HD Mode", "Use DirectX backbuffer capture for Soulgaze.", "toggle", PrismaMCMBool(_toggleState7), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "timeout", "Connection Timeout", "Timeout for requests to CHIM Server.", "slider", _timeout_int as String, "15|300|1|seconds|0|0")
 	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_sandbox_near", "NPCs Sandbox Near Player", "Let NPCs subtly move near the player during conversations.", "toggle", PrismaMCMBool(_toggle_npc_go_near_state), "0|1|1||0|0")
@@ -1041,6 +1066,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "player_tts_traditional_dialogue"
 		_playerTtsTraditionalDialogueState = enabled
 		controlScript.setConf("_player_tts_traditional_dialogue", value)
+	elseif keyName == "capture_background_chat"
+		_captureBackgroundChatState = enabled
+		controlScript.setConf("_capture_background_chat", value)
 	elseif keyName == "soulgaze_hd"
 		_toggleState7 = enabled
 		controlScript.setSoulgazeModeNative(enabled as Int)
@@ -1292,6 +1320,7 @@ event OnPageReset(string a_page)
 		_toggle1OID_C = AddToggleOption("Enable AI Actions", _toggleState2)
 		_toggleAnimation = AddToggleOption("Enable Animations", _animationstate)
 		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
+		_toggleCaptureBackgroundChat = AddToggleOption("Capture Background Chat", _captureBackgroundChatState)
 		_toggle1OID_E = AddToggleOption("Soulgaze HD Mode", _toggleState7)
 		_slider_timeout = AddSliderOption("Connection Timeout (seconds)", _timeout_int, "{1}")
 		_slider_maintenance_period = AddSliderOption("Maintenance period", _maintenance_period, "{0}")
@@ -1813,6 +1842,12 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_player_tts_traditional_dialogue",0)
 	endif
+
+	if (_captureBackgroundChatState)
+		a=controlScript.setConf("_capture_background_chat",1)
+	else
+		a=controlScript.setConf("_capture_background_chat",0)
+	endif
 	
 	if (_toggle_autoadd_hostile_state)
 		a=controlScript.setConf("_autoadd_hostile",1)
@@ -2032,6 +2067,11 @@ event OnOptionDefault(int a_option)
 		_playerTtsTraditionalDialogueState = _playerTtsTraditionalDialogueStateDefault
 		controlScript.setConf("_player_tts_traditional_dialogue", 0)
 		SetToggleOptionValue(a_option, _playerTtsTraditionalDialogueState)
+
+	elseif (a_option == _toggleCaptureBackgroundChat)
+		_captureBackgroundChatState = _captureBackgroundChatStateDefault
+		controlScript.setConf("_capture_background_chat", 1)
+		SetToggleOptionValue(a_option, _captureBackgroundChatState)
 		
 	elseif (a_option == _toggle_openmic)
 		_toggle_openmic_state = _toggle_openmic_stateDefault
@@ -2391,6 +2431,18 @@ event OnOptionSelect(int a_option)
 		
 		SetToggleOptionValue(a_option, _playerTtsTraditionalDialogueState)
 	endIf
+
+	if (a_option == _toggleCaptureBackgroundChat)
+		_captureBackgroundChatState = !_captureBackgroundChatState
+
+		if (_captureBackgroundChatState)
+			controlScript.setConf("_capture_background_chat",1)
+		else
+			controlScript.setConf("_capture_background_chat",0)
+		endif
+
+		SetToggleOptionValue(a_option, _captureBackgroundChatState)
+	endIf
 	
 	if (a_option == _toggle_npc_go_near)
 		_toggle_npc_go_near_state = !_toggle_npc_go_near_state
@@ -2731,6 +2783,10 @@ event OnOptionHighlight(int a_option)
 
 	if (a_option == _togglePlayerTtsTraditionalDialogue)
 		SetInfoText("Will play whatever PlayerTTS is selected for traditional dialogue. It must be enabled and set within the CHIM webpage and requires the optional regular or VR dialogue menu interface patch.")
+	endIf
+
+	if (a_option == _toggleCaptureBackgroundChat)
+		SetInfoText("When on, nearby vanilla NPC dialogue is added to AI context. Subtitles still appear when off.")
 	endIf
 
 	if (a_option == _slider_max_distance_inside)

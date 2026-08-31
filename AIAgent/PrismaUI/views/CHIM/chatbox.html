@@ -244,6 +244,16 @@
                                 <button class="focus-btn focus-btn-stop" type="button" onclick="triggerHaltAIActions()">Halt AI Actions</button>
                             </div>
                             <div class="focus-chatbox-actions-row focus-chatbox-actions-row-secondary">
+                                <!-- Mirrors the per-save "Capture Background Chat" MCM behaviour setting. It stays
+                                     disabled until native pushes the authoritative value, so the row never shows a guess. -->
+                                <div class="focus-chatbox-capture-controls">
+                                    <button id="chatbox-capture-background-chat" class="focus-btn focus-btn-capture is-pending" type="button" aria-pressed="mixed" disabled title="Capture Background Chat. Waiting for the current setting." aria-label="Capture Background Chat. Waiting for the current setting.">
+                                        <span>Capture Background Chat</span>
+                                        <span id="chatbox-capture-background-chat-state" class="capture-background-chat-state">&#8230;</span>
+                                    </button>
+                                    <span class="chatbox-mode-help" tabindex="0" aria-label="Capture Background Chat help" aria-describedby="chatbox-capture-background-chat-help">?</span>
+                                    <div id="chatbox-capture-background-chat-help" class="chatbox-mode-shortcuts capture-background-chat-help" role="tooltip">When on, nearby vanilla NPC dialogue is added to AI context. Subtitles still appear when off.</div>
+                                </div>
                                 <div class="focus-chatbox-soulgaze-controls">
                                     <div id="chatbox-soulgaze-selector" class="focus-chatbox-soulgaze">
                                         <button id="chatbox-soulgaze-menu-toggle" class="focus-btn focus-btn-soulgaze" type="button" aria-expanded="false" aria-controls="chatbox-soulgaze-options" title="Soulgaze. No visual description stored for the current location." aria-label="Soulgaze. No visual description stored for the current location.">

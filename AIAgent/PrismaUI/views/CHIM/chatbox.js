@@ -56,6 +56,8 @@
     const focusPositionButtons = document.querySelectorAll('.focus-chatbox-position-btn');
     const deleteEventSelect = document.getElementById('chatbox-delete-events-select');
     const deleteEventConfirmButton = document.getElementById('chatbox-delete-events-confirm');
+    const captureBackgroundChatButton = document.getElementById('chatbox-capture-background-chat');
+    const captureBackgroundChatStateElement = document.getElementById('chatbox-capture-background-chat-state');
     const storyLogElement = document.getElementById('focus-chatbox-story-log');
     const storyEmptyElement = document.getElementById('focus-chatbox-story-empty');
     const storyNewEventsButton = document.getElementById('focus-chatbox-story-new');
@@ -91,6 +93,10 @@
     let currentFocusPosition = 'center';
     let visualContextAvailable = false;
     let visualContextLocationName = '';
+    // Mirrors the per-save "Capture Background Chat" MCM behaviour setting. null means
+    // native has not published a value yet, which keeps the control disabled rather than
+    // showing a guessed ON/OFF.
+    let captureBackgroundChatEnabled = null;
     let currentTargetName = '';
     let currentTargetFormId = 0;
     let currentTargetIsNarrator = false;
@@ -924,6 +930,7 @@
         focusInput.value = '';
         restorePlayerMoodSelection();
         renderModeIndicator();
+        requestCaptureBackgroundChatState();
         setTimeout(function() {
             focusInput.focus();
             focusInput.selectionStart = focusInput.value.length;
@@ -1080,6 +1087,77 @@
         visualContextLocationName = typeof locationName === 'string' ? locationName.trim() : '';
         renderSoulgazeControl();
     };
+
+    /**
+     * Native owns this setting, so anything that is not an authoritative boolean or
+     * 0/1 leaves the control pending and disabled. Numeric strings are accepted
+     * because the bridge builds its Invoke call as text.
+     */
+    function normalizeCaptureBackgroundChatState(state) {
+        if (state === true || state === false) return state;
+        if (state === 1 || state === 0) return state === 1;
+        if (typeof state === 'string') {
+            const trimmed = state.trim().toLowerCase();
+            if (trimmed === '1' || trimmed === 'true') return true;
+            if (trimmed === '0' || trimmed === 'false') return false;
+        }
+        return null;
+    }
+
+    function renderCaptureBackgroundChatControl() {
+        if (!captureBackgroundChatButton) return;
+
+        const pending = captureBackgroundChatEnabled === null;
+        const description = pending
+            ? 'Waiting for the current setting.'
+            : (captureBackgroundChatEnabled
+                ? 'On. Nearby vanilla NPC dialogue is added to AI context.'
+                : 'Off. Nearby vanilla NPC dialogue is not added to AI context. Subtitles still appear.');
+
+        setTextIfChanged(
+            captureBackgroundChatStateElement,
+            pending ? '…' : (captureBackgroundChatEnabled ? 'ON' : 'OFF')
+        );
+        setClassNameIfChanged(
+            captureBackgroundChatButton,
+            'focus-btn focus-btn-capture ' + (pending ? 'is-pending' : (captureBackgroundChatEnabled ? 'is-on' : 'is-off'))
+        );
+        // 'mixed' is the honest ARIA value while the authoritative state is unknown.
+        captureBackgroundChatButton.setAttribute('aria-pressed', pending ? 'mixed' : String(captureBackgroundChatEnabled));
+        captureBackgroundChatButton.disabled = pending;
+        captureBackgroundChatButton.title = 'Capture Background Chat. ' + description;
+        captureBackgroundChatButton.setAttribute('aria-label', 'Capture Background Chat. ' + description);
+    }
+
+    /**
+     * Authoritative push from native (called from C++ via Invoke). Anything other
+     * than a boolean or 0/1 drops the control back to pending instead of inventing
+     * a state.
+     */
+    window.setCaptureBackgroundChatState = function(enabled) {
+        captureBackgroundChatEnabled = normalizeCaptureBackgroundChatState(enabled);
+        renderCaptureBackgroundChatControl();
+    };
+
+    // Ask native for the current value. Any last known state stays on screen until the
+    // answer lands, so re-opening the chatbox does not flash a disabled control.
+    function requestCaptureBackgroundChatState() {
+        sendControlCommand('capture_background_chat|request');
+    }
+
+    /**
+     * Hand the flip to native and wait. Deliberately no optimistic update and no
+     * timeout fallback: the button stays pending, and therefore unclickable, until
+     * setCaptureBackgroundChatState reports what was actually saved.
+     */
+    function toggleCaptureBackgroundChat() {
+        if (captureBackgroundChatEnabled === null) return;
+        if (!window.chimChatboxCommand) return;
+
+        captureBackgroundChatEnabled = null;
+        renderCaptureBackgroundChatControl();
+        sendControlCommand('capture_background_chat|toggle');
+    }
 
     window.deleteRecentEvents = async function(count) {
         const deleteCount = normalizeDeleteEventCount(count);
@@ -1972,6 +2050,12 @@
         });
     }
 
+    if (captureBackgroundChatButton) {
+        captureBackgroundChatButton.addEventListener('click', function() {
+            toggleCaptureBackgroundChat();
+        });
+    }
+
     if (storyNewEventsButton) {
         storyNewEventsButton.addEventListener('click', scrollStoryToBottom);
     }
@@ -2015,6 +2099,8 @@
     }
 
     renderSoulgazeControl();
+    renderCaptureBackgroundChatControl();
+    requestCaptureBackgroundChatState();
     window.updateChatboxMode('STANDARD');
     window.updateChatboxModel('Standard');
     renderRechatMode('random');
