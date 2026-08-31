@@ -93,7 +93,7 @@
     let currentFocusPosition = 'center';
     let visualContextAvailable = false;
     let visualContextLocationName = '';
-    // Mirrors the per-save "Capture Background Chat" MCM behaviour setting. null means
+    // Mirrors the per-save "Vanilla Dialogue" MCM behaviour setting. null means
     // native has not published a value yet, which keeps the control disabled rather than
     // showing a guessed ON/OFF.
     let captureBackgroundChatEnabled = null;
@@ -1111,8 +1111,8 @@
         const description = pending
             ? 'Waiting for the current setting.'
             : (captureBackgroundChatEnabled
-                ? 'On. Nearby vanilla NPC dialogue is added to AI context.'
-                : 'Off. Nearby vanilla NPC dialogue is not added to AI context. Subtitles still appear.');
+                ? 'On. Vanilla dialogue-menu conversations and nearby ambient NPC chatter are added to AI context.'
+                : 'Off. Vanilla dialogue-menu conversations and nearby ambient NPC chatter are not added to AI context. Normal dialogue and subtitles still work.');
 
         setTextIfChanged(
             captureBackgroundChatStateElement,
@@ -1125,8 +1125,8 @@
         // 'mixed' is the honest ARIA value while the authoritative state is unknown.
         captureBackgroundChatButton.setAttribute('aria-pressed', pending ? 'mixed' : String(captureBackgroundChatEnabled));
         captureBackgroundChatButton.disabled = pending;
-        captureBackgroundChatButton.title = 'Background Chat. ' + description;
-        captureBackgroundChatButton.setAttribute('aria-label', 'Background Chat. ' + description);
+        captureBackgroundChatButton.title = 'Vanilla Dialogue. ' + description;
+        captureBackgroundChatButton.setAttribute('aria-label', 'Vanilla Dialogue. ' + description);
     }
 
     /**

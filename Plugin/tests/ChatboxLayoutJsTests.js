@@ -12,6 +12,7 @@ const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
 const overlayScript = fs.readFileSync(path.join(viewRoot, 'overlay.js'), 'utf8');
 const overlayCss = fs.readFileSync(path.join(viewRoot, 'overlay.css'), 'utf8');
 const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
+const plugin = fs.readFileSync(path.resolve(__dirname, '../Plugin.cpp'), 'utf8');
 const conversationRouter = fs.readFileSync(path.resolve(__dirname, '../PlayerConversationRouter.h'), 'utf8');
 const httpManager = fs.readFileSync(path.resolve(__dirname, '../HTTPManager.cpp'), 'utf8');
 
@@ -236,7 +237,7 @@ function loadCaptureBackgroundChatControl() {
     return { button, stateElement, setState: factory(hostWindow, button, stateElement) };
 }
 
-test('puts Capture Background Chat in the secondary action row as a real toggle button', () => {
+test('puts Vanilla Dialogue in the secondary action row as a real toggle button', () => {
     const captureStart = html.indexOf('id="chatbox-capture-background-chat"');
     const secondaryStart = html.indexOf('focus-chatbox-actions-row-secondary');
     const soulgazeStart = html.indexOf('focus-chatbox-soulgaze-controls');
@@ -249,13 +250,13 @@ test('puts Capture Background Chat in the secondary action row as a real toggle 
 
     // Real button, short visible label, concise state, and pending until native answers.
     assert.match(html, /<button id="chatbox-capture-background-chat"[^>]*type="button"[^>]*aria-pressed="mixed"[^>]*disabled/);
-    assert.match(html, /<span>Background Chat<\/span>/);
-    assert.doesNotMatch(html, /<span>Capture Background Chat<\/span>/, 'visible label stays compact');
+    assert.match(html, /<span>Vanilla Dialogue<\/span>/);
+    assert.doesNotMatch(html, /<span>(Capture )?Background Chat<\/span>/, 'visible label uses the renamed wording');
     assert.match(html, /<span id="chatbox-capture-background-chat-state" class="capture-background-chat-state">&#8230;<\/span>/);
 
     // Compact hover/focus help only, with no persistent micro-caption beside the button.
-    const helpCopy = 'When on, nearby vanilla NPC dialogue is added to AI context. Subtitles still appear when off.';
-    assert.match(html, /<span class="chatbox-mode-help" tabindex="0" aria-label="Background Chat help" aria-describedby="chatbox-capture-background-chat-help">\?<\/span>/);
+    const helpCopy = 'When on, vanilla dialogue-menu conversations and nearby ambient NPC chatter are added to AI context. When off, neither is captured; normal dialogue and subtitles still work.';
+    assert.match(html, /<span class="chatbox-mode-help" tabindex="0" aria-label="Vanilla Dialogue help" aria-describedby="chatbox-capture-background-chat-help">\?<\/span>/);
     assert.ok(html.includes('role="tooltip">' + helpCopy + '</div>'), 'help copy must match the approved wording');
     assert.equal(html.split(helpCopy).length - 1, 1, 'help copy appears once, inside the tooltip');
 });
@@ -295,7 +296,7 @@ test('opens the bottom-row help upward and keeps the toggle focusable at a usabl
     assert.match(narrow, /\.focus-chatbox-capture-controls\s*\{[\s\S]*?width:\s*100%[\s\S]*?margin-right:\s*0/);
 });
 
-test('waits for native before showing or changing Capture Background Chat state', () => {
+test('waits for native before showing or changing Vanilla Dialogue state', () => {
     // Asks on load and on every open, since the per-save value can change while closed.
     assert.match(script, /sendControlCommand\('capture_background_chat\|request'\)/);
     assert.match(script, /window\.openFocusChatbox = function\(\)[\s\S]*?requestCaptureBackgroundChatState\(\);/);
@@ -314,7 +315,7 @@ test('waits for native before showing or changing Capture Background Chat state'
     assert.match(script, /captureBackgroundChatButton\.addEventListener\('click', function\(\) \{\s*\r?\n\s*toggleCaptureBackgroundChat\(\);/);
 });
 
-test('accepts only authoritative Capture Background Chat state from native', () => {
+test('accepts only authoritative Vanilla Dialogue state from native', () => {
     const control = loadCaptureBackgroundChatControl();
 
     [true, 1, '1'].forEach((on) => {
@@ -342,6 +343,20 @@ test('accepts only authoritative Capture Background Chat state from native', () 
         assert.equal(control.button.disabled, true, String(bad));
         assert.match(control.button.className, /\bis-pending\b/, String(bad));
     });
+});
+
+test('uses the Vanilla Dialogue setting for ambient and dialogue-menu context capture', () => {
+    assert.match(plugin, /void ProcedureListenToScene\(\) \{\s*if \(!CaptureBackgroundChatEnabled\) return;/);
+
+    const playerMenuStart = plugin.indexOf('if (DialogueLastStringSay.compare(responseNodeCurrent->topicText) != 0)');
+    const npcMenuStart = plugin.indexOf('if (DialogueLastStringResponse.compare(fullResponse) != 0)');
+    assert.notEqual(playerMenuStart, -1, 'player dialogue-menu capture block not found');
+    assert.notEqual(npcMenuStart, -1, 'NPC dialogue-menu capture block not found');
+
+    const playerMenuCapture = plugin.slice(playerMenuStart, npcMenuStart);
+    const npcMenuCapture = plugin.slice(npcMenuStart, plugin.indexOf('On<RE::TESEquipEvent>', npcMenuStart));
+    assert.match(playerMenuCapture, /if \(CaptureBackgroundChatEnabled\) \{[\s\S]*?traditional_player_speech/);
+    assert.match(npcMenuCapture, /if \(CaptureBackgroundChatEnabled\) \{[\s\S]*?traditional_npc_speech/);
 });
 test('offers a compact player mood selector with no mood as the default', () => {
     const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker"[^>]*>([\s\S]*?)<\/fieldset>/);
