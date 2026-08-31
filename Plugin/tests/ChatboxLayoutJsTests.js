@@ -247,14 +247,15 @@ test('puts Capture Background Chat in the secondary action row as a real toggle 
     assert.ok(captureStart < soulgazeStart, 'toggle leads the row ahead of Soulgaze and Delete Events');
     assert.ok(gridStart < secondaryStart, 'toggle must not land in the four-column settings grid');
 
-    // Real button, exact label, concise state, and pending until native answers.
+    // Real button, short visible label, concise state, and pending until native answers.
     assert.match(html, /<button id="chatbox-capture-background-chat"[^>]*type="button"[^>]*aria-pressed="mixed"[^>]*disabled/);
-    assert.match(html, /<span>Capture Background Chat<\/span>/);
+    assert.match(html, /<span>Background Chat<\/span>/);
+    assert.doesNotMatch(html, /<span>Capture Background Chat<\/span>/, 'visible label stays compact');
     assert.match(html, /<span id="chatbox-capture-background-chat-state" class="capture-background-chat-state">&#8230;<\/span>/);
 
     // Compact hover/focus help only, with no persistent micro-caption beside the button.
     const helpCopy = 'When on, nearby vanilla NPC dialogue is added to AI context. Subtitles still appear when off.';
-    assert.match(html, /<span class="chatbox-mode-help" tabindex="0" aria-label="Capture Background Chat help" aria-describedby="chatbox-capture-background-chat-help">\?<\/span>/);
+    assert.match(html, /<span class="chatbox-mode-help" tabindex="0" aria-label="Background Chat help" aria-describedby="chatbox-capture-background-chat-help">\?<\/span>/);
     assert.ok(html.includes('role="tooltip">' + helpCopy + '</div>'), 'help copy must match the approved wording');
     assert.equal(html.split(helpCopy).length - 1, 1, 'help copy appears once, inside the tooltip');
 });
@@ -271,6 +272,21 @@ test('opens the bottom-row help upward and keeps the toggle focusable at a usabl
     assert.match(css, /\.focus-btn-capture\s*\{[\s\S]*?min-height:\s*32px/);
     assert.match(css, /\.focus-btn-capture:focus-visible\s*\{[\s\S]*?box-shadow:/);
     assert.match(css, /\.focus-btn-capture\.is-pending,\s*\r?\n\.focus-btn-capture\[disabled\]/);
+
+    // Compact at natural width: it must not stretch to fill the row or wrap its label.
+    const captureRule = css.match(/\.focus-btn-capture\s*\{([\s\S]*?)\}/);
+    assert.ok(captureRule, 'capture button rule not found');
+    assert.match(captureRule[1], /flex:\s*0 0 auto/);
+    assert.match(captureRule[1], /white-space:\s*nowrap/);
+
+    // Green when on and red when off, backing up the ON/OFF text rather than replacing it.
+    const onRule = css.match(/\.focus-btn-capture\.is-on\s*\{([\s\S]*?)\}/);
+    const offRule = css.match(/\.focus-btn-capture\.is-off\s*\{([\s\S]*?)\}/);
+    assert.ok(onRule && offRule, 'capture on/off rules not found');
+    assert.match(onRule[1], /border-color:\s*rgba\(46, 204, 113/);
+    assert.match(onRule[1], /background:\s*rgba\(46, 204, 113/);
+    assert.match(offRule[1], /border-color:\s*rgba\(231, 76, 60/);
+    assert.match(offRule[1], /background:\s*rgba\(231, 76, 60/);
 
     // The narrow chat shell gives the toggle its own line instead of overflowing the row.
     const narrowStart = css.indexOf('@media (max-width: 920px)');

@@ -42,7 +42,6 @@ float		_soulgazeHoldThreshold = 0.7
 float		_soulgazeDoubleTapWindow = 0.35
 
 int _textGestureKey = -1
-bool _textGesturePrisma = false
 bool _textGestureCanWait = false
 bool _textGestureWaitSent = false
 float _textGesturePressedAt = 0.0
@@ -387,7 +386,7 @@ Event OnKeyDown(int keyCode)
   EndIf
    
   If(keyCode == _currentKey)
-	BeginTextHotkey(keyCode, false)
+	BeginTextHotkey(keyCode)
     Return
   EndIf
 
@@ -547,11 +546,9 @@ Event OnKeyDown(int keyCode)
 	if (_chatboxFocusHotkeySuppressed)
 		_chatboxFocusHotkeySuppressed = false
 	else
-		if (UI.IsMenuOpen("Book Menu"))
-			ToggleChatboxFocusAction(keyCode)
-		else
-			BeginTextHotkey(keyCode, true)
-		endif
+		; Open Prisma text chat on the initial press. Holding the key keeps the
+		; chatbox open instead of waiting for a release-time gesture.
+		ToggleChatboxFocusAction(keyCode)
 	endif
   ElseIf(keyCode == _currentChatboxKey)
 	If !ShouldBlockPrismaMenuHotkey()
@@ -613,18 +610,17 @@ Function ResetChatHotkeys()
 	_chatGestureCell = None
 EndFunction
 
-Function BeginTextHotkey(int keyCode, bool prisma)
+Function BeginTextHotkey(int keyCode)
 	if (keyCode < 0 || _textGestureKey >= 0 || !AIAgentFunctions.isGameFocused())
 		Return
 	endif
-	if ((prisma && ShouldBlockPrismaMenuHotkey()) || (!prisma && !SafeProcess()))
+	if (!SafeProcess())
 		Return
 	endif
 	if (_chatGestureCell && _chatGestureCell != Game.GetPlayer().GetParentCell())
 		ResetChatHotkeys()
 	endif
 	_textGestureKey = keyCode
-	_textGesturePrisma = prisma
 	_textGestureCanWait = SafeProcess()
 	_textGestureWaitSent = false
 	_textGesturePressedAt = Utility.GetCurrentRealTime()
@@ -634,7 +630,6 @@ Function BeginTextHotkey(int keyCode, bool prisma)
 EndFunction
 
 Function FinishTextHotkey(float holdTime)
-	bool prisma = _textGesturePrisma
 	bool waitSent = _textGestureWaitSent
 	bool canWait = _textGestureCanWait
 	_textGestureKey = -1
@@ -645,9 +640,6 @@ Function FinishTextHotkey(float holdTime)
 		if (canWait)
 			WaitForCrosshairNpc()
 		endif
-	elseif (prisma)
-		; Opening on release has no opening key-down echo to suppress.
-		ToggleChatboxFocusAction()
 	else
 		TriggerTextChatAction(true)
 	endif
@@ -733,11 +725,8 @@ Function UpdateChatHotkeys()
 		Return
 	endif
 	if (!SafeProcess())
-		; Preserve tapping Text Chat to switch from another Prisma panel, but never wait in a menu.
-		if (!(_textGestureKey >= 0 && _textGesturePrisma && !_textGestureCanWait && !ShouldBlockPrismaMenuHotkey() && _voiceGestureKey < 0 && !_voiceTapPending))
-			ResetChatHotkeys()
-			Return
-		endif
+		ResetChatHotkeys()
+		Return
 	endif
 	float now = Utility.GetCurrentRealTime()
 	if (_textGestureKey >= 0)

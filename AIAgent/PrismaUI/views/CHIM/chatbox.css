@@ -1970,11 +1970,18 @@ body {
     transform: rotate(180deg);
 }
 
+/* Compact by design: the short "Background Chat" label plus the ON/OFF chip sit
+   at natural width on one line, so the toggle keeps the same height as the other
+   buttons in this row without dominating it. */
 .focus-btn-capture {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    flex: 0 0 auto;
     min-height: 32px;
+    padding: 6px 10px;
+    font-size: 0.86em;
+    white-space: nowrap;
 }
 
 /* ON/OFF is spelled out rather than carried by hue alone, so the state still
@@ -1993,32 +2000,38 @@ body {
     text-align: center;
 }
 
+/* Green when on, red when off, so the state reads at a glance from across the
+   row. The ON/OFF chip above still carries the same state in words. */
 .focus-btn-capture.is-on {
-    border-color: rgba(46, 204, 113, 0.5);
-    background: rgba(46, 204, 113, 0.18);
+    border-color: rgba(46, 204, 113, 0.75);
+    background: rgba(46, 204, 113, 0.28);
+    color: #e7f9ef;
 }
 
 .focus-btn-capture.is-on:hover {
-    background: rgba(46, 204, 113, 0.3);
+    border-color: rgba(46, 204, 113, 0.95);
+    background: rgba(46, 204, 113, 0.42);
 }
 
 .focus-btn-capture.is-on .capture-background-chat-state {
-    border-color: rgba(46, 204, 113, 0.6);
+    border-color: rgba(46, 204, 113, 0.75);
     color: #9be8bd;
 }
 
 .focus-btn-capture.is-off {
-    border-color: rgba(120, 120, 132, 0.42);
-    background: rgba(30, 30, 40, 0.9);
+    border-color: rgba(231, 76, 60, 0.75);
+    background: rgba(231, 76, 60, 0.26);
+    color: #fceceb;
 }
 
 .focus-btn-capture.is-off:hover {
-    background: rgba(242, 124, 17, 0.22);
+    border-color: rgba(231, 76, 60, 0.95);
+    background: rgba(231, 76, 60, 0.4);
 }
 
 .focus-btn-capture.is-off .capture-background-chat-state {
-    border-color: rgba(120, 120, 132, 0.5);
-    color: #a7a7b0;
+    border-color: rgba(231, 76, 60, 0.75);
+    color: #f6b3ac;
 }
 
 /* Waiting on native: no guessed ON/OFF, and the button is not clickable. */

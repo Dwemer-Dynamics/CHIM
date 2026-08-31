@@ -799,7 +799,7 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.beginChimMcmSnapshot()
 
 	; Prisma captures DirectInput key codes and applies them only when Save is pressed.
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Tap to type a message. Hold to make the NPC in your crosshair wait here.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Open Prisma Text Chat immediately. Holding the key also opens it.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Hold to talk. Tap to stop current and queued dialogue, or double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it.", "keymap", _myKey2 as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
@@ -2874,7 +2874,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _keymap_chatbox_focus)
-		SetInfoText("Tap to type a message in Prisma UI. Hold to make the NPC in your crosshair wait here. With a book open, press to summarize it.")
+		SetInfoText("Open Text Chat immediately in Prisma UI. Holding the key also opens it. With a book open, press to summarize it.")
 	endIf
 	
 	if (a_option == _keymap_settingsmenu)

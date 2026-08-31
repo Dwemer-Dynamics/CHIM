@@ -1125,8 +1125,8 @@
         // 'mixed' is the honest ARIA value while the authoritative state is unknown.
         captureBackgroundChatButton.setAttribute('aria-pressed', pending ? 'mixed' : String(captureBackgroundChatEnabled));
         captureBackgroundChatButton.disabled = pending;
-        captureBackgroundChatButton.title = 'Capture Background Chat. ' + description;
-        captureBackgroundChatButton.setAttribute('aria-label', 'Capture Background Chat. ' + description);
+        captureBackgroundChatButton.title = 'Background Chat. ' + description;
+        captureBackgroundChatButton.setAttribute('aria-label', 'Background Chat. ' + description);
     }
 
     /**
