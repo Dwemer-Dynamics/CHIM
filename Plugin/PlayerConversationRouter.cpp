@@ -295,7 +295,8 @@ bool PlayerConversationRouter::IsActorSleeping(RE::Actor* actor)
 }
 
 std::string PlayerConversationRouter::GetAutomaticBlockReason(
-    const std::shared_ptr<AIAgent>& agent, RE::Actor* actor, RE::Actor* player)
+    const std::shared_ptr<AIAgent>& agent, RE::Actor* actor, RE::Actor* player,
+    bool ignoreSleeping)
 {
     if (!agent || !actor || !player) {
         return "invalid_actor";
@@ -313,7 +314,7 @@ std::string PlayerConversationRouter::GetAutomaticBlockReason(
     facts.sleeping = IsActorSleeping(actor);
     facts.inScene = actor->GetCurrentScene() != nullptr;
     facts.sceneDialogueEnabled = AllowActorsOnScene;
-    return std::string(PlayerConversationRoutingPolicy::GetAutomaticBlockReason(facts));
+    return std::string(PlayerConversationRoutingPolicy::GetAutomaticBlockReason(facts, ignoreSleeping));
 }
 
 PlayerConversationSpeechMode PlayerConversationRouter::ParseSpeechMode(std::string_view mode)

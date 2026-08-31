@@ -89,8 +89,14 @@ static std::string AutomaticResponseBlockReason(
         return {};
     }
 
-    return PlayerConversationRouter::GetAutomaticBlockReason(
+    std::string blockReason = PlayerConversationRouter::GetAutomaticBlockReason(
         agent, actor, RE::PlayerCharacter::GetSingleton());
+    if (blockReason == "sleeping" && PlayerConversationRoutingPolicy::IsDiaryRequest(message)) {
+        blockReason = PlayerConversationRouter::GetAutomaticBlockReason(
+            agent, actor, RE::PlayerCharacter::GetSingleton(), true);
+    }
+
+    return blockReason;
 }
 
 static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, const std::string& listener,

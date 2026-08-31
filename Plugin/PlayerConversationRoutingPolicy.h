@@ -24,6 +24,12 @@ namespace PlayerConversationRoutingPolicy
                eventType == "narrator_inputtext";
     }
 
+    inline bool IsDiaryRequest(std::string_view message)
+    {
+        const auto separator = message.find('|');
+        return message.substr(0, separator) == "diary";
+    }
+
     struct AutomaticEligibilityFacts
     {
         bool conversationCooldown = false;
@@ -38,7 +44,8 @@ namespace PlayerConversationRoutingPolicy
         bool sceneDialogueEnabled = false;
     };
 
-    inline std::string_view GetAutomaticBlockReason(const AutomaticEligibilityFacts& facts)
+    inline std::string_view GetAutomaticBlockReason(
+        const AutomaticEligibilityFacts& facts, bool ignoreSleeping = false)
     {
         if (facts.conversationCooldown) {
             return "cooldown";
@@ -55,7 +62,7 @@ namespace PlayerConversationRoutingPolicy
         if (facts.unconscious) {
             return "unconscious";
         }
-        if (facts.sleeping) {
+        if (facts.sleeping && !ignoreSleeping) {
             return "sleeping";
         }
         if (facts.inScene && !facts.sceneDialogueEnabled) {

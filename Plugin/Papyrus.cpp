@@ -2354,26 +2354,6 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     
     auto actorPtr = aiam.getAgentByName(npc);
 
-    // A sleeping NPC cannot write a diary entry; reject before any server dispatch.
-    if (type == "diary" && actorPtr) {
-        auto* diaryActor = actorPtr->getActor();
-        if (!diaryActor) {
-            diaryActor = actorPtr->getActorByFormId();
-        }
-        if (PlayerConversationRouter::IsActorSleeping(diaryActor)) {
-            const char* diaryDisplayName = diaryActor->GetDisplayFullName();
-            std::string diaryTargetName = diaryDisplayName ? diaryDisplayName : "";
-            if (diaryTargetName.empty()) {
-                diaryTargetName = actorPtr->getActorName();
-            }
-            logger::info("[requestMessageForActor] Rejecting diary request: '{}' is asleep", diaryTargetName);
-            std::string sleepingMsg =
-                std::format("[CHIM] {} is asleep and cannot write a diary entry.", diaryTargetName);
-            RE::DebugNotification(sleepingMsg.c_str());
-            return 0;
-        }
-    }
-
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg

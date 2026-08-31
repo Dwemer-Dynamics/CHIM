@@ -58,6 +58,12 @@ int main()
           "Direct group speech was not recognized");
     Check(!IsPlayerInitiatedRequest("rpg_word|1|date|context"),
           "Automatic Word of Power event was recognized as player speech");
+    Check(IsDiaryRequest("diary|1|date|Player: update your diary"),
+          "Diary event was not recognized");
+    Check(!IsDiaryRequest("diary_nearby|1|date|Player: update your diary"),
+          "Nearby diary event was recognized as a targeted diary request");
+    Check(!IsPlayerInitiatedRequest("diary|1|date|Player: update your diary"),
+          "Diary event was recognized as direct player speech");
 
     AutomaticEligibilityFacts eligibility{};
     Check(GetAutomaticBlockReason(eligibility).empty(),
@@ -83,6 +89,11 @@ int main()
     eligibility = {};
     eligibility.sleeping = true;
     Check(GetAutomaticBlockReason(eligibility) == "sleeping", "Sleeping was not enforced");
+    Check(GetAutomaticBlockReason(eligibility, true).empty(),
+          "Sleeping-only eligibility was not restored when sleep was ignored");
+    eligibility.inScene = true;
+    Check(GetAutomaticBlockReason(eligibility, true) == "scene",
+          "Ignoring sleep also bypassed Scene Safety");
     eligibility = {};
     eligibility.inScene = true;
     Check(GetAutomaticBlockReason(eligibility) == "scene", "Scene Safety was not enforced");

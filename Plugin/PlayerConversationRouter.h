@@ -75,7 +75,8 @@ namespace PlayerConversationRouter
     float GetCloseRadiusUnits(bool sneaking);
     bool IsActorSleeping(RE::Actor* actor);
     std::string GetAutomaticBlockReason(const std::shared_ptr<AIAgent>& agent,
-                                        RE::Actor* actor, RE::Actor* player);
+                                        RE::Actor* actor, RE::Actor* player,
+                                        bool ignoreSleeping = false);
     PlayerConversationRoutingResult Resolve(const std::string& wireMessage,
                                             const PlayerConversationRoutingContext& context);
 }
