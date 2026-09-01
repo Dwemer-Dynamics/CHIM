@@ -133,6 +133,34 @@ static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, 
     });
 }
 
+// Return player control when a server timeout leaves Skyrim's dialogue menu open without a response.
+static void QueueDialogueMenuReleaseAfterStreamTimeout(const std::string& speaker)
+{
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[HTTPManager] Task interface unavailable; cannot release dialogue menu after timeout for {}",
+                     speaker);
+        return;
+    }
+
+    taskInterface->AddTask([speaker]() {
+        auto* ui = RE::UI::GetSingleton();
+        if (!ui || !ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+            return;
+        }
+
+        auto* messageQueue = RE::UIMessageQueue::GetSingleton();
+        if (!messageQueue) {
+            logger::warn("[HTTPManager] UI message queue unavailable; cannot release dialogue menu after timeout for {}",
+                         speaker);
+            return;
+        }
+
+        messageQueue->AddMessage(RE::DialogueMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+        logger::warn("[HTTPManager] Released dialogue menu after stream timeout without a response for {}", speaker);
+    });
+}
+
 static const std::string base64_chars =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
@@ -1048,6 +1076,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         if (!firstReceived) {
             logger::info("[HTTPManager] Cancelled server side {}, taskid {}", speaker,tid);
+        }
+
+        if (closeReason == "timeout" && streamedLineCount == 0) {
+            QueueDialogueMenuReleaseAfterStreamTimeout(speaker);
         }
 
         if (rechatDepth > 0 && !rechatResponseReceived) {
