@@ -1,5 +1,4 @@
-
-
+#include <functional>
 
 class HerikaAnimGraphEventSink : public RE::BSTEventSink<RE::BSAnimationGraphEvent> {
 public:
@@ -44,8 +43,9 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange);
 std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache);
 RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell,RE::Actor *npc,int mode);
 
-// Inventory refresh function (defined in Plugin.cpp)
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous = false);
+// Completion runs after the server has accepted the snapshot or delivery has failed.
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
+                             bool synchronous = false, std::function<void(bool)> completion = {});
 RE::Actor* ResolvePendingBarterMerchant(RE::Actor* fallbackMerchant);
 void SetPendingBarterMerchant(RE::Actor* merchant);
 
