@@ -1620,15 +1620,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data) {
+        postGameData(endpoint, data, {});
+    }
+
+    void postGameData(const std::string& endpoint, const nlohmann::json& data,
+                      std::function<void(bool)> completion) {
         try {
             std::string actorName = data.contains("actor_name") ? data["actor_name"].get<std::string>() : "Unknown";
             ThreadPool::getInstance().enqueue(
                 "HTTPGameData",
-                [endpoint, data]() {
+                [endpoint, data, completion]() mutable {
+                    bool success = false;
                     try {
-                        postGameDataInternal(endpoint, data);
+                        success = postGameDataInternal(endpoint, data);
                     } catch (const std::exception& e) {
                         logger::error("[postGameData] Error: {}", e.what());
+                    }
+                    if (completion) {
+                        completion(success);
                     }
                 },
                 actorName,
@@ -1636,6 +1645,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             );
         } catch (const std::exception& e) {
             logger::error("[HTTPManager] Failed to queue postGameData task: {}", e.what());
+            if (completion) {
+                completion(false);
+            }
         }
     }
 
@@ -2070,10 +2082,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             agentPointer->setRestored(false);
         }
 
-        if (listenerPtr && agentPointer && listener != NARRATOR_NAME) {
-            RefreshAIAgentInventory(listenerPtr, agentPointer->getActorName(), false, false);
-        }
-
         std::string outboundMsg = msg;
         json speechLogPayload;
         bool shouldLogSpeech = false;
@@ -2272,27 +2280,33 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             shouldLogSpeech = false;
         }
 
-        if (GodMode && isPlayerInputRequest) {
-            // Godmode
-            const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-            ThreadPool::getInstance().enqueue(
-                rechatDepth == 0 ? "HTTPStreamGodMode" : "HTTPStreamRechat",
-                [outboundMsg, listener, rechatDepth, dialogueStopGeneration]() {
-                    std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
-                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, true, dialogueStopGeneration);
-                },
-                listener, std::chrono::seconds(90));
-        } else {
-            // Fire the event
-            const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-            ThreadPool::getInstance().enqueue(
-                rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-                [outboundMsg, listener, rechatDepth, dialogueStopGeneration]() {
-                    std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
-                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration);
-                },
-                listener, std::chrono::seconds(90));
+        const bool forceGodMode = GodMode && isPlayerInputRequest;
+        const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+        auto queueStreamRequest =
+            [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration](bool inventoryDelivered) {
+                if (!inventoryDelivered) {
+                    logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
+                }
+                const std::string taskName = rechatDepth == 0
+                    ? (forceGodMode ? "HTTPStreamGodMode" : "HTTPStream")
+                    : "HTTPStreamRechat";
+                ThreadPool::getInstance().enqueue(
+                    taskName,
+                    [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration]() {
+                        std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
+                        sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, forceGodMode,
+                                      dialogueStopGeneration);
+                    },
+                    listener, std::chrono::seconds(90));
+            };
 
+        if (listenerPtr && agentPointer && listener != NARRATOR_NAME) {
+            RefreshAIAgentInventory(listenerPtr, agentPointer->getActorName(), false, false, queueStreamRequest);
+        } else {
+            queueStreamRequest(true);
+        }
+
+        if (!forceGodMode) {
             if (shouldLogSpeech) {
                 try {
                     HTTPManager::log(
@@ -2353,10 +2367,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             actor->IsPlayerTeammate(),
             listener);
 
-        if (actor && agent && listener != NARRATOR_NAME) {
-            RefreshAIAgentInventory(actor, agent->getActorName(), false, false);
-        }
-
         // Rechat is launched while the current line may still be playing; do not interrupt it.
         if (rechatDepth > 0) {
             logger::trace("[HTTPStream] Rechat skips dialogue interrupt for {}", listener);
@@ -2372,13 +2382,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         logger::info("Stream Called for {}", listener);
 
         const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-        ThreadPool::getInstance().enqueue(
-            rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-            [msg, listener, rechatDepth, dialogueStopGeneration]() {
-                std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration);
-            },
-            listener, std::chrono::seconds(90));
+        auto queueStreamRequest = [msg, listener, rechatDepth, dialogueStopGeneration](bool inventoryDelivered) {
+            if (!inventoryDelivered) {
+                logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
+            }
+            ThreadPool::getInstance().enqueue(
+                rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
+                [msg, listener, rechatDepth, dialogueStopGeneration]() {
+                    std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
+                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration);
+                },
+                listener, std::chrono::seconds(90));
+        };
+
+        if (actor && agent && listener != NARRATOR_NAME) {
+            RefreshAIAgentInventory(actor, agent->getActorName(), false, false, queueStreamRequest);
+        } else {
+            queueStreamRequest(true);
+        }
     }
 
 }

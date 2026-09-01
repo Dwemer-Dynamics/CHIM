@@ -45,7 +45,8 @@
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
 
-extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
+                                        bool synchronous, std::function<void(bool)> completion = {});
 
 void SkipNextPlayerMenuTopicLocalPlayback();
 

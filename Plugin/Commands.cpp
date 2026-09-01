@@ -583,7 +583,8 @@ bool isPlayerTeleportTargetName(const std::string& rawTargetName) {
         return true;
     }
 
-    if (normalizedTarget == "player" || normalizedTarget == "me") {
+    if (normalizedTarget == "player" || normalizedTarget == "the player" ||
+        normalizedTarget == "me" || normalizedTarget == "you") {
         return true;
     }
 
@@ -3485,35 +3486,12 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 return;
             }
 
-            auto playerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
-            auto normalizeActorName = [](std::string value) {
-                value = trim(value);
-                std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-                    return static_cast<char>(std::tolower(c));
-                });
-                return value;
-            };
+            auto* playerActor = RE::PlayerCharacter::GetSingleton();
+            auto* targetAsActor = resolveActionActorTarget(targetName, npc, 2048.0f, false);
+            const bool targetIsPlayer = playerActor && targetAsActor &&
+                targetAsActor->GetFormID() == playerActor->GetFormID();
 
-            const std::string normalizedTargetName = normalizeActorName(targetName);
-            bool targetIsPlayer = normalizedTargetName == "player";
-            if (!targetIsPlayer && playerActor) {
-                const std::string playerDisplayName = normalizeActorName(playerActor->GetDisplayFullName());
-                const std::string playerName = normalizeActorName(playerActor->GetName());
-                targetIsPlayer = (!playerDisplayName.empty() && normalizedTargetName == playerDisplayName) ||
-                                 (!playerName.empty() && normalizedTargetName == playerName);
-            }
-
-            RE::TESObjectREFR* target = nullptr;
-            RE::Actor* targetAsActor = nullptr;
-            if (targetIsPlayer) {
-                targetAsActor = playerActor;
-                target = playerActor;
-            } else {
-                target = findActorInCell(trim(targetName), npc->GetParentCell(), npc, 2048, false);
-                targetAsActor = target ? target->As<RE::Actor>() : nullptr;
-            }
-
-            if (!target || !targetAsActor) {
+            if (!targetAsActor) {
                 logger::info("[COMMAND] GiveGoldTo target {} not found", targetName);
                 HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                              "command@GiveGoldTo@" + targetName + "@Error: target not found"),
@@ -3521,8 +3499,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 return;
             }
 
-            std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
-            if (resolvedTargetName.empty()) resolvedTargetName = targetName;
+            const std::string resolvedTargetName = getPreferredActorDisplayName(targetAsActor, targetName);
             
             // Get gold form and call Papyrus function
             auto goldForm = RE::TESForm::LookupByID(0x0f);
@@ -3558,28 +3535,34 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         responsePop("command");
         auto npc = agentPtr->getActor();
         if (npc) {
-            auto target = findActorInCell(trim(parameter), npc->GetParentCell(), npc, 2048, false);
+            auto* tradeTarget = resolveActionActorTarget(trim(parameter), npc, 2048.0f, false);
+            if (!tradeTarget) {
+                logger::info("[COMMAND] TradeItems target {} not found", parameter);
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@TradeItems@" + trim(parameter) + "@Error: target not found"),
+                                 npc);
+                return;
+            }
+
+            const std::string resolvedTargetName = getPreferredActorDisplayName(tradeTarget, trim(parameter));
 
             RE::DebugNotification(
-                std::format("[CHIM] {} trade items with {}", agentPtr->getActorName(), parameter).c_str());
+                std::format("[CHIM] {} trade items with {}", agentPtr->getActorName(), resolvedTargetName).c_str());
 
             /*HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                             "command@" + command + "@" + trim(parameter) + "@#HERIKA_NPC1# Gives Gold to
                " + parameter), npc);*/
 
             HTTPManager::log(std::format("infoaction|{}|{}|{} trade items with {}", getCurrentTimeMillis(),
-                                         GetGameTimeStamp(), targetActor->GetDisplayFullName(), parameter),
-                             targetActor);
+                                         GetGameTimeStamp(), npc->GetDisplayFullName(), resolvedTargetName),
+                             npc);
 
-            if (target) {
-                auto targetRef = target->AsReference();
-                std::string destinationName(parameter);
-                int intent = 2;
-                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                auto args = RE::MakeFunctionArguments(std::move(targetActor), std::move(targetRef), std::move(intent));
-                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
-                    "AIAgentAIMind", "MoveToTarget", args, callback);
-            }
+            auto targetRef = tradeTarget->AsReference();
+            int intent = 2;
+            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+            auto args = RE::MakeFunctionArguments(std::move(npc), std::move(targetRef), std::move(intent));
+            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                "AIAgentAIMind", "MoveToTarget", args, callback);
         }
 
     } else if (command.contains("Consume")) {
@@ -3621,7 +3604,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             };
 
             const auto payload = parseActionParameterPayload(parameter);
-            std::string requestedItem = extractStructuredActionStringField(payload, {"target", "item"});
+            std::string requestedItem = extractStructuredActionStringField(payload, {"item", "target"});
             if (requestedItem.empty()) {
                 requestedItem = trim(parameter);
             }
@@ -3767,6 +3750,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                              "command@Consume@" + requestedItem + "@Error: item not in inventory"),
                                  npc);
+                RefreshAIAgentInventory(npc, agentPtr->getActorName(), true);
                 return;
             }
 
@@ -3886,35 +3870,12 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             const std::string requestedItem = itemName;
             const auto requestedIdentifier = ItemIdentifierUtils::ParseInventoryItemIdentifier(requestedItem);
             
-            auto playerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
-            auto normalizeActorName = [](std::string value) {
-                value = trim(value);
-                std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-                    return static_cast<char>(std::tolower(c));
-                });
-                return value;
-            };
+            auto* playerActor = RE::PlayerCharacter::GetSingleton();
+            auto* targetAsActor = resolveActionActorTarget(targetName, npc, 2048.0f, false);
+            const bool targetIsPlayer = playerActor && targetAsActor &&
+                targetAsActor->GetFormID() == playerActor->GetFormID();
 
-            const std::string normalizedTargetName = normalizeActorName(targetName);
-            bool targetIsPlayer = normalizedTargetName == "player";
-            if (!targetIsPlayer && playerActor) {
-                const std::string playerDisplayName = normalizeActorName(playerActor->GetDisplayFullName());
-                const std::string playerName = normalizeActorName(playerActor->GetName());
-                targetIsPlayer = (!playerDisplayName.empty() && normalizedTargetName == playerDisplayName) ||
-                                 (!playerName.empty() && normalizedTargetName == playerName);
-            }
-
-            RE::TESObjectREFR* target = nullptr;
-            RE::Actor* targetAsActor = nullptr;
-            if (targetIsPlayer) {
-                targetAsActor = playerActor;
-                target = playerActor;
-            } else {
-                target = findActorInCell(trim(targetName), npc->GetParentCell(), npc, 2048, false);
-                targetAsActor = target ? target->As<RE::Actor>() : nullptr;
-            }
-
-            if (!target || !targetAsActor) {
+            if (!targetAsActor) {
                 logger::info("[COMMAND] GiveItemTo target {} not found", targetName);
                 HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                              "command@GiveItemTo@" + targetName + "@Error: target not found"),
@@ -3922,8 +3883,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 return;
             }
 
-            std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
-            if (resolvedTargetName.empty()) resolvedTargetName = targetName;
+            const std::string resolvedTargetName = getPreferredActorDisplayName(targetAsActor, targetName);
             
             // Search for item in NPC's inventory and get the Form
             bool itemFound = false;
@@ -3964,6 +3924,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                 HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                              "command@GiveItemTo@" + targetName + "@Error: item '" + requestedItem + "' not in inventory"),
                                  npc);
+                RefreshAIAgentInventory(npc, agentPtr->getActorName(), true);
                 return;
             }
             
