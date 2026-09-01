@@ -59,6 +59,7 @@ extern bool CombatDialogueEnabled;
 extern bool PreserveQueueDuringAction;
 extern bool PauseDialogueWhenMenuOpen;
 extern bool PlayerTtsTraditionalDialogueEnabled;
+extern bool CaptureBackgroundChatEnabled;
 extern bool AIQuestProgressionEnabled;
 extern bool AllowActorsOnScene;
 extern bool GodMode;

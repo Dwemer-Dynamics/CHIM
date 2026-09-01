@@ -1783,6 +1783,18 @@ body {
     align-items: flex-end;
 }
 
+/* Compact per-save capture toggle. It leads the secondary row so Soulgaze and
+   Delete Events keep their existing right-aligned spots, and it is the
+   positioning context for a help bubble that has to open upward. */
+.focus-chatbox-capture-controls {
+    position: relative;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    align-items: center;
+    margin-right: auto;
+}
+
 .focus-chatbox-delete-label {
     font-size: 0.72em;
     color: #a7a7b0;
@@ -1869,6 +1881,14 @@ body {
         max-width: 100%;
         justify-content: flex-end;
     }
+
+    /* Drops the auto margin so the toggle leads its own line instead of
+       fighting the wrapped Soulgaze and Delete Events groups for space. */
+    .focus-chatbox-capture-controls {
+        width: 100%;
+        margin-right: 0;
+        justify-content: flex-start;
+    }
 }
 
 .focus-btn {
@@ -1948,6 +1968,95 @@ body {
 
 .focus-btn-soulgaze[aria-expanded="true"] .chatbox-tile-trigger-arrow {
     transform: rotate(180deg);
+}
+
+/* Compact by design: the short "Background Chat" label plus the ON/OFF chip sit
+   at natural width on one line, so the toggle keeps the same height as the other
+   buttons in this row without dominating it. */
+.focus-btn-capture {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 10px;
+    font-size: 0.86em;
+    white-space: nowrap;
+}
+
+/* ON/OFF is spelled out rather than carried by hue alone, so the state still
+   reads under Ultralight colour shifts and for colour-blind players. */
+.capture-background-chat-state {
+    min-width: 26px;
+    padding: 1px 5px;
+    border: 1px solid rgba(242, 124, 17, 0.32);
+    border-radius: 3px;
+    background: rgba(16, 14, 20, 0.55);
+    color: #d8d5dd;
+    font-size: 0.78em;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    line-height: 1.35;
+    text-align: center;
+}
+
+/* Green when on, red when off, so the state reads at a glance from across the
+   row. The ON/OFF chip above still carries the same state in words. */
+.focus-btn-capture.is-on {
+    border-color: rgba(46, 204, 113, 0.75);
+    background: rgba(46, 204, 113, 0.28);
+    color: #e7f9ef;
+}
+
+.focus-btn-capture.is-on:hover {
+    border-color: rgba(46, 204, 113, 0.95);
+    background: rgba(46, 204, 113, 0.42);
+}
+
+.focus-btn-capture.is-on .capture-background-chat-state {
+    border-color: rgba(46, 204, 113, 0.75);
+    color: #9be8bd;
+}
+
+.focus-btn-capture.is-off {
+    border-color: rgba(231, 76, 60, 0.75);
+    background: rgba(231, 76, 60, 0.26);
+    color: #fceceb;
+}
+
+.focus-btn-capture.is-off:hover {
+    border-color: rgba(231, 76, 60, 0.95);
+    background: rgba(231, 76, 60, 0.4);
+}
+
+.focus-btn-capture.is-off .capture-background-chat-state {
+    border-color: rgba(231, 76, 60, 0.75);
+    color: #f6b3ac;
+}
+
+/* Waiting on native: no guessed ON/OFF, and the button is not clickable. */
+.focus-btn-capture.is-pending,
+.focus-btn-capture[disabled] {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.focus-btn-capture:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
+}
+
+/* The toggle lives in the bottom action row, so its help follows the Soulgaze
+   precedent and opens upward, clamped so a narrow shell cannot push it off
+   screen sideways. */
+.chatbox-mode-shortcuts.capture-background-chat-help {
+    top: auto;
+    bottom: calc(100% + 6px);
+    left: 0;
+    right: auto;
+    width: 270px;
+    max-width: calc(100vw - 32px);
 }
 
 /* Saved/missing is carried by shape as well as hue: a filled dot means the

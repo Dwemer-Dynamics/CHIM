@@ -1520,6 +1520,8 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    if (!CaptureBackgroundChatEnabled) return;
+
     // Cell transitions can storm scene/subtitle events; skip until world maintenance settles.
     if (IsWorldMaintenanceSuppressed()) return;
 
@@ -9620,65 +9622,56 @@ EventHandlers {
                           // Do not queue Player TTS from this late topic-event path. By this point vanilla dialogue has
                           // already advanced, so playback would overlap NPC dialogue and show delayed player subtitles.
                           // The supported traditional-dialogue Player TTS path is the optional SWF -> Papyrus bridge.
-                         const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
-                         const char* dialogueVerb = currentChatboxMode == "SHOUT"
-                             ? "Shouting to"
-                             : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
+                          controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
 
-                         HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
-                                                      getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
-                                                      aiam.getPlayerName(),
-                                                      DialogueLastStringSay, dialogueVerb, lastSpeaker->GetDisplayFullName()));
+                          if (CaptureBackgroundChatEnabled) {
+                              const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
+                              const char* dialogueVerb = currentChatboxMode == "SHOUT"
+                                  ? "Shouting to"
+                                  : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
 
-                         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
+                              HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
+                                                           getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
+                                                           aiam.getPlayerName(), DialogueLastStringSay, dialogueVerb,
+                                                           lastSpeaker->GetDisplayFullName()));
 
-                         try {
-                             json sData;
-                             sData["listener"] = lastSpeaker->GetDisplayFullName();
-                             sData["location"] = GetPlayerLocation();
-                             sData["speech"] = DialogueLastStringSay;
-                             sData["speaker"] = aiam.getPlayerName();
-                             sData["debug"] = (event->flag) ? "true" : "false";
-                             AddCachedSpeechAudience(sData, "traditional_player_speech");
-                             HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
-                                                          GetGameTimeStamp(), sData.dump()));
+                              try {
+                                  json sData;
+                                  sData["listener"] = lastSpeaker->GetDisplayFullName();
+                                  sData["location"] = GetPlayerLocation();
+                                  sData["speech"] = DialogueLastStringSay;
+                                  sData["speaker"] = aiam.getPlayerName();
+                                  sData["debug"] = (event->flag) ? "true" : "false";
+                                  AddCachedSpeechAudience(sData, "traditional_player_speech");
+                                  HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
+                                                               GetGameTimeStamp(), sData.dump()));
 
-                             // Push to chatbox in real-time
-                             if (PrismaUIBridge::IsAvailable()) {
-                                 char timeDateString[200];
-                                 RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
-                                 // Use actual player character name instead of getPlayerName()
-                                 std::string playerName = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
-                                 logger::info("[Chatbox] Pushing player dialogue: {} says: {}", 
-                                            playerName, 
-                                            DialogueLastStringSay.substr(0, 50));
-                                 PrismaUIBridge::PushChatboxMessage(
-                                     playerName, 
-                                     DialogueLastStringSay,
-                                     std::string(timeDateString),
-                                     "player",
-                                     "subtitle"
-                                 );
-                                 // Also push to conversation history panel
-                                 PrismaUIBridge::PushDialogueEntry(
-                                     playerName, 
-                                     DialogueLastStringSay,
-                                     std::string(timeDateString),
-                                     "inputtext",
-                                     "subtitle"
-                                 );
-                             } else {
-                                 logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
-                             }
+                                  // Push to chatbox in real-time
+                                  if (PrismaUIBridge::IsAvailable()) {
+                                      char timeDateString[200];
+                                      RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                                      // Use actual player character name instead of getPlayerName()
+                                      std::string playerName = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
+                                      logger::info("[Chatbox] Pushing player dialogue: {} says: {}",
+                                                   playerName, DialogueLastStringSay.substr(0, 50));
+                                      PrismaUIBridge::PushChatboxMessage(
+                                          playerName, DialogueLastStringSay, std::string(timeDateString), "player", "subtitle");
+                                      // Also push to conversation history panel
+                                      PrismaUIBridge::PushDialogueEntry(
+                                          playerName, DialogueLastStringSay, std::string(timeDateString), "inputtext", "subtitle");
+                                  } else {
+                                      logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
+                                  }
 
-                             auto result =
-                                 InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
-                                                      HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
-                             HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
-                                                          GetGameTimeStamp(), "(beings in range:" + result + ")"));
-                         } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
-                             logger::info("Error sending speech. Review encoding, {}", ex.what());
-                         }
+                                  auto result =
+                                      InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
+                                                           HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+                                  HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
+                                                               GetGameTimeStamp(), "(beings in range:" + result + ")"));
+                              } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
+                                  logger::info("Error sending speech. Review encoding, {}", ex.what());
+                              }
+                          }
                        }
 
                     if (event->flag) {
@@ -9781,54 +9774,44 @@ EventHandlers {
                         if (DialogueLastStringResponse.compare(fullResponse) != 0) {
                             DialogueLastStringResponse.assign(fullResponse);
 
+                            if (CaptureBackgroundChatEnabled) {
+                                HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {}",
+                                                             getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
+                                                             lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse));
 
+                                try {
+                                    json sData;
+                                    sData["speaker"] = lastSpeaker->GetDisplayFullName();
+                                    sData["location"] = GetPlayerLocation();
+                                    sData["speech"] = DialogueLastStringResponse;
+                                    sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
+                                    sData["audios"] = audioPaths;
+                                    sData["debug"] = (event->flag) ? "true" : "false";
+                                    AddCachedSpeechAudience(sData, "traditional_npc_speech");
+                                    HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                                 sData.dump()));
 
-
-                            HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {}",
-                                                         getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
-                                                         lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse));
-
-                            try {
-                                json sData;
-                                sData["speaker"] = lastSpeaker->GetDisplayFullName();
-                                sData["location"] = GetPlayerLocation();
-                                sData["speech"] = DialogueLastStringResponse;
-                                sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
-                                sData["audios"] = audioPaths;
-                                sData["debug"] = (event->flag) ? "true" : "false";
-                                AddCachedSpeechAudience(sData, "traditional_npc_speech");
-                                HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                                             sData.dump()));
-
-                                // Push to chatbox in real-time
-                                if (PrismaUIBridge::IsAvailable()) {
-                                    char timeDateString[200];
-                                    RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
-                                    logger::info("[Chatbox] Pushing NPC dialogue: {} says: {}",
-                                                 lastSpeaker->GetDisplayFullName(),
-                                                 DialogueLastStringResponse.substr(0, 50));
-                                    PrismaUIBridge::PushChatboxMessage(
-                                        lastSpeaker->GetDisplayFullName(),
-                                        DialogueLastStringResponse,
-                                        std::string(timeDateString),
-                                        "npc",
-                                        "subtitle"
-                                    );
-                                    // Also push to conversation history panel
-                                    PrismaUIBridge::PushDialogueEntry(
-                                        lastSpeaker->GetDisplayFullName(),
-                                        DialogueLastStringResponse,
-                                        std::string(timeDateString),
-                                        "chat",
-                                        "subtitle"
-                                    );
-                                } else {
-                                    logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");
+                                    // Push to chatbox in real-time
+                                    if (PrismaUIBridge::IsAvailable()) {
+                                        char timeDateString[200];
+                                        RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                                        logger::info("[Chatbox] Pushing NPC dialogue: {} says: {}",
+                                                     lastSpeaker->GetDisplayFullName(),
+                                                     DialogueLastStringResponse.substr(0, 50));
+                                        PrismaUIBridge::PushChatboxMessage(
+                                            lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse,
+                                            std::string(timeDateString), "npc", "subtitle");
+                                        // Also push to conversation history panel
+                                        PrismaUIBridge::PushDialogueEntry(
+                                            lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse,
+                                            std::string(timeDateString), "chat", "subtitle");
+                                    } else {
+                                        logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");
+                                    }
+                                } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
+                                    logger::info("Error sending speech. Review encoding, {}", ex.what());
                                 }
-                            } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
-                                logger::info("Error sending speech. Review encoding, {}", ex.what());
                             }
-
                         }
                     }
                          

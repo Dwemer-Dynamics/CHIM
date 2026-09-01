@@ -23,7 +23,7 @@ namespace
     Candidate MakeCandidate(std::uint32_t formId, std::string name, float distance,
                             bool hardEligible = true, bool autoEligible = true,
                             bool audible = true, float facingDot = 1.0f,
-                            bool crosshair = false)
+                            bool crosshair = false, bool sleeping = false)
     {
         Candidate candidate{};
         candidate.formId = formId;
@@ -34,6 +34,7 @@ namespace
         candidate.audible = audible;
         candidate.facingDot = facingDot;
         candidate.trueCrosshair = crosshair;
+        candidate.sleeping = sleeping;
         return candidate;
     }
 
@@ -301,6 +302,138 @@ int main()
           "Close audience lost nearby hearers or admitted distant, blocked or ineligible NPCs");
     Check(sneakingAudience == std::vector<std::size_t>({0, 1}),
           "Sneaking Close audience did not respect the reduced radius");
+
+    // Sleeping direct targets: every mode except Shout rejects instead of rerouting.
+    std::vector<Candidate> sleepingCandidates{
+        MakeCandidate(0xA0, "Sleeping Erik", 100.0f, true, false, true, 1.0f, true, true),
+        MakeCandidate(0xA1, "Awake Sven", 300.0f)
+    };
+    Request sleepingCrosshairRequest{};
+    sleepingCrosshairRequest.utterance = "Normal speech";
+    sleepingCrosshairRequest.directAddressRadius = 1000.0f;
+    sleepingCrosshairRequest.interactionRadius = 560.0f;
+    sleepingCrosshairRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingCrosshairRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0 &&
+              result.reason == "direct_target_sleeping",
+          "Sleeping crosshair target was not rejected");
+
+    sleepingCrosshairRequest.blockSleepingDirectTarget = false;
+    result = Select(sleepingCrosshairRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
+              result.reason == "true_crosshair",
+          "Shout mode did not reach the sleeping crosshair target");
+
+    Request sleepingExplicitRequest{};
+    sleepingExplicitRequest.utterance = "Normal speech";
+    sleepingExplicitRequest.explicitTargetFormId = 0xA0;
+    sleepingExplicitRequest.directAddressRadius = 1000.0f;
+    sleepingExplicitRequest.interactionRadius = 560.0f;
+    sleepingExplicitRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingExplicitRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Sleeping explicit RefID target was not rejected");
+
+    sleepingExplicitRequest.blockSleepingDirectTarget = false;
+    result = Select(sleepingExplicitRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
+              result.reason == "explicit_ui_target",
+          "Shout mode did not reach the sleeping explicit RefID target");
+
+    Request sleepingNamedRequest{};
+    sleepingNamedRequest.utterance = "Hey Sleeping Erik";
+    sleepingNamedRequest.directAddressRadius = 1000.0f;
+    sleepingNamedRequest.interactionRadius = 560.0f;
+    sleepingNamedRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingNamedRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Sleeping named target was rerouted instead of rejected");
+
+    // Automatic routing keeps excluding sleepers rather than rejecting the request.
+    std::vector<Candidate> sleepingAutomatic{
+        MakeCandidate(0xA2, "Sleeping Nazeem", 50.0f, true, false, true, 1.0f, false, true),
+        MakeCandidate(0xA3, "Awake Amren", 300.0f)
+    };
+    Request sleepingAutomaticRequest{};
+    sleepingAutomaticRequest.utterance = "Normal speech";
+    sleepingAutomaticRequest.directAddressRadius = 1000.0f;
+    sleepingAutomaticRequest.interactionRadius = 560.0f;
+    sleepingAutomaticRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingAutomaticRequest, sleepingAutomatic);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "nearest_eligible",
+          "Untargeted routing did not skip the nearer sleeping NPC");
+
+    // An exact FormID remains authoritative even when another actor shares the name.
+    std::vector<Candidate> sameNameSleepers{
+        MakeCandidate(0xB0, "Erik", 100.0f, true, false, true, 1.0f, false, true),
+        MakeCandidate(0xB1, "Erik", 300.0f)
+    };
+    Request sameNameExplicitRequest{};
+    sameNameExplicitRequest.utterance = "Normal speech";
+    sameNameExplicitRequest.explicitTargetFormId = 0xB0;
+    sameNameExplicitRequest.explicitTargetName = "Erik";
+    sameNameExplicitRequest.directAddressRadius = 1000.0f;
+    sameNameExplicitRequest.interactionRadius = 560.0f;
+    sameNameExplicitRequest.blockSleepingDirectTarget = true;
+    result = Select(sameNameExplicitRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Sleeping explicit RefID rerouted to an awake same-name actor");
+
+    Request sameNameOnlyRequest = sameNameExplicitRequest;
+    sameNameOnlyRequest.explicitTargetFormId = 0;
+    result = Select(sameNameOnlyRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "explicit_ui_target",
+          "Name-only direct target did not prefer the awake same-name actor");
+
+    Request sameNameNamedRequest{};
+    sameNameNamedRequest.utterance = "Hey Erik";
+    sameNameNamedRequest.directAddressRadius = 1000.0f;
+    sameNameNamedRequest.interactionRadius = 560.0f;
+    sameNameNamedRequest.blockSleepingDirectTarget = true;
+    result = Select(sameNameNamedRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "explicit_npc_name",
+          "Named address did not prefer the awake same-name actor over the closer sleeper");
+
+    sameNameSleepers[1].autoEligible = false;
+    sameNameSleepers[1].sleeping = true;
+    result = Select(sameNameOnlyRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Name-only target was not rejected when every same-name actor is asleep");
+    result = Select(sameNameNamedRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Named address was not rejected when every same-name actor is asleep");
+
+    // The addressed name still decides who was meant, even when that actor is asleep.
+    std::vector<Candidate> longestSleepingName{
+        MakeCandidate(0xC0, "Lydia", 100.0f),
+        MakeCandidate(0xC1, "Lydia Snow-Born", 150.0f, true, false, true, 1.0f, false, true)
+    };
+    Request longestSleepingRequest{};
+    longestSleepingRequest.utterance = "Hey Lydia Snow-Born, listen";
+    longestSleepingRequest.directAddressRadius = 1000.0f;
+    longestSleepingRequest.interactionRadius = 560.0f;
+    longestSleepingRequest.blockSleepingDirectTarget = true;
+    result = Select(longestSleepingRequest, longestSleepingName);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 1,
+          "Sleeping longest-name match fell back to a shorter awake name");
+
+    // Other direct-target soft blockers still bypass as before.
+    std::vector<Candidate> blockedButAwake{
+        MakeCandidate(0xD0, "Cooldown NPC", 100.0f, true, false, false)
+    };
+    Request blockedButAwakeRequest{};
+    blockedButAwakeRequest.utterance = "Normal speech";
+    blockedButAwakeRequest.explicitTargetFormId = 0xD0;
+    blockedButAwakeRequest.directAddressRadius = 1000.0f;
+    blockedButAwakeRequest.interactionRadius = 560.0f;
+    blockedButAwakeRequest.blockSleepingDirectTarget = true;
+    result = Select(blockedButAwakeRequest, blockedButAwake);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
+              result.reason == "explicit_ui_target",
+          "Sleep gating changed other direct-target soft-blocker behavior");
 
     std::vector<PresenceCandidate> presentCandidates{
         { 0x100, "Alvor", 200.0f, true, true, false },

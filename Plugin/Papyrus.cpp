@@ -357,6 +357,7 @@ extern int GlobalCombatBarksPeriod;
 bool PreserveQueueDuringAction = false;
 bool PauseDialogueWhenMenuOpen = false;
 bool PlayerTtsTraditionalDialogueEnabled = false;
+bool CaptureBackgroundChatEnabled = true;
 bool AIQuestProgressionEnabled = false;
 bool AllowActorsOnScene = true;
 bool GodMode = false;
@@ -2068,6 +2069,11 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
             PlayerTtsTraditionalDialogueEnabled = false;
         logger::info("Setting _player_tts_traditional_dialogue to {} ", f_Value);
 
+    } else if (code == "_capture_background_chat") {
+        CaptureBackgroundChatEnabled = f_Value > 0;
+        logger::info("Setting _capture_background_chat to {}", CaptureBackgroundChatEnabled);
+        PrismaUIBridge::PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
+
     } else if (code == "_preserve_queue") {
         if (f_Value > 0)
             PreserveQueueDuringAction = true;
@@ -2348,10 +2354,32 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     // Route through sendMessageReal which includes camera pitch detection for Narrator
     if (type == "diary" && (npc.empty() || trim(npc).empty())) {
         logger::info("[requestMessageForActor] Diary request with no target, routing through sendMessageReal");
-        return sendMessageReal(msg, type);
+        const int untargetedResult = sendMessageReal(msg, type);
+        return untargetedResult == 0 ? 1 : untargetedResult;
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+
+    // A sleeping NPC cannot write a diary entry; reject before any server dispatch.
+    if (type == "diary" && actorPtr) {
+        auto* diaryActor = actorPtr->getActor();
+        if (!diaryActor) {
+            diaryActor = actorPtr->getActorByFormId();
+        }
+        if (PlayerConversationRouter::IsActorSleeping(diaryActor)) {
+            const char* diaryDisplayName = diaryActor->GetDisplayFullName();
+            std::string diaryTargetName = diaryDisplayName ? diaryDisplayName : "";
+            if (diaryTargetName.empty()) {
+                diaryTargetName = actorPtr->getActorName();
+            }
+            logger::info("[requestMessageForActor] Rejecting diary request: '{}' is asleep", diaryTargetName);
+            std::string sleepingMsg =
+                std::format("[CHIM] {} is asleep and cannot write a diary entry.", diaryTargetName);
+            RE::DebugNotification(sleepingMsg.c_str());
+            return 0;
+        }
+    }
+
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg
@@ -2376,7 +2404,7 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                         GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
-    return 0;
+    return 1;
 }
 
 int Papyrus::setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
@@ -3065,6 +3093,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
 
     } else if (code == "_player_tts_traditional_dialogue") {
         result = PlayerTtsTraditionalDialogueEnabled ? 1 : 0;
+
+    } else if (code == "_capture_background_chat") {
+        result = CaptureBackgroundChatEnabled ? 1 : 0;
 
     } else if (code == "_restrict_onscene") {
         

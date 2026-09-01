@@ -68,6 +68,8 @@ namespace PlayerConversationRoutingPolicy
     {
         Candidate,
         Narrator,
+        // The player addressed a specific actor that must not be reached in this mode.
+        Rejected,
         None
     };
 
@@ -82,6 +84,7 @@ namespace PlayerConversationRoutingPolicy
         bool autoEligible = false;
         bool audible = false;
         bool trueCrosshair = false;
+        bool sleeping = false;
     };
 
     // Hearing is independent of which eligible NPC is selected to reply.
@@ -100,6 +103,8 @@ namespace PlayerConversationRoutingPolicy
         bool narratorMode = false;
         bool everyoneMode = false;
         bool narratorGesture = false;
+        // Shout is the only mode that can reach a sleeping direct target.
+        bool blockSleepingDirectTarget = false;
     };
 
     struct Result
@@ -186,6 +191,26 @@ namespace PlayerConversationRoutingPolicy
         return radius <= 0.0f || distance <= radius;
     }
 
+    // Direct address bypasses soft eligibility, but only Shout can reach a sleeper.
+    inline bool IsSleepingDirectTarget(const Request& request, const Candidate& candidate)
+    {
+        return request.blockSleepingDirectTarget && candidate.sleeping;
+    }
+
+    inline bool IsCloserDirectMatch(const std::vector<Candidate>& candidates, std::size_t index,
+                                    std::size_t incumbent)
+    {
+        if (incumbent == (std::numeric_limits<std::size_t>::max)()) {
+            return true;
+        }
+        const auto& lhs = candidates[index];
+        const auto& rhs = candidates[incumbent];
+        if (lhs.distance != rhs.distance) {
+            return lhs.distance < rhs.distance;
+        }
+        return lhs.formId < rhs.formId;
+    }
+
     inline std::vector<std::size_t> SelectPresent(
         const PresenceRequest& request, const std::vector<PresenceCandidate>& candidates)
     {
@@ -250,23 +275,32 @@ namespace PlayerConversationRoutingPolicy
             return result;
         }
 
+        constexpr std::size_t noMatch = (std::numeric_limits<std::size_t>::max)();
+        const auto reject = [&result](std::size_t index) {
+            result.kind = SelectionKind::Rejected;
+            result.candidateIndex = index;
+            result.reason = "direct_target_sleeping";
+            result.broadcast = false;
+            return result;
+        };
+
         if (request.explicitTargetFormId != 0 || !request.explicitTargetName.empty()) {
+            std::size_t formMatch = noMatch;
             if (request.explicitTargetFormId != 0) {
                 for (std::size_t index = 0; index < candidates.size(); ++index) {
                     const auto& candidate = candidates[index];
                     if (candidate.formId == request.explicitTargetFormId &&
                         candidate.hardEligible && candidate.directEligible &&
                         WithinRadius(candidate.distance, request.directAddressRadius)) {
-                        result.kind = SelectionKind::Candidate;
-                        result.candidateIndex = index;
-                        result.reason = "explicit_ui_target";
-                        return result;
+                        formMatch = index;
+                        break;
                     }
                 }
             }
 
             const std::string normalizedExplicitName = Normalize(request.explicitTargetName);
-            std::size_t fallbackMatch = (std::numeric_limits<std::size_t>::max)();
+            std::size_t fallbackMatch = noMatch;
+            std::size_t sleepingFallbackMatch = noMatch;
             if (!normalizedExplicitName.empty()) {
                 for (std::size_t index = 0; index < candidates.size(); ++index) {
                     const auto& candidate = candidates[index];
@@ -276,25 +310,41 @@ namespace PlayerConversationRoutingPolicy
                         continue;
                     }
 
-                    if (fallbackMatch == (std::numeric_limits<std::size_t>::max)() ||
-                        candidate.distance < candidates[fallbackMatch].distance ||
-                        (candidate.distance == candidates[fallbackMatch].distance &&
-                         candidate.formId < candidates[fallbackMatch].formId)) {
-                        fallbackMatch = index;
+                    auto& match = IsSleepingDirectTarget(request, candidate) ? sleepingFallbackMatch
+                                                                            : fallbackMatch;
+                    if (IsCloserDirectMatch(candidates, index, match)) {
+                        match = index;
                     }
                 }
             }
 
-            if (fallbackMatch != (std::numeric_limits<std::size_t>::max)()) {
+            if (formMatch != noMatch) {
+                if (IsSleepingDirectTarget(request, candidates[formMatch])) {
+                    return reject(formMatch);
+                }
+                result.kind = SelectionKind::Candidate;
+                result.candidateIndex = formMatch;
+                result.reason = "explicit_ui_target";
+                return result;
+            }
+
+            // A name-only target may still resolve to an eligible same-name actor.
+            if (fallbackMatch != noMatch) {
                 result.kind = SelectionKind::Candidate;
                 result.candidateIndex = fallbackMatch;
                 result.reason = "explicit_ui_target";
                 return result;
             }
+
+            // Every actor matching the name-only direct intent is asleep.
+            if (sleepingFallbackMatch != noMatch) {
+                return reject(sleepingFallbackMatch);
+            }
         }
 
-        std::size_t namedMatch = (std::numeric_limits<std::size_t>::max)();
+        std::size_t namedMatch = noMatch;
         std::size_t namedMatchLength = 0;
+        bool namedMatchSleeping = false;
         if (beginsWithHey && !addressedText.empty()) {
             for (std::size_t index = 0; index < candidates.size(); ++index) {
                 const auto& candidate = candidates[index];
@@ -305,20 +355,26 @@ namespace PlayerConversationRoutingPolicy
                     continue;
                 }
 
+                // The addressed name decides who was meant; sleep only breaks same-name ties.
+                const bool sleeping = IsSleepingDirectTarget(request, candidate);
                 const bool longerName = normalizedName.size() > namedMatchLength;
+                const bool awakeDuplicate = normalizedName.size() == namedMatchLength &&
+                    namedMatchSleeping && !sleeping;
                 const bool closerDuplicate = normalizedName.size() == namedMatchLength &&
-                    (namedMatch == (std::numeric_limits<std::size_t>::max)() ||
-                     candidate.distance < candidates[namedMatch].distance ||
-                     (candidate.distance == candidates[namedMatch].distance &&
-                      candidate.formId < candidates[namedMatch].formId));
-                if (longerName || closerDuplicate) {
+                    namedMatchSleeping == sleeping &&
+                    IsCloserDirectMatch(candidates, index, namedMatch);
+                if (longerName || awakeDuplicate || closerDuplicate) {
                     namedMatch = index;
                     namedMatchLength = normalizedName.size();
+                    namedMatchSleeping = sleeping;
                 }
             }
         }
 
-        if (namedMatch != (std::numeric_limits<std::size_t>::max)()) {
+        if (namedMatch != noMatch) {
+            if (namedMatchSleeping) {
+                return reject(namedMatch);
+            }
             result.kind = SelectionKind::Candidate;
             result.candidateIndex = namedMatch;
             result.reason = "explicit_npc_name";
@@ -329,6 +385,9 @@ namespace PlayerConversationRoutingPolicy
             const auto& candidate = candidates[index];
             if (candidate.trueCrosshair && candidate.hardEligible && candidate.directEligible &&
                 WithinRadius(candidate.distance, request.directAddressRadius)) {
+                if (IsSleepingDirectTarget(request, candidate)) {
+                    return reject(index);
+                }
                 result.kind = SelectionKind::Candidate;
                 result.candidateIndex = index;
                 result.reason = "true_crosshair";
