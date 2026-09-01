@@ -400,17 +400,52 @@ json parseActionParameterPayload(const std::string& parameter) {
     return json();
 }
 
-// Resolve a readable book only from the requested actor's current inventory.
-RE::TESObjectBOOK* findInventoryBookByTitle(RE::Actor* actor, const std::string& requestedTitle) {
+struct InventoryBookLookupResult {
+    RE::TESObjectBOOK* book{nullptr};
+    bool ambiguous{false};
+};
+
+std::vector<std::string> getBookLookupTokens(const std::string& value) {
+    static const std::vector<std::string> stopWords = {
+        "a", "aloud", "an", "book", "can", "could", "it", "me", "please",
+        "read", "that", "the", "this", "to", "will", "would", "you",
+    };
+
+    std::vector<std::string> tokens;
+    std::string token;
+    const auto flushToken = [&]() {
+        if (!token.empty() && std::find(stopWords.begin(), stopWords.end(), token) == stopWords.end() &&
+            std::find(tokens.begin(), tokens.end(), token) == tokens.end()) {
+            tokens.push_back(token);
+        }
+        token.clear();
+    };
+
+    for (const unsigned char ch : value) {
+        if (std::isalnum(ch)) {
+            token.push_back(static_cast<char>(std::tolower(ch)));
+        } else {
+            flushToken();
+        }
+    }
+    flushToken();
+    return tokens;
+}
+
+// Resolve one exact or unambiguous natural-language book match from an actor's current inventory.
+InventoryBookLookupResult findInventoryBookByTitle(RE::Actor* actor, const std::string& requestedTitle) {
     if (!actor) {
-        return nullptr;
+        return {};
     }
 
     const auto normalizedTitle = toLower(trim(requestedTitle));
     if (normalizedTitle.empty()) {
-        return nullptr;
+        return {};
     }
 
+    const auto queryTokens = getBookLookupTokens(requestedTitle);
+    InventoryBookLookupResult fuzzyMatch;
+    std::string fuzzyMatchTitle;
     const auto inventory = actor->GetInventory();
     for (const auto& item : inventory) {
         auto* boundObject = item.first;
@@ -432,12 +467,35 @@ RE::TESObjectBOOK* findInventoryBookByTitle(RE::Actor* actor, const std::string&
             }
         }
 
-        if (toLower(trim(displayName)) == normalizedTitle) {
-            return book;
+        const auto normalizedDisplayName = toLower(trim(displayName));
+        if (normalizedDisplayName == normalizedTitle) {
+            return {book, false};
+        }
+
+        if (queryTokens.empty()) {
+            continue;
+        }
+
+        const auto candidateTokens = getBookLookupTokens(displayName);
+        const bool matchesQuery = std::all_of(queryTokens.begin(), queryTokens.end(), [&](const auto& queryToken) {
+            return std::find(candidateTokens.begin(), candidateTokens.end(), queryToken) != candidateTokens.end();
+        });
+        if (!matchesQuery) {
+            continue;
+        }
+
+        if (!fuzzyMatch.book) {
+            fuzzyMatch.book = book;
+            fuzzyMatchTitle = normalizedDisplayName;
+        } else if (normalizedDisplayName != fuzzyMatchTitle) {
+            fuzzyMatch.ambiguous = true;
         }
     }
 
-    return nullptr;
+    if (fuzzyMatch.ambiguous) {
+        fuzzyMatch.book = nullptr;
+    }
+    return fuzzyMatch;
 }
 
 // Extract and asynchronously upload readable text from an already resolved book form.
@@ -1737,17 +1795,21 @@ void parseRoleCommand(std::string rawCommand) {
                 readerActor = readerAgent->getActor();
             }
 
-            auto* book = findInventoryBookByTitle(readerActor, bookTitle);
-            if (!book) {
-                book = findInventoryBookByTitle(RE::PlayerCharacter::GetSingleton(), bookTitle);
+            auto match = findInventoryBookByTitle(readerActor, bookTitle);
+            if (!match.book && !match.ambiguous) {
+                match = findInventoryBookByTitle(RE::PlayerCharacter::GetSingleton(), bookTitle);
             }
 
-            if (!book) {
+            if (match.ambiguous) {
+                logger::warn("[UploadBookContentByTitle] '{}' matches multiple books in the selected inventory",
+                             bookTitle);
+                RE::DebugNotification("[CHIM] That request matches multiple books. Please name the exact title.");
+            } else if (!match.book) {
                 logger::warn("[UploadBookContentByTitle] '{}' is not in {} or the player inventory", bookTitle,
                              readerName);
                 RE::DebugNotification("[CHIM] The requested book is not in the reader's or player's inventory.");
             } else {
-                queueBookContentUpload(book, requestToken);
+                queueBookContentUpload(match.book, requestToken);
             }
         }
     } else if (command == "UploadBookContent") {
