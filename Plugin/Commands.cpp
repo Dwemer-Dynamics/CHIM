@@ -3604,7 +3604,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             };
 
             const auto payload = parseActionParameterPayload(parameter);
-            std::string requestedItem = extractStructuredActionStringField(payload, {"target", "item"});
+            std::string requestedItem = extractStructuredActionStringField(payload, {"item", "target"});
             if (requestedItem.empty()) {
                 requestedItem = trim(parameter);
             }
