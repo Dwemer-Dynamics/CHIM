@@ -4155,6 +4155,9 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         parameter = trim(parameter);
         if (agentPtr->isAvailableforAnimation())
             commandAnimation(parameter, npc);
+        else {
+            logger::info("CommandAnimation: {} is not available for animation", agentPtr->getActorName());
+        }
 
     } else {
         logger::info("Command not recognized {}", command);
@@ -5726,6 +5729,8 @@ bool commandAnimation(std::string anim, RE::Actor* actor) {
 
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "SendInternalEvent",
                                                                                args, callback);
+
+    logger::warn("[ANIMATION]  SendInternalEvent {} stored for {}", npcName, parameter);
     /*
     auto actorForm = RE::TESForm::LookupByID(npcAgent->GetFormId());
     if (!actorForm) {

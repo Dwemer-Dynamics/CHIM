@@ -9967,7 +9967,7 @@ EventHandlers {
                     } catch (const std::exception& e) {
                         logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
                     }
-
+                    RE::DebugNotification("[CHIM] Book added to the CHIM library.");
                     logger::info("[TESEquipEvent] Book data analyzed and sent");
                 }
             } else if (object->formType == RE::FormType::Shout) {
@@ -10070,7 +10070,7 @@ EventHandlers {
                 } catch (const std::exception& e) {
                     logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
                 }
-
+                RE::DebugNotification("[CHIM] Book added to the CHIM library.");
                 logger::info("[TESBookReadEvent] Book data analyzed and sent");
             }
         }
