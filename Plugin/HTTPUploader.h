@@ -18,7 +18,8 @@ public:
                                           std::string referenceText);
 	std::string UploadImage(const char* data, int size, std::string hints, int sendMode);
     std::string UploadImagePng(const char* data, int size, std::string hints, int sendMode);
-    std::string UploadBookContent(std::string data, std::string title);
+    std::string UploadBookContent(std::string data, std::string title, std::string readRequestId = "",
+                                  std::string bookFormId = "");
     static std::string UploadCSVFile(std::string data, std::string filename, std::string fileType);
     
 

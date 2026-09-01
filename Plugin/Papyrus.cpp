@@ -45,7 +45,8 @@
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
 
-extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
+                                        bool synchronous, std::function<void(bool)> completion = {});
 
 void SkipNextPlayerMenuTopicLocalPlayback();
 
@@ -357,6 +358,7 @@ extern int GlobalCombatBarksPeriod;
 bool PreserveQueueDuringAction = false;
 bool PauseDialogueWhenMenuOpen = false;
 bool PlayerTtsTraditionalDialogueEnabled = false;
+bool CaptureBackgroundChatEnabled = true;
 bool AIQuestProgressionEnabled = false;
 bool AllowActorsOnScene = true;
 bool GodMode = false;
@@ -2068,6 +2070,11 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
             PlayerTtsTraditionalDialogueEnabled = false;
         logger::info("Setting _player_tts_traditional_dialogue to {} ", f_Value);
 
+    } else if (code == "_capture_background_chat") {
+        CaptureBackgroundChatEnabled = f_Value > 0;
+        logger::info("Setting _capture_background_chat to {}", CaptureBackgroundChatEnabled);
+        PrismaUIBridge::PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
+
     } else if (code == "_preserve_queue") {
         if (f_Value > 0)
             PreserveQueueDuringAction = true;
@@ -2348,10 +2355,12 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     // Route through sendMessageReal which includes camera pitch detection for Narrator
     if (type == "diary" && (npc.empty() || trim(npc).empty())) {
         logger::info("[requestMessageForActor] Diary request with no target, routing through sendMessageReal");
-        return sendMessageReal(msg, type);
+        const int untargetedResult = sendMessageReal(msg, type);
+        return untargetedResult == 0 ? 1 : untargetedResult;
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg
@@ -2376,7 +2385,7 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                         GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
-    return 0;
+    return 1;
 }
 
 int Papyrus::setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
@@ -2616,6 +2625,36 @@ int Papyrus::commandEndedForActor(RE::BSScript::Internal::VirtualMachine* a_vm, 
 
         agentPtr.get()->setCurrentCommand("");
         agentPtr.get()->setCommandBusy(false);
+        return 0;
+    } else if (command.contains("brawl") || command.contains("Brawl")) {
+        AIAgentManager& aiam = AIAgentManager::getInstance();
+        auto agentPtr = aiam.getAgentByName(npc);
+
+        if (!agentPtr) {
+            logger::info("No AI actor found, can't end brawl command");
+            return -1;
+        }
+
+        auto* opponent = agentPtr->getAttackTarget();
+        if (opponent) {
+            auto opponentAgent = aiam.getAgentByFormId(opponent->GetFormID());
+            if (opponentAgent &&
+                (opponentAgent->getCurrentCommand().contains("brawl") ||
+                 opponentAgent->getCurrentCommand().contains("Brawl"))) {
+                auto* opponentTarget = opponentAgent->getAttackTarget();
+                if (opponentTarget && opponentTarget->GetFormID() == agentPtr->GetFormId()) {
+                    logger::info("Releasing brawl opponent {}", opponentAgent->getActorName());
+                    opponentAgent->setAttackTarget(nullptr);
+                    opponentAgent->setCurrentCommand("");
+                    opponentAgent->setCommandBusy(false);
+                }
+            }
+        }
+
+        logger::info("Releasing actor {} after brawl outcome", npc);
+        agentPtr->setAttackTarget(nullptr);
+        agentPtr->setCurrentCommand("");
+        agentPtr->setCommandBusy(false);
         return 0;
     } else {
         EndCommand(command, npc);
@@ -3035,6 +3074,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
 
     } else if (code == "_player_tts_traditional_dialogue") {
         result = PlayerTtsTraditionalDialogueEnabled ? 1 : 0;
+
+    } else if (code == "_capture_background_chat") {
+        result = CaptureBackgroundChatEnabled ? 1 : 0;
 
     } else if (code == "_restrict_onscene") {
         

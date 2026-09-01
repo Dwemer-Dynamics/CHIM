@@ -2238,8 +2238,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         SpeakManager::getInstance().deleteQueue();
     }
 
-    if (currentActor)
-        logger::info("End talking sentence. {}", currentActor->getCurrentAnimation());
+    if (currentActor) logger::info("End talking sentence.<{}>, anim:<{}>", text, currentActor->getCurrentAnimation());
 
     // Free memory
     delete[] buffer;
@@ -3001,6 +3000,17 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
+        json activeAgents = json::array();
+        for (const auto& activeAgent : aiam.getAgents()) {
+            if (!activeAgent || activeAgent->isNarrator()) {
+                continue;
+            }
+            const std::string activeAgentName = trim(activeAgent->getActorName());
+            if (!activeAgentName.empty()) {
+                activeAgents.push_back(activeAgentName);
+            }
+        }
+        rechatPayload["active_agents"] = activeAgents;
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
@@ -4023,6 +4033,8 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
 
     auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
     auto args = RE::MakeFunctionArguments(std::move(npc));
+
+    
 
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "EndDialogue",
                                                                                args, callback);

@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.3.0"
-#define PLUGIN_RELEASE_DATE "2026-08-28"
+#define PLUGIN_VERSION "3.3.1"
+#define PLUGIN_RELEASE_DATE "2026-09-01"
 
 const char* GetPluginVersion()
 {
@@ -1520,6 +1520,8 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    if (!CaptureBackgroundChatEnabled) return;
+
     // Cell transitions can storm scene/subtitle events; skip until world maintenance settles.
     if (IsWorldMaintenanceSuppressed()) return;
 
@@ -1952,6 +1954,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     auto sitSleepState = actorState ? actorState->GetSitSleepState() : RE::SIT_SLEEP_STATE::kNormal;
     const bool isSitting = sitSleepState == RE::SIT_SLEEP_STATE::kIsSitting;
     const bool isSleeping = sitSleepState == RE::SIT_SLEEP_STATE::kIsSleeping;
+    const bool isRestrained = actorState ? actorState->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained : false;
     const bool isMoving = !isDead && IsActorMovingForStatus(npc, isRunning, actorState);
 
     std::string furnitureName;
@@ -2038,6 +2041,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     payload["is_unconscious"] = isUnconscious;
     payload["is_dead"] = isDead;
     payload["is_weapon_drawn"] = isWeaponDrawn;
+    payload["is_restrained"] = isRestrained;
 
     if (!attackTargetName.empty()) {
         payload["attack_target"] = attackTargetName;
@@ -2048,7 +2052,8 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
 
 // Forward declarations for metadata refresh functions
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate = false);
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous,
+                             std::function<void(bool)> completion);
 void RefreshAIAgentSkills(RE::Actor* npc, const std::string& agentName, bool forceUpdate = false);
 void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate = false);
 void RefreshAIAgentActivityStatus(RE::Actor* npc, const std::string& agentName, const std::string* furnitureOverride = nullptr);
@@ -6001,6 +6006,9 @@ OnSaveGame{
 // Track last known equipment/inventory/skills/stats hashes to avoid duplicate updates
 std::unordered_map<uint32_t, std::string> lastEquipmentHash;
 std::unordered_map<uint32_t, std::string> lastInventoryHash;
+std::mutex lastInventoryHashMutex;
+std::unordered_map<uint32_t, std::unordered_map<std::string, std::vector<std::function<void(bool)>>>>
+    pendingInventoryDeliveries;
 std::unordered_map<uint32_t, std::string> lastSkillsHash;
 std::unordered_map<uint32_t, std::string> lastStatsHash;
 std::unordered_map<uint32_t, std::string> lastSpellsHash;
@@ -6524,9 +6532,16 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
 
 
 // Helper function to refresh inventory for an AI Agent (with hash-based diffing)
-void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
-    if (!npc) return;
-    if (npc->IsPlayer()) return;  // Skip player
+void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous,
+                                 std::function<void(bool)> completion) {
+    if (!npc) {
+        if (completion) completion(false);
+        return;
+    }
+    if (npc->IsPlayer()) {
+        if (completion) completion(true);
+        return;  // Skip player
+    }
 
     std::string inventoryData;
     std::vector<InventoryItemSnapshot> inventoryItems;  // For sorted hash
@@ -6608,15 +6623,38 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
     auto formID = npc->GetFormID();
 
     // Check if inventory changed (or force update on save load)
-    if (!forceUpdate && lastInventoryHash.find(formID) != lastInventoryHash.end()) {
-        if (lastInventoryHash[formID] == inventoryHash) {
-            logger::trace("[INVENTORY_SKIP] {} inventory unchanged", agentName);
-            return;
+    bool inventoryUnchanged = false;
+    bool joinedPendingDelivery = false;
+    {
+        std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
+        auto actorPending = pendingInventoryDeliveries.find(formID);
+        if (!synchronous && actorPending != pendingInventoryDeliveries.end()) {
+            auto pendingHash = actorPending->second.find(inventoryHash);
+            if (pendingHash != actorPending->second.end()) {
+                if (completion) pendingHash->second.push_back(std::move(completion));
+                joinedPendingDelivery = true;
+            }
+        }
+
+        const auto lastHash = lastInventoryHash.find(formID);
+        inventoryUnchanged =
+            !joinedPendingDelivery && !forceUpdate && lastHash != lastInventoryHash.end() &&
+            lastHash->second == inventoryHash;
+
+        if (!joinedPendingDelivery && !inventoryUnchanged && !synchronous) {
+            auto& callbacks = pendingInventoryDeliveries[formID][inventoryHash];
+            if (completion) callbacks.push_back(std::move(completion));
         }
     }
-
-    // Inventory changed or first time tracking - send update
-    lastInventoryHash[formID] = inventoryHash;
+    if (joinedPendingDelivery) {
+        logger::trace("[INVENTORY_UPDATE] {} inventory delivery already pending", agentName);
+        return;
+    }
+    if (inventoryUnchanged) {
+        logger::trace("[INVENTORY_SKIP] {} inventory unchanged", agentName);
+        if (completion) completion(true);
+        return;
+    }
 
     json inventoryDataJson;
     inventoryDataJson["type"] = "inventory";
@@ -6635,37 +6673,74 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
             });
     }
 
-    if (synchronous) {
-        HTTPManager::postGameDataSync("gamedata.php", inventoryDataJson);
-    } else {
-        HTTPManager::postGameData("gamedata.php", inventoryDataJson);
-    }
+    auto acknowledgeDelivery = [formID, inventoryHash, agentName, itemCount = inventoryItems.size(),
+                                completion = std::move(completion), synchronous](bool success) mutable {
+        std::vector<std::function<void(bool)>> pendingCompletions;
+        {
+            std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
+            if (success) {
+                lastInventoryHash[formID] = inventoryHash;
+            }
 
-    logger::info("[INVENTORY_UPDATE] {} inventory updated ({} items{})", agentName, inventoryItems.size(),
-                 synchronous ? ", sync" : "");
+            if (!synchronous) {
+                auto actorPending = pendingInventoryDeliveries.find(formID);
+                if (actorPending != pendingInventoryDeliveries.end()) {
+                    auto pendingHash = actorPending->second.find(inventoryHash);
+                    if (pendingHash != actorPending->second.end()) {
+                        pendingCompletions = std::move(pendingHash->second);
+                        actorPending->second.erase(pendingHash);
+                    }
+                    if (actorPending->second.empty()) pendingInventoryDeliveries.erase(actorPending);
+                }
+            }
+        }
+
+        if (success) {
+            logger::info("[INVENTORY_UPDATE] {} inventory delivered ({} items)", agentName, itemCount);
+        } else {
+            logger::warn("[INVENTORY_UPDATE] {} inventory delivery failed; next refresh will retry", agentName);
+        }
+
+        if (synchronous && completion) completion(success);
+        for (auto& pendingCompletion : pendingCompletions) {
+            if (pendingCompletion) pendingCompletion(success);
+        }
+    };
+
+    if (synchronous) {
+        acknowledgeDelivery(HTTPManager::postGameDataSync("gamedata.php", inventoryDataJson));
+    } else {
+        HTTPManager::postGameData("gamedata.php", inventoryDataJson, acknowledgeDelivery);
+        logger::trace("[INVENTORY_UPDATE] {} inventory delivery queued ({} items)", agentName, inventoryItems.size());
+    }
 }
 
 
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
-    if (!npc) return;
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous,
+                             std::function<void(bool)> completion) {
+    if (!npc) {
+        if (completion) completion(false);
+        return;
+    }
 
     auto actorHandle = npc->GetHandle();
     auto* taskInterface = SKSE::GetTaskInterface();
     if (!taskInterface) {
         logger::warn("[INVENTORY_UPDATE] SKSE task interface unavailable; reading {} inventory directly", agentName);
-        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous);
+        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous, std::move(completion));
         return;
     }
 
-    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous]() {
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous, completion = std::move(completion)]() mutable {
         auto actorRef = actorHandle.get();
         auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
         if (!actor) {
             logger::trace("[INVENTORY_SKIP] {} - actor handle no longer valid", agentName);
+            if (completion) completion(false);
             return;
         }
 
-        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous);
+        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous, std::move(completion));
     });
 }
 
@@ -7279,13 +7354,14 @@ void RefreshPlayerInventory(bool forceUpdate) {
     
     auto formID = player->GetFormID();
     
-    if (!forceUpdate && lastInventoryHash.find(formID) != lastInventoryHash.end()) {
-        if (lastInventoryHash[formID] == inventoryHash) {
+    {
+        std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
+        const auto lastHash = lastInventoryHash.find(formID);
+        if (!forceUpdate && lastHash != lastInventoryHash.end() && lastHash->second == inventoryHash) {
             return;
         }
+        lastInventoryHash[formID] = inventoryHash;
     }
-    
-    lastInventoryHash[formID] = inventoryHash;
     
     if (!inventoryItems.empty()) {
         json inventoryDataJson;
@@ -9618,65 +9694,56 @@ EventHandlers {
                           // Do not queue Player TTS from this late topic-event path. By this point vanilla dialogue has
                           // already advanced, so playback would overlap NPC dialogue and show delayed player subtitles.
                           // The supported traditional-dialogue Player TTS path is the optional SWF -> Papyrus bridge.
-                         const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
-                         const char* dialogueVerb = currentChatboxMode == "SHOUT"
-                             ? "Shouting to"
-                             : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
+                          controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
 
-                         HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
-                                                      getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
-                                                      aiam.getPlayerName(),
-                                                      DialogueLastStringSay, dialogueVerb, lastSpeaker->GetDisplayFullName()));
+                          if (CaptureBackgroundChatEnabled) {
+                              const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
+                              const char* dialogueVerb = currentChatboxMode == "SHOUT"
+                                  ? "Shouting to"
+                                  : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
 
-                         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
+                              HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
+                                                           getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
+                                                           aiam.getPlayerName(), DialogueLastStringSay, dialogueVerb,
+                                                           lastSpeaker->GetDisplayFullName()));
 
-                         try {
-                             json sData;
-                             sData["listener"] = lastSpeaker->GetDisplayFullName();
-                             sData["location"] = GetPlayerLocation();
-                             sData["speech"] = DialogueLastStringSay;
-                             sData["speaker"] = aiam.getPlayerName();
-                             sData["debug"] = (event->flag) ? "true" : "false";
-                             AddCachedSpeechAudience(sData, "traditional_player_speech");
-                             HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
-                                                          GetGameTimeStamp(), sData.dump()));
+                              try {
+                                  json sData;
+                                  sData["listener"] = lastSpeaker->GetDisplayFullName();
+                                  sData["location"] = GetPlayerLocation();
+                                  sData["speech"] = DialogueLastStringSay;
+                                  sData["speaker"] = aiam.getPlayerName();
+                                  sData["debug"] = (event->flag) ? "true" : "false";
+                                  AddCachedSpeechAudience(sData, "traditional_player_speech");
+                                  HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
+                                                               GetGameTimeStamp(), sData.dump()));
 
-                             // Push to chatbox in real-time
-                             if (PrismaUIBridge::IsAvailable()) {
-                                 char timeDateString[200];
-                                 RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
-                                 // Use actual player character name instead of getPlayerName()
-                                 std::string playerName = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
-                                 logger::info("[Chatbox] Pushing player dialogue: {} says: {}", 
-                                            playerName, 
-                                            DialogueLastStringSay.substr(0, 50));
-                                 PrismaUIBridge::PushChatboxMessage(
-                                     playerName, 
-                                     DialogueLastStringSay,
-                                     std::string(timeDateString),
-                                     "player",
-                                     "subtitle"
-                                 );
-                                 // Also push to conversation history panel
-                                 PrismaUIBridge::PushDialogueEntry(
-                                     playerName, 
-                                     DialogueLastStringSay,
-                                     std::string(timeDateString),
-                                     "inputtext",
-                                     "subtitle"
-                                 );
-                             } else {
-                                 logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
-                             }
+                                  // Push to chatbox in real-time
+                                  if (PrismaUIBridge::IsAvailable()) {
+                                      char timeDateString[200];
+                                      RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                                      // Use actual player character name instead of getPlayerName()
+                                      std::string playerName = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
+                                      logger::info("[Chatbox] Pushing player dialogue: {} says: {}",
+                                                   playerName, DialogueLastStringSay.substr(0, 50));
+                                      PrismaUIBridge::PushChatboxMessage(
+                                          playerName, DialogueLastStringSay, std::string(timeDateString), "player", "subtitle");
+                                      // Also push to conversation history panel
+                                      PrismaUIBridge::PushDialogueEntry(
+                                          playerName, DialogueLastStringSay, std::string(timeDateString), "inputtext", "subtitle");
+                                  } else {
+                                      logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
+                                  }
 
-                             auto result =
-                                 InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
-                                                      HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
-                             HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
-                                                          GetGameTimeStamp(), "(beings in range:" + result + ")"));
-                         } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
-                             logger::info("Error sending speech. Review encoding, {}", ex.what());
-                         }
+                                  auto result =
+                                      InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
+                                                           HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+                                  HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
+                                                               GetGameTimeStamp(), "(beings in range:" + result + ")"));
+                              } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
+                                  logger::info("Error sending speech. Review encoding, {}", ex.what());
+                              }
+                          }
                        }
 
                     if (event->flag) {
@@ -9779,54 +9846,44 @@ EventHandlers {
                         if (DialogueLastStringResponse.compare(fullResponse) != 0) {
                             DialogueLastStringResponse.assign(fullResponse);
 
+                            if (CaptureBackgroundChatEnabled) {
+                                HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {}",
+                                                             getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
+                                                             lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse));
 
+                                try {
+                                    json sData;
+                                    sData["speaker"] = lastSpeaker->GetDisplayFullName();
+                                    sData["location"] = GetPlayerLocation();
+                                    sData["speech"] = DialogueLastStringResponse;
+                                    sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
+                                    sData["audios"] = audioPaths;
+                                    sData["debug"] = (event->flag) ? "true" : "false";
+                                    AddCachedSpeechAudience(sData, "traditional_npc_speech");
+                                    HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                                 sData.dump()));
 
-
-                            HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {}",
-                                                         getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
-                                                         lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse));
-
-                            try {
-                                json sData;
-                                sData["speaker"] = lastSpeaker->GetDisplayFullName();
-                                sData["location"] = GetPlayerLocation();
-                                sData["speech"] = DialogueLastStringResponse;
-                                sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
-                                sData["audios"] = audioPaths;
-                                sData["debug"] = (event->flag) ? "true" : "false";
-                                AddCachedSpeechAudience(sData, "traditional_npc_speech");
-                                HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                                             sData.dump()));
-
-                                // Push to chatbox in real-time
-                                if (PrismaUIBridge::IsAvailable()) {
-                                    char timeDateString[200];
-                                    RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
-                                    logger::info("[Chatbox] Pushing NPC dialogue: {} says: {}",
-                                                 lastSpeaker->GetDisplayFullName(),
-                                                 DialogueLastStringResponse.substr(0, 50));
-                                    PrismaUIBridge::PushChatboxMessage(
-                                        lastSpeaker->GetDisplayFullName(),
-                                        DialogueLastStringResponse,
-                                        std::string(timeDateString),
-                                        "npc",
-                                        "subtitle"
-                                    );
-                                    // Also push to conversation history panel
-                                    PrismaUIBridge::PushDialogueEntry(
-                                        lastSpeaker->GetDisplayFullName(),
-                                        DialogueLastStringResponse,
-                                        std::string(timeDateString),
-                                        "chat",
-                                        "subtitle"
-                                    );
-                                } else {
-                                    logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");
+                                    // Push to chatbox in real-time
+                                    if (PrismaUIBridge::IsAvailable()) {
+                                        char timeDateString[200];
+                                        RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                                        logger::info("[Chatbox] Pushing NPC dialogue: {} says: {}",
+                                                     lastSpeaker->GetDisplayFullName(),
+                                                     DialogueLastStringResponse.substr(0, 50));
+                                        PrismaUIBridge::PushChatboxMessage(
+                                            lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse,
+                                            std::string(timeDateString), "npc", "subtitle");
+                                        // Also push to conversation history panel
+                                        PrismaUIBridge::PushDialogueEntry(
+                                            lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse,
+                                            std::string(timeDateString), "chat", "subtitle");
+                                    } else {
+                                        logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");
+                                    }
+                                } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
+                                    logger::info("Error sending speech. Review encoding, {}", ex.what());
                                 }
-                            } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
-                                logger::info("Error sending speech. Review encoding, {}", ex.what());
                             }
-
                         }
                     }
                          
@@ -9965,7 +10022,7 @@ EventHandlers {
                     } catch (const std::exception& e) {
                         logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
                     }
-
+                    RE::DebugNotification("[CHIM] Book added to the CHIM library.");
                     logger::info("[TESEquipEvent] Book data analyzed and sent");
                 }
             } else if (object->formType == RE::FormType::Shout) {
@@ -10068,7 +10125,7 @@ EventHandlers {
                 } catch (const std::exception& e) {
                     logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
                 }
-
+                RE::DebugNotification("[CHIM] Book added to the CHIM library.");
                 logger::info("[TESBookReadEvent] Book data analyzed and sent");
             }
         }
