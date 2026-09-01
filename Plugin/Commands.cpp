@@ -13,6 +13,7 @@
 #include "Replacements.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
+#include "ThreadPool.h"
 #include "MusicManager.h"
 #include "SpatialAwareness.h"
 #include "VRItemAwareness.h"
@@ -1628,6 +1629,79 @@ void parseRoleCommand(std::string rawCommand) {
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "QuestNotifySound",
                                                                                    args, callback);
 
+    } else if (command == "UploadBookContent") {
+        std::vector<std::string> splitResult = splitString(parameter);
+        if (splitResult.size() != 2) {
+            logger::warn("[UploadBookContent] Expected a form ID and request token");
+            RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+        } else {
+            auto formIdText = jusTrim(splitResult[0]);
+            const auto requestToken = jusTrim(splitResult[1]);
+            if (formIdText.starts_with("0x") || formIdText.starts_with("0X")) {
+                formIdText.erase(0, 2);
+            }
+
+            const bool validFormId = !formIdText.empty() && formIdText.size() <= 8 &&
+                                     std::all_of(formIdText.begin(), formIdText.end(), [](unsigned char ch) {
+                                         return std::isxdigit(ch) != 0;
+                                     });
+            const bool validRequestToken = requestToken.size() == 32 &&
+                                           std::all_of(requestToken.begin(), requestToken.end(), [](unsigned char ch) {
+                                               return std::isxdigit(ch) != 0;
+                                           });
+
+            if (!validFormId || !validRequestToken) {
+                logger::warn("[UploadBookContent] Rejected an invalid server request");
+                RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+            } else {
+                try {
+                    const auto formId = static_cast<RE::FormID>(std::stoul(formIdText, nullptr, 16));
+                    auto* form = RE::TESForm::LookupByID(formId);
+                    auto* book = form ? form->As<RE::TESObjectBOOK>() : nullptr;
+                    auto* descriptionSource = form ? form->As<RE::TESDescription>() : nullptr;
+
+                    if (!book || !descriptionSource || !book->GetName() || std::strlen(book->GetName()) == 0) {
+                        logger::warn("[UploadBookContent] Form 0x{:08X} is not a readable book", formId);
+                        RE::DebugNotification("[CHIM] Could not find the requested book.");
+                    } else {
+                        RE::BSString description;
+                        descriptionSource->GetDescription(description, form);
+
+                        const std::string title(book->GetName());
+                        const std::string bookText(description.c_str());
+                        if (jusTrim(bookText).empty()) {
+                            logger::warn("[UploadBookContent] Book 0x{:08X} has no readable content", formId);
+                            RE::DebugNotification("[CHIM] The requested book has no readable content.");
+                        } else {
+                            std::string finalContent("Title: ");
+                            finalContent.append(title);
+                            finalContent.append("\n");
+                            finalContent.append(bookText);
+                            const auto normalizedFormId = std::format("0x{:08X}", formId);
+
+                            ThreadPool::getInstance().enqueue(
+                                "HTTPUploader",
+                                [finalContent, title, requestToken, normalizedFormId]() {
+                                    try {
+                                        HTTPUploader::getInstance().UploadBookContent(finalContent, title, requestToken,
+                                                                                      normalizedFormId);
+                                        logger::info("[UploadBookContent] Uploaded correlated content for {}", title);
+                                    } catch (const std::exception& e) {
+                                        logger::error("[UploadBookContent] Upload failed: {}", e.what());
+                                    }
+                                },
+                                "UploadBookContent", std::chrono::seconds(45));
+
+                            logger::info("[UploadBookContent] Queued correlated content for {} (0x{:08X})", title, formId);
+                            RE::DebugNotification("[CHIM] Retrieving book content...");
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    logger::warn("[UploadBookContent] Invalid form ID '{}': {}", formIdText, e.what());
+                    RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+                }
+            }
+        }
     } else if (command.contains("RawDebugNotification") || command.contains("DebugNotification")) {
         std::vector<std::string> splitResult = splitString(parameter);
         if (splitResult.size() != 1) {
