@@ -13,6 +13,7 @@
 #include "Replacements.h"
 #include "SPGResponse.h"
 #include "SpeakManager.h"
+#include "ThreadPool.h"
 #include "MusicManager.h"
 #include "SpatialAwareness.h"
 #include "VRItemAwareness.h"
@@ -397,6 +398,148 @@ json parseActionParameterPayload(const std::string& parameter) {
     }
 
     return json();
+}
+
+struct InventoryBookLookupResult {
+    RE::TESObjectBOOK* book{nullptr};
+    bool ambiguous{false};
+};
+
+std::vector<std::string> getBookLookupTokens(const std::string& value) {
+    static const std::vector<std::string> stopWords = {
+        "a", "aloud", "an", "book", "can", "could", "it", "me", "please",
+        "read", "that", "the", "this", "to", "will", "would", "you",
+    };
+
+    std::vector<std::string> tokens;
+    std::string token;
+    const auto flushToken = [&]() {
+        if (!token.empty() && std::find(stopWords.begin(), stopWords.end(), token) == stopWords.end() &&
+            std::find(tokens.begin(), tokens.end(), token) == tokens.end()) {
+            tokens.push_back(token);
+        }
+        token.clear();
+    };
+
+    for (const unsigned char ch : value) {
+        if (std::isalnum(ch)) {
+            token.push_back(static_cast<char>(std::tolower(ch)));
+        } else {
+            flushToken();
+        }
+    }
+    flushToken();
+    return tokens;
+}
+
+// Resolve one exact or unambiguous natural-language book match from an actor's current inventory.
+InventoryBookLookupResult findInventoryBookByTitle(RE::Actor* actor, const std::string& requestedTitle) {
+    if (!actor) {
+        return {};
+    }
+
+    const auto normalizedTitle = toLower(trim(requestedTitle));
+    if (normalizedTitle.empty()) {
+        return {};
+    }
+
+    const auto queryTokens = getBookLookupTokens(requestedTitle);
+    InventoryBookLookupResult fuzzyMatch;
+    std::string fuzzyMatchTitle;
+    const auto inventory = actor->GetInventory();
+    for (const auto& item : inventory) {
+        auto* boundObject = item.first;
+        if (!boundObject || item.second.first <= 0) {
+            continue;
+        }
+
+        auto* book = boundObject->As<RE::TESObjectBOOK>();
+        if (!book) {
+            continue;
+        }
+
+        std::string displayName = boundObject->GetName() ? boundObject->GetName() : "";
+        const auto& entryData = item.second.second;
+        if (entryData) {
+            const auto* entryDisplayName = entryData->GetDisplayName();
+            if (entryDisplayName && entryDisplayName[0] != '\0') {
+                displayName = entryDisplayName;
+            }
+        }
+
+        const auto normalizedDisplayName = toLower(trim(displayName));
+        if (normalizedDisplayName == normalizedTitle) {
+            return {book, false};
+        }
+
+        if (queryTokens.empty()) {
+            continue;
+        }
+
+        const auto candidateTokens = getBookLookupTokens(displayName);
+        const bool matchesQuery = std::all_of(queryTokens.begin(), queryTokens.end(), [&](const auto& queryToken) {
+            return std::find(candidateTokens.begin(), candidateTokens.end(), queryToken) != candidateTokens.end();
+        });
+        if (!matchesQuery) {
+            continue;
+        }
+
+        if (!fuzzyMatch.book) {
+            fuzzyMatch.book = book;
+            fuzzyMatchTitle = normalizedDisplayName;
+        } else if (normalizedDisplayName != fuzzyMatchTitle) {
+            fuzzyMatch.ambiguous = true;
+        }
+    }
+
+    if (fuzzyMatch.ambiguous) {
+        fuzzyMatch.book = nullptr;
+    }
+    return fuzzyMatch;
+}
+
+// Extract and asynchronously upload readable text from an already resolved book form.
+bool queueBookContentUpload(RE::TESObjectBOOK* book, const std::string& requestToken) {
+    RE::TESForm* form = book;
+    auto* descriptionSource = form ? form->As<RE::TESDescription>() : nullptr;
+    if (!book || !descriptionSource || !book->GetName() || std::strlen(book->GetName()) == 0) {
+        logger::warn("[UploadBookContent] Resolved form is not a readable book");
+        RE::DebugNotification("[CHIM] Could not find the requested book.");
+        return false;
+    }
+
+    RE::BSString description;
+    descriptionSource->GetDescription(description, form);
+
+    const std::string title(book->GetName());
+    const std::string bookText(description.c_str());
+    if (jusTrim(bookText).empty()) {
+        logger::warn("[UploadBookContent] Book 0x{:08X} has no readable content", form->GetFormID());
+        RE::DebugNotification("[CHIM] The requested book has no readable content.");
+        return false;
+    }
+
+    std::string finalContent("Title: ");
+    finalContent.append(title);
+    finalContent.append("\n");
+    finalContent.append(bookText);
+    const auto normalizedFormId = std::format("0x{:08X}", form->GetFormID());
+
+    ThreadPool::getInstance().enqueue(
+        "HTTPUploader",
+        [finalContent, title, requestToken, normalizedFormId]() {
+            try {
+                HTTPUploader::getInstance().UploadBookContent(finalContent, title, requestToken, normalizedFormId);
+                logger::info("[UploadBookContent] Uploaded correlated content for {}", title);
+            } catch (const std::exception& e) {
+                logger::error("[UploadBookContent] Upload failed: {}", e.what());
+            }
+        },
+        "UploadBookContent", std::chrono::seconds(45));
+
+    logger::info("[UploadBookContent] Queued correlated content for {} ({})", title, normalizedFormId);
+    RE::DebugNotification("[CHIM] Retrieving book content...");
+    return true;
 }
 
 std::string extractStructuredActionStringField(const json& payload, const std::initializer_list<const char*>& keys) {
@@ -1629,6 +1772,88 @@ void parseRoleCommand(std::string rawCommand) {
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "QuestNotifySound",
                                                                                    args, callback);
 
+    } else if (command == "UploadBookContentByTitle") {
+        const auto payload = parseActionParameterPayload(parameter);
+        const auto encodedReader = extractStructuredActionStringField(payload, {"reader_b64"});
+        const auto encodedTitle = extractStructuredActionStringField(payload, {"title_b64"});
+        const auto requestToken = extractStructuredActionStringField(payload, {"request_token"});
+        const auto readerName = HTTPManager::base64_decode(encodedReader);
+        const auto bookTitle = HTTPManager::base64_decode(encodedTitle);
+        const bool validRequestToken = requestToken.size() == 32 &&
+                                       std::all_of(requestToken.begin(), requestToken.end(), [](unsigned char ch) {
+                                           return std::isxdigit(ch) != 0;
+                                       });
+
+        if (readerName.empty() || readerName.size() > 256 || bookTitle.empty() || bookTitle.size() > 512 ||
+            !validRequestToken) {
+            logger::warn("[UploadBookContentByTitle] Rejected an invalid server request");
+            RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+        } else {
+            RE::Actor* readerActor = nullptr;
+            auto& manager = AIAgentManager::getInstance();
+            const auto readerAgent = manager.getAgentByName(readerName);
+            if (readerAgent) {
+                readerActor = readerAgent->getActor();
+            }
+
+            auto match = findInventoryBookByTitle(readerActor, bookTitle);
+            if (!match.book && !match.ambiguous) {
+                match = findInventoryBookByTitle(RE::PlayerCharacter::GetSingleton(), bookTitle);
+            }
+
+            if (match.ambiguous) {
+                logger::warn("[UploadBookContentByTitle] '{}' matches multiple books in the selected inventory",
+                             bookTitle);
+                RE::DebugNotification("[CHIM] That request matches multiple books. Please name the exact title.");
+            } else if (!match.book) {
+                logger::warn("[UploadBookContentByTitle] '{}' is not in {} or the player inventory", bookTitle,
+                             readerName);
+                RE::DebugNotification("[CHIM] The requested book is not in the reader's or player's inventory.");
+            } else {
+                queueBookContentUpload(match.book, requestToken);
+            }
+        }
+    } else if (command == "UploadBookContent") {
+        std::vector<std::string> splitResult = splitString(parameter);
+        if (splitResult.size() != 2) {
+            logger::warn("[UploadBookContent] Expected a form ID and request token");
+            RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+        } else {
+            auto formIdText = jusTrim(splitResult[0]);
+            const auto requestToken = jusTrim(splitResult[1]);
+            if (formIdText.starts_with("0x") || formIdText.starts_with("0X")) {
+                formIdText.erase(0, 2);
+            }
+
+            const bool validFormId = !formIdText.empty() && formIdText.size() <= 8 &&
+                                     std::all_of(formIdText.begin(), formIdText.end(), [](unsigned char ch) {
+                                         return std::isxdigit(ch) != 0;
+                                     });
+            const bool validRequestToken = requestToken.size() == 32 &&
+                                           std::all_of(requestToken.begin(), requestToken.end(), [](unsigned char ch) {
+                                               return std::isxdigit(ch) != 0;
+                                           });
+
+            if (!validFormId || !validRequestToken) {
+                logger::warn("[UploadBookContent] Rejected an invalid server request");
+                RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+            } else {
+                try {
+                    const auto formId = static_cast<RE::FormID>(std::stoul(formIdText, nullptr, 16));
+                    auto* form = RE::TESForm::LookupByID(formId);
+                    auto* book = form ? form->As<RE::TESObjectBOOK>() : nullptr;
+                    if (!book) {
+                        logger::warn("[UploadBookContent] Form 0x{:08X} is not a readable book", formId);
+                        RE::DebugNotification("[CHIM] Could not find the requested book.");
+                    } else {
+                        queueBookContentUpload(book, requestToken);
+                    }
+                } catch (const std::exception& e) {
+                    logger::warn("[UploadBookContent] Invalid form ID '{}': {}", formIdText, e.what());
+                    RE::DebugNotification("[CHIM] Could not retrieve the requested book content.");
+                }
+            }
+        }
     } else if (command.contains("RawDebugNotification") || command.contains("DebugNotification")) {
         std::vector<std::string> splitResult = splitString(parameter);
         if (splitResult.size() != 1) {

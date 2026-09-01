@@ -60,7 +60,7 @@ namespace {
         return escaped.str();
     }
 
-    std::string UrlEncodeVoiceSampleField(const std::string& value) {
+    std::string UrlEncodeQueryValue(const std::string& value) {
         std::ostringstream encoded;
         encoded << std::uppercase << std::hex;
         for (unsigned char character : value) {
@@ -297,9 +297,9 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
         path = path.substr(0, queryPosition);
     }
     path.append("?stuff&codename=")
-        .append(UrlEncodeVoiceSampleField(codename))
+                            .append(UrlEncodeQueryValue(codename))
         .append("&oname=")
-        .append(UrlEncodeVoiceSampleField(originalName));
+                            .append(UrlEncodeQueryValue(originalName));
     std::wstring widePath = StringToWideString(path);
 
     logger::info("Using VSX: {}", server + ":" + port + "/" + path);
@@ -426,7 +426,8 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
     return response;
 }
 
-std::string HTTPUploader::UploadBookContent(std::string data, std::string title) {
+std::string HTTPUploader::UploadBookContent(std::string data, std::string title, std::string readRequestId,
+                                            std::string bookFormId) {
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -444,7 +445,16 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title)
         path.replace(pos, 8, "book.php?title=");
     }
     if (!title.empty()) {
-        path.append(title);
+        path.append(UrlEncodeQueryValue(title));
+    }
+
+    if (!readRequestId.empty()) {
+        path.append("&read_request_id=");
+        path.append(UrlEncodeQueryValue(readRequestId));
+    }
+    if (!bookFormId.empty()) {
+        path.append("&book_form_id=");
+        path.append(UrlEncodeQueryValue(bookFormId));
     }
 
     path.append("&ts=");
@@ -452,7 +462,7 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title)
     path.append("&gamets=");
     path.append(std::to_string(GetGameTimeStamp()));
     
-    logger::info("Using BOOK: {}", server + ":" + port + "/" + path);
+    logger::info("Using BOOK uploader: {}:{}", server, port);
 
     std::wstring widePath = StringToWideString(path);
 
@@ -558,7 +568,7 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title)
 
     if (response.starts_with("<")) {
         response.assign("...");
-        logger::info("Error using http://{}", server + ":" + port + "/" + path);
+        logger::info("Error using BOOK uploader at {}:{}", server, port);
     }
 
     // Clean up
