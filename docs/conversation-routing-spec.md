@@ -174,15 +174,12 @@ Automatic routing is unchanged. Sleeping actors remain excluded from
 field-of-view and proximity selection, so an untargeted utterance still reaches
 the nearest eligible awake NPC or the Narrator.
 
-A diary request aimed at a sleeping actor is rejected on the same sleep state,
-before HTTP dispatch, and reports:
-
-```
-[CHIM] <Name> is asleep and cannot write a diary entry.
-```
-
-The Papyrus diary callers show their "is writing diary entry" notification only
-after the native request reports an accepted status.
+A targeted diary request is the non-dialogue exception: it can be generated
+while the actor is sleeping. Only the `sleeping` automatic blocker is bypassed;
+cooldown, combat, unconscious, scene, and every other blocker remain in force.
+The request does not interrupt or wake the actor. Papyrus diary callers show
+their "is writing diary entry" notification only after the native request
+reports an accepted status.
 
 ## Responder Priority
 
@@ -411,8 +408,9 @@ privacy, and spatial-audibility reports.
     standard player audience.
 19. NPC-to-NPC, Background Life, scripted dialogue, diaries, vision,
     instructions, and action callbacks continue through their existing routes.
-20. A diary request aimed at a sleeping NPC is rejected with the diary sleeping
-    notification, and the "is writing diary entry" notification is not shown.
+20. A targeted diary request can proceed for a sleeping NPC without interrupting
+    or waking the actor, while every non-sleeping automatic blocker remains in
+    force.
 
 ## Source References
 
@@ -424,8 +422,8 @@ privacy, and spatial-audibility reports.
   actor action targeting with name fallback.
 - `Plugin/SpatialAwareness.cpp`: request-local physical audibility.
 - `Plugin/PrismaUIBridge.cpp`: Prisma mode/target transport and target display.
-- `Plugin/Papyrus.cpp`: legacy text routing, mode synchronization, and the
-  sleeping diary-target rejection with its accepted-status return value.
+- `Plugin/Papyrus.cpp`: legacy text routing, mode synchronization, and the diary
+  request's accepted-status return value.
 - `Plugin/Voicerec.cpp`: voice/STT routing context.
 - `AIAgent/PrismaUI/views/CHIM/chatbox.js`: Prisma controls and Ctrl+Enter.
 - `AIAgent/Source/Scripts/AIAgentPapyrusFunctions.psc`: legacy controls and mode

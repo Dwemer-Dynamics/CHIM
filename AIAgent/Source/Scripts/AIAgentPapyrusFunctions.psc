@@ -232,7 +232,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		Debug.Notification("[CHIM] Updating dynamic profile for The Narrator")
 		AIAgentFunctions.logMessage("The Narrator", "updateprofile_narrator")
 	elseif (actionId == "rp_write_diary" && targetActor)
-		; The native call reports the rejection itself when the target is asleep.
+		; Show the start notification only after the native request is accepted.
 		int diaryStatus = AIAgentFunctions.requestMessageForActor("Please, update your diary", "diary", targetActor.GetDisplayName())
 		if (diaryStatus > 0)
 			Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
@@ -1409,7 +1409,7 @@ Function OpenRoleplayWheel()
 		If (targetName != "")
 			Actor targetActor = crosshairRef as Actor
 			If (targetActor)
-				; The native call reports the rejection itself when the target is asleep.
+				; Show the start notification only after the native request is accepted.
 				int diaryStatus = AIAgentFunctions.requestMessageForActor("Please, update your diary","diary", targetActor.GetDisplayName())
 				If (diaryStatus > 0)
 					Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
