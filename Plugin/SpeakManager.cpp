@@ -3345,7 +3345,15 @@ void SpeakManager::process(AIAgent *agent) {
             std::string phoneticTrimmed = SM::trim(scriptLine.phonetic);
             bool unfinished = spgResponse.isUnfinished();
             const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
-            if (GlobalRechatPolicyAsap == 0 && !whisperModeActive) {
+
+            bool bypassAllrechat = false;
+
+            if (!scriptLine.rechatTargetHint.empty()  && scriptLine.rechatTargetHint == "explicit_disable_rechat") {
+                logger::info("[EARLY RECHAT {}] Disabled by explicit_disable_rechat", tid);
+                bypassAllrechat = true;
+            }
+
+            if (GlobalRechatPolicyAsap == 0 && !whisperModeActive && bypassAllrechat == false ) {
                 if (countItems() == 1 && !unfinished) {
                     // Last item in queue and SGPQueue is finished
                     std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
@@ -3419,94 +3427,95 @@ void SpeakManager::process(AIAgent *agent) {
                     playerInDialog = true;
                 }
 
-                logger::info("[RECHAT {}] Rechat evaluation", tid);
-                if (playerInDialog) {
-                    logger::info("[RECHAT {}] Avoiding rechat, player is in dialog", tid);
-                } else if (whisperModeActive) {
-                    logger::info("[RECHAT {}] Avoiding rechat, WHISPER mode is private", tid);
-                } else if (GlobalRechatPolicyAsap == 0 && res != 2 && earlyRechat == false) {
-                    bool unfinished = spgResponse.isUnfinished();
+                if (bypassAllrechat == false) {
+                    logger::info("[RECHAT {}] Rechat evaluation", tid);
+                    if (playerInDialog) {
+                        logger::info("[RECHAT {}] Avoiding rechat, player is in dialog", tid);
+                    } else if (whisperModeActive) {
+                        logger::info("[RECHAT {}] Avoiding rechat, WHISPER mode is private", tid);
+                    } else if (GlobalRechatPolicyAsap == 0 && res != 2 && earlyRechat == false) {
+                        bool unfinished = spgResponse.isUnfinished();
 
-                    if (countItems() == 1 && !unfinished) {
-                        // Only one item pending. Lets launch rechat event here
+                        if (countItems() == 1 && !unfinished) {
+                            // Only one item pending. Lets launch rechat event here
 
-                        std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
-                        std::string rechatTargetHint = ResolveScriptLineRechatTargetHint(scriptLine);
+                            std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
+                            std::string rechatTargetHint = ResolveScriptLineRechatTargetHint(scriptLine);
 
-                        /* But, maybe listener is different in the last line. Can happen when scriptlines are queued,
-                        and they come from different generation, like for example, return a function call */
+                            /* But, maybe listener is different in the last line. Can happen when scriptlines are
+                            queued, and they come from different generation, like for example, return a function call */
 
-                        auto lastLine = getLastItem();
+                            auto lastLine = getLastItem();
 
-                        if (!lastLine.action.empty()) {
-                            rechatListenerHint = ResolveScriptLineListenerHint(lastLine);
-                        }
-                        if (!SM::trim(lastLine.rechatTargetHint).empty()) {
-                            rechatTargetHint = ResolveScriptLineRechatTargetHint(lastLine);
-                        }
-
-                        const bool sameSpeakerAsLastRechatter = (agent->getActorName() == getLastRechatter());
-                        const bool sameSpeakerRechatInFlight = isRechatInFlightFor(agent->getActorName());
-                        if (isRechatChainClosed()) {
-                        } else if (!sameSpeakerAsLastRechatter && !sameSpeakerRechatInFlight) {
-                            logger::info("[RECHAT {}] LAUNCH Response queue has 1 items and is finished.", tid);
-                            if (rechat(agent->getActorName(), rechatListenerHint, 0, scriptLine.subtitle,
-                                       rechatTargetHint) > 0) {
-                                beginRechatAttempt(agent->getActorName());
+                            if (!lastLine.action.empty()) {
+                                rechatListenerHint = ResolveScriptLineListenerHint(lastLine);
                             }
-                        } else if (sameSpeakerRechatInFlight) {
+                            if (!SM::trim(lastLine.rechatTargetHint).empty()) {
+                                rechatTargetHint = ResolveScriptLineRechatTargetHint(lastLine);
+                            }
+
+                            const bool sameSpeakerAsLastRechatter = (agent->getActorName() == getLastRechatter());
+                            const bool sameSpeakerRechatInFlight = isRechatInFlightFor(agent->getActorName());
+                            if (isRechatChainClosed()) {
+                            } else if (!sameSpeakerAsLastRechatter && !sameSpeakerRechatInFlight) {
+                                logger::info("[RECHAT {}] LAUNCH Response queue has 1 items and is finished.", tid);
+                                if (rechat(agent->getActorName(), rechatListenerHint, 0, scriptLine.subtitle,
+                                           rechatTargetHint) > 0) {
+                                    beginRechatAttempt(agent->getActorName());
+                                }
+                            } else if (sameSpeakerRechatInFlight) {
+                                logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.",
+                                             tid, agent->getActorName());
+                                queueRechatRetry(agent->getActorName(), rechatListenerHint, rechatTargetHint,
+                                                 scriptLine.subtitle, 0);
+                            } else {
+                                logger::info("[RECHAT {}] AVOIDED because lastRechatter is same.", tid);
+                            }
+
+                        } else if (countItems() == 0 && !unfinished && getLastRechatter() != agent->getActorName() &&
+                                   !isRechatInFlightFor(agent->getActorName())) {  // One liners
+                            // Last item item pending. Lets launch rechat event here
+                            if (isRechatChainClosed()) {
+                                setLastRechatter("");
+                                resetRechatChainState();
+                            } else {
+                                logger::info("[RECHAT {}] LAUNCH Response queue has 0 items and is finished. ", tid);
+                                if (rechat(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine), 0,
+                                           scriptLine.subtitle, ResolveScriptLineRechatTargetHint(scriptLine)) > 0) {
+                                    beginRechatAttempt(agent->getActorName());
+                                }
+                            }
+                        } else if (countItems() == 0 && !unfinished && isRechatInFlightFor(agent->getActorName())) {
                             logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.", tid,
                                          agent->getActorName());
-                            queueRechatRetry(agent->getActorName(), rechatListenerHint, rechatTargetHint,
-                                             scriptLine.subtitle, 0);
+                            queueRechatRetry(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine),
+                                             ResolveScriptLineRechatTargetHint(scriptLine), scriptLine.subtitle, 0);
                         } else {
-                            logger::info("[RECHAT {}] AVOIDED because lastRechatter is same.", tid);
-                        }
-
-                    } else if (countItems() == 0 && !unfinished &&
-                               getLastRechatter() != agent->getActorName() &&
-                               !isRechatInFlightFor(agent->getActorName())) {  // One liners
-                        // Last item item pending. Lets launch rechat event here
-                        if (isRechatChainClosed()) {
-                            setLastRechatter("");
-                            resetRechatChainState();
-                        } else {
-                            logger::info("[RECHAT {}] LAUNCH Response queue has 0 items and is finished. ", tid);
-                            if (rechat(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine), 0,
-                                       scriptLine.subtitle, ResolveScriptLineRechatTargetHint(scriptLine)) > 0) {
-                                beginRechatAttempt(agent->getActorName());
+                            const int queueItems = countItems();
+                            const bool keepChainState =
+                                unfinished || queueItems > 0 || isRechatInFlightFor(agent->getActorName());
+                            logger::info("[RECHAT {}] NO RECHAT! Items in queue {}, unfinished {}, last rechatter {}",
+                                         tid, queueItems, unfinished, getLastRechatter());
+                            if (!keepChainState) {
+                                setLastRechatter("");
+                                resetRechatChainState();
                             }
                         }
-                    } else if (countItems() == 0 && !unfinished &&
-                               isRechatInFlightFor(agent->getActorName())) {
-                        logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.", tid,
-                                     agent->getActorName());
-                        queueRechatRetry(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine),
-                                         ResolveScriptLineRechatTargetHint(scriptLine), scriptLine.subtitle, 0);
                     } else {
-                        const int queueItems = countItems();
-                        const bool keepChainState = unfinished || queueItems > 0 ||
-                                                    isRechatInFlightFor(agent->getActorName());
-                        logger::info("[RECHAT {}] NO RECHAT! Items in queue {}, unfinished {}, last rechatter {}", tid,
-                                     queueItems, unfinished, getLastRechatter());
-                        if (!keepChainState) {
-                            setLastRechatter("");
-                            resetRechatChainState();
+                        if (GlobalRechatPolicyAsap == 0) {
+                            const int queueItems = countItems();
+                            const bool keepChainState =
+                                earlyRechat || queueItems > 0 || isRechatInFlightFor(agent->getActorName());
+                            logger::info(
+                                "[RECHAT {}] NO RECHAT! Last DownloadAndPlay return value was {},earlyRechat {} ", tid,
+                                res, earlyRechat ? 1 : 0);
+                            if (!keepChainState) {
+                                setLastRechatter("");
+                                resetRechatChainState();
+                            }
+                        } else {
+                            logger::info("[RECHAT {}] NO RECHAT! Using ASAP policy", tid, res);
                         }
-                    }
-                } else {
-                    if (GlobalRechatPolicyAsap == 0) {
-                        const int queueItems = countItems();
-                        const bool keepChainState = earlyRechat || queueItems > 0 ||
-                                                    isRechatInFlightFor(agent->getActorName());
-                        logger::info("[RECHAT {}] NO RECHAT! Last DownloadAndPlay return value was {},earlyRechat {} ",
-                                     tid, res, earlyRechat ? 1 : 0);
-                        if (!keepChainState) {
-                            setLastRechatter("");
-                            resetRechatChainState();
-                        }
-                    } else {
-                        logger::info("[RECHAT {}] NO RECHAT! Using ASAP policy", tid, res);
                     }
                 }
             }
