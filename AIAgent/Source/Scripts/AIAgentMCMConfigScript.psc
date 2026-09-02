@@ -92,6 +92,9 @@ bool		_pauseDialogueState			= false
 int			_togglePlayerTtsTraditionalDialogue
 bool		_playerTtsTraditionalDialogueState	= false
 
+int			_toggleCaptureBackgroundChat
+bool		_captureBackgroundChatState		= true
+
 
 ; Auto Activate related
 
@@ -147,6 +150,10 @@ int 		_toggle_autoadd_allraces
 bool  		_toggle_autoadd_allraces_state = false
 
 
+int 		_toggle_autoadd_creature_npcs
+bool  		_toggle_autoadd_creature_npcs_state = false
+
+
 ; Open Mic functionality
 int			_toggle_openmic
 bool		_toggle_openmic_state			= false
@@ -195,6 +202,10 @@ int			_settingsmenu_key				= -1
 ; CHIM Master Menu (Prisma UI)
 int			_keymap_mastermenu
 int			_mastermenu_key					= -1
+
+; Gesture-driven Soulgaze capture
+int			_keymap_soulgaze
+int			_soulgaze_key					= -1
 
 ; CHIM Overlay/Status Cycle (Single hotkey)
 int			_keymap_overlaystatus_cycle
@@ -264,11 +275,13 @@ bool		_camera_based_audio_stateDefault	= false
 bool		_invertheadingstateDefault		= false
 bool		_pauseDialogueStateDefault		= false
 bool		_playerTtsTraditionalDialogueStateDefault = false
+bool		_captureBackgroundChatStateDefault	= true
 bool 		_rechat_policy_asap_default		= true
 bool		_toggle_openmic_stateDefault	= false
 float		_openmic_sensitivityDefault		= 1000.0
 float		_openmic_enddelayDefault		= 1.0
 int			_openmic_mute_keyDefault		= -1
+int			_soulgaze_keyDefault			= -1
 bool		_toggle_cancel_dialogue_on_combat_stateDefault = true
 bool		_toggle_combat_barks_stateDefault	= true
 float		_combat_barks_periodDefault		= 30.0
@@ -286,7 +299,14 @@ int _prismaMcmRevision = 0
 int _slider_curve_legacy_distance 
 float _curve_legacy_distance = 1.0
 
+int _slider_maintenance_period
+float _maintenance_period = 4.0
+
 event OnPlayerLoadGame()
+	; The quest's pending key state is saved; do not replay a gesture from the loaded save.
+	if (controlScript)
+		controlScript.ResetChatHotkeys()
+	endif
 	RegisterPrismaMCMEvent()
 	; Re-apply combat settings on every game load since C++ plugin doesn't persist them
 	Debug.Trace("[CHIM] OnPlayerLoadGame")
@@ -332,6 +352,12 @@ event OnPlayerLoadGame()
 		controlScript.setConf("_player_tts_traditional_dialogue", 1)
 	else
 		controlScript.setConf("_player_tts_traditional_dialogue", 0)
+	endIf
+
+	if (_captureBackgroundChatState)
+		controlScript.setConf("_capture_background_chat", 1)
+	else
+		controlScript.setConf("_capture_background_chat", 0)
 	endIf
 
 	if (_enable3daudioplaybackstate)
@@ -410,6 +436,10 @@ event OnConfigInit()
 	if (CurrentVersion<66)
 		_camera_based_audio_state = false
 	endIf
+
+	if (CurrentVersion<73)
+		_captureBackgroundChatState = true
+	endIf
 	
 	; Load combat dialogue settings
 	int combatDialogueValue = AIAgentFunctions.get_conf_i("_combat_dialogue")
@@ -457,6 +487,12 @@ event OnConfigInit()
 	else
 		_playerTtsTraditionalDialogueState = false
 		controlScript.setConf("_player_tts_traditional_dialogue", 0)
+	endIf
+
+	if (_captureBackgroundChatState)
+		controlScript.setConf("_capture_background_chat", 1)
+	else
+		controlScript.setConf("_capture_background_chat", 0)
 	endIf
 
 	; Load spatial hearing distance settings
@@ -545,12 +581,46 @@ endEvent
 
 int function GetVersion()
 
-	return 70
+	return 73
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 73 && a_version > CurrentVersion)
+		OnConfigInit()
+	endif
+
+	if (a_version == 72 && a_version > CurrentVersion)
+		OnConfigInit()
+	endif
+	
+	if (a_version == 71 && a_version > CurrentVersion)
+		; Version 71: Refresh the SoulGaze hotkey entry for saves already on 70. Keeps every
+		; stored setting, including _soulgaze_key, so OnConfigInit is deliberately not called.
+		if (CurrentVersion < 70)
+			; Saves that never reached 70 still need the original SoulGaze setup and the
+			; OnConfigInit catch-up the version 70 block used to give them.
+			_soulgaze_key = -1
+			OnConfigInit()
+		endIf
+		RegisterPrismaMCMEvent()
+		if (_soulgaze_key != -1)
+			controlScript.doBinding20(_soulgaze_key)
+		endIf
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		if (UI.IsMenuOpen("Journal Menu"))
+			ForcePageReset()
+		endIf
+	endIf
+
+	if (a_version == 70 && a_version > CurrentVersion)
+		; Version 70: Added the independent gesture-driven Soulgaze hotkey.
+		_soulgaze_key = -1
+		OnConfigInit()
+	endIf
 
 	if (a_version == 69 && a_version > CurrentVersion)
 		OnConfigInit()
@@ -729,12 +799,13 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.beginChimMcmSnapshot()
 
 	; Prisma captures DirectInput key codes and applies them only when Save is pressed.
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Open Prisma Text Chat and type a message.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Push to talk with AI NPCs or summarize an open book.", "keymap", _myKey2 as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Open Prisma Text Chat immediately. Holding the key also opens it.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Hold to talk. Tap to stop current and queued dialogue, or double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it.", "keymap", _myKey2 as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "manual_ai_activate", "Manual AI Activate", "Activate or deactivate AI control for the targeted NPC.", "keymap", _myKey7 as String, "0|0|0||0|0")
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Legacy text chat input. Use Text Chat instead.", "keymap", _myKey as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "soulgaze", SoulGazeDisplayName(), "Tap to capture visual context, double-tap an AI NPC for a portrait, or hold for a nearby NPC to describe the scene.", "keymap", _soulgaze_key as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat_deprecated", "Text Chat (Deprecated)", "Tap to type a message in the legacy textbox. Hold to make the NPC in your crosshair wait here. Use Text Chat for Prisma UI.", "keymap", _myKey as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "chatbox_view", "Chatbox View", "Toggle the live Prisma Chatbox View.", "keymap", _chatbox_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "actions_menu", "Actions Menu", "Open the Prisma AI actions panel.", "keymap", _settingsmenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Prisma Hotkeys", "overlay_status_cycle", "Status, Minihud, Terminator Views", "Cycle through the Prisma status views.", "keymap", _overlaystatus_cycle_key as String, "0|0|0||0|0")
@@ -754,6 +825,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_outside", "Exterior Spatial Hearing Distance", "Set outdoor conversation hearing distance.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Hearing", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_creature_npcs", "Add Creature NPCs", "Allow Auto Activate for a set group of creatures such as dragons, giants, Falmer, undead and animal followers. Hostile ones still need Add Hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_creature_npcs_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
 
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
@@ -761,6 +833,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "animations", "Enable Animations", "Allow AI NPCs to perform animations.", "toggle", PrismaMCMBool(_animationstate), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "player_tts_traditional_dialogue", "Player TTS for Traditional Dialogue", "Play configured Player TTS for traditional dialogue choices.", "toggle", PrismaMCMBool(_playerTtsTraditionalDialogueState), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "capture_background_chat", "Vanilla Dialogue", "When on, vanilla dialogue-menu conversations and nearby ambient NPC chatter are added to AI context. When off, neither is captured; normal dialogue and subtitles still work.", "toggle", PrismaMCMBool(_captureBackgroundChatState), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "soulgaze_hd", "Soulgaze HD Mode", "Use DirectX backbuffer capture for Soulgaze.", "toggle", PrismaMCMBool(_toggleState7), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "timeout", "Connection Timeout", "Timeout for requests to CHIM Server.", "slider", _timeout_int as String, "15|300|1|seconds|0|0")
 	PublishPrismaMCMEntry("Behavior", "NPC Behavior", "npc_sandbox_near", "NPCs Sandbox Near Player", "Let NPCs subtly move near the player during conversations.", "toggle", PrismaMCMBool(_toggle_npc_go_near_state), "0|1|1||0|0")
@@ -795,8 +868,17 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
 EndFunction
 
+; Prisma label only. The native MCM uses the "$chim_soulgaze_hotkey" translation key so
+; SkyUI resolves the casing in Scaleform instead of relying on the Papyrus string table.
+; Build the label at runtime so the assembler cannot merge it with the "soulgaze" ID.
+; A local variable prevents the optimizer from folding the concatenation into a literal.
+String Function SoulGazeDisplayName()
+	String prefix = "Soul"
+	return prefix + "Gaze"
+EndFunction
+
 bool Function IsPrismaMCMKeySetting(String keyName)
-	return keyName == "text_chat" || keyName == "voice_chat" || keyName == "halt_ai_actions" || keyName == "master_menu" || keyName == "manual_ai_activate" || keyName == "text_chat_deprecated" || keyName == "chatbox_view" || keyName == "actions_menu" || keyName == "overlay_status_cycle" || keyName == "history_diaries_cycle" || keyName == "browser" || keyName == "logs_view" || keyName == "master_wheel" || keyName == "roleplay_wheel" || keyName == "settings_wheel" || keyName == "mode_wheel" || keyName == "soulgaze_wheel" || keyName == "openmic_mute"
+	return keyName == "text_chat" || keyName == "voice_chat" || keyName == "halt_ai_actions" || keyName == "master_menu" || keyName == "manual_ai_activate" || keyName == "soulgaze" || keyName == "text_chat_deprecated" || keyName == "chatbox_view" || keyName == "actions_menu" || keyName == "overlay_status_cycle" || keyName == "history_diaries_cycle" || keyName == "browser" || keyName == "logs_view" || keyName == "master_wheel" || keyName == "roleplay_wheel" || keyName == "settings_wheel" || keyName == "mode_wheel" || keyName == "soulgaze_wheel" || keyName == "openmic_mute"
 EndFunction
 
 bool Function IsPrismaMCMValueValid(String keyName, float value)
@@ -866,6 +948,10 @@ bool Function ApplyPrismaMCMKeySetting(String keyName, int keyCode)
 		controlScript.removeBinding(_myKey7)
 		_myKey7 = keyCode
 		controlScript.doBinding7(keyCode)
+	elseif keyName == "soulgaze"
+		controlScript.removeBinding(_soulgaze_key)
+		_soulgaze_key = keyCode
+		controlScript.doBinding20(keyCode)
 	elseif keyName == "text_chat_deprecated"
 		controlScript.removeBinding(_myKey)
 		_myKey = keyCode
@@ -962,6 +1048,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "autoadd_allraces"
 		_toggle_autoadd_allraces_state = enabled
 		controlScript.setConf("_autoadd_allraces", value)
+	elseif keyName == "autoadd_creature_npcs"
+		_toggle_autoadd_creature_npcs_state = enabled
+		controlScript.setConf("_autoadd_creature_npcs", value)
 	elseif keyName == "bored_period"
 		_bored_period = value
 		controlScript.setConf("_bored_period", value)
@@ -977,6 +1066,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "player_tts_traditional_dialogue"
 		_playerTtsTraditionalDialogueState = enabled
 		controlScript.setConf("_player_tts_traditional_dialogue", value)
+	elseif keyName == "capture_background_chat"
+		_captureBackgroundChatState = enabled
+		controlScript.setConf("_capture_background_chat", value)
 	elseif keyName == "soulgaze_hd"
 		_toggleState7 = enabled
 		controlScript.setSoulgazeModeNative(enabled as Int)
@@ -1173,6 +1265,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
+		_keymap_soulgaze = AddKeyMapOption("$chim_soulgaze_hotkey", _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
@@ -1185,7 +1278,7 @@ event OnPageReset(string a_page)
 		_keymap_browser = AddKeyMapOption("Browser Beta", _browser_key)
 		_keymap_debugger = AddKeyMapOption("Logs View (Beta)", _debugger_key)
 
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("Wheel Menus (Deprecated)")
 		AddEmptyOption()
 		_keymap_masterwheel = AddKeyMapOption("Master Wheel", _masterwheel_key)
@@ -1210,6 +1303,8 @@ event OnPageReset(string a_page)
 		
 		_toggle_autoadd_hostile	= AddToggleOption("Add Hostile NPCs", _toggle_autoadd_hostile_state)
 		AddEmptyOption() 
+		_toggle_autoadd_creature_npcs	= AddToggleOption("Add Creature NPCs", _toggle_autoadd_creature_npcs_state)
+		AddEmptyOption()
 		_toggle_autoadd_allraces	= AddToggleOption("Add All races", _toggle_autoadd_allraces_state)
 		
 	endif
@@ -1218,17 +1313,19 @@ event OnPageReset(string a_page)
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
 		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("General Behavior")
 		AddEmptyOption()
 
 		_toggle1OID_C = AddToggleOption("Enable AI Actions", _toggleState2)
 		_toggleAnimation = AddToggleOption("Enable Animations", _animationstate)
 		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
+		_toggleCaptureBackgroundChat = AddToggleOption("Vanilla Dialogue", _captureBackgroundChatState)
 		_toggle1OID_E = AddToggleOption("Soulgaze HD Mode", _toggleState7)
 		_slider_timeout = AddSliderOption("Connection Timeout (seconds)", _timeout_int, "{1}")
+		_slider_maintenance_period = AddSliderOption("Maintenance period", _maintenance_period, "{0}")
 
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("NPC Behavior")
 		AddEmptyOption()
 		
@@ -1238,13 +1335,13 @@ event OnPageReset(string a_page)
 		
 		_toggle_restrict_onscene	= AddToggleOption("NPC Scene Safety", _toggle_restrict_onscene_state)
 		
-		AddEmptyOption()
+		;AddEmptyOption()
 		AddHeaderOption("Combat Settings")
 		AddEmptyOption()
 		
 		_toggle_combatdialogue	= AddToggleOption("Allow combat dialogue", _toggle_combatdialogue_state)
 		_toggle_cancel_dialogue_on_combat = AddToggleOption("Clear dialogue entering combat", _toggle_cancel_dialogue_on_combat_state)
-		AddEmptyOption()
+		;ººAddEmptyOption()
 		_toggle_combat_barks = AddToggleOption("Enable Combat Barks", _toggle_combat_barks_state)
 		_slider_combat_barks_period = AddSliderOption("Combat Bark Timer (seconds)", _combat_barks_period, "{0}")
 		
@@ -1515,6 +1612,14 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogInterval(0.1)
 	endIf
 	
+	if (a_option == _slider_maintenance_period)
+		SetSliderDialogStartValue(_maintenance_period)
+		SetSliderDialogDefaultValue(4)
+		SetSliderDialogRange(4, 60)
+		SetSliderDialogInterval(1)
+	endIf
+	
+
 endEvent
 
 event OnOptionSliderAccept(int a_option, float a_value)
@@ -1640,6 +1745,13 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		SetSliderOptionValue(a_option, a_value, "{0}")
 	endIf
 	
+	if (a_option == _slider_maintenance_period)
+		_maintenance_period = a_value
+		controlScript.setConf("_maintenance_period",_maintenance_period)
+		SetSliderOptionValue(a_option, a_value, "{0}")
+	endIf
+	
+	
 	_prismaMcmRevision += 1
 endEvent
 	
@@ -1682,6 +1794,11 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_camera_based_audio",0)
 	endif
+	if (_invertheadingstate)
+		a=controlScript.setConf("_invertheadingstate",1)
+	else
+		a=controlScript.setConf("_invertheadingstate",0)
+	endif
 	a=controlScript.setConf("_lip_int",_lip_int)
 	a=controlScript.setConf("_lip_res",_lip_res)
 	a=controlScript.setConf("_timeout",_timeout_int)
@@ -1694,6 +1811,7 @@ event OnGameReload()
 	a=controlScript.setConf("_auto_hearing_radius_m",_auto_hearing_radius_m)
 	
 	a=controlScript.setConf("_curve_legacy_distance",_curve_legacy_distance)
+	a=controlScript.setConf("_maintenance_period",_maintenance_period)
 	
 	controlScript.mdi=_max_distance_inside;
 	controlScript.mdo=_max_distance_outside;
@@ -1729,6 +1847,12 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_player_tts_traditional_dialogue",0)
 	endif
+
+	if (_captureBackgroundChatState)
+		a=controlScript.setConf("_capture_background_chat",1)
+	else
+		a=controlScript.setConf("_capture_background_chat",0)
+	endif
 	
 	if (_toggle_autoadd_hostile_state)
 		a=controlScript.setConf("_autoadd_hostile",1)
@@ -1742,6 +1866,12 @@ event OnGameReload()
 		a=controlScript.setConf("_autoadd_allraces",0)
 	endif
 	
+	if (_toggle_autoadd_creature_npcs_state)
+		a=controlScript.setConf("_autoadd_creature_npcs",1)
+	else
+		a=controlScript.setConf("_autoadd_creature_npcs",0)
+	endif
+
 	a=controlScript.setSoulgazeModeNative(_toggleState7 as Int)
 	
 	a=controlScript.setConf("_godmode",0)
@@ -1828,6 +1958,12 @@ event OnOptionDefault(int a_option)
 		_myKey7 = _myKey7Default
 		SetKeymapOptionValue(a_option, _myKey7)
 		controlScript.doBinding7(_myKey7)
+
+	elseif (a_option == _keymap_soulgaze)
+		controlScript.removeBinding(_soulgaze_key)
+		_soulgaze_key = _soulgaze_keyDefault
+		SetKeymapOptionValue(a_option, _soulgaze_key)
+		controlScript.doBinding20(_soulgaze_key)
 
 	elseif (a_option == _toggle1OID_C)
 		_toggleState2 = _toggleState2Default
@@ -1936,6 +2072,11 @@ event OnOptionDefault(int a_option)
 		_playerTtsTraditionalDialogueState = _playerTtsTraditionalDialogueStateDefault
 		controlScript.setConf("_player_tts_traditional_dialogue", 0)
 		SetToggleOptionValue(a_option, _playerTtsTraditionalDialogueState)
+
+	elseif (a_option == _toggleCaptureBackgroundChat)
+		_captureBackgroundChatState = _captureBackgroundChatStateDefault
+		controlScript.setConf("_capture_background_chat", 1)
+		SetToggleOptionValue(a_option, _captureBackgroundChatState)
 		
 	elseif (a_option == _toggle_openmic)
 		_toggle_openmic_state = _toggle_openmic_stateDefault
@@ -1954,6 +2095,11 @@ event OnOptionDefault(int a_option)
 		_openmic_mute_key = _openmic_mute_keyDefault
 		SetKeymapOptionValue(a_option, _openmic_mute_key)
 		controlScript.doBinding9(_openmic_mute_key)
+
+	elseif (a_option == _toggle_autoadd_creature_npcs)
+		_toggle_autoadd_creature_npcs_state = false
+		controlScript.setConf("_autoadd_creature_npcs", 0)
+		SetToggleOptionValue(a_option, _toggle_autoadd_creature_npcs_state)
 	endIf
 	
 endEvent
@@ -2049,6 +2195,15 @@ event OnOptionKeyMapChange(int a_option, int a_keyCode, string a_conflictControl
 			controlScript.removeBinding(_myKey7)
 			_myKey7 = a_keyCode
 			controlScript.doBinding7(a_keyCode)
+			if (a_keyCode == -1)
+				ForcePageReset()
+			else
+				SetKeymapOptionValue(a_option, a_keyCode)
+			endif
+		elseif (a_option == _keymap_soulgaze)
+			controlScript.removeBinding(_soulgaze_key)
+			_soulgaze_key = a_keyCode
+			controlScript.doBinding20(_soulgaze_key)
 			if (a_keyCode == -1)
 				ForcePageReset()
 			else
@@ -2281,6 +2436,18 @@ event OnOptionSelect(int a_option)
 		
 		SetToggleOptionValue(a_option, _playerTtsTraditionalDialogueState)
 	endIf
+
+	if (a_option == _toggleCaptureBackgroundChat)
+		_captureBackgroundChatState = !_captureBackgroundChatState
+
+		if (_captureBackgroundChatState)
+			controlScript.setConf("_capture_background_chat",1)
+		else
+			controlScript.setConf("_capture_background_chat",0)
+		endif
+
+		SetToggleOptionValue(a_option, _captureBackgroundChatState)
+	endIf
 	
 	if (a_option == _toggle_npc_go_near)
 		_toggle_npc_go_near_state = !_toggle_npc_go_near_state
@@ -2378,6 +2545,18 @@ event OnOptionSelect(int a_option)
  		SetToggleOptionValue(a_option, _toggle_autoadd_allraces_state)
  	endIf
 	
+	if (a_option == _toggle_autoadd_creature_npcs)
+		_toggle_autoadd_creature_npcs_state = !_toggle_autoadd_creature_npcs_state
+
+		if (_toggle_autoadd_creature_npcs_state)
+			controlScript.setConf("_autoadd_creature_npcs",1)
+		else
+			controlScript.setConf("_autoadd_creature_npcs",0)
+		endif
+
+		SetToggleOptionValue(a_option, _toggle_autoadd_creature_npcs_state)
+	endIf
+
 	if (a_option == _toggle_openmic)
  		_toggle_openmic_state = !_toggle_openmic_state
  
@@ -2519,13 +2698,13 @@ event OnOptionHighlight(int a_option)
 	{Called when the user highlights an option}
 	
 	if (a_option == _keymapOID_K)
-		SetInfoText("Deprecated text chat input. Use Text Chat for the Prisma UI chat input when available.")
+		SetInfoText("Deprecated text chat input. Tap to type a message. Hold to make the NPC in your crosshair wait here. Use Text Chat for Prisma UI.")
 	endIf
 	if (a_option == _toggle1OID_B)
 		SetInfoText("Enables Text-to-Speech for AI NPCs.")
 	endIf
 	if (a_option == _keymapOID_K2)
-		SetInfoText("Push-to-Talk: Speak with AI NPCs or summarize open books. CHIM records from the current Windows default recording device shown below.")
+		SetInfoText("Hold to talk. Tap to stop current and queued dialogue without halting NPC actions. Double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it. CHIM uses the Windows default recording device shown below.")
 	endIf
 	if (a_option == _toggle1OID_C)
 		SetInfoText("Enable AI to perform actions.")
@@ -2609,6 +2788,10 @@ event OnOptionHighlight(int a_option)
 
 	if (a_option == _togglePlayerTtsTraditionalDialogue)
 		SetInfoText("Will play whatever PlayerTTS is selected for traditional dialogue. It must be enabled and set within the CHIM webpage and requires the optional regular or VR dialogue menu interface patch.")
+	endIf
+
+	if (a_option == _toggleCaptureBackgroundChat)
+		SetInfoText("When on, vanilla dialogue-menu conversations and nearby ambient NPC chatter are added to AI context. When off, neither is captured; normal dialogue and subtitles still work.")
 	endIf
 
 	if (a_option == _slider_max_distance_inside)
@@ -2696,7 +2879,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _keymap_chatbox_focus)
-		SetInfoText("Open Text Chat in Prisma UI so you can type and send a message, or summarize an open book, then return control to the game.")
+		SetInfoText("Open Text Chat immediately in Prisma UI. Holding the key also opens it. With a book open, press to summarize it.")
 	endIf
 	
 	if (a_option == _keymap_settingsmenu)
@@ -2705,6 +2888,10 @@ event OnOptionHighlight(int a_option)
 	
 	if (a_option == _keymap_mastermenu)
 		SetInfoText("Open the CHIM Master Menu. Quick launcher for all Prisma UI panels. Game pauses when open. Select a panel to toggle it. Requires Prisma UI.")
+	endIf
+
+	if (a_option == _keymap_soulgaze)
+		SetInfoText("Tap to capture visual context without speech. Double-tap while aiming at an activated AI NPC to update their portrait. Hold to ask the nearest activated NPC to describe the scene.")
 	endIf
 	
 	if (a_option == _toggle_autoadd_hostile)
@@ -2715,6 +2902,10 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Auto Activate policy. By default, it applies to non-hostile NPCs whose race allows player dialogue (PC Dialogue = 1). Check this option to allow Auto Activate for all races - including animals like rabbits, deer, foxes, etc. Note: Enabling this may cause instability.")
 	endIf
 	
+	if (a_option == _toggle_autoadd_creature_npcs)
+		SetInfoText("Auto Activate policy. Adds a set group of creatures: dragons, hagravens, giants, Falmer, spriggans, werewolves, undead, dwarven automatons and animal followers. Ordinary wildlife and unrecognized modded creatures stay excluded. Hostile ones are only added if Add Hostile NPCs is also on. Add All races still overrides this.")
+	endIf
+
 	if (a_option == _actionSendLocations)
 		SetInfoText("Send faction,location and unique NPCs info to the server. This can take 3-5 minutes and only needs to be done once per playthrough.")
 	endIf
@@ -2772,6 +2963,9 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Curve distance scale for emmiter. How much attenuate actors based on distance. High Values: Low Attenuation, Lower values: High Attenuation: 0: Plain 2D sound")
 	endIf
 
+	if (a_option == _slider_maintenance_period)
+		SetInfoText("How often run maintenance (restore voices, delete unussed agents). In seconds")
+	endIf
 	
 	; Help text for individual agent removal options
 	if (_agentToggleOIDs && _currentAgentNames)

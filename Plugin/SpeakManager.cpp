@@ -2238,8 +2238,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         SpeakManager::getInstance().deleteQueue();
     }
 
-    if (currentActor)
-        logger::info("End talking sentence. {}", currentActor->getCurrentAnimation());
+    if (currentActor) logger::info("End talking sentence.<{}>, anim:<{}>", text, currentActor->getCurrentAnimation());
 
     // Free memory
     delete[] buffer;
@@ -3001,6 +3000,17 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
+        json activeAgents = json::array();
+        for (const auto& activeAgent : aiam.getAgents()) {
+            if (!activeAgent || activeAgent->isNarrator()) {
+                continue;
+            }
+            const std::string activeAgentName = trim(activeAgent->getActorName());
+            if (!activeAgentName.empty()) {
+                activeAgents.push_back(activeAgentName);
+            }
+        }
+        rechatPayload["active_agents"] = activeAgents;
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
@@ -3783,7 +3793,10 @@ void SpeakManager::process(AIAgent *agent) {
 
         setProcessing(false);
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // Speaker Manager sets a time stamp on agent to know when it finishes talking.
+            // 15 seconds are a too high value. Recommended is to have a MCM/Prisma setting to adjust MAINTENANCE_TIMEOUT
+            // and let user decide.
+            // ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15)); 
         }
 
         // Narrator cleanup MUST run before checking for more queue items.
@@ -3875,7 +3888,13 @@ void SpeakManager::processPlayer() {
             clearVisibleSubtitles();
         }
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // 15 seconds is too high if using fast llm.
+            //ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            auto aproximatedTimeToSupressMaintenance = trimmedSubtitle.length() * 0.2f;  // 0.1 seconds per character
+            long roundedTimeToSupressMaintenance = static_cast<long>(aproximatedTimeToSupressMaintenance);
+            logger::info("Maintenance suppression for {} seconds", roundedTimeToSupressMaintenance);
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(roundedTimeToSupressMaintenance));
+
         }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -4014,6 +4033,8 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
 
     auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
     auto args = RE::MakeFunctionArguments(std::move(npc));
+
+    
 
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "EndDialogue",
                                                                                args, callback);

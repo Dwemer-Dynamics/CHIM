@@ -214,6 +214,21 @@ body {
     transform: none;
 }
 
+/* Keyboard focus indicator - scoped to CHIM Actions controls */
+.setting-btn:focus,
+.corner-btn:focus,
+.close-btn:focus {
+    outline: 2px solid rgb(242, 124, 17);
+    outline-offset: 2px;
+}
+
+/* Drop the ring for pointer interaction when the engine supports :focus-visible */
+.setting-btn:focus:not(:focus-visible),
+.corner-btn:focus:not(:focus-visible),
+.close-btn:focus:not(:focus-visible) {
+    outline: none;
+}
+
 /* Footer */
 .menu-footer {
     padding: 12px 24px;

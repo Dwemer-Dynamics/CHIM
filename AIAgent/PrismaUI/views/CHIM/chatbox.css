@@ -122,7 +122,7 @@ body {
 
 .chatbox-control-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr)) minmax(0, 0.75fr);
+    grid-template-columns: minmax(0, 1.35fr) repeat(3, minmax(0, 1fr));
     gap: 12px;
     align-items: start;
 }
@@ -369,10 +369,6 @@ body {
 .chatbox-option-tile:disabled {
     cursor: not-allowed;
     opacity: 0.5;
-}
-
-.chatbox-control-block.focus-stack .chatbox-control-value {
-    min-height: 40px;
 }
 
 .chatbox-profile-menu-toggle {
@@ -861,55 +857,6 @@ body {
 
 .chatbox-inline-btn:hover {
     background: rgba(242, 124, 17, 0.3);
-}
-
-.chatbox-focus-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 72px;
-    padding: 6px 12px;
-    border-radius: 999px;
-    border: 1px solid rgba(100, 100, 110, 0.4);
-    background: rgba(100, 100, 110, 0.2);
-    color: #888;
-    font-size: 0.8em;
-    font-weight: 700;
-    letter-spacing: 0.45px;
-    cursor: pointer;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
-    transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
-}
-
-.chatbox-focus-toggle:hover {
-    transform: translateY(-1px);
-    border-color: rgba(242, 124, 17, 0.6);
-    background: rgba(242, 124, 17, 0.2);
-    color: #f2f2f2;
-    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(242, 124, 17, 0.18);
-}
-
-.chatbox-focus-toggle.on {
-    background: rgba(46, 204, 113, 0.2);
-    color: #58d68d;
-    border-color: rgba(46, 204, 113, 0.4);
-}
-
-.chatbox-focus-toggle.on:hover {
-    border-color: rgba(46, 204, 113, 0.7);
-    background: rgba(46, 204, 113, 0.28);
-    color: #b8f6cb;
-    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(46, 204, 113, 0.22);
-}
-
-.chatbox-focus-toggle.off {
-    background: rgba(100, 100, 110, 0.2);
-    color: #888;
-    border-color: rgba(100, 100, 110, 0.4);
-}
-
-.chatbox-focus-toggle.off:hover {
-    color: #f1f1f4;
 }
 
 .toggle-indicator {
@@ -1593,6 +1540,163 @@ body {
     line-height: 1.35;
 }
 
+.focus-chatbox-mood-picker {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    margin: 0;
+    padding: 6px 14px;
+    border: 0;
+    background: rgba(18, 18, 26, 0.95);
+}
+
+.focus-chatbox-mood-label {
+    flex: 0 0 auto;
+    padding: 0;
+    color: #a7a7b0;
+    font-size: 0.72em;
+    letter-spacing: 0.45px;
+    text-transform: uppercase;
+}
+
+.focus-chatbox-mood-options {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.focus-chatbox-mood-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.focus-chatbox-mood-option {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid rgba(120, 120, 132, 0.34);
+    border-radius: 6px;
+    background: rgba(30, 30, 40, 0.9);
+    color: #ddd;
+    font-family: "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+    font-size: 1.05em;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.focus-chatbox-mood-option:hover {
+    border-color: rgba(242, 124, 17, 0.55);
+    background: rgba(242, 124, 17, 0.22);
+}
+
+.focus-chatbox-mood-input:checked + .focus-chatbox-mood-option {
+    border-color: rgba(242, 124, 17, 0.82);
+    background: rgba(242, 124, 17, 0.34);
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.focus-chatbox-mood-input:focus-visible + .focus-chatbox-mood-option {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.28);
+}
+
+/* Pointer hover or keyboard focus names the mood above its icon; the row itself stays icon-only. */
+.focus-chatbox-mood-tip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    z-index: 160;
+    padding: 3px 7px;
+    border: 1px solid rgba(242, 124, 17, 0.62);
+    border-radius: 5px;
+    background: rgba(16, 14, 20, 0.99);
+    color: #dedbe2;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.66);
+    font-family: 'Segoe UI', 'Roboto', 'Arial', sans-serif;
+    font-size: 11px;
+    line-height: 1.3;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: nowrap;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, -3px);
+    transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s ease;
+}
+
+.focus-chatbox-mood-option:hover .focus-chatbox-mood-tip {
+    visibility: visible;
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+/* Kept out of the hover selector list so hover survives engines without :focus-visible. */
+.focus-chatbox-mood-input:focus-visible + .focus-chatbox-mood-option .focus-chatbox-mood-tip {
+    visibility: visible;
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+/* Custom mood free-text field sits directly beside its pencil icon and wraps with the roster. */
+.focus-chatbox-mood-custom-input {
+    flex: 0 1 196px;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 30px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid rgba(120, 120, 132, 0.34);
+    border-radius: 6px;
+    outline: none;
+    background: rgba(30, 30, 40, 0.9);
+    color: #e8e8e8;
+    font-family: inherit;
+    font-size: 0.82em;
+    line-height: 1;
+}
+
+.focus-chatbox-mood-custom-input:hover {
+    border-color: rgba(242, 124, 17, 0.55);
+}
+
+.focus-chatbox-mood-custom-input:focus,
+.focus-chatbox-mood-custom-input:focus-visible {
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.28);
+}
+
+.focus-chatbox-mood-custom-input[aria-invalid="true"] {
+    border-color: rgb(214, 78, 66);
+    box-shadow: 0 0 0 2px rgba(214, 78, 66, 0.26);
+}
+
+.focus-chatbox-mood-custom-error {
+    flex: 1 1 100%;
+    min-width: 0;
+    color: #ef9a92;
+    font-size: 0.72em;
+    letter-spacing: 0.3px;
+}
+
+.focus-chatbox-mood-custom-error[hidden] {
+    display: none;
+}
+
 .focus-chatbox-actions {
     display: flex;
     flex-direction: column;
@@ -1667,6 +1771,28 @@ body {
     flex-direction: column;
     gap: 4px;
     align-items: flex-end;
+}
+
+/* Its own small group so the Soulgaze trigger sits beside the Delete Events
+   controls at natural button width instead of stretching the row. The row's
+   align-items: flex-end keeps it baseline-aligned with the Delete button
+   even though this group has no label above it. */
+.focus-chatbox-soulgaze-controls {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: flex-end;
+}
+
+/* Compact per-save capture toggle. It leads the secondary row so Soulgaze and
+   Delete Events keep their existing right-aligned spots, and it is the
+   positioning context for a help bubble that has to open upward. */
+.focus-chatbox-capture-controls {
+    position: relative;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    align-items: center;
+    margin-right: auto;
 }
 
 .focus-chatbox-delete-label {
@@ -1747,6 +1873,22 @@ body {
     .focus-chatbox-event-controls {
         width: 100%;
     }
+
+    /* The Soulgaze group wraps onto its own line above the full-width Delete
+       Events group rather than stretching, so the trigger keeps the same
+       size as every other action button. */
+    .focus-chatbox-soulgaze-controls {
+        max-width: 100%;
+        justify-content: flex-end;
+    }
+
+    /* Drops the auto margin so the toggle leads its own line instead of
+       fighting the wrapped Soulgaze and Delete Events groups for space. */
+    .focus-chatbox-capture-controls {
+        width: 100%;
+        margin-right: 0;
+        justify-content: flex-start;
+    }
 }
 
 .focus-btn {
@@ -1789,6 +1931,181 @@ body {
 .focus-btn-stop:hover {
     background: rgba(184, 34, 34, 0.6);
     border-color: rgba(235, 106, 106, 0.76);
+}
+
+.focus-btn-compact {
+    padding: 6px 10px;
+    font-size: 0.86em;
+    line-height: 1.25;
+    white-space: nowrap;
+}
+
+.focus-chatbox-soulgaze {
+    position: relative;
+    display: flex;
+    pointer-events: auto;
+}
+
+.focus-btn-soulgaze {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-color: rgba(242, 124, 17, 0.55);
+    background: rgba(242, 124, 17, 0.24);
+}
+
+.focus-btn-soulgaze:hover,
+.focus-btn-soulgaze[aria-expanded="true"] {
+    background: rgba(242, 124, 17, 0.38);
+    border-color: rgba(242, 124, 17, 0.75);
+}
+
+.focus-btn-soulgaze:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
+}
+
+.focus-btn-soulgaze[aria-expanded="true"] .chatbox-tile-trigger-arrow {
+    transform: rotate(180deg);
+}
+
+/* Compact by design: the short "Background Chat" label plus the ON/OFF chip sit
+   at natural width on one line, so the toggle keeps the same height as the other
+   buttons in this row without dominating it. */
+.focus-btn-capture {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 10px;
+    font-size: 0.86em;
+    white-space: nowrap;
+}
+
+/* ON/OFF is spelled out rather than carried by hue alone, so the state still
+   reads under Ultralight colour shifts and for colour-blind players. */
+.capture-background-chat-state {
+    min-width: 26px;
+    padding: 1px 5px;
+    border: 1px solid rgba(242, 124, 17, 0.32);
+    border-radius: 3px;
+    background: rgba(16, 14, 20, 0.55);
+    color: #d8d5dd;
+    font-size: 0.78em;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    line-height: 1.35;
+    text-align: center;
+}
+
+/* Green when on, red when off, so the state reads at a glance from across the
+   row. The ON/OFF chip above still carries the same state in words. */
+.focus-btn-capture.is-on {
+    border-color: rgba(46, 204, 113, 0.75);
+    background: rgba(46, 204, 113, 0.28);
+    color: #e7f9ef;
+}
+
+.focus-btn-capture.is-on:hover {
+    border-color: rgba(46, 204, 113, 0.95);
+    background: rgba(46, 204, 113, 0.42);
+}
+
+.focus-btn-capture.is-on .capture-background-chat-state {
+    border-color: rgba(46, 204, 113, 0.75);
+    color: #9be8bd;
+}
+
+.focus-btn-capture.is-off {
+    border-color: rgba(231, 76, 60, 0.75);
+    background: rgba(231, 76, 60, 0.26);
+    color: #fceceb;
+}
+
+.focus-btn-capture.is-off:hover {
+    border-color: rgba(231, 76, 60, 0.95);
+    background: rgba(231, 76, 60, 0.4);
+}
+
+.focus-btn-capture.is-off .capture-background-chat-state {
+    border-color: rgba(231, 76, 60, 0.75);
+    color: #f6b3ac;
+}
+
+/* Waiting on native: no guessed ON/OFF, and the button is not clickable. */
+.focus-btn-capture.is-pending,
+.focus-btn-capture[disabled] {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.focus-btn-capture:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
+}
+
+/* The toggle lives in the bottom action row, so its help follows the Soulgaze
+   precedent and opens upward, clamped so a narrow shell cannot push it off
+   screen sideways. */
+.chatbox-mode-shortcuts.capture-background-chat-help {
+    top: auto;
+    bottom: calc(100% + 6px);
+    left: 0;
+    right: auto;
+    width: 270px;
+    max-width: calc(100vw - 32px);
+}
+
+/* Saved/missing is carried by shape as well as hue: a filled dot means the
+   current location has a stored description, a hollow ring means it does not.
+   The trigger title/aria-label spells the same state out in words. */
+.soulgaze-status-dot {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    background: transparent;
+}
+
+.soulgaze-status-dot.is-missing {
+    border-color: rgba(242, 124, 17, 0.95);
+    background: transparent;
+}
+
+.soulgaze-status-dot.is-saved {
+    border-color: rgba(46, 204, 113, 0.95);
+    background: #37d67a;
+    box-shadow: 0 0 5px rgba(46, 204, 113, 0.6);
+}
+
+/* Announced by screen readers when the stored-context state changes; the
+   visible trigger keeps reading exactly "Soulgaze". */
+.soulgaze-status-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* The secondary action row sits at the bottom of the panel, so this menu opens
+   upward and is anchored to the trigger's right edge to stay inside the shell. */
+.chatbox-tile-options.soulgaze-options {
+    top: auto;
+    bottom: calc(100% + 6px);
+    left: auto;
+    right: 0;
+    width: max(232px, 100%);
+    max-width: calc(100vw - 32px);
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .focus-btn-close {

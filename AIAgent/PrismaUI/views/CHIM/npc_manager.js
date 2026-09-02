@@ -905,6 +905,7 @@
     function addRelationshipRow(target, relationship) {
         const row = document.createElement('div');
         row.className = 'relationship-row';
+        row.relationshipData = relationship && typeof relationship === 'object' ? { ...relationship } : {};
         const targetInput = document.createElement('input');
         targetInput.className = 'relationship-target';
         targetInput.placeholder = 'NPC or Player';
@@ -925,13 +926,23 @@
         note.className = 'relationship-note';
         note.placeholder = 'Relationship note';
         note.value = String(relationship && (relationship.note || relationship.relation) || '');
+        const customInfoField = document.createElement('label');
+        customInfoField.className = 'relationship-custom-info-field';
+        const customInfoLabel = document.createElement('span');
+        customInfoLabel.textContent = 'Custom Info';
+        const customInfo = document.createElement('textarea');
+        customInfo.className = 'relationship-custom-info';
+        customInfo.rows = 3;
+        customInfo.placeholder = 'Player-only notes (not used by AI)';
+        customInfo.value = String(relationship && relationship.custom_info || '');
+        customInfoField.append(customInfoLabel, customInfo);
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'remove-relationship';
         remove.textContent = '×';
         remove.title = 'Remove relationship';
         remove.addEventListener('click', () => row.remove());
-        row.append(targetInput, affinity, type, note, remove);
+        row.append(targetInput, affinity, type, note, remove, customInfoField);
         byId('relationship-list').appendChild(row);
     }
 
@@ -946,9 +957,11 @@
             const target = row.querySelector('.relationship-target').value.trim();
             if (!target) return;
             relationships[target] = {
+                ...(row.relationshipData || {}),
                 aff: Number(row.querySelector('.relationship-affinity').value || 0),
                 type: row.querySelector('.relationship-type').value,
-                note: row.querySelector('.relationship-note').value.trim()
+                note: row.querySelector('.relationship-note').value.trim(),
+                custom_info: row.querySelector('.relationship-custom-info').value.trim()
             };
         });
         return relationships;

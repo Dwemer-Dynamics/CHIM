@@ -1,5 +1,4 @@
-
-
+#include <functional>
 
 class HerikaAnimGraphEventSink : public RE::BSTEventSink<RE::BSAnimationGraphEvent> {
 public:
@@ -19,7 +18,8 @@ void commandIdleLookFar();
 bool commandAnimation(std::string anim,RE::Actor *npc);
 void resetAnimation();
 
-void StartAttack(std::string targetName, RE::Actor *actor,bool lethal);
+void StartAttack(std::string targetName, RE::Actor *actor);
+void StartBrawl(std::string targetName, RE::Actor *actor);
 void Follow(std::string targetName);
 void StopCurrent(RE::Actor *npc);
 void StartSneakTo(std::string targetName);
@@ -43,8 +43,9 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange);
 std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache);
 RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell,RE::Actor *npc,int mode);
 
-// Inventory refresh function (defined in Plugin.cpp)
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous = false);
+// Completion runs after the server has accepted the snapshot or delivery has failed.
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
+                             bool synchronous = false, std::function<void(bool)> completion = {});
 RE::Actor* ResolvePendingBarterMerchant(RE::Actor* fallbackMerchant);
 void SetPendingBarterMerchant(RE::Actor* merchant);
 
