@@ -1089,6 +1089,647 @@
         if (tabName === 'history') loadNpcHistory();
     }
 
+    // ---------------------------------------------------------------------------
+    // Reference groups
+    //
+    // A group names the exact placed references that are one character, so those actors share a
+    // single profile. CHIM ships a built-in list; a custom row carrying the same group key replaces
+    // the built-in entry until it is reset. The shell below is built here rather than in the page
+    // markup because the settings view hosts this same NPC page from its own document.
+    // ---------------------------------------------------------------------------
+    const referenceState = {
+        defaults: [],
+        custom: [],
+        loading: false,
+        saving: false,
+        failed: false,
+        editing: null,
+        returnFocus: null,
+        editorReturnFocus: null,
+        editorReturnKey: ''
+    };
+
+    const REFERENCE_MODAL_MARKUP = `
+<section id="reference-modal" class="editor-modal reference-modal" role="dialog" aria-modal="true"
+         aria-labelledby="reference-title" aria-describedby="reference-intro">
+    <header class="editor-header">
+        <div class="reference-heading">
+            <h2 id="reference-title">Reference Groups</h2>
+            <p id="reference-intro" class="reference-intro">A group lists the exact placed references that are the same character, so they share one profile. Changes take effect the next time those actors register. Existing links remain until you unlink them in the web NPC Manager.</p>
+        </div>
+        <button id="reference-close" class="icon-button" type="button" aria-label="Close reference groups">&times;</button>
+    </header>
+    <div class="reference-body">
+        <div class="reference-status-line">
+            <span id="reference-status" class="reference-status" role="status" aria-live="polite"></span>
+            <span id="reference-count" class="reference-count"></span>
+        </div>
+
+        <form id="reference-editor" class="reference-editor" autocomplete="off" aria-labelledby="reference-editor-title" hidden>
+            <h3 id="reference-editor-title">Add a group</h3>
+            <p id="reference-editor-note" class="reference-editor-note" hidden></p>
+            <div class="reference-editor-grid">
+                <label class="form-field">
+                    <span>Character or group name</span>
+                    <input id="reference-display-name" type="text" maxlength="120" placeholder="Sigrid">
+                </label>
+                <label class="form-field">
+                    <span>Plugin file</span>
+                    <input id="reference-plugin-name" type="text" maxlength="120" spellcheck="false" placeholder="Skyrim.esm">
+                </label>
+            </div>
+            <label class="form-field">
+                <span>Reference FormIDs</span>
+                <textarea id="reference-formids" class="reference-formids" rows="3" spellcheck="false"
+                          aria-describedby="reference-formids-hint" placeholder="0001A66C"></textarea>
+            </label>
+            <p id="reference-formids-hint" class="reference-hint">Local FormIDs from the plugin above, without the load order prefix. One per line, or separated by spaces or commas.</p>
+            <label class="check-field"><input id="reference-enabled" type="checkbox"><span>Enabled</span></label>
+            <div class="reference-editor-actions">
+                <span id="reference-editor-status" class="reference-editor-status" role="status" aria-live="polite"></span>
+                <button id="reference-cancel" class="button secondary compact" type="button">Cancel</button>
+                <button id="reference-save" class="button primary compact" type="submit">Save group</button>
+            </div>
+        </form>
+
+        <section class="reference-section" aria-labelledby="reference-defaults-heading">
+            <div class="reference-section-heading">
+                <div>
+                    <h3 id="reference-defaults-heading">Built-in defaults</h3>
+                    <p>Shipped with CHIM. Customize one to keep your own version of it.</p>
+                </div>
+            </div>
+            <div class="reference-table-wrap">
+                <table class="reference-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Character or group</th>
+                            <th scope="col">Plugin</th>
+                            <th scope="col">Reference FormIDs</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reference-defaults-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="reference-section" aria-labelledby="reference-custom-heading">
+            <div class="reference-section-heading">
+                <div>
+                    <h3 id="reference-custom-heading">Your groups</h3>
+                    <p>Groups you added, plus your versions of built-in ones. Resetting a version brings the built-in group back.</p>
+                </div>
+                <button id="reference-add" class="button secondary compact" type="button"
+                        aria-controls="reference-editor" aria-expanded="false">Add group</button>
+            </div>
+            <div class="reference-table-wrap">
+                <table class="reference-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Character or group</th>
+                            <th scope="col">Plugin</th>
+                            <th scope="col">Reference FormIDs</th>
+                            <th scope="col">Kind</th>
+                            <th scope="col">State</th>
+                            <th scope="col">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reference-custom-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+    <footer class="editor-actions reference-footer">
+        <button id="reference-refresh" class="button secondary compact" type="button">Refresh</button>
+        <button id="reference-done" class="button secondary" type="button">Close</button>
+    </footer>
+</section>`;
+
+    function toBoolean(value, fallback) {
+        if (value === undefined || value === null || value === '') return !!fallback;
+        if (typeof value === 'string') return !/^(0|false|no|off)$/i.test(value.trim());
+        return !!value;
+    }
+
+    // Local FormIDs are stored without the load order prefix, so only the plugin-local digits are kept.
+    function normalizeLocalFormid(value) {
+        const raw = String(value == null ? '' : value).trim().replace(/^0x/i, '').toUpperCase();
+        return /^[0-9A-F]{1,8}$/.test(raw) ? raw.padStart(8, '0') : '';
+    }
+
+    // Leading zeros are cosmetic, so short input and canonical eight-digit input deduplicate.
+    function formidKey(id) {
+        return id.replace(/^0+/, '') || '0';
+    }
+
+    function normalizeFormidList(value) {
+        let raw = value;
+        if (typeof raw === 'string') raw = raw.split(/[\s,;]+/);
+        if (!Array.isArray(raw)) return [];
+        const ids = [];
+        const seen = new Set();
+        raw.forEach((entry) => {
+            const id = normalizeLocalFormid(entry);
+            if (!id || seen.has(formidKey(id))) return;
+            seen.add(formidKey(id));
+            ids.push(id);
+        });
+        return ids;
+    }
+
+    // Operators paste FormIDs in every shape, so any run of whitespace, comma or semicolon separates
+    // them. Unreadable entries are reported instead of being dropped in silence.
+    function readFormidField(text) {
+        const ids = [];
+        const invalid = [];
+        const seen = new Set();
+        String(text == null ? '' : text).split(/[\s,;]+/).filter(Boolean).forEach((token) => {
+            const id = normalizeLocalFormid(token);
+            if (!id) {
+                invalid.push(token);
+                return;
+            }
+            if (seen.has(formidKey(id))) return;
+            seen.add(formidKey(id));
+            ids.push(id);
+        });
+        return { ids, invalid };
+    }
+
+    function referenceRow(row, isDefault) {
+        const source = row && typeof row === 'object' ? row : {};
+        return {
+            key: String(source.group_key == null ? '' : source.group_key).trim(),
+            name: String(source.display_name == null ? '' : source.display_name).trim(),
+            plugin: String(source.plugin_name == null ? '' : source.plugin_name).trim(),
+            formids: normalizeFormidList(source.local_formids),
+            enabled: toBoolean(source.enabled, true),
+            overridesDefault: !isDefault && toBoolean(source.overrides_default, false)
+        };
+    }
+
+    function referenceModalOpen() {
+        const backdrop = byId('reference-backdrop');
+        return !!backdrop && !backdrop.classList.contains('hidden');
+    }
+
+    function referenceEditorOpen() {
+        const editor = byId('reference-editor');
+        return !!editor && !editor.hidden;
+    }
+
+    function setReferenceStatus(message, error, good) {
+        const status = byId('reference-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.classList.toggle('error', !!error);
+        status.classList.toggle('good', !error && !!good);
+    }
+
+    function setReferenceEditorStatus(message, error) {
+        const status = byId('reference-editor-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.classList.toggle('error', !!error);
+    }
+
+    function referenceCell(label, className) {
+        const cell = document.createElement('td');
+        cell.dataset.label = label;
+        if (className) cell.className = className;
+        return cell;
+    }
+
+    function referenceTextCell(label, text, className, muted) {
+        const cell = referenceCell(label, className);
+        if (muted) cell.classList.add('reference-muted');
+        cell.textContent = text;
+        return cell;
+    }
+
+    function referenceFormidCell(group) {
+        return group.formids.length
+            ? referenceTextCell('Reference FormIDs', group.formids.join(', '), 'reference-formid-list')
+            : referenceTextCell('Reference FormIDs', 'None listed', 'reference-formid-list', true);
+    }
+
+    function referenceMessageRow(text, columns, error) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.className = `reference-cell-message${error ? ' error' : ''}`;
+        cell.colSpan = columns;
+        cell.textContent = text;
+        row.appendChild(cell);
+        return row;
+    }
+
+    function referenceActionButton(label, action, group, danger) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `reference-action${danger ? ' danger' : ''}`;
+        button.textContent = label;
+        button.dataset.action = action;
+        button.dataset.groupKey = group.key;
+        button.disabled = referenceState.saving;
+        return button;
+    }
+
+    // Row buttons are rebuilt on every refresh, so focus is restored by group key, not by element.
+    function referenceActionFor(key) {
+        const modal = byId('reference-modal');
+        if (!modal || !key) return null;
+        return Array.from(modal.querySelectorAll('.reference-action'))
+            .find((button) => button.dataset.groupKey === key) || null;
+    }
+
+    function customGroupFor(key) {
+        return referenceState.custom.find((entry) => entry.key && entry.key === key) || null;
+    }
+
+    function renderReferenceDefaults() {
+        const body = byId('reference-defaults-body');
+        if (!body) return;
+        body.replaceChildren();
+        if (referenceState.loading) {
+            body.appendChild(referenceMessageRow('Loading groups...', 5));
+            return;
+        }
+        if (referenceState.failed) {
+            body.appendChild(referenceMessageRow('Groups could not be loaded.', 5, true));
+            return;
+        }
+        if (!referenceState.defaults.length) {
+            body.appendChild(referenceMessageRow('No built-in groups are available.', 5));
+            return;
+        }
+        referenceState.defaults.forEach((group) => {
+            const override = customGroupFor(group.key);
+            const row = document.createElement('tr');
+            row.className = `reference-row${override ? ' overridden' : ''}`;
+            row.append(
+                referenceTextCell('Character or group', group.name || 'Unnamed group', 'reference-name'),
+                referenceTextCell('Plugin', group.plugin || 'Unknown plugin', 'reference-plugin'),
+                referenceFormidCell(group)
+            );
+            const status = referenceCell('Status');
+            status.appendChild(override
+                ? pill('Overridden')
+                : (group.enabled ? pill('In use', 'good') : pill('Disabled')));
+            row.appendChild(status);
+
+            const actions = referenceCell('Actions');
+            const wrap = document.createElement('div');
+            wrap.className = 'reference-row-actions';
+            const label = override ? 'Edit override' : 'Customize';
+            const button = referenceActionButton(label, override ? 'edit' : 'customize', group);
+            button.setAttribute('aria-label', `${label} ${group.name || 'group'}`);
+            button.addEventListener('click', () => {
+                const current = customGroupFor(group.key);
+                openReferenceEditor(current ? 'edit' : 'customize', current || group, button);
+            });
+            wrap.appendChild(button);
+            actions.appendChild(wrap);
+            row.appendChild(actions);
+            body.appendChild(row);
+        });
+    }
+
+    function renderReferenceCustom() {
+        const body = byId('reference-custom-body');
+        if (!body) return;
+        body.replaceChildren();
+        if (referenceState.loading) {
+            body.appendChild(referenceMessageRow('Loading groups...', 6));
+            return;
+        }
+        if (referenceState.failed) {
+            body.appendChild(referenceMessageRow('Groups could not be loaded.', 6, true));
+            return;
+        }
+        if (!referenceState.custom.length) {
+            body.appendChild(referenceMessageRow('You have not added or customized any groups yet.', 6));
+            return;
+        }
+        const defaultKeys = new Set(referenceState.defaults.map((group) => group.key).filter(Boolean));
+        referenceState.custom.forEach((group) => {
+            const isOverride = group.overridesDefault || defaultKeys.has(group.key);
+            const row = document.createElement('tr');
+            row.className = 'reference-row';
+            row.append(
+                referenceTextCell('Character or group', group.name || 'Unnamed group', 'reference-name'),
+                referenceTextCell('Plugin', group.plugin || 'Unknown plugin', 'reference-plugin'),
+                referenceFormidCell(group)
+            );
+            const kind = referenceCell('Kind');
+            kind.appendChild(isOverride ? pill('Replaces a built-in') : pill('Custom'));
+            row.appendChild(kind);
+            const state = referenceCell('State');
+            state.appendChild(group.enabled ? pill('Enabled', 'good') : pill('Disabled'));
+            row.appendChild(state);
+
+            const actions = referenceCell('Actions');
+            const wrap = document.createElement('div');
+            wrap.className = 'reference-row-actions';
+            const edit = referenceActionButton('Edit', 'edit', group);
+            edit.setAttribute('aria-label', `Edit ${group.name || 'group'}`);
+            edit.addEventListener('click', () => openReferenceEditor('edit', group, edit));
+            const removeLabel = isOverride ? 'Reset' : 'Delete';
+            const remove = referenceActionButton(removeLabel, isOverride ? 'reset' : 'delete', group, true);
+            remove.setAttribute('aria-label', isOverride
+                ? `Reset ${group.name || 'group'} to the built-in group`
+                : `Delete ${group.name || 'group'}`);
+            remove.addEventListener('click', () => deleteReferenceGroup(group, isOverride));
+            wrap.append(edit, remove);
+            actions.appendChild(wrap);
+            row.appendChild(actions);
+            body.appendChild(row);
+        });
+    }
+
+    function renderReferenceTables() {
+        renderReferenceDefaults();
+        renderReferenceCustom();
+        const count = byId('reference-count');
+        if (!count) return;
+        if (referenceState.loading || referenceState.failed) {
+            count.textContent = '';
+            return;
+        }
+        const builtin = referenceState.defaults.length;
+        const custom = referenceState.custom.length;
+        count.textContent = `${builtin} built-in · ${custom} custom`;
+    }
+
+    function setReferenceBusy(saving) {
+        referenceState.saving = !!saving;
+        const modal = byId('reference-modal');
+        if (!modal) return;
+        modal.querySelectorAll('.reference-action').forEach((button) => { button.disabled = !!saving; });
+        byId('reference-save').disabled = !!saving;
+        byId('reference-cancel').disabled = !!saving;
+        byId('reference-add').disabled = !!saving;
+        byId('reference-refresh').disabled = !!saving;
+    }
+
+    function openReferenceEditor(mode, group, invoker) {
+        const editor = byId('reference-editor');
+        if (!editor) return;
+        const source = group || { key: '', name: '', plugin: '', formids: [], enabled: true };
+        // A customized built-in keeps the built-in key so the server knows which entry it replaces.
+        referenceState.editing = { mode, key: mode === 'add' ? '' : source.key };
+        referenceState.editorReturnFocus = invoker || byId('reference-add');
+        referenceState.editorReturnKey = mode === 'add' ? '' : source.key;
+        byId('reference-editor-title').textContent = mode === 'add'
+            ? 'Add a group'
+            : (mode === 'customize' ? 'Customize a built-in group' : 'Edit a group');
+        const note = byId('reference-editor-note');
+        if (mode === 'customize') {
+            note.textContent = 'Your version is used instead of the built-in one. Reset it later to go back.';
+            note.hidden = false;
+        } else if (mode === 'add') {
+            note.textContent = 'List every placed reference that is the same character.';
+            note.hidden = false;
+        } else {
+            note.textContent = '';
+            note.hidden = true;
+        }
+        byId('reference-display-name').value = source.name || '';
+        byId('reference-plugin-name').value = source.plugin || '';
+        byId('reference-formids').value = (source.formids || []).join('\n');
+        byId('reference-enabled').checked = source.enabled !== false;
+        setReferenceEditorStatus('', false);
+        editor.hidden = false;
+        byId('reference-add').setAttribute('aria-expanded', 'true');
+        if (typeof editor.scrollIntoView === 'function') editor.scrollIntoView({ block: 'nearest' });
+        const first = byId('reference-display-name');
+        first.focus();
+        if (typeof first.select === 'function') first.select();
+    }
+
+    function closeReferenceEditor(focusTarget) {
+        const editor = byId('reference-editor');
+        if (!editor || editor.hidden) return;
+        const key = referenceState.editorReturnKey;
+        const invoker = referenceState.editorReturnFocus;
+        editor.hidden = true;
+        referenceState.editing = null;
+        referenceState.editorReturnFocus = null;
+        referenceState.editorReturnKey = '';
+        setReferenceEditorStatus('', false);
+        byId('reference-add').setAttribute('aria-expanded', 'false');
+        // Pass false when the whole modal is closing, so focus is not moved twice.
+        if (focusTarget === false) return;
+        // The invoking row button survives a cancel; after a save its row was rebuilt, so the
+        // replacement is found by group key instead.
+        const usable = (element) => element && document.contains(element) && !element.disabled;
+        const target = (usable(focusTarget) && focusTarget)
+            || (usable(invoker) && invoker)
+            || referenceActionFor(key)
+            || byId('reference-add');
+        if (usable(target)) target.focus();
+    }
+
+    async function loadReferenceGroups(message, good) {
+        referenceState.loading = true;
+        referenceState.failed = false;
+        setReferenceStatus(message || 'Loading reference groups...', false, good);
+        renderReferenceTables();
+        try {
+            const data = await parseResponse(await fetch(
+                `${serverBaseUrl}/ui/api/chim_npc_manager.php?operation=reference_groups`,
+                { cache: 'no-store' }
+            ));
+            referenceState.defaults = (Array.isArray(data && data.defaults) ? data.defaults : [])
+                .map((row) => referenceRow(row, true));
+            referenceState.custom = (Array.isArray(data && data.custom) ? data.custom : [])
+                .map((row) => referenceRow(row, false));
+            referenceState.loading = false;
+            renderReferenceTables();
+            setReferenceStatus(message || 'Changes apply the next time these actors register.', false, good);
+        } catch (error) {
+            referenceState.loading = false;
+            referenceState.failed = true;
+            referenceState.defaults = [];
+            referenceState.custom = [];
+            renderReferenceTables();
+            setReferenceStatus(`Could not load reference groups: ${error.message || error}`, true);
+        }
+    }
+
+    async function saveReferenceGroup(event) {
+        event.preventDefault();
+        if (referenceState.saving || !referenceState.editing) return;
+        const name = byId('reference-display-name').value.trim();
+        const plugin = byId('reference-plugin-name').value.trim();
+        const parsed = readFormidField(byId('reference-formids').value);
+        if (!name) {
+            setReferenceEditorStatus('Enter a name for this character or group.', true);
+            byId('reference-display-name').focus();
+            return;
+        }
+        if (!plugin) {
+            setReferenceEditorStatus('Enter the plugin file the references come from.', true);
+            byId('reference-plugin-name').focus();
+            return;
+        }
+        if (!/^[^\\/:*?"<>|\x00-\x1F]+\.es[mpl]$/i.test(plugin)) {
+            setReferenceEditorStatus('Enter a plugin filename ending in .esp, .esm or .esl.', true);
+            byId('reference-plugin-name').focus();
+            return;
+        }
+        if (parsed.invalid.length) {
+            setReferenceEditorStatus(`Not valid FormIDs: ${parsed.invalid.join(', ')}`, true);
+            byId('reference-formids').focus();
+            return;
+        }
+        if (parsed.ids.length < 2) {
+            setReferenceEditorStatus('Add at least two reference FormIDs.', true);
+            byId('reference-formids').focus();
+            return;
+        }
+        if (parsed.ids.length > 32) {
+            setReferenceEditorStatus('A group can contain up to 32 reference FormIDs.', true);
+            byId('reference-formids').focus();
+            return;
+        }
+
+        const key = referenceState.editing.key;
+        const added = !key;
+        setReferenceBusy(true);
+        setReferenceEditorStatus('Saving...', false);
+        try {
+            await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    operation: 'reference_group_save',
+                    group_key: key,
+                    display_name: name,
+                    plugin_name: plugin,
+                    local_formids: parsed.ids,
+                    enabled: byId('reference-enabled').checked
+                })
+            }));
+            // The tables are refreshed before the editor closes so focus lands on the rebuilt row
+            // button rather than moving twice.
+            await loadReferenceGroups(added ? 'Group added.' : 'Group saved.', true);
+            setReferenceBusy(false);
+            closeReferenceEditor();
+        } catch (error) {
+            setReferenceBusy(false);
+            setReferenceEditorStatus(`Save failed: ${error.message || error}`, true);
+        }
+    }
+
+    async function deleteReferenceGroup(group, isOverride) {
+        if (referenceState.saving) return;
+        const label = group.name || 'this group';
+        const question = isOverride
+            ? `Reset "${label}" to the built-in group? Your version is removed.`
+            : `Delete the group "${label}"?`;
+        if (!window.confirm(question)) return;
+        setReferenceBusy(true);
+        setReferenceStatus(isOverride ? 'Resetting group...' : 'Deleting group...', false);
+        try {
+            await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ operation: 'reference_group_delete', group_key: group.key })
+            }));
+            const wasEditing = !!(referenceState.editing && referenceState.editing.key === group.key);
+            await loadReferenceGroups(isOverride ? 'Built-in group restored.' : 'Group deleted.', true);
+            setReferenceBusy(false);
+            if (wasEditing) {
+                closeReferenceEditor();
+                return;
+            }
+            // Resetting an override leaves the built-in row's Customize button under the same key.
+            const target = referenceActionFor(group.key) || byId('reference-add');
+            if (target && document.contains(target) && !target.disabled) target.focus();
+        } catch (error) {
+            setReferenceBusy(false);
+            setReferenceStatus(`${isOverride ? 'Reset' : 'Delete'} failed: ${error.message || error}`, true);
+        }
+    }
+
+    function openReferenceModal(invoker) {
+        const backdrop = byId('reference-backdrop');
+        if (!backdrop || !backdrop.classList.contains('hidden')) return;
+        referenceState.returnFocus = invoker || byId('reference-groups-button');
+        backdrop.classList.remove('hidden');
+        setReferenceBusy(false);
+        byId('reference-close').focus();
+        loadReferenceGroups();
+    }
+
+    function closeReferenceModal() {
+        const backdrop = byId('reference-backdrop');
+        if (!backdrop || backdrop.classList.contains('hidden')) return;
+        closeReferenceEditor(false);
+        backdrop.classList.add('hidden');
+        const target = referenceState.returnFocus;
+        referenceState.returnFocus = null;
+        if (target && document.contains(target)) target.focus();
+        sendCommand('input_capture|off');
+    }
+
+    // The NPC list behind the modal stays in the tab order otherwise, which strands keyboard users.
+    function trapReferenceFocus(event) {
+        if (event.key !== 'Tab') return;
+        const modal = byId('reference-modal');
+        if (!modal) return;
+        const focusable = Array.from(modal.querySelectorAll(
+            'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled])'
+        )).filter((element) => !element.closest('[hidden]'));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    function ensureReferenceGroupsUi() {
+        // The settings view renders this NPC page from its own markup, so the trigger is adopted
+        // when it is already there and created next to Refresh when it is not.
+        let trigger = byId('reference-groups-button');
+        if (!trigger) {
+            const refresh = byId('refresh-button');
+            if (!refresh || !refresh.parentElement) return;
+            trigger = document.createElement('button');
+            trigger.id = 'reference-groups-button';
+            trigger.type = 'button';
+            trigger.className = 'button secondary compact';
+            trigger.setAttribute('aria-haspopup', 'dialog');
+            trigger.textContent = 'Reference Groups';
+            refresh.insertAdjacentElement('afterend', trigger);
+        }
+
+        if (!byId('reference-backdrop')) {
+            const backdrop = document.createElement('div');
+            backdrop.id = 'reference-backdrop';
+            backdrop.className = 'editor-backdrop reference-backdrop hidden';
+            backdrop.setAttribute('role', 'presentation');
+            backdrop.innerHTML = REFERENCE_MODAL_MARKUP;
+            document.body.appendChild(backdrop);
+            byId('reference-modal').addEventListener('keydown', trapReferenceFocus);
+            byId('reference-close').addEventListener('click', closeReferenceModal);
+            byId('reference-done').addEventListener('click', closeReferenceModal);
+            byId('reference-refresh').addEventListener('click', () => loadReferenceGroups());
+            byId('reference-add').addEventListener('click', () => openReferenceEditor('add', null));
+            byId('reference-cancel').addEventListener('click', () => closeReferenceEditor());
+            byId('reference-editor').addEventListener('submit', saveReferenceGroup);
+        }
+
+        trigger.addEventListener('click', (event) => openReferenceModal(event.currentTarget));
+    }
+
     window.setNpcManagerServerUrl = function (value) {
         serverBaseUrl = normalizeBaseUrl(value);
     };
@@ -1124,6 +1765,7 @@
     });
     byId('profile-filter').addEventListener('change', () => { page = 1; loadNpcs(); });
     byId('refresh-button').addEventListener('click', () => sendCommand('targets_refresh'));
+    ensureReferenceGroupsUi();
     byId('previous-page').addEventListener('click', () => { if (page > 1) { page -= 1; loadNpcs(); } });
     byId('next-page').addEventListener('click', () => { if (page < pages) { page += 1; loadNpcs(); } });
     if (!embeddedInSettings) byId('close-button').addEventListener('click', () => sendCommand('close'));
@@ -1148,7 +1790,13 @@
     form.addEventListener('submit', saveNpc);
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape') return;
-        if (!byId('editor-backdrop').classList.contains('hidden')) {
+        // Reference groups sit above the NPC editor: the inline group editor closes first, then
+        // the modal, and only then does Escape reach the page behind it.
+        if (referenceModalOpen()) {
+            event.stopImmediatePropagation();
+            if (referenceEditorOpen()) closeReferenceEditor();
+            else closeReferenceModal();
+        } else if (!byId('editor-backdrop').classList.contains('hidden')) {
             event.stopImmediatePropagation();
             closeEditor();
         } else if (!embeddedInSettings) {
