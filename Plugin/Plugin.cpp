@@ -53,8 +53,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.3.1"
-#define PLUGIN_RELEASE_DATE "2026-09-01"
+#define PLUGIN_VERSION "3.3.2"
+#define PLUGIN_RELEASE_DATE "2026-09-02"
 
 const char* GetPluginVersion()
 {

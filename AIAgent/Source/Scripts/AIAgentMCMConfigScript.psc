@@ -1794,6 +1794,11 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_camera_based_audio",0)
 	endif
+	if (_invertheadingstate)
+		a=controlScript.setConf("_invertheadingstate",1)
+	else
+		a=controlScript.setConf("_invertheadingstate",0)
+	endif
 	a=controlScript.setConf("_lip_int",_lip_int)
 	a=controlScript.setConf("_lip_res",_lip_res)
 	a=controlScript.setConf("_timeout",_timeout_int)
