@@ -3076,7 +3076,7 @@ void SpeakManager::process(AIAgent *agent) {
 
     if (npc->IsDead()) {
         logger::warn("[SPEAKERMANAGER {}] Actor {} is dead. Deleting agent and queue.",tid, agent->getActorName());
-        aiam.deleteAgentByName(agent->getActorName());
+        aiam.deleteAgentByFormId(agent->GetFormId());
         deleteQueue();
         return;
     }
@@ -4061,7 +4061,7 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
                                                                                args, callback);
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
-    auto npcAgent = aiam.getAgentByName(npc->GetDisplayFullName());
+    auto npcAgent = aiam.getAgentByFormId(npc->GetFormID());
     if (npcAgent) {
         npcAgent->setAnimationBusy(false);
         npcAgent->setTalking(false);

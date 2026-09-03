@@ -4,11 +4,14 @@
 #include <cctype>
 #include <chrono>
 #include <mutex>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "RE/Skyrim.h"
+#include "ActorIdentityUtils.h"
+#include "ActorTargetIdentifierUtils.h"
 #include "SpatialAwareness.h"
 
 #define HERIKA_MAX_VISION_RANGE 5000
@@ -125,6 +128,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return name;
 
+    }
+
+    std::string getActorIdentifier() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ActorIdentityUtils::BuildPromptIdentifier(name, formID);
     }
 
     bool isPresent(const std::string& presentActors) {
@@ -688,28 +696,39 @@ public:
     std::shared_ptr<AIAgent> getAgentByName(const std::string& name) {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // Convert the input name to lower case for case-insensitive comparison
-        // Trim leading and trailing whitespace from the input name
-        std::string lowerName = name;
-        lowerName.erase(0, lowerName.find_first_not_of(" \t\n\r\f\v"));
-        lowerName.erase(lowerName.find_last_not_of(" \t\n\r\f\v") + 1);
+        const auto parsedTarget = ActorTargetIdentifierUtils::Parse(name);
+        if (parsedTarget.hasRefId) {
+            auto exact = std::find_if(agents.begin(), agents.end(), [&parsedTarget](const std::shared_ptr<AIAgent>& agent) {
+                return agent && agent->GetFormId() == parsedTarget.refId;
+            });
+            if (exact != agents.end()) {
+                return *exact;
+            }
+            logger::warn("Actor identifier '{}' referenced unavailable RefID {:08X}", name, parsedTarget.refId);
+            return nullptr;
+        }
+
+        std::string lowerName = parsedTarget.fallbackName;
+        const auto first = lowerName.find_first_not_of(" \t\n\r\f\v");
+        if (first == std::string::npos) {
+            return nullptr;
+        }
+        const auto last = lowerName.find_last_not_of(" \t\n\r\f\v");
+        lowerName = lowerName.substr(first, last - first + 1);
 
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-
-        auto it = std::find_if(agents.begin(), agents.end(), [&lowerName](const std::shared_ptr<AIAgent>& agent) {
+        std::vector<std::shared_ptr<AIAgent>> matches;
+        for (const auto& agent : agents) {
+            if (!agent) {
+                continue;
+            }
             std::string agentName(agent->getActorName());
-            
-
-            // Convert the agent's name to lower case for comparison
             std::transform(agentName.begin(), agentName.end(), agentName.begin(),
                            [](unsigned char c) { return std::tolower(c); });
 
-            //logger::info("Searching agent by name <{}> <{}>", agentName, lowerName);
-
-            // Patch RealNames Extended. Some LLMs are refering to generic NPCs without the brackets.
-            
+            bool matched = agentName == lowerName;
             if (agentName != lowerName) {
                 auto actor = agent->getActorByFormId();
                 if (actor) {
@@ -721,20 +740,25 @@ public:
 
                         if (agentName == fullname) {
                             logger::debug("Matched {} after extending name {}: {}", agentName, lowerName, fullname);
-                            return true;
+                            matched = true;
                         }
                     }
                 }
             }
 
-            return agentName == lowerName;
-        });
-
-        if (it != agents.end()) {
-            return *it;  // Return the found agent
-        } else {
-            return nullptr;  // Return nullptr if agent with given name is not found
+            if (matched) {
+                matches.push_back(agent);
+            }
         }
+
+        if (matches.size() == 1) {
+            return matches.front();
+        }
+        if (matches.size() > 1) {
+            logger::warn("Actor name '{}' is ambiguous across {} active agents; use a RefID identifier", name,
+                         matches.size());
+        }
+        return nullptr;
     }
 
 
@@ -761,27 +785,21 @@ public:
         agents.erase(std::remove(agents.begin(), agents.end(), agentToDelete), agents.end());
     }
 
-    void deleteAgentByName(const std::string& name) {
+    void deleteAgentByFormId(RE::FormID formId) {
         std::lock_guard<std::mutex> lock(mutex_);
-
-        // Convert the input name to lower case for case-insensitive comparison
-        std::string lowerName = name;
-        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-
-        auto it = std::find_if(agents.begin(), agents.end(), [&lowerName](const std::shared_ptr<AIAgent>& agent) {
-            std::string agentName = agent->getActorName();
-
-            // Convert the agent's name to lower case for comparison
-            std::transform(agentName.begin(), agentName.end(), agentName.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-
-            return agentName == lowerName;  // Compare in a case-insensitive manner
+        auto it = std::find_if(agents.begin(), agents.end(), [formId](const std::shared_ptr<AIAgent>& agent) {
+            return agent && agent->GetFormId() == formId;
         });
-
         if (it != agents.end()) {
-            logger::info("Delete agent {}", (*it)->getActorName());
-            agents.erase(it);  // Remove the agent from the vector
+            logger::info("Delete agent {} ({:08X})", (*it)->getActorName(), formId);
+            agents.erase(it);
+        }
+    }
+
+    void deleteAgentByName(const std::string& name) {
+        auto agent = getAgentByName(name);
+        if (agent) {
+            deleteAgent(agent);
         }
     }
 

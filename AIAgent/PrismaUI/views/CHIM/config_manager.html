@@ -123,7 +123,10 @@
             </div>
             <label class="filter-field search-field">
                 <span>Search</span>
-                <input id="search-input" type="search" placeholder="Name, race, or RefID">
+                <input id="search-input" type="search" placeholder="Name, race, RefID, or mod"
+                       title="Matches name, race, RefID (with or without 0x), and source or override mod names"
+                       aria-describedby="search-hint">
+                <span id="search-hint" class="sr-only">Matches name, race, RefID with or without the 0x prefix, and source or override mod names.</span>
             </label>
             <label class="filter-field">
                 <span>Profile</span>
@@ -169,6 +172,7 @@
                     <div>
                         <h2 id="editor-title">NPC Profile</h2>
                         <p id="editor-subtitle"></p>
+                        <p id="editor-shared" class="editor-shared" hidden><span class="pill shared"><span aria-hidden="true">&#128279;</span> Shared profile</span></p>
                     </div>
                 </div>
                 <button id="editor-close" class="icon-button" type="button" aria-label="Close editor">×</button>
@@ -188,6 +192,14 @@
                 <input id="npc-id" type="hidden">
                 <div class="editor-content">
                     <section class="tab-panel active" data-panel="general">
+                        <section id="sharing-panel" class="sharing-panel" aria-labelledby="sharing-heading" hidden>
+                            <h3 id="sharing-heading"><span aria-hidden="true">&#128279;</span> Shared profile <span id="sharing-auto" class="pill shared" hidden>Linked automatically</span></h3>
+                            <p id="sharing-explainer" class="sharing-explainer"></p>
+                            <h4 class="sharing-subheading">Actors sharing this profile</h4>
+                            <ul id="sharing-members" class="sharing-members"></ul>
+                            <p class="sharing-note">Actions, injected events and speech still target the actor you opened. Unlinking separates every actor listed here at once; merging and unlinking are done from the CHIM NPC page in a browser.</p>
+                        </section>
+                        <p id="sharing-auto-off" class="sharing-auto-off" role="note" hidden>Automatic linking is switched off for this character for the rest of this playthrough. Same-name actors can still be merged by hand from the CHIM NPC page in a browser.</p>
                         <div class="form-grid two-columns">
                             <label class="form-field"><span>Name</span><input name="npc_name" required></label>
                             <label class="form-field"><span>Profile</span><select name="profile_id" required></select></label>
@@ -259,12 +271,32 @@
                             <label class="form-field"><span>Gender</span><input name="gender"></label>
                             <label class="form-field"><span>Race</span><input name="race"></label>
                             <label class="form-field"><span>Base ID</span><input name="base"></label>
-                            <label class="form-field"><span>Reference ID</span><input name="refid"></label>
+                            <label class="form-field"><span>Reference ID</span><input name="refid" readonly aria-describedby="identity-note"></label>
                             <label class="form-field"><span>Voice Type</span><input name="voiceid"></label>
                             <label class="form-field"><span>Tags</span><input name="tags"></label>
                         </div>
                         <label class="form-field"><span>Oghma Knowledge Tags</span><textarea name="oghma_knowledge_tags" rows="3"></textarea></label>
                         <label class="form-field"><span>Emote Moods</span><textarea name="emote_moods" rows="3"></textarea></label>
+                        <section class="identity-readonly" aria-labelledby="identity-heading">
+                            <h3 id="identity-heading">Actor Identity</h3>
+                            <p id="identity-note" class="identity-note">Read-only. These values bind this profile to one game actor and tell same-named NPCs apart.</p>
+                            <dl class="identity-grid">
+                                <div class="identity-item">
+                                    <dt>RefID</dt>
+                                    <dd><span id="identity-refid">No RefID</span> <span id="identity-refid-runtime" class="pill" hidden>Runtime</span></dd>
+                                </div>
+                                <div class="identity-item">
+                                    <dt>Defining Mod</dt>
+                                    <dd id="identity-source">Unknown source</dd>
+                                </div>
+                                <div class="identity-item">
+                                    <dt>Name Sharing</dt>
+                                    <dd id="identity-duplicates">This name is unique</dd>
+                                </div>
+                            </dl>
+                            <h4 class="identity-subheading">Mod Chain</h4>
+                            <ol id="identity-chain" class="identity-chain"></ol>
+                        </section>
                         <details class="metadata-readonly">
                             <summary>Read-only game metadata</summary>
                             <pre id="metadata-output">{}</pre>

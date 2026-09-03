@@ -1115,7 +1115,7 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                     targetActor->SetDisplayName(storedName.c_str(), true);
                 }
 
-                auto already = aiam.getAgentByName(targetActor->GetDisplayFullName());
+                auto already = aiam.getAgentByFormId(targetActor->GetFormID());
 
                 if (already && removewhenexisting) {
                     // Check if this is an auto-activated agent
@@ -1352,6 +1352,7 @@ int setDrivenByAIReal(RE::ObjectRefHandle targetObject, bool salutation, bool wa
                             classData = std::format("{}:{:08X}:{}:{}", className, npcClass->GetFormID(), trainSkill, trainLevel);
                         }
                         metainfo.append("@").append(classData);
+                        metainfo.append("@").append(BuildActorReferenceSource(targetActor));
 
                         category.append(metainfo);
                     }
@@ -5356,6 +5357,7 @@ int addBasicProfileReal(RE::ObjectRefHandle targetObject) {
                             std::format("{}:{:08X}:{}:{}", className, npcClass->GetFormID(), trainSkill, trainLevel);
                     }
                     metainfo.append("@").append(classData);
+                    metainfo.append("@").append(BuildActorReferenceSource(targetActor));
 
                     category.append(metainfo);
 

@@ -1,3 +1,4 @@
+#include "ActorIdentityUtils.h"
 #include "ActorTargetIdentifierUtils.h"
 
 #include <cassert>
@@ -38,6 +39,15 @@ int main()
         assert(!target.hasRefId);
         assert(target.fallbackName == "Alvor");
     }
+
+    assert(ActorIdentityUtils::BuildPromptIdentifier("Bandit", 0xFF001234) ==
+           "Bandit [RefID: FF001234]");
+    assert(ActorIdentityUtils::BuildReferenceSource("Follower.esp", 0x05001234) ==
+           ActorIdentityUtils::BuildReferenceSource("Follower.esp", 0x07001234));
+    assert(ActorIdentityUtils::BuildReferenceSource("Light.esp", 0xFE012ABC, true) == "Light.esp/00000ABC");
+    assert(ActorIdentityUtils::BuildReferenceSource("Light.esp", 0xFE034ABC, true) == "Light.esp/00000ABC");
+    assert(ActorIdentityUtils::BuildReferenceSource("VR.esp", 0xFE012ABC) == "VR.esp/00012ABC");
+    assert(ActorIdentityUtils::BuildReferenceSource("Skyrim.esm", 0xFF001234).empty());
 
     return 0;
 }

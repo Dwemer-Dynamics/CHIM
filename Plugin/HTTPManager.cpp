@@ -81,6 +81,11 @@ static bool IsPlayerStreamActor(const std::string& actorName)
     return !configuredPlayerName.empty() && EqualsIgnoreCaseHttp(normalizedActorName, configuredPlayerName);
 }
 
+static std::string ResolveActorProfileHash(const std::string& actorIdentifier)
+{
+    return md5(actorIdentifier, true);
+}
+
 static std::string AutomaticResponseBlockReason(
     std::string_view message, const std::shared_ptr<AIAgent>& agent, RE::Actor* actor)
 {
@@ -548,7 +553,7 @@ namespace HTTPManager {
         } else {
             httpRealRequest =
                 std::format("GET /{0}?DATA={1}&profile={2} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n",
-                            Conf::getInstance().getPath(), msg, md5(listener,true), Conf::getInstance().getServer());
+                            Conf::getInstance().getPath(), msg, ResolveActorProfileHash(listener), Conf::getInstance().getServer());
         }
 
         if (!msg) {
@@ -833,7 +838,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         std::string httpRealRequest =
             std::format("GET /{0}?DATA={1}&profile={2} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n", destination,
-                        msg, md5(speaker,true), Conf::getInstance().getServer());
+                        msg, ResolveActorProfileHash(speaker), Conf::getInstance().getServer());
 
         iResult = send(rawSocket, httpRealRequest.c_str(), httpRealRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
@@ -1217,7 +1222,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        const std::string listener = agent ? agent->getActorName() : actor->GetDisplayFullName();
+        const std::string listener = agent ? agent->getActorIdentifier() : actor->GetDisplayFullName();
         return requestPlayerMenuTtsPlay(std::move(msg), listener);
     }
 
@@ -1239,7 +1244,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
-        std::string listener = agent ? agent->getActorName() : actor->GetDisplayFullName();
+        std::string listener = agent ? agent->getActorIdentifier() : actor->GetDisplayFullName();
         
         try {
             ThreadPool::getInstance().enqueue(
@@ -1948,7 +1953,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         try {
             if (agentPointer->getActor() && listener != NARRATOR_NAME) {
-                listener = agentPointer->getActor()->GetDisplayFullName();
+                listener = agentPointer->getActorIdentifier();
             }
         } catch (const std::exception& e) {
             logger::error("Error getting actor display name for {}: {}", agentPointer->getActorName(), e.what());
@@ -2392,7 +2397,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
-        std::string listener = agent ? agent->getActorName() : actor->GetDisplayFullName();
+        std::string listener = agent ? agent->getActorIdentifier() : actor->GetDisplayFullName();
         
         logger::info("[HTTPStream] Setting dialogue busy for actor: {}, isPlayerTeammate: {}, resolved listener: {}", 
             actor->GetDisplayFullName(), 
