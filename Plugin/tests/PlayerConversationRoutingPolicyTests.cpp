@@ -1,4 +1,5 @@
 #include "PlayerConversationRoutingPolicy.h"
+#include "SpatialGeometryPolicy.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -64,6 +65,9 @@ int main()
           "Nearby diary event was recognized as a targeted diary request");
     Check(!IsPlayerInitiatedRequest("diary|1|date|Player: update your diary"),
           "Diary event was recognized as direct player speech");
+    Check(IsRechatRequest("rechat|1|date|{}"), "Rechat event was not recognized");
+    Check(!IsRechatRequest("rechat_nearby|1|date|{}"),
+          "Non-rechat event was recognized as rechat");
 
     AutomaticEligibilityFacts eligibility{};
     Check(GetAutomaticBlockReason(eligibility).empty(),
@@ -89,16 +93,38 @@ int main()
     eligibility = {};
     eligibility.sleeping = true;
     Check(GetAutomaticBlockReason(eligibility) == "sleeping", "Sleeping was not enforced");
-    Check(GetAutomaticBlockReason(eligibility, true).empty(),
+    AutomaticEligibilityOptions options{};
+    options.ignoreSleeping = true;
+    Check(GetAutomaticBlockReason(eligibility, options).empty(),
           "Sleeping-only eligibility was not restored when sleep was ignored");
     eligibility.inScene = true;
-    Check(GetAutomaticBlockReason(eligibility, true) == "scene",
+    Check(GetAutomaticBlockReason(eligibility, options) == "scene",
           "Ignoring sleep also bypassed Scene Safety");
+    eligibility = {};
+    eligibility.restrained = true;
+    options = {};
+    options.ignoreRestrained = true;
+    Check(GetAutomaticBlockReason(eligibility, options).empty(),
+          "Restrained rechat eligibility was not restored");
+    eligibility.unconscious = true;
+    Check(GetAutomaticBlockReason(eligibility, options) == "unconscious",
+          "Ignoring restraint also bypassed unconscious state");
     eligibility = {};
     eligibility.inScene = true;
     Check(GetAutomaticBlockReason(eligibility) == "scene", "Scene Safety was not enforced");
     eligibility.sceneDialogueEnabled = true;
     Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled scene dialogue was ignored");
+
+    using SpatialGeometryPolicy::IsPointWithinSegmentCorridor;
+    using SpatialGeometryPolicy::Point3;
+    const Point3 corridorStart{0.0f, 0.0f, 0.0f};
+    const Point3 corridorEnd{560.0f, 0.0f, 0.0f};
+    Check(IsPointWithinSegmentCorridor(corridorStart, corridorEnd, {280.0f, 79.0f, 0.0f}, 80.0f),
+          "Door inside the segment corridor was rejected");
+    Check(!IsPointWithinSegmentCorridor(corridorStart, corridorEnd, {280.0f, 180.0f, 0.0f}, 80.0f),
+          "Unrelated lateral door was accepted by the segment corridor");
+    Check(!IsPointWithinSegmentCorridor(corridorStart, corridorEnd, {600.0f, 0.0f, 0.0f}, 80.0f),
+          "Door beyond the listener was accepted by the segment corridor");
 
     Check(ExtractUtterance("inputtext|1|date|Rangroo: Hey Lydia, come here") ==
               "hey lydia come here",
