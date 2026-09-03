@@ -302,6 +302,11 @@ float _curve_legacy_distance = 1.0
 int _slider_maintenance_period
 float _maintenance_period = 4.0
 
+; Combat barks
+int			_toggle_force_mono
+bool		_toggle_force_mono_state		= false
+
+
 event OnPlayerLoadGame()
 	; The quest's pending key state is saved; do not replay a gesture from the loaded save.
 	if (controlScript)
@@ -372,6 +377,11 @@ event OnPlayerLoadGame()
 		controlScript.setConf("_camera_based_audio", 0)
 	endIf
 	
+	if (_camera_based_audio_state)
+		controlScript.setConf("_camera_based_audio", 1)
+	else
+		controlScript.setConf("_camera_based_audio", 0)
+	endIf
 	
 
 endEvent
@@ -390,12 +400,13 @@ event OnConfigInit()
 	
 	Debug.Trace("[AIAGENT] OnConfigInit");
 	
-	_sound_postclip				= 0.0
-	_sound_preclip				= 100.0
-	_sound_volume				= 75 
-	_head_voice_volume			= 100
-	_lip_res				= 500.0
-	_lip_int				= 1.0
+	;_sound_postclip				= 0.0
+	;_sound_preclip				= 100.0
+	;_sound_volume				= 75 
+	;_head_voice_volume			= 100
+	;_lip_res				= 500.0
+	;_lip_int				= 1.0
+	
 	if (CurrentVersion>1)
 		_sound_ds					= 2.0
 	endIf
@@ -581,13 +592,17 @@ endEvent
 
 int function GetVersion()
 
-	return 73
+	return 74
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
+	if (a_version == 74 && a_version > CurrentVersion)
+		OnConfigInit()
+	endif
+	
 	if (a_version == 73 && a_version > CurrentVersion)
 		OnConfigInit()
 	endif
@@ -1341,7 +1356,7 @@ event OnPageReset(string a_page)
 		
 		_toggle_combatdialogue	= AddToggleOption("Allow combat dialogue", _toggle_combatdialogue_state)
 		_toggle_cancel_dialogue_on_combat = AddToggleOption("Clear dialogue entering combat", _toggle_cancel_dialogue_on_combat_state)
-		;ººAddEmptyOption()
+		;AddEmptyOption()
 		_toggle_combat_barks = AddToggleOption("Enable Combat Barks", _toggle_combat_barks_state)
 		_slider_combat_barks_period = AddSliderOption("Combat Bark Timer (seconds)", _combat_barks_period, "{0}")
 		
@@ -1361,6 +1376,8 @@ event OnPageReset(string a_page)
 
 		_slider_curve_legacy_distance = AddSliderOption("Legacy 3D distance scaler", _curve_legacy_distance, "{1}")
 
+		_toggle_force_mono = AddToggleOption("Mono Sound", _toggle_force_mono_state)
+		AddEmptyOption()
 		
 		AddHeaderOption("Advanced")
 		AddEmptyOption()
@@ -1906,6 +1923,12 @@ event OnGameReload()
 		a=controlScript.setConf("_combat_barks",0)
 	endif
 	
+	if (_toggle_force_mono_state)
+		a=controlScript.setConf("_force_mono",1)
+	else
+		a=controlScript.setConf("_force_mono",-1)
+	endif
+	
 	a=controlScript.setConf("_combat_barks_period",_combat_barks_period)
 	
 	if (_toggle_restrict_onscene_state)
@@ -2100,6 +2123,16 @@ event OnOptionDefault(int a_option)
 		_toggle_autoadd_creature_npcs_state = false
 		controlScript.setConf("_autoadd_creature_npcs", 0)
 		SetToggleOptionValue(a_option, _toggle_autoadd_creature_npcs_state)
+		
+	elseif (a_option == _toggle_force_mono)
+		_toggle_force_mono_state = false
+		if (_toggle_force_mono_state)
+			controlScript.setConf("_force_mono", 1)
+		else
+			controlScript.setConf("_force_mono", -1)
+		endif
+		SetToggleOptionValue(a_option, _toggle_force_mono_state)
+	
 	endIf
 	
 endEvent
@@ -2636,6 +2669,18 @@ event OnOptionSelect(int a_option)
  		endif
  	endIf
  	
+	if (a_option == _toggle_force_mono)
+ 		_toggle_force_mono_state = !_toggle_force_mono_state
+ 
+ 		if (_toggle_force_mono_state)
+ 			controlScript.setConf("_force_mono",1)
+ 		else
+ 			controlScript.setConf("_force_mono",-1)
+ 		endif
+ 
+ 		SetToggleOptionValue(a_option, _toggle_force_mono_state)
+ 	endIf
+	
  	; Handle individual agent removal
  	if (_agentToggleOIDs && _currentAgentNames)
  		int i = 0
@@ -2965,6 +3010,10 @@ event OnOptionHighlight(int a_option)
 
 	if (a_option == _slider_maintenance_period)
 		SetInfoText("How often run maintenance (restore voices, delete unussed agents). In seconds")
+	endIf
+
+	if (a_option == _toggle_force_mono)
+		SetInfoText("Mono audio. Same volume on all channels")
 	endIf
 	
 	; Help text for individual agent removal options

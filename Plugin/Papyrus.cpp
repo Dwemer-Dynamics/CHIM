@@ -348,6 +348,7 @@ extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
+bool GlobalForceMono = false;
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
 
@@ -2048,6 +2049,17 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         }
 
         logger::info("Setting _curve_legacy_distance to {}", fValueCasted);
+
+    } else if (code == "_force_mono") {
+        float fValueCasted = static_cast<int>(f_Value);
+        if (fValueCasted > 0) {
+            GlobalForceMono = true;
+            
+        } else {
+            GlobalForceMono = false;
+        }
+
+        logger::info("Setting _force_mono to {}", GlobalForceMono);
 
     } else if (code == "_maintenance_period") {
         int fValueCasted = static_cast<int>(f_Value);
