@@ -30,6 +30,12 @@ namespace PlayerConversationRoutingPolicy
         return message.substr(0, separator) == "diary";
     }
 
+    inline bool IsRechatRequest(std::string_view message)
+    {
+        const auto separator = message.find('|');
+        return message.substr(0, separator) == "rechat";
+    }
+
     struct AutomaticEligibilityFacts
     {
         bool conversationCooldown = false;
@@ -44,8 +50,14 @@ namespace PlayerConversationRoutingPolicy
         bool sceneDialogueEnabled = false;
     };
 
+    struct AutomaticEligibilityOptions
+    {
+        bool ignoreSleeping = false;
+        bool ignoreRestrained = false;
+    };
+
     inline std::string_view GetAutomaticBlockReason(
-        const AutomaticEligibilityFacts& facts, bool ignoreSleeping = false)
+        const AutomaticEligibilityFacts& facts, AutomaticEligibilityOptions options = {})
     {
         if (facts.conversationCooldown) {
             return "cooldown";
@@ -56,13 +68,13 @@ namespace PlayerConversationRoutingPolicy
         if (facts.inCombat && !facts.combatDialogueEnabled) {
             return "combat";
         }
-        if (facts.restrained) {
+        if (facts.restrained && !options.ignoreRestrained) {
             return "restrained";
         }
         if (facts.unconscious) {
             return "unconscious";
         }
-        if (facts.sleeping && !ignoreSleeping) {
+        if (facts.sleeping && !options.ignoreSleeping) {
             return "sleeping";
         }
         if (facts.inScene && !facts.sceneDialogueEnabled) {

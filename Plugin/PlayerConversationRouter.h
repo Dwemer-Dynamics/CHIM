@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Globals.h"
+#include "PlayerConversationRoutingPolicy.h"
 
 #include <cstdint>
 #include <memory>
@@ -76,7 +77,7 @@ namespace PlayerConversationRouter
     bool IsActorSleeping(RE::Actor* actor);
     std::string GetAutomaticBlockReason(const std::shared_ptr<AIAgent>& agent,
                                         RE::Actor* actor, RE::Actor* player,
-                                        bool ignoreSleeping = false);
+                                        PlayerConversationRoutingPolicy::AutomaticEligibilityOptions options = {});
     PlayerConversationRoutingResult Resolve(const std::string& wireMessage,
                                             const PlayerConversationRoutingContext& context);
 }
