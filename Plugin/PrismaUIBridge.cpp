@@ -141,7 +141,6 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_chatboxStatusFetchInProgress{false};
     static std::atomic<bool> g_chatboxStoryFetchInProgress{false};
     static std::atomic<int> g_chatboxStoryLastRowId{0};
-    static std::atomic<int> g_chatboxStoryLastRelationshipId{0};
     static bool g_chatboxModeInitialized = false;
     static std::string g_lastChatboxMode = "";
     // Once a valid server or local value is accepted, delayed startup hydration
@@ -327,7 +326,7 @@ namespace PrismaUIBridge {
     void HideMasterMenu();
     void HideQuestManagerPanel();
     void HideDebuggerPanel();
-    static std::string FetchEventlogFromServer(int limit, int sinceRowId, int sinceRelationshipId = 0);
+    static std::string FetchEventlogFromServer(int limit, int sinceRowId);
     static std::string FetchOverlayFromServer();
     static std::string RequestJsonFromServer(
         const std::string& method,
@@ -5787,7 +5786,7 @@ R"CHIM(
     }
 
     // HTTP fetch helper - similar to HTTPManager but simpler for GET requests
-    static std::string FetchEventlogFromServer(int limit, int sinceRowId, int sinceRelationshipId) {
+    static std::string FetchEventlogFromServer(int limit, int sinceRowId) {
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5863,9 +5862,6 @@ R"CHIM(
         std::string requestPath = basePath + "ui/api/eventlog.php?limit=" + std::to_string(limit) + "&format=raw";
         if (sinceRowId > 0) {
             requestPath += "&since_rowid=" + std::to_string(sinceRowId);
-        }
-        if (sinceRelationshipId > 0) {
-            requestPath += "&since_relationship_id=" + std::to_string(sinceRelationshipId);
         }
         // Remove leading slash if present (we add it in the GET line)
         if (!requestPath.empty() && requestPath[0] == '/') {
@@ -6783,15 +6779,14 @@ R"CHIM(
         }
 
         const int sinceRowId = replaceExisting ? 0 : g_chatboxStoryLastRowId.load();
-        const int sinceRelationshipId = replaceExisting ? 0 : g_chatboxStoryLastRelationshipId.load();
         const int limit = replaceExisting ? 120 : 50;
         ThreadPool::getInstance().enqueue(
             "PrismaUIChatboxStoryFetch",
-            [replaceExisting, sinceRowId, sinceRelationshipId, limit]() {
+            [replaceExisting, sinceRowId, limit]() {
                 bool updateUnavailableState = false;
                 try {
                     do {
-                        std::string response = FetchEventlogFromServer(limit, sinceRowId, sinceRelationshipId);
+                        std::string response = FetchEventlogFromServer(limit, sinceRowId);
                         if (response.empty()) {
                             updateUnavailableState = replaceExisting;
                             break;
@@ -6829,8 +6824,6 @@ R"CHIM(
                             }
                         }
                         g_chatboxStoryLastRowId.store(maxRowId);
-                        g_chatboxStoryLastRelationshipId.store(
-                            parsed.value("latest_relationship_id", sinceRelationshipId));
 
                         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
                             (!replaceExisting && g_chatboxState.load() == 0)) {
