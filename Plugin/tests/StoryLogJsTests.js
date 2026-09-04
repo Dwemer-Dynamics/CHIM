@@ -203,6 +203,10 @@ test('labels relationship events by affinity direction', () => {
         entries.map((entry) => entry.speaker),
         ['Affinity', 'Affinity', 'Relationship']
     );
+    assert.deepEqual(
+        entries.map((entry) => entry.rowId),
+        ['relationship:50', 'relationship:51', 'relationship:52']
+    );
     // Direction must survive in the visible text, not only in the row colour.
     assert.match(entries[0].text, /increased by 5/);
     assert.match(entries[1].text, /decreased by 3/);

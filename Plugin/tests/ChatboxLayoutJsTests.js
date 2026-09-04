@@ -185,6 +185,18 @@ test('requires two presses on Delete Events and asks "Are you sure?" in between'
     assert.match(script, /if \(pendingDeleteCount === deleteCount\) \{[\s\S]*?window\.deleteRecentEvents\(deleteCount\);[\s\S]*?armDeleteConfirmation\(deleteCount\);/);
 });
 
+test('keeps relationship history IDs deletable in Recent Context', () => {
+    const normalize = loadChatboxFunction('normalizeStoryRowId');
+    assert.equal(normalize('relationship:50'), 'relationship:50');
+    assert.equal(normalize('relationship:00050'), 'relationship:50');
+    assert.equal(normalize('21220'), '21220');
+    assert.equal(normalize('relationship:nope'), '');
+
+    assert.match(script, /const persistedRowId = normalizeStoryRowId\(entry\.rowId\)/);
+    assert.match(script, /Undo this relationship change/);
+    assert.match(script, /formData\.append\('rowid', String\(rowId\)\)/);
+});
+
 test('never leaves the Delete Events button stuck on the confirmation prompt', () => {
     assert.match(script, /function clearPendingDeleteConfirmation\(\)[\s\S]*?pendingDeleteCount = 0;[\s\S]*?window\.clearTimeout\(pendingDeleteConfirmTimeoutId\)[\s\S]*?deleteEventConfirmButton\.textContent = 'Delete'/);
     // Expiry, count changes, and every busy/error/success exit reset the label.
@@ -193,9 +205,9 @@ test('never leaves the Delete Events button stuck on the confirmation prompt', (
     assert.match(script, /\} finally \{\s*setDeleteEventControlsBusy\(false\);\s*clearPendingDeleteConfirmation\(\);/);
 
     // It stays a real focusable button, with the tooltip matching whichever state it shows.
-    assert.match(html, /<button id="chatbox-delete-events-confirm"[^>]*type="button"[^>]*title="Delete the selected number of recent events"[^>]*>Delete<\/button>/);
-    assert.match(script, /textContent = 'Are you sure\?';\s*deleteEventConfirmButton\.title = 'Press again to delete the selected events'/);
-    assert.match(script, /textContent = 'Delete';\s*deleteEventConfirmButton\.title = 'Delete the selected number of recent events'/);
+    assert.match(html, /<button id="chatbox-delete-events-confirm"[^>]*type="button"[^>]*title="Remove recent events and undo included relationship changes"[^>]*>Delete<\/button>/);
+    assert.match(script, /textContent = 'Are you sure\?';\s*deleteEventConfirmButton\.title = 'Press again to remove these timeline events'/);
+    assert.match(script, /textContent = 'Delete';\s*deleteEventConfirmButton\.title = 'Remove recent events and undo included relationship changes'/);
 });
 
 // Rebuilds the toggle out of chatbox.js against stub DOM nodes so the pending/ON/OFF

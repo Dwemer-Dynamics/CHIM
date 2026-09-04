@@ -221,11 +221,21 @@
         });
     }
 
+    function normalizeStoryRowId(rowId) {
+        const value = String(rowId || '').trim();
+        if (/^[1-9]\d*$/.test(value)) {
+            return String(Number(value));
+        }
+        const relationshipMatch = value.match(/^relationship:0*([1-9]\d*)$/);
+        return relationshipMatch ? 'relationship:' + Number(relationshipMatch[1]) : '';
+    }
+
     function createStoryEntryElement(entry) {
         const row = document.createElement('div');
         row.className = 'story-entry ' + entry.kind + (entry.source === 'subtitle' ? ' non-llm' : '');
-        if (entry.rowId > 0) {
-            row.dataset.rowId = String(entry.rowId);
+        const persistedRowId = normalizeStoryRowId(entry.rowId);
+        if (persistedRowId) {
+            row.dataset.rowId = persistedRowId;
             row.classList.add('has-delete');
         }
 
@@ -248,35 +258,38 @@
         line.appendChild(text);
         row.appendChild(time);
         row.appendChild(line);
-        if (entry.rowId > 0) {
-            row.appendChild(createStoryDeleteButton(entry.rowId));
+        if (persistedRowId) {
+            row.appendChild(createStoryDeleteButton(persistedRowId));
         }
         return row;
     }
 
     function createStoryDeleteButton(rowId) {
+        const isRelationshipHistory = String(rowId).startsWith('relationship:');
+        const defaultTitle = isRelationshipHistory ? 'Undo this relationship change' : 'Delete this event';
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'story-entry-delete';
         button.textContent = '\u{1F5D1}';
-        button.title = 'Delete this event';
-        button.setAttribute('aria-label', 'Delete this event');
+        button.title = defaultTitle;
+        button.setAttribute('aria-label', defaultTitle);
         button.addEventListener('click', function(event) {
             event.preventDefault();
             event.stopPropagation();
-            confirmAndDeleteEvent(button, rowId);
+            confirmAndDeleteEvent(button, rowId, isRelationshipHistory);
         });
         return button;
     }
 
-    async function confirmAndDeleteEvent(button, rowId) {
+    async function confirmAndDeleteEvent(button, rowId, isRelationshipHistory) {
+        const defaultTitle = isRelationshipHistory ? 'Undo this relationship change' : 'Delete this event';
         if (button.disabled) return;
         if (!button.classList.contains('confirm-delete')) {
             button.classList.add('confirm-delete');
-            button.title = 'Click again to delete';
+            button.title = isRelationshipHistory ? 'Click again to undo' : 'Click again to delete';
             setTimeout(function() {
                 button.classList.remove('confirm-delete');
-                button.title = 'Delete this event';
+                button.title = defaultTitle;
             }, 3000);
             return;
         }
@@ -292,15 +305,18 @@
             });
             const result = await response.json();
             if (!response.ok || !result.ok) {
-                throw new Error(result.message || 'Failed to delete event.');
+                throw new Error(result.message || 'Failed to remove timeline event.');
             }
             window.removeEventLogEntry(rowId);
             sendControlCommand('event_deleted|' + rowId);
+            if (isRelationshipHistory) {
+                pushChatboxSystemMessage('Relationship change undone.');
+            }
         } catch (error) {
             button.disabled = false;
             button.classList.remove('confirm-delete');
-            button.title = 'Delete this event';
-            pushChatboxSystemMessage(error.message || 'Failed to delete event.');
+            button.title = defaultTitle;
+            pushChatboxSystemMessage(error.message || 'Failed to remove timeline event.');
         }
     }
 
@@ -310,14 +326,14 @@
     };
 
     window.removeEventLogEntry = function(rowId) {
-        const normalizedRowId = Number(rowId || 0);
-        if (!storyLogElement || normalizedRowId <= 0) return;
+        const normalizedRowId = normalizeStoryRowId(rowId);
+        if (!storyLogElement || !normalizedRowId) return;
         const rowKey = 'row:' + normalizedRowId;
         const row = storyLogElement.querySelector(`[data-row-id="${normalizedRowId}"]`);
         if (row) row.remove();
         storyEntryKeys.delete(rowKey);
         recentStoryContent.forEach(function(recent, key) {
-            if (recent && recent.entry && Number(recent.entry.rowId || 0) === normalizedRowId) {
+            if (recent && recent.entry && normalizeStoryRowId(recent.entry.rowId) === normalizedRowId) {
                 recentStoryContent.delete(key);
             }
         });
@@ -327,7 +343,8 @@
     function appendStoryEntry(entry, isLive) {
         if (!storyLogElement || !entry) return false;
 
-        const rowKey = entry.rowId > 0 ? 'row:' + entry.rowId : '';
+        const normalizedRowId = normalizeStoryRowId(entry.rowId);
+        const rowKey = normalizedRowId ? 'row:' + normalizedRowId : '';
         if (rowKey && storyEntryKeys.has(rowKey)) return false;
 
         const now = Date.now();
@@ -845,7 +862,7 @@
 
         if (deleteEventConfirmButton) {
             deleteEventConfirmButton.textContent = 'Delete';
-            deleteEventConfirmButton.title = 'Delete the selected number of recent events';
+            deleteEventConfirmButton.title = 'Remove recent events and undo included relationship changes';
         }
     }
 
@@ -854,7 +871,7 @@
         pendingDeleteCount = deleteCount;
         if (deleteEventConfirmButton) {
             deleteEventConfirmButton.textContent = 'Are you sure?';
-            deleteEventConfirmButton.title = 'Press again to delete the selected events';
+            deleteEventConfirmButton.title = 'Press again to remove these timeline events';
         }
         pendingDeleteConfirmTimeoutId = window.setTimeout(function() {
             clearPendingDeleteConfirmation();
@@ -1185,17 +1202,21 @@
             }
 
             if (!response.ok || !result || !result.ok) {
-                const errorMessage = (result && result.message) ? result.message : `Failed to delete the last ${deleteCount} events.`;
+                const errorMessage = (result && result.message) ? result.message : `Failed to remove the latest ${deleteCount} timeline events.`;
                 pushChatboxSystemMessage(errorMessage);
                 return;
             }
 
             const deletedCount = Number(result.deleted_count || 0);
-            pushChatboxSystemMessage(`Deleted ${deletedCount} latest visible event${deletedCount === 1 ? '' : 's'}.`);
-            showInGameDebugNotification(`Deleted last ${deletedCount} events`);
+            const relationshipUndoCount = Number(result.relationship_undo_count || 0);
+            const relationshipCopy = relationshipUndoCount > 0
+                ? ` ${relationshipUndoCount} relationship change${relationshipUndoCount === 1 ? '' : 's'} undone.`
+                : '';
+            pushChatboxSystemMessage(`Removed ${deletedCount} latest visible timeline event${deletedCount === 1 ? '' : 's'}.${relationshipCopy}`);
+            showInGameDebugNotification(`Removed ${deletedCount} timeline events`);
             sendControlCommand('story_refresh');
         } catch (_err) {
-            pushChatboxSystemMessage(`Failed to delete the last ${deleteCount} events.`);
+            pushChatboxSystemMessage(`Failed to remove the latest ${deleteCount} timeline events.`);
         } finally {
             setDeleteEventControlsBusy(false);
             clearPendingDeleteConfirmation();

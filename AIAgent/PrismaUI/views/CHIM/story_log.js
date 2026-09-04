@@ -101,6 +101,15 @@
         );
     }
 
+    function normalizeRowId(rowId) {
+        const value = String(rowId || '').trim();
+        if (/^[1-9]\d*$/.test(value)) {
+            return Number(value);
+        }
+        const relationshipMatch = value.match(/^relationship:0*([1-9]\d*)$/);
+        return relationshipMatch ? 'relationship:' + Number(relationshipMatch[1]) : 0;
+    }
+
     function buildEntry(rowId, timestamp, kind, speaker, text, source, occurredAtMs) {
         const normalizedSpeaker = String(speaker || '').trim();
         const normalizedText = String(text || '').trim();
@@ -113,7 +122,7 @@
         ].join('|');
 
         return {
-            rowId: Number(rowId || 0),
+            rowId: normalizeRowId(rowId),
             timestamp: shortTimestamp(timestamp),
             kind: kind,
             speaker: normalizedSpeaker,
@@ -134,7 +143,7 @@
         const occurredAtMs = parseUtcTimestamp(
             clean(findField(entry, 'Time (UTC)') || entry.utcTimestamp || '', decode)
         );
-        const rowId = Number(entry.ROWID || entry.rowId || 0);
+        const rowId = normalizeRowId(entry.ROWID || entry.rowId || 0);
         const source = clean(entry.Source || entry.source || '', decode);
         if (!rawText) return null;
 
@@ -199,7 +208,8 @@
             return timeDelta >= 0 && timeDelta <= persistedDuplicateWindowMs;
         }
 
-        if (!entry.occurredAtMs && !previous.occurredAtMs && entry.rowId && previous.rowId) {
+        if (!entry.occurredAtMs && !previous.occurredAtMs
+            && typeof entry.rowId === 'number' && typeof previous.rowId === 'number') {
             const rowDelta = entry.rowId - previous.rowId;
             return rowDelta > 0 && rowDelta <= 10;
         }
@@ -216,7 +226,9 @@
                     const timeDelta = left.occurredAtMs - right.occurredAtMs;
                     if (timeDelta !== 0) return timeDelta;
                 }
-                if (left.rowId && right.rowId) return left.rowId - right.rowId;
+                if (typeof left.rowId === 'number' && typeof right.rowId === 'number') {
+                    return left.rowId - right.rowId;
+                }
                 return 0;
             });
 
