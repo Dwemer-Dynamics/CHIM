@@ -21,11 +21,14 @@ This repo replaces the split source-of-truth model that previously lived across:
 From the monorepo root:
 
 ```powershell
+git submodule update --init --recursive
 .\scripts\build-chim-plugin.ps1
 .\scripts\deploy.ps1
 ```
 
 `build-chim-plugin.ps1` now builds from `CHIM/Plugin`.
+
+The native plugin uses pinned CommonLibSSE-NG and SkyrimScripting submodules to retain one-DLL support for Skyrim SE, AE, and VR. Skyrim 1.7.104 requires SKSE 2.3.1 and Address Library All in One v13 or newer.
 
 `deploy.ps1` now sources CHIM client assets and Papyrus files from `CHIM/AIAgent`, and sources the plugin build from `CHIM/Plugin`.
 

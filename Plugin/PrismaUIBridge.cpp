@@ -181,7 +181,7 @@ namespace PrismaUIBridge {
             for (auto* event = *events; event; event = event->next) {
                 const auto device = event->GetDevice();
                 if (device == RE::INPUT_DEVICE::kKeyboard ||
-                    device == RE::INPUT_DEVICE::kVirtualKeyboard) {
+                    device == RE::INPUT_DEVICES::VirtualKeyboard()) {
                     return RE::BSEventNotifyControl::kStop;
                 }
             }
@@ -4797,7 +4797,7 @@ R"CHIM(
         std::string targetName = "";
         std::string targetRefId = "";
         
-        auto crosshairTarget = RE::CrosshairPickData::GetSingleton()->target;
+        auto crosshairTarget = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
         
         if (crosshairTarget && crosshairTarget.get()->GetFormType() == RE::FormType::ActorCharacter) {
             auto potentialTarget = crosshairTarget.get()->As<RE::Actor>();
@@ -6913,7 +6913,7 @@ R"CHIM(
         } else {
             RE::TESObjectREFRPtr crosshairTarget;
             if (auto crosshairData = RE::CrosshairPickData::GetSingleton(); crosshairData) {
-                crosshairTarget = crosshairData->target.get();
+                crosshairTarget = crosshairData->GetActiveTarget().get();
             }
             if (crosshairTarget && crosshairTarget.get()->GetFormType() == RE::FormType::ActorCharacter) {
                 auto potentialTarget = crosshairTarget.get()->As<RE::Actor>();
@@ -8114,8 +8114,8 @@ R"CHIM(
             if (!crosshairRef) {
                 // Try alternative method
                 auto crosshairPickData = RE::CrosshairPickData::GetSingleton();
-                if (crosshairPickData && crosshairPickData->target) {
-                    crosshairRef = crosshairPickData->target.get();
+                if (crosshairPickData) {
+                    crosshairRef = crosshairPickData->GetActiveTarget().get();
                 }
             }
 

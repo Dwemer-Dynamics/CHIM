@@ -91,7 +91,7 @@ namespace
         auto* tm = RE::MenuTopicManager::GetSingleton();
         if (tm) {
             if (auto* responseNode = tm->selectedResponseNode) {
-                if (auto* selectedDialogue = responseNode->front()) {
+                if (auto* selectedDialogue = responseNode->item) {
                     std::string selectedLine = selectedDialogue->topicText.c_str();
                     selectedLine = SanitizePlayerMenuDialogueLine(std::move(selectedLine));
                     if (!selectedLine.empty()) {
@@ -1609,7 +1609,7 @@ int sendMessageReal(
         
         // Crosshair and fallback logic (only if not already sent to narrator)
         if (!sent) {
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
             if (cameraObject) {
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
@@ -1889,9 +1889,9 @@ bool promoteCrosshairTargetToAI() {
     if (!cell) return false;
 
     auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
-    if (!crosshairPickData || !crosshairPickData->target) return false;
+    if (!crosshairPickData) return false;
 
-    auto targetRef = crosshairPickData->target.get();
+    auto targetRef = crosshairPickData->GetActiveTarget().get();
     if (!targetRef || targetRef->GetFormType() != RE::FormType::ActorCharacter) return false;
 
     auto* actor = targetRef->As<RE::Actor>();
@@ -2891,12 +2891,13 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
                            RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("setDrivenByAI");
 
-    auto targetObject = RE::CrosshairPickData::GetSingleton()->targetActor;
+    auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
+    auto targetObject = crosshairPickData ? crosshairPickData->GetActiveTarget() : RE::ObjectRefHandle{};
 
     if (!targetObject && REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
         logger::info("Checking NPC via grabbed ref");
         auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
-        targetObject = targetObjectRef.get();
+        targetObject = targetObjectRef ? targetObjectRef->GetHandle() : RE::ObjectRefHandle{};
         if (targetObject) logger::info("Checked NPC via grabbed ref {}", targetObject.get()->GetDisplayFullName());
     } else if (!targetObject) {
         logger::debug("Skipping grabbed ref target fallback in VR");
@@ -3316,8 +3317,8 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
 
     if (cell) {
         cell->ForEachReference([&ref, &player, &position, &minDistance, restriction,
-                                &maxdistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+                                &maxdistance](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
             if ((restriction == false) ||
                 (baseForm->formType == RE::FormType::Armor || baseForm->formType == RE::FormType::Book ||
                  baseForm->formType == RE::FormType::Misc || baseForm->formType == RE::FormType::Weapon ||
@@ -3331,21 +3332,21 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
                  baseForm->formType == RE::FormType::NPC
                  
                     )) {
-                std::string name(object.GetName());
+                std::string name(object->GetName());
                 if (name.empty() && restriction) return RE::BSContainer::ForEachResult::kContinue;
 
-                name.assign(object.GetName());
+                name.assign(object->GetName());
                 if (name == "Generic Note") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Amulet") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Ring") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Necklace") return RE::BSContainer::ForEachResult::kContinue;
 
-                if (object.IsDeleted() || object.IsDisabled() || !object.Is3DLoaded())
+                if (object->IsDeleted() || object->IsDisabled() || !object->Is3DLoaded())
                     return RE::BSContainer::ForEachResult::kContinue;
 
-                float localDistance = position.GetDistance(object.GetPosition());
+                float localDistance = position.GetDistance(object->GetPosition());
                 if ((localDistance > minDistance) && (localDistance < maxdistance)) {
-                    ref = &object;
+                    ref = object;
                     minDistance = localDistance;
                 }
             }
@@ -3620,9 +3621,9 @@ RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, 
     auto cell = player->GetParentCell();
     RE::TESObjectREFR* buffer = nullptr;
     if (cell) {
-        cell->ForEachReference([&buffer](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
-            auto ref2 = &object;
+        cell->ForEachReference([&buffer](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
+            auto ref2 = object;
             if (baseForm->formType == RE::FormType::Door) {
                 auto door = baseForm->As<RE::TESObjectDOOR>();
                 if (door) {

@@ -465,21 +465,17 @@ namespace
 
         std::set<std::string> seenPluginNames;
 
-        if (REL::Module::IsVR()) {
-            if (auto* loadedMods = dataHandler->GetLoadedMods()) {
-                const auto loadedModCount = dataHandler->GetLoadedModCount();
-                for (std::uint32_t i = 0; i < loadedModCount; ++i) {
-                    AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedMods[i]);
-                }
+        if (auto* loadedMods = dataHandler->GetLoadedMods()) {
+            const auto loadedModCount = dataHandler->GetLoadedModCount();
+            for (std::uint32_t i = 0; i < loadedModCount; ++i) {
+                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedMods[i]);
             }
-        } else {
-            const auto& fileCollection = REL::RelocateMember<const RE::TESFileCollection>(dataHandler, 0xD70, 0);
-            for (auto* file : fileCollection.files) {
-                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, file);
-            }
+        }
 
-            for (auto* file : fileCollection.smallFiles) {
-                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, file);
+        if (auto* loadedLightMods = dataHandler->GetLoadedLightMods()) {
+            const auto loadedLightModCount = dataHandler->GetLoadedLightModCount();
+            for (std::uint32_t i = 0; i < loadedLightModCount; ++i) {
+                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedLightMods[i]);
             }
         }
 
@@ -882,7 +878,7 @@ namespace
 
         RE::MenuTopicManager::Dialogue* selectedDialogue = nullptr;
         if (auto* responseNode = tm->selectedResponseNode) {
-            selectedDialogue = responseNode->front();
+            selectedDialogue = responseNode->item;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -1195,7 +1191,7 @@ namespace
 
         // Keep dialogue paused without flagging it as finished, otherwise Skyrim may skip the NPC line.
         actor->AllowPCDialogue(false);
-        actor->PauseCurrentDialogue();
+        actor->StopCurrentDialogue();
         actor->SetSpeakingDone(false);
     }
 
@@ -1550,7 +1546,7 @@ void ProcedureListenToScene() {
                 if (localactor->GetFormID() == actor->GetFormID() &&
                     (s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), s.subtitle.c_str()))) {
                     logger::info("[ProcedureListenToScene] Skipped recognized AI dialogue, actor:{},text:{}", localactor->GetDisplayFullName(),
-                        s.subtitle);
+                        s.subtitle.c_str());
                     skipThisSubtitle = true;
                     break;
                 }
@@ -2466,7 +2462,7 @@ private:
                         
                     }
 
-                    if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+                    if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
                         logger::info("[BORED] Avoiding bored event because player is in dialogue");
                         playerInDialog = true;
                     }
@@ -3892,13 +3888,13 @@ namespace ProcessorScreenShot {
 namespace ProcessorNativeScreenShot {
 
     struct Hook {
-        static void thunk(ID3D11Texture2D* a_texture_2d, char const* a_path,
+        static void thunk(REX::W32::ID3D11Texture2D* a_texture_2d, char const* a_path,
                           RE::BSGraphics::TextureFileFormat a_format);
 
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
-    void Hook::thunk(ID3D11Texture2D* a_texture_2d, char const* a_path, RE::BSGraphics::TextureFileFormat a_format) {
+    void Hook::thunk(REX::W32::ID3D11Texture2D* a_texture_2d, char const* a_path, RE::BSGraphics::TextureFileFormat a_format) {
         
         func(a_texture_2d, a_path, a_format);
         if (MutexIsMakeShotNativeActivated()) {
@@ -6092,8 +6088,7 @@ static bool HasArmorSlot(RE::TESObjectARMO* armor, RE::BGSBipedObjectForm::Biped
         return false;
     }
 
-    auto slotMask = static_cast<uint64_t>(armor->GetSlotMask());
-    return (slotMask & static_cast<uint64_t>(slot)) != 0;
+    return armor->HasPartOf(slot);
 }
 
 static json CollectItemKeywords(RE::TESBoundObject* boundObject)
@@ -8499,7 +8494,7 @@ EventHandlers {
 
                             // Use door's activate text as name
                             RE::BSString actText;
-                            door->GetActivateText(event->reference, actText);
+                            door->GetActivateText(event->reference.get(), actText);
 
                             // With the following code:
                             auto locNameFull = std::string(actText);
@@ -8516,7 +8511,7 @@ EventHandlers {
                                 locName = locName.substr(0, ltPos);
                             }
                             locName.append(" (door/passage)");
-                            LocationList::GetInstance().AddLocation(locName, ref);
+                            LocationList::GetInstance().AddLocation(locName, ref.get());
 
                             /*
                             RE::TESObjectCELL* cellDoor = destination->GetParentCell();
@@ -8564,7 +8559,7 @@ EventHandlers {
                 if (npc) {
                     
                     RE::ExtraDataList* extra = &ref->extraList;
-                    NPCList::GetInstance().AddNPC(npc->GetName(), ref);
+                    NPCList::GetInstance().AddNPC(npc->GetName(), ref.get());
 
                    
                 }
@@ -8594,7 +8589,8 @@ EventHandlers {
                                          item->GetDisplayFullName());
 
                             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                            auto args = RE::MakeFunctionArguments(std::move(item));
+                            auto* itemReference = item.get();
+                            auto args = RE::MakeFunctionArguments(std::move(itemReference));
                             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                                 "AIAgentAIMind", "AddDelayedHint", args, callback);
 
@@ -8612,7 +8608,7 @@ EventHandlers {
                                 item->GetDisplayFullName(), event->attached);
                    std::thread([item]() {
                         std::this_thread::sleep_for(std::chrono::seconds(1));
-                        RE::TESObjectREFR *localIitem = item;
+                        RE::TESObjectREFR *localIitem = item.get();
                         if (localIitem) {
                             logger::info("AIFaction item loaded {:#x} {}", localIitem->GetFormID(),
                                          localIitem->GetDisplayFullName());
@@ -8650,7 +8646,7 @@ EventHandlers {
                             // Use door's activate text as name
                             RE::BSString actText;
 
-                            door->GetActivateText(event->reference, actText);
+                            door->GetActivateText(event->reference.get(), actText);
 
                             // With the following code:
                             auto locNameFull = std::string(actText);
@@ -9380,7 +9376,7 @@ EventHandlers {
             return;
         }
 
-        auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
+        auto* topicForm = RE::TESForm::LookupByID(event->topicInfoFormID);
         RE::TESTopicInfo* source =
             topicForm && topicForm->GetFormType() == RE::FormType::Info
                 ? static_cast<RE::TESTopicInfo*>(topicForm)
@@ -9394,20 +9390,21 @@ EventHandlers {
         // Check if im involved
 
         auto lastSpeaker = tm ? tm->speaker.get() : nullptr;
-        auto* topicActor = event->speaker;
+        auto* topicActor = event->speakerRef ? event->speakerRef->As<RE::Actor>() : nullptr;
+        const bool topicEnded = event->type.get() == RE::TESTopicInfoEvent::TopicInfoEventType::kTopicEnd;
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
          //if (event->speaker) {
-        if (topicActor && event->flag) {
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+        if (topicActor && topicEnded) {
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
             // DISABLED
             if (cameraObject && false ) {   // Will do the audio search in the other condition branch
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
                     if (targetActor == topicActor) {
                         if (!source) {
-                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoID,
+                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoFormID,
                                          topicActor->GetDisplayFullName());
                             return;
                         }
@@ -9511,7 +9508,7 @@ EventHandlers {
                 } else {
                 }
             }
-        } else  if (topicActor && !event->flag) {
+        } else if (topicActor && !topicEnded) {
             if (topicActor) {
                 //std::string actorName(topicActor->GetDisplayFullName());
                 //auto agentPtr = aiam.getAgentByName(actorName);
@@ -9524,7 +9521,7 @@ EventHandlers {
                                  event->topicInfoID);*/
                 }
 
-                auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
                 if (!cameraObject) {
                     // logger::info("Checking NPC via grabbed ref");
                     // logger::info("TESTopicInfoEvent {} {}", source->GetFormID(), event->topicInfoID);
@@ -9534,7 +9531,7 @@ EventHandlers {
                         // logger::info("Grabbed ref is null");
                         auto cameraObject2 = targetObjectRef.get();
                         if (cameraObject2) {
-                            cameraObject = cameraObject2;
+                            cameraObject = cameraObject2->GetHandle();
                             logger::info("Checked NPC via grabbed ref {}", cameraObject.get()->GetDisplayFullName());
                         }
                     }
@@ -9608,7 +9605,7 @@ EventHandlers {
                                                 } else {
                                                     logger::warn("[VOICE] Skipping unreadable dialogue sample for {} from {} (topic {:08X}): {}",
                                                                  existingAgent->getActorName(), finalAudioPath,
-                                                                 event->topicInfoID, readFailure);
+                                                                 event->topicInfoFormID, readFailure);
                                                 }
                                             }
                                         }
@@ -9678,7 +9675,7 @@ EventHandlers {
             auto responseNode = tm->selectedResponseNode;
             if (responseNode) {
 
-                auto responseNodeCurrent = responseNode->front();
+                auto responseNodeCurrent = responseNode->item;
                  if (responseNodeCurrent) {
                       RE::Actor* menuListenerActor = lastSpeaker ? lastSpeaker->As<RE::Actor>() : nullptr;
                       ProcessorMenu::RememberRecentConversationTarget(menuListenerActor);
@@ -9713,7 +9710,7 @@ EventHandlers {
                                   sData["location"] = GetPlayerLocation();
                                   sData["speech"] = DialogueLastStringSay;
                                   sData["speaker"] = aiam.getPlayerName();
-                                  sData["debug"] = (event->flag) ? "true" : "false";
+                                  sData["debug"] = topicEnded ? "true" : "false";
                                   AddCachedSpeechAudience(sData, "traditional_player_speech");
                                   HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
                                                                GetGameTimeStamp(), sData.dump()));
@@ -9746,7 +9743,7 @@ EventHandlers {
                           }
                        }
 
-                    if (event->flag) {
+                    if (topicEnded) {
                         ResetPlayerMenuCustomPlaybackStateForNpcResponse();
 
                         auto responses = responseNodeCurrent->responses;
@@ -9757,7 +9754,7 @@ EventHandlers {
                             RE::DialogueResponse* response = *it;
                             if (!response) {
                                 logger::warn("[VOICE] Dialogue response was null for {} (topic {:08X})",
-                                             lastSpeaker->GetDisplayFullName(), event->topicInfoID);
+                                             lastSpeaker->GetDisplayFullName(), event->topicInfoFormID);
                                 continue;
                             }
 
@@ -9835,7 +9832,7 @@ EventHandlers {
                                         speakerAgent->setVoiceSamplePath(finalPath);
                                     } else {
                                         logger::warn("[VOICE] Skipping unreadable dialogue-menu sample for {} from {} (topic {:08X}): {}",
-                                                     speakerAgent->getActorName(), finalPath, event->topicInfoID,
+                                                     speakerAgent->getActorName(), finalPath, event->topicInfoFormID,
                                                      readFailure);
                                     }
                                 }
@@ -9858,7 +9855,7 @@ EventHandlers {
                                     sData["speech"] = DialogueLastStringResponse;
                                     sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
                                     sData["audios"] = audioPaths;
-                                    sData["debug"] = (event->flag) ? "true" : "false";
+                                    sData["debug"] = topicEnded ? "true" : "false";
                                     AddCachedSpeechAudience(sData, "traditional_npc_speech");
                                     HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                                                  sData.dump()));
@@ -10050,11 +10047,11 @@ EventHandlers {
 
     On<RE::TESBookReadEvent>([](const RE::TESBookReadEvent* event) {
         // Only triggers on PC?s
-        if (!event->book.get()) return;
+        if (!event->ref.get()) return;
 
         bool bypass = false;
-        auto bookRefPtr = event->book.get();
-        auto bookRef = event->book.get()->GetObjectReference();
+        auto bookRefPtr = event->ref.get();
+        auto bookRef = event->ref.get()->GetObjectReference();
         if (bookRef) {
 
             std::string fullName(bookRefPtr->GetDisplayFullName());
@@ -10067,7 +10064,7 @@ EventHandlers {
                 bypass = true;
             } else if (localName=="Generic Note") {
                 // AIAgent faction. is an ethereal note
-                std::string hashName=md5low(trim(event->book.get()->GetDisplayFullName()),false);
+                std::string hashName=md5low(trim(event->ref.get()->GetDisplayFullName()),false);
                 std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName+".png";
                 std::string destinationFilePath = "data/textures/AIAgent/Books/Note01.png";
 
@@ -10159,7 +10156,7 @@ EventHandlers {
                 RE::TESForm* spell = RE::TESForm::LookupByID(event->spell);
                 if (spell) {
                     if (spell->formType == RE::FormType::Spell) {
-                        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                        auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
                         if (cameraObject && cameraObject.get() &&
                             cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                             auto targetActor = cameraObject.get()->As<RE::Actor>();
@@ -10332,7 +10329,7 @@ EventHandlers {
             return;
         }
         if (false) 
-            logger::info("Quest started, name {} editorId {} , started {} ", qqData->GetName(), qqData->formEditorID,
+            logger::info("Quest started, name {} editorId {} , started {} ", qqData->GetName(), qqData->formEditorID.c_str(),
                      event->started);
         
         if (event->started) {
@@ -10384,7 +10381,7 @@ EventHandlers {
         PostQuestProgressionQuestStage(qqData, event->stage);
         
         if (false)
-            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID,
+            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID.c_str(),
                          event->stage);
         
         

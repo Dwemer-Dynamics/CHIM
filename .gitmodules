@@ -1,0 +1,6 @@
+[submodule "Plugin/lib/CommonLibSSE-NG"]
+	path = Plugin/lib/CommonLibSSE-NG
+	url = https://github.com/alandtse/CommonLibSSE-NG.git
+[submodule "Plugin/lib/SkyrimScripting.Plugin"]
+	path = Plugin/lib/SkyrimScripting.Plugin
+	url = https://github.com/SkyrimScripting/Plugin.git
