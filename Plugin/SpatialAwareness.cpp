@@ -979,13 +979,13 @@ namespace SpatialAwareness
         // same-cell interior conversations.
         if (speakerInterior) {
             speakerCell->ForEachReferenceInRange(
-                speakerPosition, scanRadius, [&](RE::TESObjectREFR& reference) {
-                    const auto* baseObject = reference.GetBaseObject();
+                speakerPosition, scanRadius, [&](RE::TESObjectREFR* reference) {
+                    const auto* baseObject = reference->GetBaseObject();
                     if (!baseObject || baseObject->GetFormType() != RE::FormType::Door) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
 
-                    const auto doorPosition = reference.GetPosition();
+                    const auto doorPosition = reference->GetPosition();
                     if (!SpatialGeometryPolicy::IsPointWithinSegmentCorridor(
                             {speakerPosition.x, speakerPosition.y, speakerPosition.z},
                             {listenerPosition.x, listenerPosition.y, listenerPosition.z},
@@ -993,10 +993,10 @@ namespace SpatialAwareness
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
 
-                    const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
+                    const auto openState = RE::BGSOpenCloseForm::GetOpenState(reference);
                     if (IsClosedDoorState(openState)) {
                         ++closedDoorCount;
-                        closedDoorCandidateFormId = reference.GetFormID();
+                        closedDoorCandidateFormId = reference->GetFormID();
                         return RE::BSContainer::ForEachResult::kStop;
                     }
 
