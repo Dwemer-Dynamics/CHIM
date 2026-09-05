@@ -154,13 +154,13 @@ namespace
 
         const float corridorHalfWidth = std::max(settings.doorTriangulationAbsoluteTolerance, 0.0f);
         const float scanRadius = airDistance + corridorHalfWidth;
-        playerCell->ForEachReferenceInRange(playerPosition, scanRadius, [&](RE::TESObjectREFR& reference) {
-            const auto* baseObject = reference.GetBaseObject();
+        playerCell->ForEachReferenceInRange(playerPosition, scanRadius, [&](RE::TESObjectREFR* reference) {
+            const auto* baseObject = reference->GetBaseObject();
             if (!baseObject || baseObject->GetFormType() != RE::FormType::Door) {
                 return RE::BSContainer::ForEachResult::kContinue;
             }
 
-            const auto doorPosition = reference.GetPosition();
+            const auto doorPosition = reference->GetPosition();
             if (!SpatialGeometryPolicy::IsPointWithinSegmentCorridor(
                     {playerPosition.x, playerPosition.y, playerPosition.z},
                     {targetPosition.x, targetPosition.y, targetPosition.z},
@@ -168,10 +168,10 @@ namespace
                 return RE::BSContainer::ForEachResult::kContinue;
             }
 
-            const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
+            const auto openState = RE::BGSOpenCloseForm::GetOpenState(reference);
             if (IsClosedDoorState(openState)) {
                 ++scan.closedDoorCount;
-                scan.closedDoorCandidateFormId = reference.GetFormID();
+                scan.closedDoorCandidateFormId = reference->GetFormID();
                 return RE::BSContainer::ForEachResult::kStop;
             }
 
@@ -1314,9 +1314,8 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
     const bool spatialRefinementSettling = ShouldDeferPlayerSpatialForCell(playerCell, now, reason);
 
     RE::FormID crosshairFormId = 0;
-    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
-        crosshairPickData && crosshairPickData->target) {
-        if (auto crosshairTarget = crosshairPickData->target.get();
+    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton(); crosshairPickData) {
+        if (auto crosshairTarget = crosshairPickData->GetActiveTarget().get();
             crosshairTarget && crosshairTarget->GetFormType() == RE::FormType::ActorCharacter) {
             crosshairFormId = crosshairTarget->GetFormID();
         }

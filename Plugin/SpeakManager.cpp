@@ -2991,7 +2991,7 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     }
 
     if (!commandInQueue) {
-        if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+        if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
             logger::debug("[RECHAT] Avoiding rechat event because player is in dialogue");
             return 0;
         }
@@ -3435,7 +3435,7 @@ void SpeakManager::process(AIAgent *agent) {
             } else {
                 // New policy
                 bool playerInDialog = false;
-                if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+                if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
                     playerInDialog = true;
                 }
 

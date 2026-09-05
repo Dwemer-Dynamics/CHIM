@@ -103,10 +103,10 @@ namespace
     RE::FormID GetTrueCrosshairActorFormId()
     {
         auto* crosshair = RE::CrosshairPickData::GetSingleton();
-        if (!crosshair || !crosshair->target) {
+        if (!crosshair) {
             return 0;
         }
-        auto reference = crosshair->target.get();
+        auto reference = crosshair->GetActiveTarget().get();
         auto* actor = reference ? reference->As<RE::Actor>() : nullptr;
         return actor ? actor->GetFormID() : 0;
     }
