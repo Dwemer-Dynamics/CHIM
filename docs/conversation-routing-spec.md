@@ -344,7 +344,8 @@ Each routed player utterance logs one `[PLAYER-ROUTING]` record with:
 - effective listener and audience radii;
 - audience count;
 - physical-presence and inactive-presence counts; and
-- rejected candidates with reasons.
+- candidates excluded from the actual audience with hard or spatial reasons; and
+- audible audience members that remain ineligible for automatic responder selection.
 
 A rejected sleeping direct target logs a shorter `[PLAYER-ROUTING]` record with
 the input source, mode, normalized utterance, rejected target name, and the
@@ -411,6 +412,8 @@ privacy, and spatial-audibility reports.
 20. A targeted diary request can proceed for a sleeping NPC without interrupting
     or waking the actor, while every non-sleeping automatic blocker remains in
     force.
+21. A restrained actor can continue an established rechat chain, while restraint
+    remains a blocker for untargeted automatic responder selection.
 
 ## Source References
 

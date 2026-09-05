@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -507,6 +508,42 @@ namespace
         return serverVersion;
     }
 
+    // Compare numeric release components so the warning names the component to update.
+    std::string GetVersionMismatchGuidance(const std::string& pluginVersion, const std::string& serverVersion)
+    {
+        const auto parseVersion = [](const std::string& version, std::array<unsigned int, 3>& parts) {
+            const char* cursor = version.data();
+            const char* end = cursor + version.size();
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                const auto result = std::from_chars(cursor, end, parts[i]);
+                if (result.ec != std::errc{}) {
+                    return false;
+                }
+                cursor = result.ptr;
+                if (i + 1 == parts.size()) {
+                    return cursor == end;
+                }
+                if (cursor == end || *cursor != '.') {
+                    return false;
+                }
+                ++cursor;
+            }
+            return false;
+        };
+
+        std::array<unsigned int, 3> pluginParts{};
+        std::array<unsigned int, 3> serverParts{};
+        if (parseVersion(pluginVersion, pluginParts) && parseVersion(serverVersion, serverParts)) {
+            if (pluginParts < serverParts) {
+                return "[CHIM] Update the plugin to match the server, or CHIM will not work.";
+            }
+            if (serverParts < pluginParts) {
+                return "[CHIM] Update the server to match the plugin, or CHIM will not work.";
+            }
+        }
+        return "[CHIM] Install matching plugin and server versions, or CHIM will not work.";
+    }
+
     void ScheduleVersionMismatchStartupCheck()
     {
         std::thread([]() {
@@ -538,9 +575,12 @@ namespace
                 rawServerVersion);
 
             logger::warn("[VersionCheck] {}", warning);
+            const std::string guidance = GetVersionMismatchGuidance(pluginVersion, normalizedServerVersion);
+            logger::warn("[VersionCheck] {}", guidance);
 
-            SKSE::GetTaskInterface()->AddTask([warning]() {
+            SKSE::GetTaskInterface()->AddTask([warning, guidance]() {
                 RE::DebugNotification(warning.c_str());
+                RE::DebugNotification(guidance.c_str());
             });
         }).detach();
     }

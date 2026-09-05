@@ -51,6 +51,7 @@ constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
 extern bool GlobalEnable3DAudioPlayback;
+extern bool GlobalForceMono;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
 extern int GlobalConfiguredTimeout;
@@ -1559,6 +1560,17 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     auto updatePlaybackSpatialPosition = [&]() {
         if (!DXinitOK) {
             return;
+        }
+
+        if (GlobalForceMono) {
+            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            
+            am.UpdateLegacy(
+                noopPosition,
+                noopPosition, 
+                0.0f);
+
+             return;
         }
 
         if (!enable3DAudioPlayback) {
