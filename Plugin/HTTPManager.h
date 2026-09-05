@@ -1,6 +1,7 @@
 #pragma once 
 
 #include <cstdio>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -29,6 +30,9 @@ namespace HTTPManager {
     void stream(std::string msg, RE::Actor *actor, int rechatDepth);
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data);
+    // Completion runs after the queued request receives a success or failure result.
+    void postGameData(const std::string& endpoint, const nlohmann::json& data,
+                      std::function<void(bool)> completion);
     bool postGameDataSync(const std::string& endpoint, const nlohmann::json& data);
     std::string postGameDataResponse(const std::string& endpoint, const nlohmann::json& data, int timeoutMs = 5000);
     nlohmann::json postGameDataJson(const std::string& endpoint, const nlohmann::json& data, int timeoutMs = 5000);

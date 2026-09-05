@@ -9,6 +9,9 @@ int function commandEndedForActor(String command,string npc)  Global Native
 
 int function recordSoundEx(int bindedKey)  Global Native
 int function stopRecording(int bindedKey)  Global Native
+; Stop speech and pending replies without changing NPC actions or conversation history.
+int function stopAllDialogue() Global Native
+bool function isGameFocused() Global Native
 int function startOpenMicMonitoring()  Global Native
 int function stopOpenMicMonitoring()  Global Native
 int function setOpenMicMuted(bool muted)  Global Native
@@ -34,6 +37,7 @@ int function requestArrestConfirmation(Actor player, Actor guard, Faction crimeF
 int function sendRequest() Global Native
 int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
+int function startSoulgazeCapture(String hints, int captureType, int renderMode, Actor target = None) Global Native
 int function isGameVR() Global Native									; 1 if VR
 
 int function sendLocationFast(Location curr,string tags,Cell referenceCell=None) global Native

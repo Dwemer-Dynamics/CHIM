@@ -1,5 +1,7 @@
 #include "SpatialAwareness.h"
 
+#include "SpatialGeometryPolicy.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -201,6 +203,7 @@ namespace SpatialAwareness
             int detectionLevel = 0;
             int openDoorCount = 0;
             int closedDoorCount = 0;
+            RE::FormID closedDoorCandidateFormId = 0;
 
             bool operator==(const SpatialEvalLogSnapshot& other) const = default;
         };
@@ -268,6 +271,7 @@ namespace SpatialAwareness
             snapshot.detectionLevel = result.detectionLevel;
             snapshot.openDoorCount = result.openDoorCount;
             snapshot.closedDoorCount = result.closedDoorCount;
+            snapshot.closedDoorCandidateFormId = result.closedDoorCandidateFormId;
             return snapshot;
         }
 
@@ -699,22 +703,6 @@ namespace SpatialAwareness
             return query;
         }
 
-        float GetTriangulationTolerance(float airDistance, const Settings& settings)
-        {
-            const float scaledTolerance = airDistance * settings.doorTriangulationPercentTolerance;
-            return std::max(settings.doorTriangulationAbsoluteTolerance, scaledTolerance);
-        }
-
-        bool IsBetweenActors(const RE::NiPoint3& speakerPosition, const RE::NiPoint3& listenerPosition,
-                             const RE::NiPoint3& candidatePosition, float airDistance, const Settings& settings)
-        {
-            const float speakerToCandidate = speakerPosition.GetDistance(candidatePosition);
-            const float listenerToCandidate = listenerPosition.GetDistance(candidatePosition);
-            const float combinedDistance = speakerToCandidate + listenerToCandidate;
-            const float tolerance = GetTriangulationTolerance(airDistance, settings);
-            return combinedDistance >= (airDistance - tolerance) && combinedDistance <= (airDistance + tolerance);
-        }
-
         bool IsClosedDoorState(RE::BGSOpenCloseForm::OPEN_STATE state)
         {
             return state == RE::BGSOpenCloseForm::OPEN_STATE::kClosed ||
@@ -874,11 +862,12 @@ namespace SpatialAwareness
         const auto finalize = [&](const char* tier) -> Result {
             if (ShouldEmitSpatialEvalLog(speaker, listener, tier, result)) {
                 logger::info(
-                    "[SPATIAL_V1L] {} -> {} | tier={} | reason={} | can={} | volume={:.3f} | distance={:.1f} | pathDist={:.1f} | pathRatio={:.2f} | pathUsed={} | pathFound={} | losFallback={} | los={} | detect={} | openDoors={} | closedDoors={}",
+                    "[SPATIAL_V1L] {} -> {} | tier={} | reason={} | can={} | volume={:.3f} | distance={:.1f} | pathDist={:.1f} | pathRatio={:.2f} | pathUsed={} | pathFound={} | losFallback={} | los={} | detect={} | openDoors={} | closedDoors={} | closedDoorCandidate={:08X}",
                     speakerName, listenerName, tier, result.reason, result.canCommunicate ? 1 : 0, result.volume,
                     result.airDistance, result.pathDistance, result.pathRatio, result.navmeshPathUsed ? 1 : 0,
                     result.navmeshPathFound ? 1 : 0, result.losFallbackUsed ? 1 : 0, result.hasLineOfSight ? 1 : 0,
-                    result.detectionLevel, result.openDoorCount, result.closedDoorCount);
+                    result.detectionLevel, result.openDoorCount, result.closedDoorCount,
+                    result.closedDoorCandidateFormId);
             }
             if (speaker && listener) {
                 const auto expiresAt = std::chrono::steady_clock::now() + kEvalCacheTtl;
@@ -980,10 +969,10 @@ namespace SpatialAwareness
 
         int openDoorCount = 0;
         int closedDoorCount = 0;
+        RE::FormID closedDoorCandidateFormId = 0;
 
-        const float scanRadius =
-            airDistance + std::max(settings.doorTriangulationAbsoluteTolerance,
-                                   airDistance * settings.doorTriangulationPercentTolerance);
+        const float corridorHalfWidth = std::max(settings.doorTriangulationAbsoluteTolerance, 0.0f);
+        const float scanRadius = airDistance + corridorHalfWidth;
 
         // Exterior worldspaces contain many load doors that do not form meaningful
         // audio barriers between outdoor actors. Restrict door triangulation to
@@ -996,13 +985,18 @@ namespace SpatialAwareness
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
 
-                    if (!IsBetweenActors(speakerPosition, listenerPosition, reference.GetPosition(), airDistance, settings)) {
+                    const auto doorPosition = reference.GetPosition();
+                    if (!SpatialGeometryPolicy::IsPointWithinSegmentCorridor(
+                            {speakerPosition.x, speakerPosition.y, speakerPosition.z},
+                            {listenerPosition.x, listenerPosition.y, listenerPosition.z},
+                            {doorPosition.x, doorPosition.y, doorPosition.z}, corridorHalfWidth)) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
 
                     const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
                     if (IsClosedDoorState(openState)) {
                         ++closedDoorCount;
+                        closedDoorCandidateFormId = reference.GetFormID();
                         return RE::BSContainer::ForEachResult::kStop;
                     }
 
@@ -1016,15 +1010,11 @@ namespace SpatialAwareness
 
         result.openDoorCount = openDoorCount;
         result.closedDoorCount = closedDoorCount;
-
-        if (closedDoorCount > 0) {
-            result.reason = "closed_door_between";
-            return finalize("tier3_closed_door");
-        }
+        result.closedDoorCandidateFormId = closedDoorCandidateFormId;
 
         // Keep the instant-pass fast path, but only when there is no detected door boundary.
         // If an open door is between actors, continue through volume shaping for muffled-around-corner behavior.
-        if (airDistance <= settings.immediateDistance && openDoorCount == 0) {
+        if (airDistance <= settings.immediateDistance && openDoorCount == 0 && closedDoorCount == 0) {
             result.canCommunicate = true;
             result.volume = 1.0f;
             result.reason = "immediate_proximity";
@@ -1043,6 +1033,7 @@ namespace SpatialAwareness
         result.losQueryOk = losQueryOk;
         result.hasLineOfSight = losQueryOk && hasLineOfSight;
         if (result.hasLineOfSight) {
+            result.closedDoorCount = 0;
             result.reason = openDoorCount > 0 ? "open_door_muffled" : "line_of_sight_clear";
             result.volume = std::clamp(distanceFactor * environmentModifier * openDoorModifier, 0.0f, 1.0f);
             if (result.volume < settings.minimumAudibleVolume) {
@@ -1052,6 +1043,11 @@ namespace SpatialAwareness
 
             result.canCommunicate = true;
             return finalize("tier4_los_pass");
+        }
+
+        if (closedDoorCount > 0) {
+            result.reason = "closed_door_between";
+            return finalize("tier4_closed_door");
         }
 
         const auto navPath = QueryNavPathDistance(speakerCell, speakerPosition, listenerPosition, settings);

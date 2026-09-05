@@ -60,7 +60,7 @@ namespace {
         return escaped.str();
     }
 
-    std::string UrlEncodeVoiceSampleField(const std::string& value) {
+    std::string UrlEncodeQueryValue(const std::string& value) {
         std::ostringstream encoded;
         encoded << std::uppercase << std::hex;
         for (unsigned char character : value) {
@@ -85,6 +85,21 @@ namespace {
             return "audio/ogg";
         }
         return "application/octet-stream";
+    }
+
+    bool IsSuccessfulHttpStatus(HINTERNET request) {
+        DWORD statusCode = 0;
+        DWORD statusSize = sizeof(statusCode);
+        if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr,
+                                 &statusCode, &statusSize, nullptr)) {
+            logger::error("Unable to read image upload HTTP status: {}", GetLastError());
+            return false;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            logger::error("Image upload returned HTTP status {}", statusCode);
+            return false;
+        }
+        return true;
     }
 }
 
@@ -282,9 +297,9 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
         path = path.substr(0, queryPosition);
     }
     path.append("?stuff&codename=")
-        .append(UrlEncodeVoiceSampleField(codename))
+                            .append(UrlEncodeQueryValue(codename))
         .append("&oname=")
-        .append(UrlEncodeVoiceSampleField(originalName));
+                            .append(UrlEncodeQueryValue(originalName));
     std::wstring widePath = StringToWideString(path);
 
     logger::info("Using VSX: {}", server + ":" + port + "/" + path);
@@ -411,7 +426,8 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
     return response;
 }
 
-std::string HTTPUploader::UploadBookContent(std::string data, std::string title) {
+std::string HTTPUploader::UploadBookContent(std::string data, std::string title, std::string readRequestId,
+                                            std::string bookFormId) {
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -429,7 +445,16 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title)
         path.replace(pos, 8, "book.php?title=");
     }
     if (!title.empty()) {
-        path.append(title);
+        path.append(UrlEncodeQueryValue(title));
+    }
+
+    if (!readRequestId.empty()) {
+        path.append("&read_request_id=");
+        path.append(UrlEncodeQueryValue(readRequestId));
+    }
+    if (!bookFormId.empty()) {
+        path.append("&book_form_id=");
+        path.append(UrlEncodeQueryValue(bookFormId));
     }
 
     path.append("&ts=");
@@ -437,7 +462,7 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title)
     path.append("&gamets=");
     path.append(std::to_string(GetGameTimeStamp()));
     
-    logger::info("Using BOOK: {}", server + ":" + port + "/" + path);
+    logger::info("Using BOOK uploader: {}:{}", server, port);
 
     std::wstring widePath = StringToWideString(path);
 
@@ -543,7 +568,7 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title)
 
     if (response.starts_with("<")) {
         response.assign("...");
-        logger::info("Error using http://{}", server + ":" + port + "/" + path);
+        logger::info("Error using BOOK uploader at {}:{}", server, port);
     }
 
     // Clean up
@@ -753,7 +778,7 @@ std::string HTTPUploader::UploadCSVFile(std::string data, std::string filename, 
     return response;
 }
 
-std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string hints) {
+std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string hints, int sendMode) {
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -765,11 +790,11 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
     std::string path = Conf::getInstance().getPath();
     auto pos = path.find("comm.php");
     if (pos != std::string::npos) {
-        if (MutexGetScreenShotSendMode()==0)
+        if (sendMode == 0 || sendMode == 3 || sendMode == 4)
             path.replace(pos, 8, "itt.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 1)
+        else if (sendMode == 1)
             path.replace(pos, 8, "pic.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 2)
+        else if (sendMode == 2)
             path.replace(pos, 8, "upl.php?stuff");
     }
 
@@ -863,11 +888,16 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
         logger::info("Error using http://{}:{}{}", server, port, path);
     }
 
+    const bool imageRequestSucceeded = IsSuccessfulHttpStatus(hRequest);
+
     // Clean up
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
+    if (!imageRequestSucceeded) {
+        return "";
+    }
     return response;
 }
 /*
@@ -966,7 +996,7 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
 }
 */
 
-std::string HTTPUploader::UploadImage(const char *data, int size, std::string hints) {
+std::string HTTPUploader::UploadImage(const char *data, int size, std::string hints, int sendMode) {
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -978,11 +1008,11 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
     std::string path = Conf::getInstance().getPath();
     auto pos = path.find("comm.php");
     if (pos != std::string::npos) {
-        if (MutexGetScreenShotSendMode() == 0)
+        if (sendMode == 0 || sendMode == 3 || sendMode == 4)
             path.replace(pos, 8, "itt.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 1)
+        else if (sendMode == 1)
             path.replace(pos, 8, "pic.php?stuff");
-        else if (MutexGetScreenShotSendMode() == 2)
+        else if (sendMode == 2)
             path.replace(pos, 8, "upl.php?stuff");
     }
 
@@ -1076,10 +1106,15 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
         logger::info("Error using http://{}:{}{}", server, port, path);
     }
 
+    const bool imageRequestSucceeded = IsSuccessfulHttpStatus(hRequest);
+
     // Clean up
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
+    if (!imageRequestSucceeded) {
+        return "";
+    }
     return response;
 }

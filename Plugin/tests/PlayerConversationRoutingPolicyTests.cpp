@@ -1,4 +1,5 @@
 #include "PlayerConversationRoutingPolicy.h"
+#include "SpatialGeometryPolicy.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -23,7 +24,7 @@ namespace
     Candidate MakeCandidate(std::uint32_t formId, std::string name, float distance,
                             bool hardEligible = true, bool autoEligible = true,
                             bool audible = true, float facingDot = 1.0f,
-                            bool crosshair = false)
+                            bool crosshair = false, bool sleeping = false)
     {
         Candidate candidate{};
         candidate.formId = formId;
@@ -34,6 +35,7 @@ namespace
         candidate.audible = audible;
         candidate.facingDot = facingDot;
         candidate.trueCrosshair = crosshair;
+        candidate.sleeping = sleeping;
         return candidate;
     }
 
@@ -57,6 +59,15 @@ int main()
           "Direct group speech was not recognized");
     Check(!IsPlayerInitiatedRequest("rpg_word|1|date|context"),
           "Automatic Word of Power event was recognized as player speech");
+    Check(IsDiaryRequest("diary|1|date|Player: update your diary"),
+          "Diary event was not recognized");
+    Check(!IsDiaryRequest("diary_nearby|1|date|Player: update your diary"),
+          "Nearby diary event was recognized as a targeted diary request");
+    Check(!IsPlayerInitiatedRequest("diary|1|date|Player: update your diary"),
+          "Diary event was recognized as direct player speech");
+    Check(IsRechatRequest("rechat|1|date|{}"), "Rechat event was not recognized");
+    Check(!IsRechatRequest("rechat_nearby|1|date|{}"),
+          "Non-rechat event was recognized as rechat");
 
     AutomaticEligibilityFacts eligibility{};
     Check(GetAutomaticBlockReason(eligibility).empty(),
@@ -82,11 +93,38 @@ int main()
     eligibility = {};
     eligibility.sleeping = true;
     Check(GetAutomaticBlockReason(eligibility) == "sleeping", "Sleeping was not enforced");
+    AutomaticEligibilityOptions options{};
+    options.ignoreSleeping = true;
+    Check(GetAutomaticBlockReason(eligibility, options).empty(),
+          "Sleeping-only eligibility was not restored when sleep was ignored");
+    eligibility.inScene = true;
+    Check(GetAutomaticBlockReason(eligibility, options) == "scene",
+          "Ignoring sleep also bypassed Scene Safety");
+    eligibility = {};
+    eligibility.restrained = true;
+    options = {};
+    options.ignoreRestrained = true;
+    Check(GetAutomaticBlockReason(eligibility, options).empty(),
+          "Restrained rechat eligibility was not restored");
+    eligibility.unconscious = true;
+    Check(GetAutomaticBlockReason(eligibility, options) == "unconscious",
+          "Ignoring restraint also bypassed unconscious state");
     eligibility = {};
     eligibility.inScene = true;
     Check(GetAutomaticBlockReason(eligibility) == "scene", "Scene Safety was not enforced");
     eligibility.sceneDialogueEnabled = true;
     Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled scene dialogue was ignored");
+
+    using SpatialGeometryPolicy::IsPointWithinSegmentCorridor;
+    using SpatialGeometryPolicy::Point3;
+    const Point3 corridorStart{0.0f, 0.0f, 0.0f};
+    const Point3 corridorEnd{560.0f, 0.0f, 0.0f};
+    Check(IsPointWithinSegmentCorridor(corridorStart, corridorEnd, {280.0f, 79.0f, 0.0f}, 80.0f),
+          "Door inside the segment corridor was rejected");
+    Check(!IsPointWithinSegmentCorridor(corridorStart, corridorEnd, {280.0f, 180.0f, 0.0f}, 80.0f),
+          "Unrelated lateral door was accepted by the segment corridor");
+    Check(!IsPointWithinSegmentCorridor(corridorStart, corridorEnd, {600.0f, 0.0f, 0.0f}, 80.0f),
+          "Door beyond the listener was accepted by the segment corridor");
 
     Check(ExtractUtterance("inputtext|1|date|Rangroo: Hey Lydia, come here") ==
               "hey lydia come here",
@@ -108,11 +146,6 @@ int main()
     Check(result.candidateIndex == 0 && result.reason == "true_crosshair",
           "True crosshair did not bypass soft eligibility");
 
-    candidates[0].directEligible = false;
-    result = Select("Normal speech", candidates);
-    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
-          "Conversation cooldown did not block the crosshair target");
-
     Request cooldownTargetRequest{};
     cooldownTargetRequest.utterance = "Normal speech";
     cooldownTargetRequest.explicitTargetFormId = 0x10;
@@ -120,12 +153,17 @@ int main()
     cooldownTargetRequest.directAddressRadius = 1000.0f;
     cooldownTargetRequest.interactionRadius = 560.0f;
     result = PlayerConversationRoutingPolicy::Select(cooldownTargetRequest, candidates);
-    Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
-          "Conversation cooldown did not block the explicit UI target");
+    Check(result.candidateIndex == 0 && result.reason == "explicit_ui_target",
+          "Explicit player input did not bypass conversation cooldown");
 
     result = Select("Hey Camilla Valerius", candidates);
+    Check(result.candidateIndex == 0 && result.reason == "explicit_npc_name",
+          "Named player input did not bypass conversation cooldown");
+
+    candidates[0].trueCrosshair = false;
+    result = Select("Normal speech", candidates);
     Check(result.candidateIndex == 3 && result.reason == "nearest_eligible",
-          "Conversation cooldown did not block the named target");
+          "Conversation cooldown did not block automatic selection");
 
     candidates[0].hardEligible = false;
     result = Select("Hey", candidates);
@@ -269,6 +307,170 @@ int main()
     result = Select("Hey Lydia", distantNamedTarget);
     Check(result.kind == SelectionKind::Narrator,
           "Named target outside direct-address radius was incorrectly selected");
+
+    std::vector<Candidate> closeCandidates{
+        MakeCandidate(0x90, "Lydia", 80.0f, true, true, true, 1.0f, true),
+        MakeCandidate(0x91, "Alvor", 100.0f, true, true, true, -1.0f),
+        MakeCandidate(0x92, "Gerdur", 200.0f, true, false),
+        MakeCandidate(0x93, "Distant NPC", 201.0f),
+        MakeCandidate(0x94, "Blocked NPC", 50.0f, true, true, false),
+        MakeCandidate(0x95, "Ineligible NPC", 40.0f, false),
+    };
+    Request closeRequest{};
+    closeRequest.utterance = "Hello";
+    closeRequest.directAddressRadius = 200.0f;
+    closeRequest.interactionRadius = 200.0f;
+    result = Select(closeRequest, closeCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0,
+          "Close speech did not retain the crosshair responder");
+
+    std::vector<std::size_t> closeAudience;
+    std::vector<std::size_t> sneakingAudience;
+    for (std::size_t index = 0; index < closeCandidates.size(); ++index) {
+        const bool selected = index == result.candidateIndex;
+        if (IsAudienceMember(closeCandidates[index], selected, 200.0f)) {
+            closeAudience.push_back(index);
+        }
+        if (IsAudienceMember(closeCandidates[index], selected, 100.0f)) {
+            sneakingAudience.push_back(index);
+        }
+    }
+    Check(closeAudience == std::vector<std::size_t>({0, 1, 2}),
+          "Close audience lost nearby hearers or admitted distant, blocked or ineligible NPCs");
+    Check(sneakingAudience == std::vector<std::size_t>({0, 1}),
+          "Sneaking Close audience did not respect the reduced radius");
+
+    // Sleeping direct targets: every mode except Shout rejects instead of rerouting.
+    std::vector<Candidate> sleepingCandidates{
+        MakeCandidate(0xA0, "Sleeping Erik", 100.0f, true, false, true, 1.0f, true, true),
+        MakeCandidate(0xA1, "Awake Sven", 300.0f)
+    };
+    Request sleepingCrosshairRequest{};
+    sleepingCrosshairRequest.utterance = "Normal speech";
+    sleepingCrosshairRequest.directAddressRadius = 1000.0f;
+    sleepingCrosshairRequest.interactionRadius = 560.0f;
+    sleepingCrosshairRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingCrosshairRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0 &&
+              result.reason == "direct_target_sleeping",
+          "Sleeping crosshair target was not rejected");
+
+    sleepingCrosshairRequest.blockSleepingDirectTarget = false;
+    result = Select(sleepingCrosshairRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
+              result.reason == "true_crosshair",
+          "Shout mode did not reach the sleeping crosshair target");
+
+    Request sleepingExplicitRequest{};
+    sleepingExplicitRequest.utterance = "Normal speech";
+    sleepingExplicitRequest.explicitTargetFormId = 0xA0;
+    sleepingExplicitRequest.directAddressRadius = 1000.0f;
+    sleepingExplicitRequest.interactionRadius = 560.0f;
+    sleepingExplicitRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingExplicitRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Sleeping explicit RefID target was not rejected");
+
+    sleepingExplicitRequest.blockSleepingDirectTarget = false;
+    result = Select(sleepingExplicitRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
+              result.reason == "explicit_ui_target",
+          "Shout mode did not reach the sleeping explicit RefID target");
+
+    Request sleepingNamedRequest{};
+    sleepingNamedRequest.utterance = "Hey Sleeping Erik";
+    sleepingNamedRequest.directAddressRadius = 1000.0f;
+    sleepingNamedRequest.interactionRadius = 560.0f;
+    sleepingNamedRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingNamedRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Sleeping named target was rerouted instead of rejected");
+
+    // Automatic routing keeps excluding sleepers rather than rejecting the request.
+    std::vector<Candidate> sleepingAutomatic{
+        MakeCandidate(0xA2, "Sleeping Nazeem", 50.0f, true, false, true, 1.0f, false, true),
+        MakeCandidate(0xA3, "Awake Amren", 300.0f)
+    };
+    Request sleepingAutomaticRequest{};
+    sleepingAutomaticRequest.utterance = "Normal speech";
+    sleepingAutomaticRequest.directAddressRadius = 1000.0f;
+    sleepingAutomaticRequest.interactionRadius = 560.0f;
+    sleepingAutomaticRequest.blockSleepingDirectTarget = true;
+    result = Select(sleepingAutomaticRequest, sleepingAutomatic);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "nearest_eligible",
+          "Untargeted routing did not skip the nearer sleeping NPC");
+
+    // An exact FormID remains authoritative even when another actor shares the name.
+    std::vector<Candidate> sameNameSleepers{
+        MakeCandidate(0xB0, "Erik", 100.0f, true, false, true, 1.0f, false, true),
+        MakeCandidate(0xB1, "Erik", 300.0f)
+    };
+    Request sameNameExplicitRequest{};
+    sameNameExplicitRequest.utterance = "Normal speech";
+    sameNameExplicitRequest.explicitTargetFormId = 0xB0;
+    sameNameExplicitRequest.explicitTargetName = "Erik";
+    sameNameExplicitRequest.directAddressRadius = 1000.0f;
+    sameNameExplicitRequest.interactionRadius = 560.0f;
+    sameNameExplicitRequest.blockSleepingDirectTarget = true;
+    result = Select(sameNameExplicitRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Sleeping explicit RefID rerouted to an awake same-name actor");
+
+    Request sameNameOnlyRequest = sameNameExplicitRequest;
+    sameNameOnlyRequest.explicitTargetFormId = 0;
+    result = Select(sameNameOnlyRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "explicit_ui_target",
+          "Name-only direct target did not prefer the awake same-name actor");
+
+    Request sameNameNamedRequest{};
+    sameNameNamedRequest.utterance = "Hey Erik";
+    sameNameNamedRequest.directAddressRadius = 1000.0f;
+    sameNameNamedRequest.interactionRadius = 560.0f;
+    sameNameNamedRequest.blockSleepingDirectTarget = true;
+    result = Select(sameNameNamedRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "explicit_npc_name",
+          "Named address did not prefer the awake same-name actor over the closer sleeper");
+
+    sameNameSleepers[1].autoEligible = false;
+    sameNameSleepers[1].sleeping = true;
+    result = Select(sameNameOnlyRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Name-only target was not rejected when every same-name actor is asleep");
+    result = Select(sameNameNamedRequest, sameNameSleepers);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
+          "Named address was not rejected when every same-name actor is asleep");
+
+    // The addressed name still decides who was meant, even when that actor is asleep.
+    std::vector<Candidate> longestSleepingName{
+        MakeCandidate(0xC0, "Lydia", 100.0f),
+        MakeCandidate(0xC1, "Lydia Snow-Born", 150.0f, true, false, true, 1.0f, false, true)
+    };
+    Request longestSleepingRequest{};
+    longestSleepingRequest.utterance = "Hey Lydia Snow-Born, listen";
+    longestSleepingRequest.directAddressRadius = 1000.0f;
+    longestSleepingRequest.interactionRadius = 560.0f;
+    longestSleepingRequest.blockSleepingDirectTarget = true;
+    result = Select(longestSleepingRequest, longestSleepingName);
+    Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 1,
+          "Sleeping longest-name match fell back to a shorter awake name");
+
+    // Other direct-target soft blockers still bypass as before.
+    std::vector<Candidate> blockedButAwake{
+        MakeCandidate(0xD0, "Cooldown NPC", 100.0f, true, false, false)
+    };
+    Request blockedButAwakeRequest{};
+    blockedButAwakeRequest.utterance = "Normal speech";
+    blockedButAwakeRequest.explicitTargetFormId = 0xD0;
+    blockedButAwakeRequest.directAddressRadius = 1000.0f;
+    blockedButAwakeRequest.interactionRadius = 560.0f;
+    blockedButAwakeRequest.blockSleepingDirectTarget = true;
+    result = Select(blockedButAwakeRequest, blockedButAwake);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
+              result.reason == "explicit_ui_target",
+          "Sleep gating changed other direct-target soft-blocker behavior");
 
     std::vector<PresenceCandidate> presentCandidates{
         { 0x100, "Alvor", 200.0f, true, true, false },

@@ -50,6 +50,7 @@ const int rampSteps = 10;
 bool isRamping = false;
 std::chrono::steady_clock::time_point rampStartTime;
 bool isPaused = false;
+bool legacyAudioNoattenuation = false;
 
 
 
@@ -98,6 +99,16 @@ void AudioManager::setDistanceScaler(float cds) {
 
 }
 
+               
+float AudioManager::getDistanceScaler() {
+    return emitter.CurveDistanceScaler;
+}
+
+void AudioManager::setLegacyDistanceScaler(float cds) {
+    emitter.CurveDistanceScaler = cds;
+    logger::info("[AudioManager Legacy] Set emitter CurveDistanceScaler to {}", cds);
+}
+
 void AudioManager::setMuffledPlayback(bool enabled)
 {
     std::lock_guard<std::mutex> lock(voiceMtx);
@@ -129,6 +140,191 @@ void AudioManager::setSpatialUpdatesEnabled(bool enabled)
         forceSpatialMatrixUpdate = true;
     }
 }
+
+void AudioManager::LogDebug() {
+    logger::debug("============================================================");
+    logger::debug("[AudioManager] DEBUG AUDIO CONFIGURATION");
+    logger::debug("============================================================");
+
+    // ------------------------------------------------------------
+    // XAudio2
+    // ------------------------------------------------------------
+
+    logger::debug("[XAudio2]");
+
+    if (pXAudio2) {
+        logger::debug("  pXAudio2       : {}", static_cast<const void*>(pXAudio2));
+    } else {
+        logger::debug("  pXAudio2       : NULL");
+    }
+
+    if (pMasterVoice) {
+        XAUDIO2_VOICE_DETAILS details{};
+        pMasterVoice->GetVoiceDetails(&details);
+
+        logger::debug("  MasterChannels : {}", details.InputChannels);
+        logger::debug("  SampleRate     : {}", details.InputSampleRate);
+
+        DWORD channelMask = 0;
+        const HRESULT hr = pMasterVoice->GetChannelMask(&channelMask);
+
+        if (SUCCEEDED(hr)) {
+            logger::debug("  ChannelMask    : 0x{:08X}", channelMask);
+
+            logger::debug("  Channel layout :");
+
+            if (channelMask & SPEAKER_FRONT_LEFT) logger::debug("    FRONT_LEFT");
+
+            if (channelMask & SPEAKER_FRONT_RIGHT) logger::debug("    FRONT_RIGHT");
+
+            if (channelMask & SPEAKER_FRONT_CENTER) logger::debug("    FRONT_CENTER");
+
+            if (channelMask & SPEAKER_LOW_FREQUENCY) logger::debug("    LFE");
+
+            if (channelMask & SPEAKER_BACK_LEFT) logger::debug("    BACK_LEFT");
+
+            if (channelMask & SPEAKER_BACK_RIGHT) logger::debug("    BACK_RIGHT");
+
+            if (channelMask & SPEAKER_FRONT_LEFT_OF_CENTER) logger::debug("    FRONT_LEFT_OF_CENTER");
+
+            if (channelMask & SPEAKER_FRONT_RIGHT_OF_CENTER) logger::debug("    FRONT_RIGHT_OF_CENTER");
+
+            if (channelMask & SPEAKER_BACK_CENTER) logger::debug("    BACK_CENTER");
+
+            if (channelMask & SPEAKER_SIDE_LEFT) logger::debug("    SIDE_LEFT");
+
+            if (channelMask & SPEAKER_SIDE_RIGHT) logger::debug("    SIDE_RIGHT");
+
+            if (channelMask & SPEAKER_TOP_CENTER) logger::debug("    TOP_CENTER");
+
+            if (channelMask & SPEAKER_TOP_FRONT_LEFT) logger::debug("    TOP_FRONT_LEFT");
+
+            if (channelMask & SPEAKER_TOP_FRONT_CENTER) logger::debug("    TOP_FRONT_CENTER");
+
+            if (channelMask & SPEAKER_TOP_FRONT_RIGHT) logger::debug("    TOP_FRONT_RIGHT");
+
+            if (channelMask & SPEAKER_TOP_BACK_LEFT) logger::debug("    TOP_BACK_LEFT");
+
+            if (channelMask & SPEAKER_TOP_BACK_CENTER) logger::debug("    TOP_BACK_CENTER");
+
+            if (channelMask & SPEAKER_TOP_BACK_RIGHT) logger::debug("    TOP_BACK_RIGHT");
+        } else {
+            logger::debug("  GetChannelMask  : FAILED 0x{:08X}", static_cast<unsigned>(hr));
+        }
+    } else {
+        logger::debug("  MasterVoice     : NULL");
+    }
+
+    // ------------------------------------------------------------
+    // Source voice
+    // ------------------------------------------------------------
+
+    logger::debug("[SourceVoice]");
+
+    if (pSourceVoice) {
+        XAUDIO2_VOICE_DETAILS details{};
+        pSourceVoice->GetVoiceDetails(&details);
+
+        logger::debug("  Channels       : {}", details.InputChannels);
+        logger::debug("  SampleRate     : {}", details.InputSampleRate);
+        logger::debug("  Voice          : {}", static_cast<const void*>(pSourceVoice));
+    } else {
+        logger::debug("  Voice          : NULL");
+    }
+
+    // ------------------------------------------------------------
+    // WAV format
+    // ------------------------------------------------------------
+
+    logger::debug("[WAV Format]");
+
+    logger::debug("  FormatTag      : 0x{:04X}", wfx.wFormatTag);
+    logger::debug("  Channels       : {}", wfx.nChannels);
+    logger::debug("  SampleRate     : {}", wfx.nSamplesPerSec);
+    logger::debug("  BitsPerSample  : {}", wfx.wBitsPerSample);
+    logger::debug("  BlockAlign     : {}", wfx.nBlockAlign);
+    logger::debug("  AvgBytesSec    : {}", wfx.nAvgBytesPerSec);
+    logger::debug("  ExtraSize      : {}", wfx.cbSize);
+
+    // ------------------------------------------------------------
+    // X3DAudio
+    // ------------------------------------------------------------
+
+    logger::debug("[X3DAudio]");
+
+    logger::debug("  SrcChannels    : {}", dspSettings.SrcChannelCount);
+    logger::debug("  DstChannels    : {}", dspSettings.DstChannelCount);
+    logger::debug("  MatrixPointer  : {}", static_cast<const void*>(dspSettings.pMatrixCoefficients));
+
+    logger::debug("  SpeedOfSound   : {}", X3DAUDIO_SPEED_OF_SOUND);
+
+    // ------------------------------------------------------------
+    // Listener
+    // ------------------------------------------------------------
+
+    logger::debug("[Listener]");
+
+    logger::debug("  Position       : ({}, {}, {})", listener.Position.x, listener.Position.y, listener.Position.z);
+
+    logger::debug("  OrientFront    : ({}, {}, {})", listener.OrientFront.x, listener.OrientFront.y,
+                  listener.OrientFront.z);
+
+    logger::debug("  OrientTop      : ({}, {}, {})", listener.OrientTop.x, listener.OrientTop.y, listener.OrientTop.z);
+
+    // ------------------------------------------------------------
+    // Emitter
+    // ------------------------------------------------------------
+
+    logger::debug("[Emitter]");
+
+    logger::debug("  Channels       : {}", emitter.ChannelCount);
+    logger::debug("  DistanceScaler : {}", emitter.CurveDistanceScaler);
+    logger::debug("  InnerRadius    : {}", emitter.InnerRadius);
+    logger::debug("  InnerRadiusAng : {}", emitter.InnerRadiusAngle);
+
+    logger::debug("  Position       : ({}, {}, {})", emitter.Position.x, emitter.Position.y, emitter.Position.z);
+
+    logger::debug("  OrientFront    : ({}, {}, {})", emitter.OrientFront.x, emitter.OrientFront.y,
+                  emitter.OrientFront.z);
+
+    logger::debug("  OrientTop      : ({}, {}, {})", emitter.OrientTop.x, emitter.OrientTop.y, emitter.OrientTop.z);
+
+    // ------------------------------------------------------------
+    // Runtime settings
+    // ------------------------------------------------------------
+
+    logger::debug("[Runtime]");
+
+    logger::debug("  DefaultVolume  : {}", defaultVolume.load());
+    logger::debug("  CurrentVolume  : {}", currentVolume);
+    logger::debug("  DistanceScaler : {}", getDistanceScaler());
+    logger::debug("  LegacyNoAtten  : {}", getLegacyAudioNoattenuation());
+    logger::debug("  SpatialUpdates : {}", spatialUpdatesEnabled);
+    logger::debug("  ForceMatrix    : {}", forceSpatialMatrixUpdate);
+    logger::debug("  Ramping        : {}", isRamping);
+
+    // ------------------------------------------------------------
+    // DSP matrix contents
+    // ------------------------------------------------------------
+
+    if (dspSettings.pMatrixCoefficients && dspSettings.SrcChannelCount > 0 && dspSettings.DstChannelCount > 0) {
+        const UINT count = dspSettings.SrcChannelCount * dspSettings.DstChannelCount;
+
+        logger::debug("[DSP Matrix]");
+        logger::debug("  Dimensions     : {} x {}", dspSettings.SrcChannelCount, dspSettings.DstChannelCount);
+
+        for (UINT i = 0; i < count; ++i) {
+            logger::debug("  Matrix[{}]      : {}", i, dspSettings.pMatrixCoefficients[i]);
+        }
+    } else {
+        logger::debug("[DSP Matrix] INVALID / NOT ALLOCATED");
+    }
+
+    logger::debug("============================================================");
+    logger::debug("[AudioManager] END DEBUG AUDIO CONFIGURATION");
+    logger::debug("============================================================");
+}
+
 
 bool AudioManager::Initialize() {
     logger::debug("[AudioManager] Starting initialization");
@@ -197,6 +393,9 @@ bool AudioManager::Initialize() {
 
     // Other initialization steps such as loading audio data, setting source properties, etc.
     logger::info("[AudioManager] Successfully initialized with {} channels", details.InputChannels);
+
+
+    LogDebug();  // Log the debug information after initialization
 
     return true;
 }
@@ -424,80 +623,147 @@ void AudioManager::setVolume(float vol) {
 }
 
 
+bool AudioManager::getLegacyAudioNoattenuation() {
+    return legacyAudioNoattenuation; 
+}
+
+void AudioManager::setLegacyAudioNoattenuation(bool value) { 
+    legacyAudioNoattenuation = value; 
+}
+
 void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3DAUDIO_VECTOR& listenerPosition,
-                           float headingAngle) {
+                                float headingAngle) {
     if (!pSourceVoice) {
-        // logger::warn("[AudioManager] Update called with null source voice");
         return;
     }
 
-    // Handle volume ramping
+    // ------------------------------------------------------------
+    // Volume ramping
+    // ------------------------------------------------------------
+
     if (isRamping) {
         auto currentTime = std::chrono::steady_clock::now();
         float elapsedSeconds = std::chrono::duration<float>(currentTime - rampStartTime).count();
 
         if (elapsedSeconds < rampDuration) {
-            // Calculate ramped volume
             float newVolume = (elapsedSeconds / rampDuration) * defaultVolume;
-            if (std::abs(newVolume - currentVolume) > 0.01f) {  // Only update if change is significant
+
+            if (std::abs(newVolume - currentVolume) > 0.01f) {
                 currentVolume = newVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                logger::debug("[AudioManager Legacy] Ramping volume to: {}", currentVolume);
             }
         } else {
-            // Ramping complete
             if (std::abs(defaultVolume - currentVolume) > 0.01f) {
                 currentVolume = defaultVolume;
                 pSourceVoice->SetVolume(currentVolume);
-                logger::debug("[AudioManager Legacy] Volume ramp complete, set to: {}", currentVolume);
             }
+
             isRamping = false;
         }
     } else if (std::abs(defaultVolume - currentVolume) > 0.01f) {
-        // Only update volume if it has changed significantly
         currentVolume = defaultVolume;
         pSourceVoice->SetVolume(currentVolume);
-        logger::debug("[AudioManager Legacy] Set volume to: {}", defaultVolume);
     }
 
-    const float PI = 3.14159265358979323846f;
+    // ------------------------------------------------------------
+    // Calculate emitter position relative to listener
+    // ------------------------------------------------------------
+
+    constexpr float PI = 3.14159265358979323846f;
 
     X3DAUDIO_VECTOR relativePosition;
     relativePosition.x = emitterPosition.x - listenerPosition.x;
     relativePosition.y = emitterPosition.y - listenerPosition.y;
     relativePosition.z = emitterPosition.z - listenerPosition.z;
 
-    float angle_rad = headingAngle * (PI / 180.0f);
-
     X3DAUDIO_VECTOR rotatedPosition;
+
     rotatedPosition.x = relativePosition.x * cos(headingAngle) - relativePosition.y * sin(headingAngle);
     rotatedPosition.y = relativePosition.x * sin(headingAngle) + relativePosition.y * cos(headingAngle);
+
     rotatedPosition.z = relativePosition.z;
 
-    // Only update position if change is significant
-    const float positionThreshold = 0.1f;
+    // ------------------------------------------------------------
+    // Update emitter position only when it moved significantly
+    // ------------------------------------------------------------
+
+    constexpr float positionThreshold = 0.1f;
+
+    const float newX = std::round(rotatedPosition.x) / 100.0f;
+    const float newY = std::round(rotatedPosition.y) / 100.0f;
+    const float newZ = std::round(rotatedPosition.z) / 100.0f;
+
     bool positionChanged = true;
 
-    if (std::abs(emitter.Position.x - round(rotatedPosition.x) / 100) > positionThreshold ||
-        std::abs(emitter.Position.y - round(rotatedPosition.y) / 100) > positionThreshold ||
-        std::abs(emitter.Position.z - round(rotatedPosition.z) / 100) > positionThreshold) {
-        emitter.Position.x = round(rotatedPosition.x) / 100;
-        emitter.Position.y = round(rotatedPosition.y) / 100;
-        emitter.Position.z = round(rotatedPosition.z) / 100;
-        positionChanged = true;
+    if (std::abs(emitter.Position.x - newX) > positionThreshold ||
+        std::abs(emitter.Position.y - newY) > positionThreshold ||
+        std::abs(emitter.Position.z - newZ) > positionThreshold) {
+        emitter.Position.x = newX;
+        emitter.Position.y = newY;
+        emitter.Position.z = newZ;
 
-        /*logger::debug("[AudioManager Legacy] Updated 3D position - X: {:.2f}, Y: {:.2f}, Z: {:.2f}, Heading: {:.2f}°",
-        emitter.Position.x, emitter.Position.y, emitter.Position.z, headingAngle);*/
+        positionChanged = true;
     }
 
-    if (positionChanged) {
+    if (!positionChanged) {
+        return;
+    }
+
+    // ------------------------------------------------------------
+    // Distance attenuation
+    //
+    // distanceScaler > 0:
+    //     Normal X3DAudio distance attenuation.
+    //
+    // distanceScaler == 0:
+    //     Keep 3D spatialization, but compensate for the
+    //     distance-related gain reduction.
+    // ------------------------------------------------------------
+
+    const float distanceScaler = getDistanceScaler();
+
+    if (legacyAudioNoattenuation) {
+        // Constant-volume 3D mode.
+        //
+        // We still let X3DAudio calculate the spatial matrix so
+        // emitter position affects left/right/multichannel
+        // spatialization.
+        //
+        // We then normalize the matrix to remove the overall
+        // distance attenuation.
+        //logger::debug("[AudioManager Legacy] Using constant-volume 3D mode (distanceScaler={})", distanceScaler);
+        emitter.CurveDistanceScaler = 1.0f;
+
         X3DAudioCalculate(x3DInstance, &listener, &emitter, X3DAUDIO_CALCULATE_MATRIX, &dspSettings);
 
-        HRESULT hr = pSourceVoice->SetOutputMatrix(pMasterVoice, wfx.nChannels, dspSettings.DstChannelCount,
-                                                   dspSettings.pMatrixCoefficients);
-        if (FAILED(hr)) {
-            logger::error("[AudioManager Legacy] Failed to set output matrix: {}", hr);
+        float maxCoefficient = 0.0f;
+
+        for (UINT i = 0; i < dspSettings.DstChannelCount; ++i) {
+            maxCoefficient = std::max(maxCoefficient, dspSettings.pMatrixCoefficients[i]);
         }
+
+        if (maxCoefficient > 0.0001f) {
+            for (UINT i = 0; i < dspSettings.DstChannelCount; ++i) {
+                dspSettings.pMatrixCoefficients[i] /= maxCoefficient;
+            }
+        }
+    } else {
+        // Normal distance-attenuated 3D mode.
+        //logger::debug("[AudioManager Legacy] Using normal 3D mode (distanceScaler={})", distanceScaler);
+        emitter.CurveDistanceScaler = distanceScaler;
+
+        X3DAudioCalculate(x3DInstance, &listener, &emitter, X3DAUDIO_CALCULATE_MATRIX, &dspSettings);
+    }
+
+    // ------------------------------------------------------------
+    // Apply calculated spatialization matrix
+    // ------------------------------------------------------------
+
+    HRESULT hr = pSourceVoice->SetOutputMatrix(pMasterVoice, wfx.nChannels, dspSettings.DstChannelCount,
+                                               dspSettings.pMatrixCoefficients);
+
+    if (FAILED(hr)) {
+        logger::error("[AudioManager Legacy] Failed to set output matrix: {}", hr);
     }
 }
 
