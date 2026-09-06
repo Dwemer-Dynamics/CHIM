@@ -394,9 +394,9 @@
        from extra metadata fields. A key with no entry falls back to a read-only row. */
     const MCM_ENUM_OPTIONS = {
         audio_mode: [
-            { value: 0, label: 'Flat 2D' },
-            { value: 1, label: 'Legacy 3D' },
-            { value: 2, label: 'Advanced 3D' },
+            { value: 2, label: '3D Advanced' },
+            { value: 1, label: '3D Legacy' },
+            { value: 0, label: '2D Flat' },
             { value: 3, label: 'Mono' },
             { value: 4, label: 'Mono + Advanced Effects' }
         ]
@@ -906,7 +906,7 @@
         const trigger = selector.querySelector('.settings-tile-trigger');
         const value = selector.querySelector('.settings-tile-value');
         value.id = `mcm-enum-value-${++mcmSequence}`;
-        /* Reads as "Audio Mode, Advanced 3D" instead of just the bare option name. */
+        /* Reads as "Audio Mode, 3D Advanced" instead of just the bare option name. */
         trigger.setAttribute('aria-labelledby', `${heading.labelId} ${value.id}`);
         mcmDescribe(trigger, [helpId, state.pillId, state.errorId]);
         /* The option list and the hover help both drop below the row, so one hides the other. */

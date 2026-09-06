@@ -319,20 +319,28 @@ string[] Function AudioModeOptions()
 	if (!_audio_mode_options || _audio_mode_options.Length != 5)
 		_audio_mode_options = new string[5]
 	endIf
-	_audio_mode_options[0] = "Flat 2D"
-	_audio_mode_options[1] = "Legacy 3D"
-	_audio_mode_options[2] = "Advanced 3D"
+	_audio_mode_options[0] = "3D Advanced"
+	_audio_mode_options[1] = "3D Legacy"
+	_audio_mode_options[2] = "2D Flat"
 	_audio_mode_options[3] = "Mono"
 	_audio_mode_options[4] = "Mono + Advanced Effects"
 	return _audio_mode_options
 EndFunction
 
+; Convert between menu order and saved mode IDs; swapping 0 and 2 works in both directions.
+int Function AudioModeMenuIndex(int mode)
+	if (mode == 0 || mode == 2)
+		return 2 - mode
+	endIf
+	return mode
+EndFunction
+
 string Function AudioModeLabel(int mode)
 	string[] modes = AudioModeOptions()
 	if (mode >= 0 && mode < modes.Length)
-		return modes[mode]
+		return modes[AudioModeMenuIndex(mode)]
 	endIf
-	return modes[2]
+	return modes[0]
 EndFunction
 
 ; Distinguish original saves from the unmerged three-mode draft, whose Flat mode was mono.
@@ -968,15 +976,15 @@ Function PublishPrismaMCMState()
 
 	PublishPrismaMCMEntry("Sound", "Basic", "sound_volume", "AI Voice Volume", "Set AI NPC speech volume.", "slider", _sound_volume as String, "0|500|2|%|0|0")
 	PublishPrismaMCMEntry("Sound", "Basic", "head_voice_volume", "Narrator / Player TTS Volume", "Adjust narrator and player TTS volume relative to AI voices.", "slider", _head_voice_volume as String, "0|200|5|%|0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "audio_mode", "Audio Mode", "Advanced 3D: directional with distance fading and muffling. Legacy 3D: directional with legacy distance fading. Flat 2D: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling.", "enum", _audio_mode as String, "0|4|1||0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance. Advanced 3D and Mono + Advanced Effects only.", "slider", _sound_ds as String, "0.1|20|0.1||" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness. Advanced 3D and Mono + Advanced Effects only.", "slider", _playback_dropoff_inside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness. Advanced 3D and Mono + Advanced Effects only.", "slider", _playback_dropoff_outside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "curve_legacy_distance", "Legacy 3D Distance Scaler", "How strongly Legacy 3D attenuates voices with distance. Higher values attenuate less. Values below 1 select Flat 2D, retaining direction without distance fading. Legacy 3D only.", "slider", _curve_legacy_distance as String, "0|4|0.1||" + PrismaMCMReadonly(_audio_mode == 1) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing. Flat 2D, Legacy 3D and Advanced 3D only.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "audio_mode", "Audio Mode", "3D Advanced: directional with distance fading and muffling. 3D Legacy: directional with legacy distance fading. 2D Flat: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling.", "enum", _audio_mode as String, "0|4|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance. 3D Advanced and Mono + Advanced Effects only.", "slider", _sound_ds as String, "0.1|20|0.1||" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness. 3D Advanced and Mono + Advanced Effects only.", "slider", _playback_dropoff_inside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness. 3D Advanced and Mono + Advanced Effects only.", "slider", _playback_dropoff_outside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "curve_legacy_distance", "3D Legacy Distance Scaler", "How strongly 3D Legacy attenuates voices with distance. Higher values attenuate less. Values below 1 select 2D Flat, retaining direction without distance fading. 3D Legacy only.", "slider", _curve_legacy_distance as String, "0|4|0.1||" + PrismaMCMReadonly(_audio_mode == 1) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing. 2D Flat, 3D Legacy and 3D Advanced only.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_preclip", "Skip milliseconds at beginning", "Skip silence at the beginning of generated speech.", "slider", _sound_preclip as String, "0|100|10|ms|0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_postclip", "Skip milliseconds at end", "Skip silence at the end of generated speech.", "slider", _sound_postclip as String, "0|2000|2|ms|0|0")
-	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed. Flat 2D, Legacy 3D and Advanced 3D only.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed. 2D Flat, 3D Legacy and 3D Advanced only.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "lip_resolution", "Resolution of Lip Animations", "Tune lip animation sampling resolution.", "slider", _lip_res as String, "0|1000|10||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "lip_intensity", "Intensity of Lip Animations", "Tune mouth movement intensity.", "slider", _lip_int as String, "0.1|2|0.1||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "pause_dialogue", "Pause Dialogue on Game Pause", "Pause CHIM dialogue while game menus pause Skyrim.", "toggle", PrismaMCMBool(_pauseDialogueState), "0|1|1||0|0")
@@ -1503,7 +1511,7 @@ event OnPageReset(string a_page)
 		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}", AudioModeOptionFlags(audioIsAdvanced))
 		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}", AudioModeOptionFlags(audioIsAdvanced))
 		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}", AudioModeOptionFlags(audioIsAdvanced))
-		_slider_curve_legacy_distance = AddSliderOption("Legacy 3D Distance Scaler", _curve_legacy_distance, "{1}", AudioModeOptionFlags(audioIsLegacy))
+		_slider_curve_legacy_distance = AddSliderOption("3D Legacy Distance Scaler", _curve_legacy_distance, "{1}", AudioModeOptionFlags(audioIsLegacy))
 		_toggleCameraBasedAudio = AddToggleOption("Camera Based Audio", _camera_based_audio_state, AudioModeOptionFlags(audioIs3D))
 		; Two fillers keep the option count even so the Advanced header stays in the left column.
 		AddEmptyOption()
@@ -1617,8 +1625,8 @@ event OnOptionMenuOpen(int a_option)
 		; mode either, so both are rebuilt before the dialog reads them.
 		MigrateAudioMode()
 		SetMenuDialogOptions(AudioModeOptions())
-		SetMenuDialogStartIndex(_audio_mode)
-		SetMenuDialogDefaultIndex(_audio_modeDefault)
+		SetMenuDialogStartIndex(AudioModeMenuIndex(_audio_mode))
+		SetMenuDialogDefaultIndex(AudioModeMenuIndex(_audio_modeDefault))
 	endIf
 
 endEvent
@@ -1628,7 +1636,7 @@ event OnOptionMenuAccept(int a_option, int a_index)
 		if (a_index < 0 || a_index > 4)
 			return
 		endIf
-		_audio_mode = a_index
+		_audio_mode = AudioModeMenuIndex(a_index)
 		ApplyAudioMode()
 		SetMenuOptionValue(a_option, AudioModeLabel(_audio_mode))
 		_prismaMcmRevision += 1
@@ -2914,19 +2922,19 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Skips specified millisecods at end of a sentence. Some TTS services add some silence at the end of audio clips.")
 	endIf
 	if (a_option == _slider_ds)
-		SetInfoText("Adjust AI NPC volume at distance. Range: 0.1 to 20.0. Used by Advanced 3D and Mono + Advanced Effects only.")
+		SetInfoText("Adjust AI NPC volume at distance. Range: 0.1 to 20.0. Used by 3D Advanced and Mono + Advanced Effects only.")
 	endIf
 	if (a_option == _slider_playback_dropoff_inside)
-		SetInfoText("Indoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by Advanced 3D and Mono + Advanced Effects only.")
+		SetInfoText("Indoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by 3D Advanced and Mono + Advanced Effects only.")
 	endIf
 	if (a_option == _slider_playback_dropoff_outside)
-		SetInfoText("Outdoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by Advanced 3D and Mono + Advanced Effects only.")
+		SetInfoText("Outdoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by 3D Advanced and Mono + Advanced Effects only.")
 	endIf
 	if (a_option == _menu_audio_mode)
-		SetInfoText("Advanced 3D: directional with distance fading and muffling. Legacy 3D: directional with legacy distance fading. Flat 2D: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling. Dialogue awareness is unaffected.")
+		SetInfoText("3D Advanced: directional with distance fading and muffling. 3D Legacy: directional with legacy distance fading. 2D Flat: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling. Dialogue awareness is unaffected.")
 	endIf
 	if (a_option == _toggleCameraBasedAudio)
-		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default. Used by Flat 2D, Legacy 3D and Advanced 3D only.")
+		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default. Used by 2D Flat, 3D Legacy and 3D Advanced only.")
 	endIf
 	if (a_option == _toggle1OID_E)
 		SetInfoText("Enable HD mode for Soulgaze (DirectX backbuffer access, server compression). Disable for in-game screenshots (VR users should disable).")
@@ -2953,7 +2961,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _toggleInvertHeading)
-		SetInfoText("Inverts the 3D audio heading. This may resolve issues where NPCs in the front are heard at a lower volume. Used by Flat 2D, Legacy 3D and Advanced 3D only.")
+		SetInfoText("Inverts the 3D audio heading. This may resolve issues where NPCs in the front are heard at a lower volume. Used by 2D Flat, 3D Legacy and 3D Advanced only.")
 	endIf
 
 	if (a_option == _togglePauseDialogue)
@@ -3134,7 +3142,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 
 	if (a_option == _slider_curve_legacy_distance)
-		SetInfoText("Curve distance scale for the emitter. How much actors are attenuated based on distance. Higher values: less attenuation. Lower values: more attenuation. Values below 1 select Flat 2D, retaining direction without distance fading. Used by Legacy 3D only.")
+		SetInfoText("Curve distance scale for the emitter. How much actors are attenuated based on distance. Higher values: less attenuation. Lower values: more attenuation. Values below 1 select 2D Flat, retaining direction without distance fading. Used by 3D Legacy only.")
 	endIf
 
 	if (a_option == _slider_maintenance_period)
