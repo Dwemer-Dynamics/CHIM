@@ -77,7 +77,7 @@ bool		_animationstate			= false
 
 int			_toggle1OID_Rereg
 
-int			_toggleEnable3DAudioPlayback
+; Retired toggle, kept so the one-time Audio Mode migration can still read it out of old saves.
 bool		_enable3daudioplaybackstate		= true
 
 int			_toggleCameraBasedAudio
@@ -302,10 +302,73 @@ float _curve_legacy_distance = 1.0
 int _slider_maintenance_period
 float _maintenance_period = 4.0
 
-; Combat barks
-int			_toggle_force_mono
+; Retired toggle, kept so the one-time Audio Mode migration can still read it out of old saves.
 bool		_toggle_force_mono_state		= false
 
+; Audio Mode replaces the old "Enable 3D Advanced Audio Playback" and "Mono Sound" toggles.
+; 0 = Flat 2D, 1 = Legacy 3D, 2 = Advanced 3D. -1 is the sentinel for "never migrated".
+int			_menu_audio_mode
+int			_audio_mode						= -1
+int			_audio_modeDefault				= 2
+string[]	_audio_mode_options
+
+
+; ----- Audio Mode -----
+; The plugin still accepts the old "_force_mono" and "_enable_3d_audio_playback" keys as
+; compatibility aliases, so nothing in this script may write them any more: a stray write on an
+; init, load or default path would silently overwrite the mode the player picked.
+
+; Saves made before Audio Mode existed carry no array, so the labels are rebuilt on demand.
+string[] Function AudioModeOptions()
+	if (!_audio_mode_options || _audio_mode_options.Length != 3)
+		_audio_mode_options = new string[3]
+	endIf
+	_audio_mode_options[0] = "Flat 2D"
+	_audio_mode_options[1] = "Legacy 3D"
+	_audio_mode_options[2] = "Advanced 3D"
+	return _audio_mode_options
+EndFunction
+
+string Function AudioModeLabel(int mode)
+	string[] modes = AudioModeOptions()
+	if (mode >= 0 && mode < modes.Length)
+		return modes[mode]
+	endIf
+	return modes[2]
+EndFunction
+
+; Runs exactly once per save: _audio_mode holds -1 until a mode has been resolved. Mono wins
+; because it used to override 3D playback entirely, then the Advanced toggle, then Legacy.
+; A fresh install has Mono off and the Advanced toggle on, which lands on Advanced 3D.
+Function MigrateAudioMode()
+	if (_audio_mode >= 0 && _audio_mode <= 2)
+		return
+	endIf
+	if (_toggle_force_mono_state)
+		_audio_mode = 0
+	elseif (_enable3daudioplaybackstate)
+		_audio_mode = 2
+	else
+		_audio_mode = 1
+	endIf
+EndFunction
+
+Function ApplyAudioMode()
+	MigrateAudioMode()
+	controlScript.setConf("_audio_mode", _audio_mode)
+EndFunction
+
+; Camera heading and invert heading only mean anything once voices are positioned.
+bool Function IsAudioMode3D()
+	return _audio_mode == 1 || _audio_mode == 2
+EndFunction
+
+int Function AudioModeOptionFlags(bool editable)
+	if (editable)
+		return OPTION_FLAG_NONE
+	endIf
+	return OPTION_FLAG_DISABLED
+EndFunction
 
 event OnPlayerLoadGame()
 	; The quest's pending key state is saved; do not replay a gesture from the loaded save.
@@ -365,18 +428,15 @@ event OnPlayerLoadGame()
 		controlScript.setConf("_capture_background_chat", 0)
 	endIf
 
-	if (_enable3daudioplaybackstate)
-		controlScript.setConf("_enable_3d_audio_playback", 1)
-	else
-		controlScript.setConf("_enable_3d_audio_playback", 0)
-	endIf
+	; Restore the saved Audio Mode; the native flag boots to its own default on a fresh load.
+	ApplyAudioMode()
 
 	if (_camera_based_audio_state)
 		controlScript.setConf("_camera_based_audio", 1)
 	else
 		controlScript.setConf("_camera_based_audio", 0)
 	endIf
-	
+
 	if (_camera_based_audio_state)
 		controlScript.setConf("_camera_based_audio", 1)
 	else
@@ -388,6 +448,8 @@ endEvent
 
 event OnConfigInit()
 
+	; Resolve saved legacy flags before any initialization defaults can replace them.
+	MigrateAudioMode()
 	ModName="CHIM"
 	RegisterPrismaMCMEvent()
 	Pages = new string[6]
@@ -438,10 +500,6 @@ event OnConfigInit()
 	
 	if (CurrentVersion<43)
 		_dynamic_profile_period=20
-	endIf
-
-	if (CurrentVersion<59)
-		_enable3daudioplaybackstate = true
 	endIf
 
 	if (CurrentVersion<66)
@@ -550,11 +608,7 @@ event OnConfigInit()
 	endIf
 	controlScript.setConf("_playback_dropoff_outside", _playback_dropoff_outside)
 
-	if (_enable3daudioplaybackstate)
-		controlScript.setConf("_enable_3d_audio_playback", 1)
-	else
-		controlScript.setConf("_enable_3d_audio_playback", 0)
-	endIf
+	ApplyAudioMode()
 
 	if (_camera_based_audio_state)
 		controlScript.setConf("_camera_based_audio", 1)
@@ -592,12 +646,25 @@ endEvent
 
 int function GetVersion()
 
-	return 74
+	return 75
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
+
+	if (a_version == 75 && a_version > CurrentVersion)
+		; Version 75: Replaced the 3D audio playback and Mono Sound toggles with one Audio Mode
+		; setting. Preserve unrelated settings on every supported upgrade path.
+		ApplyAudioMode()
+		RegisterPrismaMCMEvent()
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		if (UI.IsMenuOpen("Journal Menu"))
+			ForcePageReset()
+		endIf
+		return
+	endIf
 
 	if (a_version == 74 && a_version > CurrentVersion)
 		OnConfigInit()
@@ -806,11 +873,22 @@ String Function PrismaMCMBool(bool value)
 	return "0"
 EndFunction
 
+; Prisma's readonly metadata flag: controls that the current Audio Mode does not use stay visible
+; but greyed out, so their saved values survive a round trip through another mode.
+String Function PrismaMCMReadonly(bool editable)
+	if editable
+		return "0"
+	endif
+	return "1"
+EndFunction
+
 Function PublishPrismaMCMEntry(String pageName, String sectionName, String keyName, String label, String description, String controlType, String value, String options)
 	AIAgentFunctions.publishChimMcmEntry(pageName, sectionName, keyName, label, description, controlType, value, options)
 EndFunction
 
 Function PublishPrismaMCMState()
+	; Resolve the sentinel first: the Sound rows publish their readonly flags from the mode.
+	MigrateAudioMode()
 	AIAgentFunctions.beginChimMcmSnapshot()
 
 	; Prisma captures DirectInput key codes and applies them only when Save is pressed.
@@ -862,14 +940,15 @@ Function PublishPrismaMCMState()
 
 	PublishPrismaMCMEntry("Sound", "Basic", "sound_volume", "AI Voice Volume", "Set AI NPC speech volume.", "slider", _sound_volume as String, "0|500|2|%|0|0")
 	PublishPrismaMCMEntry("Sound", "Basic", "head_voice_volume", "Narrator / Player TTS Volume", "Adjust narrator and player TTS volume relative to AI voices.", "slider", _head_voice_volume as String, "0|200|5|%|0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance.", "slider", _sound_ds as String, "0.1|20|0.1||0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness.", "slider", _playback_dropoff_inside as String, "25|200|1|%|0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness.", "slider", _playback_dropoff_outside as String, "25|200|1|%|0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "enable_3d_audio", "Enable 3D Audio Playback", "Play voices from their in-world positions.", "toggle", PrismaMCMBool(_enable3daudioplaybackstate), "0|1|1||0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "audio_mode", "Audio Mode", "Flat 2D plays voices without positioning or distance attenuation. Legacy 3D positions voices using the legacy distance scaler. Advanced 3D positions voices and adds the distance scale and interior/exterior dropoff controls.", "enum", _audio_mode as String, "0|2|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance. Advanced 3D only.", "slider", _sound_ds as String, "0.1|20|0.1||" + PrismaMCMReadonly(_audio_mode == 2) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness. Advanced 3D only.", "slider", _playback_dropoff_inside as String, "25|200|1|%|" + PrismaMCMReadonly(_audio_mode == 2) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness. Advanced 3D only.", "slider", _playback_dropoff_outside as String, "25|200|1|%|" + PrismaMCMReadonly(_audio_mode == 2) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "curve_legacy_distance", "Legacy 3D Distance Scaler", "How strongly Legacy 3D attenuates voices with distance. Higher values attenuate less. Zero removes distance attenuation but voices stay directional. Legacy 3D only.", "slider", _curve_legacy_distance as String, "0|4|0.1||" + PrismaMCMReadonly(_audio_mode == 1) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing. Legacy 3D and Advanced 3D only.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_preclip", "Skip milliseconds at beginning", "Skip silence at the beginning of generated speech.", "slider", _sound_preclip as String, "0|100|10|ms|0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_postclip", "Skip milliseconds at end", "Skip silence at the end of generated speech.", "slider", _sound_postclip as String, "0|2000|2|ms|0|0")
-	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed. Legacy 3D and Advanced 3D only.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "lip_resolution", "Resolution of Lip Animations", "Tune lip animation sampling resolution.", "slider", _lip_res as String, "0|1000|10||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "lip_intensity", "Intensity of Lip Animations", "Tune mouth movement intensity.", "slider", _lip_int as String, "0.1|2|0.1||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "pause_dialogue", "Pause Dialogue on Game Pause", "Pause CHIM dialogue while game menus pause Skyrim.", "toggle", PrismaMCMBool(_pauseDialogueState), "0|1|1||0|0")
@@ -918,8 +997,14 @@ bool Function IsPrismaMCMValueValid(String keyName, float value)
 		return value >= 0.0 && value <= 500.0
 	elseif keyName == "head_voice_volume"
 		return value >= 0.0 && value <= 200.0
+	elseif keyName == "audio_mode"
+		; Only the three exact mode integers are accepted; anything else keeps the current mode.
+		int mode = value as Int
+		return value == (mode as Float) && mode >= 0 && mode <= 2
 	elseif keyName == "sound_distance_scale"
 		return value >= 0.1 && value <= 20.0
+	elseif keyName == "curve_legacy_distance"
+		return value >= 0.0 && value <= 4.0
 	elseif keyName == "playback_dropoff_inside" || keyName == "playback_dropoff_outside"
 		return value >= 25.0 && value <= 200.0
 	elseif keyName == "sound_preclip"
@@ -1129,9 +1214,14 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "playback_dropoff_outside"
 		_playback_dropoff_outside = value
 		controlScript.setConf("_playback_dropoff_outside", value)
-	elseif keyName == "enable_3d_audio"
-		_enable3daudioplaybackstate = enabled
-		controlScript.setConf("_enable_3d_audio_playback", value)
+	elseif keyName == "audio_mode"
+		; Dependent rows are republished right after this returns, so their readonly flags follow
+		; the new mode while any other staged edits stay queued in Prisma.
+		_audio_mode = value as Int
+		controlScript.setConf("_audio_mode", _audio_mode)
+	elseif keyName == "curve_legacy_distance"
+		_curve_legacy_distance = value
+		controlScript.setConf("_curve_legacy_distance", value)
 	elseif keyName == "camera_based_audio"
 		_camera_based_audio_state = enabled
 		controlScript.setConf("_camera_based_audio", value)
@@ -1364,27 +1454,33 @@ event OnPageReset(string a_page)
 	
 
 	if (a_page=="Sound")
+		MigrateAudioMode()
+		; Volume is always available. Everything else is greyed out unless the mode uses it; the
+		; stored values are untouched so switching modes back restores them.
+		bool audioIs3D = IsAudioMode3D()
+		bool audioIsLegacy = _audio_mode == 1
+		bool audioIsAdvanced = _audio_mode == 2
+
 		AddHeaderOption("Basic")
 		AddEmptyOption()
 		_slider_volume		= AddSliderOption("AI Voice Volume", _sound_volume,"{0}")
 		_slider_head_voice_volume = AddSliderOption("Narrator / Player TTS Volume (%)", _head_voice_volume,"{0}")
-		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}" )
-		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}")
-		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}")
-		_toggleEnable3DAudioPlayback = AddToggleOption("Enable 3D Advanced Audio Playback", _enable3daudioplaybackstate)
-		_toggleCameraBasedAudio = AddToggleOption("Camera Based Audio", _camera_based_audio_state)
-
-		_slider_curve_legacy_distance = AddSliderOption("Legacy 3D distance scaler", _curve_legacy_distance, "{1}")
-
-		_toggle_force_mono = AddToggleOption("Mono Sound", _toggle_force_mono_state)
+		_menu_audio_mode	= AddMenuOption("Audio Mode", AudioModeLabel(_audio_mode))
+		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}", AudioModeOptionFlags(audioIsAdvanced))
+		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}", AudioModeOptionFlags(audioIsAdvanced))
+		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}", AudioModeOptionFlags(audioIsAdvanced))
+		_slider_curve_legacy_distance = AddSliderOption("Legacy 3D Distance Scaler", _curve_legacy_distance, "{1}", AudioModeOptionFlags(audioIsLegacy))
+		_toggleCameraBasedAudio = AddToggleOption("Camera Based Audio", _camera_based_audio_state, AudioModeOptionFlags(audioIs3D))
+		; Two fillers keep the option count even so the Advanced header stays in the left column.
 		AddEmptyOption()
-		
+		AddEmptyOption()
+
 		AddHeaderOption("Advanced")
 		AddEmptyOption()
 		_slider_preclip		= AddSliderOption("Skip milliseconds at begining",_sound_preclip,"{0}" )
 		_slider_postclip	= AddSliderOption("Skip milliseconds at end",_sound_postclip,"{0}" )
 		
-		_toggleInvertHeading	= AddToggleOption("3D Sound Invert Heading",_invertheadingstate)
+		_toggleInvertHeading	= AddToggleOption("3D Sound Invert Heading",_invertheadingstate, AudioModeOptionFlags(audioIs3D))
 		
 		_slider_lip_res	= AddSliderOption("Resolution of Lip Animations",_lip_res,"{0}" )
 		_slider_lip_int			= AddSliderOption("Intensity of Lip Animations ",_lip_int,"{1}" )
@@ -1477,6 +1573,35 @@ event OnPageReset(string a_page)
 	
 	endif
 
+endEvent
+
+event OnOptionMenuOpen(int a_option)
+	{Called when the user selects a menu option}
+
+	if (a_option == _menu_audio_mode)
+		; Old saves reach this with no option strings and, on the very first open, no resolved
+		; mode either, so both are rebuilt before the dialog reads them.
+		MigrateAudioMode()
+		SetMenuDialogOptions(AudioModeOptions())
+		SetMenuDialogStartIndex(_audio_mode)
+		SetMenuDialogDefaultIndex(_audio_modeDefault)
+	endIf
+
+endEvent
+
+event OnOptionMenuAccept(int a_option, int a_index)
+	if (a_option == _menu_audio_mode)
+		if (a_index < 0 || a_index > 2)
+			return
+		endIf
+		_audio_mode = a_index
+		controlScript.setConf("_audio_mode", _audio_mode)
+		SetMenuOptionValue(a_option, AudioModeLabel(_audio_mode))
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		; Redraw so the mode-dependent rows pick up their new enabled state.
+		ForcePageReset()
+	endIf
 endEvent
 
 event OnOptionSliderOpen(int a_option)
@@ -1759,7 +1884,8 @@ event OnOptionSliderAccept(int a_option, float a_value)
 	if (a_option == _slider_curve_legacy_distance)
 		_curve_legacy_distance = a_value
 		controlScript.setConf("_curve_legacy_distance",_curve_legacy_distance)
-		SetSliderOptionValue(a_option, a_value, "{0}")
+		; The slider steps in 0.1, so it has to render with a decimal like the row does on draw.
+		SetSliderOptionValue(a_option, a_value, "{1}")
 	endIf
 	
 	if (a_option == _slider_maintenance_period)
@@ -1800,11 +1926,7 @@ event OnGameReload()
 	a=controlScript.setConf("_sound_ds",_sound_ds)
 	a=controlScript.setConf("_playback_dropoff_inside",_playback_dropoff_inside)
 	a=controlScript.setConf("_playback_dropoff_outside",_playback_dropoff_outside)
-	if (_enable3daudioplaybackstate)
-		a=controlScript.setConf("_enable_3d_audio_playback",1)
-	else
-		a=controlScript.setConf("_enable_3d_audio_playback",0)
-	endif
+	ApplyAudioMode()
 
 	if (_camera_based_audio_state)
 		a=controlScript.setConf("_camera_based_audio",1)
@@ -1921,12 +2043,6 @@ event OnGameReload()
 		a=controlScript.setConf("_combat_barks",1)
 	else
 		a=controlScript.setConf("_combat_barks",0)
-	endif
-	
-	if (_toggle_force_mono_state)
-		a=controlScript.setConf("_force_mono",1)
-	else
-		a=controlScript.setConf("_force_mono",-1)
 	endif
 	
 	a=controlScript.setConf("_combat_barks_period",_combat_barks_period)
@@ -2065,14 +2181,19 @@ event OnOptionDefault(int a_option)
 		_lip_int = _lip_intDefault
 		SetSliderOptionValue(a_option, _lip_int, "{1}")
 
-	elseif (a_option == _toggleEnable3DAudioPlayback)
-		_enable3daudioplaybackstate = _enable3daudioplaybackstateDefault
-		if (_enable3daudioplaybackstate)
-			controlScript.setConf("_enable_3d_audio_playback", 1)
-		else
-			controlScript.setConf("_enable_3d_audio_playback", 0)
-		endif
-		SetToggleOptionValue(a_option, _enable3daudioplaybackstate)
+	elseif (a_option == _menu_audio_mode)
+		_audio_mode = _audio_modeDefault
+		controlScript.setConf("_audio_mode", _audio_mode)
+		SetMenuOptionValue(a_option, AudioModeLabel(_audio_mode))
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		; Redraw so the mode-dependent rows pick up their new enabled state.
+		ForcePageReset()
+
+	elseif (a_option == _slider_curve_legacy_distance)
+		_curve_legacy_distance = 1.0
+		controlScript.setConf("_curve_legacy_distance", _curve_legacy_distance)
+		SetSliderOptionValue(a_option, _curve_legacy_distance, "{1}")
 
 	elseif (a_option == _toggleCameraBasedAudio)
 		_camera_based_audio_state = _camera_based_audio_stateDefault
@@ -2123,16 +2244,7 @@ event OnOptionDefault(int a_option)
 		_toggle_autoadd_creature_npcs_state = false
 		controlScript.setConf("_autoadd_creature_npcs", 0)
 		SetToggleOptionValue(a_option, _toggle_autoadd_creature_npcs_state)
-		
-	elseif (a_option == _toggle_force_mono)
-		_toggle_force_mono_state = false
-		if (_toggle_force_mono_state)
-			controlScript.setConf("_force_mono", 1)
-		else
-			controlScript.setConf("_force_mono", -1)
-		endif
-		SetToggleOptionValue(a_option, _toggle_force_mono_state)
-	
+
 	endIf
 	
 endEvent
@@ -2410,18 +2522,6 @@ event OnOptionSelect(int a_option)
 		ShowMessage("Close menu")
 	endIf
 
-	if (a_option == _toggleEnable3DAudioPlayback)
-		_enable3daudioplaybackstate = !_enable3daudioplaybackstate
-		
-		if (_enable3daudioplaybackstate)
-			controlScript.setConf("_enable_3d_audio_playback",1)
-		else
-			controlScript.setConf("_enable_3d_audio_playback",0)
-		endif
-		
-		SetToggleOptionValue(a_option, _enable3daudioplaybackstate)
-	endIf
-
 	if (a_option == _toggleCameraBasedAudio)
 		_camera_based_audio_state = !_camera_based_audio_state
 		
@@ -2669,18 +2769,6 @@ event OnOptionSelect(int a_option)
  		endif
  	endIf
  	
-	if (a_option == _toggle_force_mono)
- 		_toggle_force_mono_state = !_toggle_force_mono_state
- 
- 		if (_toggle_force_mono_state)
- 			controlScript.setConf("_force_mono",1)
- 		else
- 			controlScript.setConf("_force_mono",-1)
- 		endif
- 
- 		SetToggleOptionValue(a_option, _toggle_force_mono_state)
- 	endIf
-	
  	; Handle individual agent removal
  	if (_agentToggleOIDs && _currentAgentNames)
  		int i = 0
@@ -2785,19 +2873,19 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Skips specified millisecods at end of a sentence. Some TTS services add some silence at the end of audio clips.")
 	endIf
 	if (a_option == _slider_ds)
-		SetInfoText("Adjust AI NPC volume at distance. Range: 0.1 to 20.0.")
+		SetInfoText("Adjust AI NPC volume at distance. Range: 0.1 to 20.0. Used by Advanced 3D only.")
 	endIf
 	if (a_option == _slider_playback_dropoff_inside)
-		SetInfoText("Indoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70).")
+		SetInfoText("Indoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by Advanced 3D only.")
 	endIf
 	if (a_option == _slider_playback_dropoff_outside)
-		SetInfoText("Outdoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70).")
+		SetInfoText("Outdoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by Advanced 3D only.")
 	endIf
-	if (a_option == _toggleEnable3DAudioPlayback)
-		SetInfoText("Controls player-heard 3D voice playback only. Disabling this keeps spatial dialogue awareness for who can hear speech, but plays voices back in flat 2D.")
+	if (a_option == _menu_audio_mode)
+		SetInfoText("How player-heard voices are played back. Flat 2D: no positioning or distance attenuation. Legacy 3D: positioned voices using the legacy distance scaler. Advanced 3D: positioned voices with the distance scale and interior/exterior dropoff controls. Spatial dialogue awareness for who can hear speech is unaffected.")
 	endIf
 	if (a_option == _toggleCameraBasedAudio)
-		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default.")
+		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default. Used by Legacy 3D and Advanced 3D only.")
 	endIf
 	if (a_option == _toggle1OID_E)
 		SetInfoText("Enable HD mode for Soulgaze (DirectX backbuffer access, server compression). Disable for in-game screenshots (VR users should disable).")
@@ -2824,7 +2912,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _toggleInvertHeading)
-		SetInfoText("When 3D audio playback is enabled, it will try inverting the heading. This may resolve issues where NPCs in the front are heard at a lower volume.")
+		SetInfoText("Inverts the 3D audio heading. This may resolve issues where NPCs in the front are heard at a lower volume. Used by Legacy 3D and Advanced 3D only.")
 	endIf
 
 	if (a_option == _togglePauseDialogue)
@@ -3005,17 +3093,13 @@ event OnOptionHighlight(int a_option)
 	endIf
 
 	if (a_option == _slider_curve_legacy_distance)
-		SetInfoText("Curve distance scale for emmiter. How much attenuate actors based on distance. High Values: Low Attenuation, Lower values: High Attenuation: 0: Plain 2D sound")
+		SetInfoText("Curve distance scale for the emitter. How much actors are attenuated based on distance. Higher values: less attenuation. Lower values: more attenuation. Zero removes distance attenuation entirely, but voices are still directional. Used by Legacy 3D only.")
 	endIf
 
 	if (a_option == _slider_maintenance_period)
 		SetInfoText("How often run maintenance (restore voices, delete unussed agents). In seconds")
 	endIf
 
-	if (a_option == _toggle_force_mono)
-		SetInfoText("Mono audio. Same volume on all channels")
-	endIf
-	
 	; Help text for individual agent removal options
 	if (_agentToggleOIDs && _currentAgentNames)
 		int i = 0

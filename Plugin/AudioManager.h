@@ -22,6 +22,9 @@
 
 #include <string>
 
+enum class AudioPlaybackMode { Flat2D = 0, Legacy3D = 1, Advanced3D = 2 };
+extern std::atomic<AudioPlaybackMode> GlobalAudioPlaybackMode;
+
 class AudioManager {
 public:
     AudioManager();
@@ -43,6 +46,7 @@ public:
     void setDistanceScaler(float vol);
     float getDistanceScaler();
     void setLegacyDistanceScaler(float vol);
+    float getLegacyDistanceScaler();
     void setMuffledPlayback(bool enabled);
     void setSpatialUpdatesEnabled(bool enabled);
     void Update(const X3DAUDIO_VECTOR& sourcePosition, const X3DAUDIO_VECTOR& listenerPosition,
@@ -66,6 +70,9 @@ public:
     BYTE* copiedData = nullptr;
 
     std::atomic<float> defaultVolume{1.0f};
+    // Keep each mode's tuning independent of the shared X3DAudio emitter.
+    std::atomic<float> advancedDistanceScaler{2.0f};
+    std::atomic<float> legacyDistanceScaler{1.0f};
     bool spatialUpdatesEnabled = true;
     // Dirty flag: forces next Update() to recompute X3DAudio matrix even if emitter position hasn't moved past threshold. Set on Play/setSpatialUpdatesEnabled, cleared after successful SetOutputMatrix.
     bool forceSpatialMatrixUpdate = true;

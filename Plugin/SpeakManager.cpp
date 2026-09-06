@@ -43,15 +43,12 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
-float GlobalLegacyDistanceScaler = 1.0;
 
 constexpr double MIN_SEGMENT_DURATION = 0.080;  // 80 ms
 
 constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
-extern bool GlobalEnable3DAudioPlayback;
-extern bool GlobalForceMono;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
 extern int GlobalConfiguredTimeout;
@@ -1521,7 +1518,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     auto* playbackListenerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
     const bool dynamicSpatialPlayback =
         !isNarrator && speaker != "Player" && speakerActorPointer != nullptr && playbackListenerActor != nullptr;
-    const bool enable3DAudioPlayback = dynamicSpatialPlayback && GlobalEnable3DAudioPlayback && !GlobalForceMono;
+    // Snapshot the selected mode once so an in-progress line cannot switch audio pipelines.
+    const AudioPlaybackMode audioMode = GlobalAudioPlaybackMode.load();
+    const bool enable3DAudioPlayback = dynamicSpatialPlayback && audioMode == AudioPlaybackMode::Advanced3D;
+    const bool enableLegacyAudioPlayback = dynamicSpatialPlayback && audioMode == AudioPlaybackMode::Legacy3D;
+    const bool positionalPlayback = enable3DAudioPlayback || enableLegacyAudioPlayback;
 
     if (enable3DAudioPlayback) {
         const PlaybackSpatialAudioState initialSpatialState =
@@ -1558,7 +1559,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             return;
         }
 
-        if (!enable3DAudioPlayback) {
+        if (!positionalPlayback) {
             // Keep flat playback on the new voice's default channel matrix; only update its volume ramp.
             const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
             am.Update(noopPosition, noopPosition, 0.0f);
@@ -1582,6 +1583,13 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
         if (GlobalInvertHeadingState)
             headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+
+        if (enableLegacyAudioPlayback) {
+            am.UpdateLegacy(AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerActorPointer->GetPosition()),
+                            AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(playbackListenerActor->GetPosition()),
+                            headingAngle);
+            return;
+        }
 
         auto speakerPos = GetActorHeadPosition(speakerActorPointer);
 
@@ -2139,7 +2147,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("avoid_click_check");
         if (DXinitOK) {  // Only if audio being reproduced,
             const bool shouldUpdatePlaybackState =
-                !enable3DAudioPlayback || std::chrono::steady_clock::now() > avoidClick;
+                !positionalPlayback || std::chrono::steady_clock::now() > avoidClick;
             if (shouldUpdatePlaybackState) {
                 setPhase("spatial_audio_position_update");
                 updatePlaybackSpatialPosition();

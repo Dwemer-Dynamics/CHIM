@@ -344,11 +344,9 @@ extern int GlobalEndConversationCooldown;
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 extern RE::TESFaction* AIAgentRoleMasterFaction;
 
-extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
-bool GlobalEnable3DAudioPlayback = true;
-bool GlobalForceMono = false;
+std::atomic<AudioPlaybackMode> GlobalAudioPlaybackMode{AudioPlaybackMode::Advanced3D};
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
 
@@ -1994,11 +1992,17 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
         logger::info("Setting _invertheadingstate to {} ", f_Value);
 
+    } else if (code == "_audio_mode") {
+        if (!std::isfinite(f_Value) || f_Value < 0.0f || f_Value > 2.0f || std::floor(f_Value) != f_Value) {
+            logger::warn("Invalid audio mode: {}", f_Value);
+            return -1;
+        }
+        GlobalAudioPlaybackMode.store(static_cast<AudioPlaybackMode>(static_cast<int>(f_Value)));
+        logger::info("Setting _audio_mode to {}", static_cast<int>(f_Value));
+
     } else if (code == "_enable_3d_audio_playback") {
-        if (f_Value > 0)
-            GlobalEnable3DAudioPlayback = true;
-        else
-            GlobalEnable3DAudioPlayback = false;
+        // Compatibility for older scripts: disabled advanced audio used legacy positional playback.
+        GlobalAudioPlaybackMode.store(f_Value > 0 ? AudioPlaybackMode::Advanced3D : AudioPlaybackMode::Legacy3D);
 
         logger::info("Setting _enable_3d_audio_playback to {} ", f_Value);
 
@@ -2037,29 +2041,19 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
     } else if (code == "_curve_legacy_distance") {
         
-        float fValueCasted = static_cast<int>(f_Value);
-        if (fValueCasted < 0.01) {
-            AudioManagerController::GetInstance().setLegacyDistanceScaler(1.0);
-            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(true);
-        } else {
-            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(false);
-            GlobalLegacyDistanceScaler = fValueCasted;
-            AudioManagerController::GetInstance().setLegacyDistanceScaler(fValueCasted);
-            
+        if (!std::isfinite(f_Value) || f_Value < 0.0f || f_Value > 4.0f) {
+            return -1;
         }
-
-        logger::info("Setting _curve_legacy_distance to {}", fValueCasted);
+        AudioManagerController::GetInstance().setLegacyDistanceScaler(f_Value);
+        logger::info("Setting _curve_legacy_distance to {}", f_Value);
 
     } else if (code == "_force_mono") {
-        float fValueCasted = static_cast<int>(f_Value);
-        if (fValueCasted > 0) {
-            GlobalForceMono = true;
-            
-        } else {
-            GlobalForceMono = false;
+        if (f_Value > 0) {
+            GlobalAudioPlaybackMode.store(AudioPlaybackMode::Flat2D);
+        } else if (GlobalAudioPlaybackMode.load() == AudioPlaybackMode::Flat2D) {
+            GlobalAudioPlaybackMode.store(AudioPlaybackMode::Advanced3D);
         }
-
-        logger::info("Setting _force_mono to {}", GlobalForceMono);
+        logger::info("Setting _force_mono to {}", f_Value > 0);
 
     } else if (code == "_maintenance_period") {
         int fValueCasted = static_cast<int>(f_Value);
@@ -3034,8 +3028,12 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_animations") {
         result=GlobalAnimations ? 1 : 0;
 
+    } else if (code == "_audio_mode") {
+        result = static_cast<int>(GlobalAudioPlaybackMode.load());
+    } else if (code == "_force_mono") {
+        result = GlobalAudioPlaybackMode.load() == AudioPlaybackMode::Flat2D ? 1 : 0;
     } else if (code == "_enable_3d_audio_playback") {
-        result = GlobalEnable3DAudioPlayback ? 1 : 0;
+        result = GlobalAudioPlaybackMode.load() == AudioPlaybackMode::Advanced3D ? 1 : 0;
 
     } else if (code == "_camera_based_audio") {
         result = GlobalCameraBasedAudio ? 1 : 0;
@@ -3113,7 +3111,7 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         result = GlobalCombatBarksPeriod;
 
     } else if (code == "_curve_legacy_distance") {
-        result = AudioManagerController::GetInstance().getDistanceScaler();
+        result = AudioManagerController::GetInstance().getLegacyDistanceScaler();
 
     }  else {
         logger::info("Unknown configuration code: {}", code);
