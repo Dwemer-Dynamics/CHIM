@@ -1521,7 +1521,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     auto* playbackListenerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
     const bool dynamicSpatialPlayback =
         !isNarrator && speaker != "Player" && speakerActorPointer != nullptr && playbackListenerActor != nullptr;
-    const bool enable3DAudioPlayback = dynamicSpatialPlayback && GlobalEnable3DAudioPlayback;
+    const bool enable3DAudioPlayback = dynamicSpatialPlayback && GlobalEnable3DAudioPlayback && !GlobalForceMono;
 
     if (enable3DAudioPlayback) {
         const PlaybackSpatialAudioState initialSpatialState =
@@ -1542,10 +1542,6 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         logger::info(
             "[SpeakManager] SpatialAudioDBG skipped for '{}' (narrator={}, speakerPtr={}, listenerPtr={})",
             speaker, isNarrator ? 1 : 0, speakerActorPointer ? 1 : 0, playbackListenerActor ? 1 : 0);
-        
-        // Default to 1.0f for non-spatial playback, so that the volume multiplier is not affected by spatial
-        // calculations.
-        am.setDistanceScaler(GlobalLegacyDistanceScaler);
     }
 
     //
@@ -1562,46 +1558,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             return;
         }
 
-        if (GlobalForceMono) {
-            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
-            
-            am.UpdateLegacy(
-                noopPosition,
-                noopPosition, 
-                0.0f);
-
-             return;
-        }
-
         if (!enable3DAudioPlayback) {
-            // This is the legacy behavior.
-            auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
-            auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
-            auto camera = RE::PlayerCamera::GetSingleton();
-            auto speakerPos = speakerActorPointer->GetPosition();
-
-            if (GlobalCameraBasedAudio && camera) {
-                auto cameraState = camera->currentState.get();
-                if (cameraState) {
-                    RE::NiQuaternion rotation;
-                    cameraState->GetRotation(rotation);
-                    auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
-                    if (std::isfinite(cameraHeadingAngle)) {
-                        headingAngle = cameraHeadingAngle;
-                    }
-                }
-            }
-
-            if (GlobalInvertHeadingState) headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
-
-
-            am.UpdateLegacy(
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
-                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
-                headingAngle);
-
-            //const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
-            //am.Update(noopPosition, noopPosition, 0.0f);
+            // Keep flat playback on the new voice's default channel matrix; only update its volume ramp.
+            const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            am.Update(noopPosition, noopPosition, 0.0f);
             return;
         }
 
@@ -1637,26 +1597,20 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     _dap_phase("before_LoadWAV");
 
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
-        if (enable3DAudioPlayback) {
-            _dap_phase("after_LoadWAV_ok");
-            am.setMuffledPlayback(runtimeMuffleFilter);
-            // Always set base playback volume. AudioManager ramps from 0 during Update(),
-            // even when spatial positioning is disabled.
-            if (std::abs(runtimeLineVolumeMultiplier - 1.0f) > 0.001f || enable3DAudioPlayback) {
-                logger::info("[SpeakManager] Applying line volume multiplier: {}", runtimeLineVolumeMultiplier);
-            }
-            am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
-            scopedVolumeRestore.active = true;
-            DXinitOK = true;
-            updatePlaybackSpatialPosition();
-            _dap_phase("before_Play");
-            if (!am.Play()) DXinitOK = false;
-            _dap_phase("after_Play");
-        } else {
-            DXinitOK = true;
-            if (!am.Play()) 
-                DXinitOK = false;
+        _dap_phase("after_LoadWAV_ok");
+        am.setMuffledPlayback(runtimeMuffleFilter);
+        // Always set base playback volume. AudioManager ramps from 0 during Update(),
+        // even when spatial positioning is disabled.
+        if (std::abs(runtimeLineVolumeMultiplier - 1.0f) > 0.001f || enable3DAudioPlayback) {
+            logger::info("[SpeakManager] Applying line volume multiplier: {}", runtimeLineVolumeMultiplier);
         }
+        am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
+        scopedVolumeRestore.active = true;
+        DXinitOK = true;
+        updatePlaybackSpatialPosition();
+        _dap_phase("before_Play");
+        if (!am.Play()) DXinitOK = false;
+        _dap_phase("after_Play");
     } else {
         _dap_phase("after_LoadWAV_failed");
     }
@@ -2185,7 +2139,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("avoid_click_check");
         if (DXinitOK) {  // Only if audio being reproduced,
             const bool shouldUpdatePlaybackState =
-                std::chrono::steady_clock::now() > avoidClick;
+                !enable3DAudioPlayback || std::chrono::steady_clock::now() > avoidClick;
             if (shouldUpdatePlaybackState) {
                 setPhase("spatial_audio_position_update");
                 updatePlaybackSpatialPosition();
