@@ -396,12 +396,14 @@
         audio_mode: [
             { value: 0, label: 'Flat 2D' },
             { value: 1, label: 'Legacy 3D' },
-            { value: 2, label: 'Advanced 3D' }
+            { value: 2, label: 'Advanced 3D' },
+            { value: 3, label: 'Mono' },
+            { value: 4, label: 'Mono + Advanced Effects' }
         ]
     };
     const MCM_AUDIO_CONTROL_MODES = {
-        sound_distance_scale: [2], playback_dropoff_inside: [2], playback_dropoff_outside: [2],
-        curve_legacy_distance: [1], camera_based_audio: [1, 2], invert_heading: [1, 2]
+        sound_distance_scale: [2, 4], playback_dropoff_inside: [2, 4], playback_dropoff_outside: [2, 4],
+        curve_legacy_distance: [1], camera_based_audio: [0, 1, 2], invert_heading: [0, 1, 2]
     };
     let mcmState = null;
     let mcmAgents = null;

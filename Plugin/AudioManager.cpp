@@ -50,6 +50,7 @@ const int rampSteps = 10;
 bool isRamping = false;
 std::chrono::steady_clock::time_point rampStartTime;
 bool isPaused = false;
+bool legacyAudioNoattenuation = false;
 
 
 
@@ -93,23 +94,19 @@ void AudioManager::Stop() {
                
 void AudioManager::setDistanceScaler(float cds) {
 
-    advancedDistanceScaler.store(cds);
+    emitter.CurveDistanceScaler = cds;
     logger::info("[AudioManager] Set emitter CurveDistanceScaler to {}", cds);
 
 }
 
                
 float AudioManager::getDistanceScaler() {
-    return advancedDistanceScaler.load();
+    return emitter.CurveDistanceScaler;
 }
 
 void AudioManager::setLegacyDistanceScaler(float cds) {
-    legacyDistanceScaler.store(cds);
+    emitter.CurveDistanceScaler = cds;
     logger::info("[AudioManager Legacy] Set emitter CurveDistanceScaler to {}", cds);
-}
-
-float AudioManager::getLegacyDistanceScaler() {
-    return legacyDistanceScaler.load();
 }
 
 void AudioManager::setMuffledPlayback(bool enabled)
@@ -627,24 +624,15 @@ void AudioManager::setVolume(float vol) {
 
 
 bool AudioManager::getLegacyAudioNoattenuation() {
-    return getLegacyDistanceScaler() == 0.0f;
+    return legacyAudioNoattenuation; 
 }
 
 void AudioManager::setLegacyAudioNoattenuation(bool value) { 
-    if (value) {
-        setLegacyDistanceScaler(0.0f);
-    } else if (getLegacyAudioNoattenuation()) {
-        setLegacyDistanceScaler(1.0f);
-    }
+    legacyAudioNoattenuation = value; 
 }
 
 void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3DAUDIO_VECTOR& listenerPosition,
                                 float headingAngle) {
-    // Match Update's voice lifetime guard when restoring legacy positional playback.
-    std::unique_lock<std::mutex> lock(voiceMtx, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        return;
-    }
     if (!pSourceVoice) {
         return;
     }
@@ -732,9 +720,9 @@ void AudioManager::UpdateLegacy(const X3DAUDIO_VECTOR& emitterPosition, const X3
     //     distance-related gain reduction.
     // ------------------------------------------------------------
 
-    const float distanceScaler = getLegacyDistanceScaler();
+    const float distanceScaler = getDistanceScaler();
 
-    if (distanceScaler == 0.0f) {
+    if (legacyAudioNoattenuation) {
         // Constant-volume 3D mode.
         //
         // We still let X3DAudio calculate the spatial matrix so
@@ -819,12 +807,6 @@ void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
 
     if (!spatialUpdatesEnabled) {
         return;
-    }
-
-    const float distanceScaler = getDistanceScaler();
-    if (emitter.CurveDistanceScaler != distanceScaler) {
-        emitter.CurveDistanceScaler = distanceScaler;
-        forceSpatialMatrixUpdate = true;
     }
 
     X3DAUDIO_VECTOR relativePosition;
