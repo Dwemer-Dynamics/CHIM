@@ -46,9 +46,6 @@ bool _textGestureCanWait = false
 bool _textGestureWaitSent = false
 float _textGesturePressedAt = 0.0
 float _textGestureReleaseLostAt = -1.0
-int _voiceGestureKey = -1
-bool _voiceGestureRecording = false
-bool _voiceGestureExternal = false
 float _textHoldThreshold = 0.7
 Cell _chatGestureCell
 
@@ -315,13 +312,24 @@ Event OnKeyUp(int keyCode, float holdTime)
 	if (keyCode == _textGestureKey)
 		FinishTextHotkey(holdTime)
 		Return
-	elseif (keyCode == _voiceGestureKey)
-		FinishVoiceHotkey(holdTime)
-		Return
 	endif
 	If ShouldSuppressChatboxFocusedHotkey(keyCode)
 		Return
 	EndIf
+
+	If(keyCode == _currentKeyVoice)
+		if (!UI.IsMenuOpen("Book Menu") && SafeProcess())
+			int externalSTTactive=StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT");
+			if (externalSTTactive>0)
+				AIAgentSTTExternal.stopRecording(_currentKeyVoice)
+			else
+				AIAgentFunctions.stopRecording(_currentKeyVoice)
+			endif
+			_vrikVoiceRecordingActive = false
+			;WebSocketSTT.StopRecordVoice(_currentKeyVoice);
+			Debug.Notification("[CHIM] Recording end");
+		endif
+	endif
 
 	If (keyCode == _currentSoulgazeKey && _soulgazeKeyPressed)
 		_soulgazeKeyPressed = false
@@ -402,10 +410,18 @@ Event OnKeyDown(int keyCode)
 	if (UI.IsMenuOpen("Book Menu"))
 		;Debug.Notification("[CHIM] lazy reader...");
 		AIAgentFunctions.sendMessage("Please, summarize this book i've just found.","chatnf_book")
-	else
-		BeginVoiceHotkey(keyCode)
+	elseif SafeProcess()
+		int externalSTTactive=StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT");
+		if (externalSTTactive>0)
+			AIAgentSTTExternal.recordSoundEx(_currentKeyVoice)
+		else
+			AIAgentFunctions.recordSoundEx(_currentKeyVoice)
+		endif
+		_vrikVoiceRecordingActive = true
+
+		;WebSocketSTT.StartRecordVoice(_currentKeyVoice);
+		Debug.Notification("[CHIM] recording....");
 	endif
-    Return
   EndIf
   If(keyCode == _currentFollowKey)
   
@@ -589,11 +605,9 @@ Endevent
 
 ; Forget pending input on load, rebind, focus loss or a blocking menu.
 Function ResetChatHotkeys()
-	StopChatHotkeyVoice()
 	_textGestureKey = -1
 	_textGestureWaitSent = false
 	_textGestureReleaseLostAt = -1.0
-	_voiceGestureKey = -1
 	_chatboxFocusHotkeySuppressed = false
 	_chatGestureCell = None
 EndFunction
@@ -633,49 +647,6 @@ Function FinishTextHotkey(float holdTime)
 	endif
 EndFunction
 
-; Start on the registered key-down event so controller input needs no hold timer.
-Function BeginVoiceHotkey(int keyCode)
-	if (keyCode < 0 || _voiceGestureKey >= 0 || _vrikVoiceRecordingActive || !SafeProcess() || !AIAgentFunctions.isGameFocused())
-		Return
-	endif
-	if (_chatGestureCell && _chatGestureCell != Game.GetPlayer().GetParentCell())
-		ResetChatHotkeys()
-	endif
-	_voiceGestureKey = keyCode
-	_chatGestureCell = Game.GetPlayer().GetParentCell()
-	_voiceGestureExternal = StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT") > 0
-	_voiceGestureRecording = true
-	_vrikVoiceRecordingActive = true
-	if (_voiceGestureExternal)
-		AIAgentSTTExternal.recordSoundEx(_voiceGestureKey)
-	else
-		AIAgentFunctions.recordSoundEx(_voiceGestureKey)
-	endif
-	Debug.Notification("[CHIM] Recording...")
-	RegisterForSingleUpdate(0.1)
-EndFunction
-
-; Only a recording started by this gesture may be stopped here; VRIK stays independent.
-Function StopChatHotkeyVoice()
-	if (!_voiceGestureRecording)
-		Return
-	endif
-	_voiceGestureRecording = false
-	if (_voiceGestureExternal)
-		AIAgentSTTExternal.stopRecording(_voiceGestureKey)
-	else
-		AIAgentFunctions.stopRecording(_voiceGestureKey)
-	endif
-	_vrikVoiceRecordingActive = false
-	Debug.Notification("[CHIM] Recording end")
-EndFunction
-
-; Keep the event signature for saved calls; every release stops its own recording.
-Function FinishVoiceHotkey(float holdTime)
-	StopChatHotkeyVoice()
-	_voiceGestureKey = -1
-EndFunction
-
 ; Textbox holds use a live actor reference, never name/nearest fallback.
 Function WaitForCrosshairNpc()
 	if (!SafeProcess() || !AIAgentFunctions.isGameFocused())
@@ -692,7 +663,7 @@ EndFunction
 
 ; Use the existing update cadence only while a chat gesture is pending.
 Function UpdateChatHotkeys()
-	if (_textGestureKey < 0 && _voiceGestureKey < 0)
+	if (_textGestureKey < 0)
 		Return
 	endif
 	if (!AIAgentFunctions.isGameFocused() || _chatGestureCell != Game.GetPlayer().GetParentCell())
