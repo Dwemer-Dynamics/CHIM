@@ -47,16 +47,9 @@ bool _textGestureWaitSent = false
 float _textGesturePressedAt = 0.0
 float _textGestureReleaseLostAt = -1.0
 int _voiceGestureKey = -1
-bool _voiceGestureHeld = false
 bool _voiceGestureRecording = false
 bool _voiceGestureExternal = false
-bool _voiceSecondTap = false
-bool _voiceTapPending = false
-float _voiceGesturePressedAt = 0.0
-float _voiceTapReleasedAt = 0.0
 float _textHoldThreshold = 0.7
-float _voiceHoldThreshold = 0.35
-float _voiceDoubleTapWindow = 0.35
 Cell _chatGestureCell
 
 ; VRIK gesture actions mirror the Main page CHIM hotkeys.
@@ -601,9 +594,6 @@ Function ResetChatHotkeys()
 	_textGestureWaitSent = false
 	_textGestureReleaseLostAt = -1.0
 	_voiceGestureKey = -1
-	_voiceGestureHeld = false
-	_voiceSecondTap = false
-	_voiceTapPending = false
 	_chatboxFocusHotkeySuppressed = false
 	_chatGestureCell = None
 EndFunction
@@ -643,6 +633,7 @@ Function FinishTextHotkey(float holdTime)
 	endif
 EndFunction
 
+; Start on the registered key-down event so controller input needs no hold timer.
 Function BeginVoiceHotkey(int keyCode)
 	if (keyCode < 0 || _voiceGestureKey >= 0 || _vrikVoiceRecordingActive || !SafeProcess() || !AIAgentFunctions.isGameFocused())
 		Return
@@ -650,17 +641,17 @@ Function BeginVoiceHotkey(int keyCode)
 	if (_chatGestureCell && _chatGestureCell != Game.GetPlayer().GetParentCell())
 		ResetChatHotkeys()
 	endif
-	float now = Utility.GetCurrentRealTime()
-	if (_voiceTapPending && now - _voiceTapReleasedAt >= _voiceDoubleTapWindow)
-		_voiceTapPending = false
-		AIAgentFunctions.stopAllDialogue()
-	endif
-	_voiceSecondTap = _voiceTapPending
-	_voiceTapPending = false
 	_voiceGestureKey = keyCode
-	_voiceGesturePressedAt = now
-	_voiceGestureHeld = false
 	_chatGestureCell = Game.GetPlayer().GetParentCell()
+	_voiceGestureExternal = StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT") > 0
+	_voiceGestureRecording = true
+	_vrikVoiceRecordingActive = true
+	if (_voiceGestureExternal)
+		AIAgentSTTExternal.recordSoundEx(_voiceGestureKey)
+	else
+		AIAgentFunctions.recordSoundEx(_voiceGestureKey)
+	endif
+	Debug.Notification("[CHIM] Recording...")
 	RegisterForSingleUpdate(0.1)
 EndFunction
 
@@ -679,26 +670,13 @@ Function StopChatHotkeyVoice()
 	Debug.Notification("[CHIM] Recording end")
 EndFunction
 
+; Keep the event signature for saved calls; every release stops its own recording.
 Function FinishVoiceHotkey(float holdTime)
 	StopChatHotkeyVoice()
-	bool held = _voiceGestureHeld || holdTime >= _voiceHoldThreshold
-	bool secondTap = _voiceSecondTap
 	_voiceGestureKey = -1
-	_voiceSecondTap = false
-	_voiceGestureHeld = false
-	if (held || !SafeProcess() || !AIAgentFunctions.isGameFocused() || _chatGestureCell != Game.GetPlayer().GetParentCell())
-		_voiceTapPending = false
-		Return
-	endif
-	if (secondTap)
-		WaitForCrosshairNpc()
-	else
-		_voiceTapPending = true
-		_voiceTapReleasedAt = Utility.GetCurrentRealTime()
-	endif
 EndFunction
 
-; Both textbox holds and voice double taps use a live actor reference, never name/nearest fallback.
+; Textbox holds use a live actor reference, never name/nearest fallback.
 Function WaitForCrosshairNpc()
 	if (!SafeProcess() || !AIAgentFunctions.isGameFocused())
 		Return
@@ -714,7 +692,7 @@ EndFunction
 
 ; Use the existing update cadence only while a chat gesture is pending.
 Function UpdateChatHotkeys()
-	if (_textGestureKey < 0 && _voiceGestureKey < 0 && !_voiceTapPending)
+	if (_textGestureKey < 0 && _voiceGestureKey < 0)
 		Return
 	endif
 	if (!AIAgentFunctions.isGameFocused() || _chatGestureCell != Game.GetPlayer().GetParentCell())
@@ -739,28 +717,6 @@ Function UpdateChatHotkeys()
 		elseif (now - _textGestureReleaseLostAt >= 1.0)
 			_textGestureKey = -1
 		endif
-	endif
-	if (_voiceGestureKey >= 0)
-		; Registered key events cover keyboard, gamepad, and VR input. The key-down
-		; state remains authoritative until OnKeyUp because Input.IsKeyPressed only
-		; tracks DirectInput keyboard and mouse state.
-		if (!_voiceGestureHeld && now - _voiceGesturePressedAt >= _voiceHoldThreshold)
-			_voiceGestureHeld = true
-			_voiceSecondTap = false
-			_voiceGestureExternal = StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT") > 0
-			_voiceGestureRecording = true
-			_vrikVoiceRecordingActive = true
-			if (_voiceGestureExternal)
-				AIAgentSTTExternal.recordSoundEx(_voiceGestureKey)
-			else
-				AIAgentFunctions.recordSoundEx(_voiceGestureKey)
-			endif
-			Debug.Notification("[CHIM] Recording...")
-		endif
-	endif
-	if (_voiceTapPending && _voiceGestureKey < 0 && now - _voiceTapReleasedAt >= _voiceDoubleTapWindow)
-		_voiceTapPending = false
-		AIAgentFunctions.stopAllDialogue()
 	endif
 EndFunction
 
