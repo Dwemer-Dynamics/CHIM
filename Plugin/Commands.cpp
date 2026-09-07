@@ -4287,18 +4287,18 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             
             if (auto cell = npc->GetParentCell()) {
                 // Use ForEachReference to find the item by its FormID
-                cell->ForEachReference([&itemRef, &itemName, &player, targetFormID](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-                    if (object.IsDisabled() || object.IsDeleted()) {
+                cell->ForEachReference([&itemRef, &itemName, &player, targetFormID](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+                    if (object->IsDisabled() || object->IsDeleted()) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                     
                     // Check if this is the exact item we're looking for by FormID
-                    if (object.GetFormID() == targetFormID) {
-                        float dist = player->GetPosition().GetDistance(object.GetPosition());
+                    if (object->GetFormID() == targetFormID) {
+                        float dist = player->GetPosition().GetDistance(object->GetPosition());
                         
                         // Verify it's within 512 units from player
                         if (dist < 512.0f) {
-                            itemRef = &object;
+                            itemRef = object;
                             return RE::BSContainer::ForEachResult::kStop; // Found it, stop searching
                         }
                     }
@@ -5106,14 +5106,14 @@ std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache) {
     std::string buffer;
 
     if (cell) {
-        cell->ForEachReference([&buffer](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+        cell->ForEachReference([&buffer](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
 
             // logger::info("Loaded {},{},{}",object.GetName(),baseForm->GetName(),baseForm->GetFormEditorID());
             if (baseForm->formType == RE::FormType::NPC) {
-                const char* currentNPC = object.GetName();
+                const char* currentNPC = object->GetName();
                 // logger::info("{}", currentNPC);
-                RE::Actor* actorNpc = object.As<RE::Actor>();
+                RE::Actor* actorNpc = object->As<RE::Actor>();
                 if (actorNpc) {
                     std::string actorLabel(actorNpc->GetName());
                     if (actorNpc->IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
@@ -5127,7 +5127,7 @@ std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache) {
                     }
                     // logger::info("Actor {} ", actorLabel);
                 } else {
-                    std::string actorLabel(object.GetName());
+                    std::string actorLabel(object->GetName());
 
                     bool hasLos = false;
                     RE::PlayerCharacter::GetSingleton()->HasLineOfSight(actorNpc->AsReference(), hasLos);
@@ -5222,14 +5222,14 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
     // Get what the player is currently looking at via crosshair
     RE::TESObjectREFR* crosshairTarget = nullptr;
     auto crosshairPickData = RE::CrosshairPickData::GetSingleton();
-    if (crosshairPickData && crosshairPickData->target) {
-        crosshairTarget = crosshairPickData->target.get().get();
+    if (crosshairPickData) {
+        crosshairTarget = crosshairPickData->GetActiveTarget().get().get();
     }
     
     // Scan cell references for items
-    cell->ForEachReference([&results, &player, &crosshairTarget, visionRange](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
+    cell->ForEachReference([&results, &player, &crosshairTarget, visionRange](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
         
-        RE::TESForm* baseForm = object.GetBaseObject();
+        RE::TESForm* baseForm = object->GetBaseObject();
         if (!baseForm) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
@@ -5255,29 +5255,29 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
         }
         
         // Also exclude any Actor references (including dead NPCs)
-        if (object.As<RE::Actor>()) {
+        if (object->As<RE::Actor>()) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Check if item is disabled or already taken
-        if (object.IsDisabled() || object.IsDeleted()) {
+        if (object->IsDisabled() || object->IsDeleted()) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Check if it's a container reference (even if base form isn't a container type)
-        auto refContainer = object.As<RE::TESObjectCONT>();
+        auto refContainer = object->As<RE::TESObjectCONT>();
         if (refContainer) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Check distance
-        float distance = player->GetPosition().GetDistance(object.GetPosition());
+        float distance = player->GetPosition().GetDistance(object->GetPosition());
         if (distance >= visionRange) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Get item name and FormIDs (both RefID and BaseID)
-        std::string itemName = object.GetDisplayFullName();
+        std::string itemName = object->GetDisplayFullName();
         if (itemName.empty()) {
             itemName = baseForm->GetName();
         }
@@ -5287,13 +5287,13 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
         }
         
         // Check if taking this item would be stealing
-        bool isStealing = WouldBeStealing(&object, player);
+        bool isStealing = WouldBeStealing(object, player);
         
         // Check if player is looking at this item
-        bool isLookingAt = (crosshairTarget && crosshairTarget->GetFormID() == object.GetFormID());
+        bool isLookingAt = (crosshairTarget && crosshairTarget->GetFormID() == object->GetFormID());
         
         // Format as "RefID:BaseID:ItemName" with optional markers
-        uint32_t refFormID = object.GetFormID();
+        uint32_t refFormID = object->GetFormID();
         uint32_t baseFormID = baseForm->GetFormID();
         std::string itemEntry = std::format("0x{:X}:0x{:X}:{}", refFormID, baseFormID, itemName);
         
@@ -5349,11 +5349,11 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
     float lastDistance = 10000;
     if (cell) {
         cell->ForEachReference([&target, &targetName, &sourceActor, allowDead,
-                                &lastDistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
+                                &lastDistance](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
             float distance = 10000;
             // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(), object.GetFormID());
 
-            RE::TESForm* baseForm = object.GetBaseObject();
+            RE::TESForm* baseForm = object->GetBaseObject();
 
             if (!baseForm) {
                 return RE::BSContainer::ForEachResult::kContinue;
@@ -5362,10 +5362,10 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
             // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(),
             // baseForm->GetFormID());
             if (baseForm->formType == RE::FormType::NPC) {
-                const char* currentNPC = object.GetName();
+                const char* currentNPC = object->GetName();
                 // logger::info("[findActorInCell], found NPC {}", currentNPC);
 
-                RE::Actor* actorNpc = object.As<RE::Actor>();
+                RE::Actor* actorNpc = object->As<RE::Actor>();
                 if (actorNpc) {
                     if (actorNpc->IsDead() && !allowDead) return RE::BSContainer::ForEachResult::kContinue;
                     if (actorNpc->IsDisabled()) {
@@ -5384,7 +5384,7 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
                             distance = sourceActor->GetPosition().GetDistance(actorNpc->GetPosition());
                             if (distance < lastDistance) {
                                 lastDistance = distance;
-                                target = &object;
+                                target = object;
                             }
 
                             // return RE::BSContainer::ForEachResult::kStop;
@@ -5394,7 +5394,7 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
                 } else {
                     // Reference found, but no actor
 
-                    std::string actorLabel(object.GetDisplayFullName());
+                    std::string actorLabel(object->GetDisplayFullName());
                     logger::info("[findActorInCell], reference {}", actorLabel);
                     if (containsCaseInsensitive(actorLabel, targetName)) {
                         bool hasLos = true;
@@ -5402,7 +5402,7 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
                             sourceActor->HasLineOfSight(actorNpc->AsReference(), hasLos);
                         }
                         if (hasLos) {
-                            target = &object;
+                            target = object;
                             // return RE::BSContainer::ForEachResult::kStop;
                         }
                     }
@@ -5486,28 +5486,28 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
 
     if (cell) {
         cell->ForEachReference([&foundTarget, &herika, &currentDistance, furnitureMode,
-                                &formIDList](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+                                &formIDList](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
 
             if (baseForm->formType == RE::FormType::Furniture) {
-                const char* currentFurniture = object.GetName();
+                const char* currentFurniture = object->GetName();
                 //logger::info("[TAKEASEAT] Posible target {}", currentFurniture);
 
-                if (object.IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
-                if (object.IsMarkedForDeletion()) return RE::BSContainer::ForEachResult::kContinue;
-                if (object.IsDeleted()) return RE::BSContainer::ForEachResult::kContinue;
+                if (object->IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
+                if (object->IsMarkedForDeletion()) return RE::BSContainer::ForEachResult::kContinue;
+                if (object->IsDeleted()) return RE::BSContainer::ForEachResult::kContinue;
 
                 auto furnitureForm = baseForm->As<RE::TESFurniture>();
                 if (furnitureForm) {
                     if (furnitureForm->workBenchData.benchType != RE::TESFurniture::WorkBenchData::BenchType::kNone) {
                         logger::info("[TAKEASEAT] Posible sit target {} is a workbench 0x{:08x}", currentFurniture,
-                                     object.GetFormID());
+                                     object->GetFormID());
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                 }
                 bool found = false;
 
-                auto it = std::find(formIDList.begin(), formIDList.end(), object.GetFormID());
+                auto it = std::find(formIDList.begin(), formIDList.end(), object->GetFormID());
 
                 if (it != formIDList.end()) {
                     //logger::info("[TAKEASEAT] Posible sit target {} is blocked 0x{:08x}", currentFurniture,object.GetFormID());
@@ -5516,13 +5516,13 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                     // logger::info("[TAKEASEAT] Posible sit target {} is free 0x{:08x}", currentFurniture,object.GetFormID());
                 }
 
-                if (object.IsActivationBlocked() && false) {
-                    logger::info("[TAKEASEAT] Possible sit target {} is IsActivationBlocked 0x{:08x}", currentFurniture,object.GetFormID());
+                if (object->IsActivationBlocked() && false) {
+                    logger::info("[TAKEASEAT] Possible sit target {} is IsActivationBlocked 0x{:08x}", currentFurniture,object->GetFormID());
                     return RE::BSContainer::ForEachResult::kContinue;
                 }
 
                 // https://github.com/VersuchDrei/OStimNG/blob/0440ae951089e0c27d2ae6b01cfcbdb640f91c6d/skse/src/Furniture/Furniture.cpp#L12
-                auto root = object.Get3D();
+                auto root = object->Get3D();
                 if (root) {
                     auto extra = root->GetExtraData("FRN");
                     if (extra) {
@@ -5551,7 +5551,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
 
                         if (allMarkersToSit) {
                             found = true;
-                            float localcurrentDistance = object.GetPosition().GetDistance(herika->GetPosition());
+                            float localcurrentDistance = object->GetPosition().GetDistance(herika->GetPosition());
                             if (localcurrentDistance < 1) {  // occupied
                                 found = false;
                                 logger::info(
@@ -5563,7 +5563,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                             }
                         } else if (someMarkersToSit) {
                             found = false;
-                            float localcurrentDistance = object.GetPosition().GetDistance(herika->GetPosition());
+                            float localcurrentDistance = object->GetPosition().GetDistance(herika->GetPosition());
                             if (localcurrentDistance < 1) {  // occupied
                                 found = false;
                                 logger::info(
@@ -5580,28 +5580,28 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                         }
                     } else {
                         logger::info("[TAKEASEAT] Possible sit target {} has no extra data, 0x{:08x}", currentFurniture,
-                                     object.GetFormID());
+                                     object->GetFormID());
                     }
                 } else {
                     logger::info("[TAKEASEAT] Possible sit target {} has no 3d, 0x{:08x}", currentFurniture,
-                                 object.GetFormID());
+                                 object->GetFormID());
                 }
                 // if (containsCaseSensitive(std::string(currentFurniture), "Chair")) found = found & true;
                 // if (containsCaseSensitive(std::string(currentFurniture), "Bench")) found = found & true;
                 if (found) {
-                    float localcurrentDistance = object.GetPosition().GetDistance(herika->GetPosition());
+                    float localcurrentDistance = object->GetPosition().GetDistance(herika->GetPosition());
                     if (localcurrentDistance < currentDistance) {
-                        foundTarget = object.GetFormID();
+                        foundTarget = object->GetFormID();
                         currentDistance = localcurrentDistance;
-                        logger::info("Chosen target {}, distance {},  0x{:08x} ", object.GetName(), currentDistance,
-                                     object.GetFormID());
+                        logger::info("Chosen target {}, distance {},  0x{:08x} ", object->GetName(), currentDistance,
+                                     object->GetFormID());
                     }
                 }
             } else if (baseForm->formType == RE::FormType::IdleMarker) {
-                const char* currentIdleMarker = object.GetName();
+                const char* currentIdleMarker = object->GetName();
                 
                 logger::info("[TAKEASEAT] Possible sit target <{}> IdleMarker 0x{:08x}", currentIdleMarker,
-                             object.GetFormID());
+                             object->GetFormID());
                 
             }
 
@@ -5629,7 +5629,7 @@ RE::Actor* findClosestAgent() {
     std::string beings =
         InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", HERIKA_MAX_VISION_RANGE);
 
-    auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+    auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
 
     RE::TESObjectREFRPtr refUnderCrossHair;
     if (cameraObject) {

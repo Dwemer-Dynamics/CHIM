@@ -15,6 +15,19 @@
 #include "RE/Skyrim.h"
 #include "md5.h"
 
+namespace RE
+{
+    // Supply the relocation implementation omitted from the pinned CommonLib 7.2 source archive.
+    void BookMenu::OpenBookMenu(const BSString& description, const ExtraDataList* extraList, TESObjectREFR* reference,
+                                TESObjectBOOK* book, const NiPoint3& position, const NiMatrix3& rotation, float scale,
+                                bool useDefaultPosition)
+    {
+        using func_t = decltype(&BookMenu::OpenBookMenu);
+        static REL::Relocation<func_t> func{ RELOCATION_ID(50122, 51053) };
+        func(description, extraList, reference, book, position, rotation, scale, useDefaultPosition);
+    }
+}
+
 namespace
 {
     constexpr RE::FormID kDiaryBookLocalFormID = 0x045CEF;
