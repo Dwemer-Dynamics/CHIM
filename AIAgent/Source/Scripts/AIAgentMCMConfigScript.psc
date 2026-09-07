@@ -815,7 +815,7 @@ Function PublishPrismaMCMState()
 
 	; Prisma captures DirectInput key codes and applies them only when Save is pressed.
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "text_chat", "Text Chat", "Open Prisma Text Chat immediately. Holding the key also opens it.", "keymap", _chatbox_focus_key as String, "0|0|0||0|0")
-	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Hold to talk. Tap to stop current and queued dialogue, or double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it.", "keymap", _myKey2 as String, "0|0|0||0|0")
+	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "voice_chat", "Voice Chat", "Press and hold to record. Release to send. With a book open, press to summarize it.", "keymap", _myKey2 as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "halt_ai_actions", "Halt AI Actions", "Immediately stop CHIM actions for the target or nearby NPCs.", "keymap", _halt_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "master_menu", "Master Menu", "Open the CHIM Master Menu.", "keymap", _mastermenu_key as String, "0|0|0||0|0")
 	PublishPrismaMCMEntry("Hotkeys", "Primary Hotkeys", "manual_ai_activate", "Manual AI Activate", "Activate or deactivate AI control for the targeted NPC.", "keymap", _myKey7 as String, "0|0|0||0|0")
@@ -2749,7 +2749,7 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Enables Text-to-Speech for AI NPCs.")
 	endIf
 	if (a_option == _keymapOID_K2)
-		SetInfoText("Hold to talk. Tap to stop current and queued dialogue without halting NPC actions. Double-tap to make the NPC in your crosshair wait here. With a book open, press to summarize it. CHIM uses the Windows default recording device shown below.")
+		SetInfoText("Press and hold to record. Release to send. With a book open, press to summarize it. CHIM uses the Windows default recording device shown below.")
 	endIf
 	if (a_option == _toggle1OID_C)
 		SetInfoText("Enable AI to perform actions.")
