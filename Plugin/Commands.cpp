@@ -3896,6 +3896,17 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     currentRejectionReason = "it is not a food, drink, or potion";
                 }
 
+                if (candidateAlchemy) {
+                    if (candidateAlchemy->IsMagicItem()) {
+                        if (candidateAlchemy->As<RE::MagicItem>()) {
+                            auto magicItem = candidateAlchemy->As<RE::MagicItem>();
+                            if (magicItem->GetSpellType() == RE::MagicSystem::SpellType::kAlchemy) {
+                                currentRejectionReason = "";
+                            }
+                        }
+                    }
+                }
+
                 const std::string normalizedCurrentItem = normalizeConsumeItemName(currentItemName);
                 const bool exactDisplayMatch = equalsCaseInsensitive(currentItemName, requestedItem);
                 const bool exactNormalizedMatch =
