@@ -9,10 +9,20 @@ int function commandEndedForActor(String command,string npc)  Global Native
 
 int function recordSoundEx(int bindedKey)  Global Native
 int function stopRecording(int bindedKey)  Global Native
+; Stop speech and pending replies without changing NPC actions or conversation history.
+int function stopAllDialogue() Global Native
+bool function isGameFocused() Global Native
 int function startOpenMicMonitoring()  Global Native
 int function stopOpenMicMonitoring()  Global Native
 int function setOpenMicMuted(bool muted)  Global Native
 String function getCurrentRecordingDeviceName() Global Native
+int function beginChimMcmSnapshot() Global Native
+int function publishChimMcmEntry(String page, String section, String key, String label, String description, String controlType, String value, String options) Global Native
+int function commitChimMcmSnapshot(int revision) Global Native
+int function beginChimMcmAgents() Global Native
+int function publishChimMcmAgent(String bucket, int formId, String actorName) Global Native
+int function commitChimMcmAgents() Global Native
+int function publishChimMcmCommandResult(String request, bool succeeded, String message) Global Native
 int function setNewActionMode(int mode)  Global Native
 int function logMessage(String a_msg,String type) Global Native			; Send message for logging purposes. Doesn't expect response
 int function logMessageForActor(String a_msg,String type,String npc) Global Native			; Send message for logging purposes. Doesn't expect response
@@ -27,6 +37,7 @@ int function requestArrestConfirmation(Actor player, Actor guard, Faction crimeF
 int function sendRequest() Global Native
 int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
+int function startSoulgazeCapture(String hints, int captureType, int renderMode, Actor target = None) Global Native
 int function isGameVR() Global Native									; 1 if VR
 
 int function sendLocationFast(Location curr,string tags,Cell referenceCell=None) global Native
@@ -153,3 +164,4 @@ string function GetDoorActivationText(ObjectReference akRef) global native
 
 int function startMusicScene(string songName,string singer) global native
 int function stopMusicScene(string singer) global native
+int function removeFromRenamedNPCList(Actor akTarget)  global native;

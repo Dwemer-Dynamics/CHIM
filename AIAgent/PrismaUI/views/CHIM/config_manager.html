@@ -13,14 +13,27 @@
             <div><h1>Settings</h1><p>Manage CHIM without leaving the game.</p></div>
             <button id="close-button" class="icon-button" type="button" aria-label="Close">&times;</button>
         </header>
-        <nav class="top-tabs" aria-label="Settings pages">
-            <button class="top-tab active" data-page="globals" type="button">🌐 Global Settings</button>
-            <button class="top-tab" data-page="profiles" type="button">📁 Profiles</button>
-            <button class="top-tab" data-page="npcs" type="button">🧑 CHIM NPCs</button>
+        <nav class="top-tabs" role="tablist" aria-label="Settings pages">
+            <button id="tab-globals" class="top-tab active" data-page="globals" type="button" role="tab" aria-selected="true" aria-controls="globals-page">🌐 Global Settings</button>
+            <button id="tab-profiles" class="top-tab" data-page="profiles" type="button" role="tab" aria-selected="false" aria-controls="profiles-page" tabindex="-1">📁 Profiles</button>
+            <button id="tab-npcs" class="top-tab" data-page="npcs" type="button" role="tab" aria-selected="false" aria-controls="npcs-page" tabindex="-1">🧑 CHIM NPCs</button>
+            <button id="tab-mcm" class="top-tab" data-page="mcm" type="button" role="tab" aria-selected="false" aria-controls="mcm-page" tabindex="-1">CHIM MCM</button>
         </nav>
-        <div id="status-line" class="status-line">Loading settings...</div>
+        <div id="status-line" class="status-line" role="status" aria-live="polite">Loading settings...</div>
 
-        <section id="globals-page" class="page active">
+        <section id="globals-page" class="page active" role="tabpanel" aria-labelledby="tab-globals">
+            <div id="preset-bar" class="preset-bar">
+                <span id="preset-bar-label" class="preset-bar-label">Settings Preset</span>
+                <div class="preset-select-host">
+                    <select id="preset-select" aria-labelledby="preset-bar-label" aria-describedby="preset-status"></select>
+                </div>
+                <div class="preset-actions">
+                    <button id="preset-apply" class="button primary" type="button" disabled>Apply</button>
+                    <button id="preset-save-new" class="button" type="button" disabled>Save as new…</button>
+                    <button id="preset-overwrite" class="button" type="button" disabled>Overwrite…</button>
+                </div>
+                <p id="preset-status" class="preset-status" role="status" aria-live="polite">Loading presets…</p>
+            </div>
             <div id="global-tabs" class="sub-tabs"></div>
             <form id="globals-form">
                 <div class="settings-content-panel">
@@ -34,7 +47,7 @@
             </form>
         </section>
 
-        <section id="profiles-page" class="page" hidden>
+        <section id="profiles-page" class="page" hidden role="tabpanel" aria-labelledby="tab-profiles">
             <div class="profiles-layout">
                 <aside class="profile-sidebar">
                     <div class="sidebar-actions">
@@ -55,6 +68,21 @@
                         </div>
                         <button class="button primary" type="submit">Save Profile</button>
                     </header>
+                    <div id="profile-preset-row" class="profile-preset-row" hidden>
+                        <span id="profile-preset-label" class="profile-preset-label">Profile Preset</span>
+                        <select id="profile-preset-select" class="profile-preset-select" aria-labelledby="profile-preset-label" aria-describedby="profile-preset-status"></select>
+                        <div class="profile-preset-actions">
+                            <button id="profile-preset-apply" class="button profile-preset-apply" type="button" disabled>Apply</button>
+                            <div id="profile-preset-custom-actions" class="profile-preset-custom-actions" hidden>
+                                <button id="profile-preset-save-new" class="button" type="button" disabled>Save as new…</button>
+                                <button id="profile-preset-overwrite" class="button" type="button" disabled>Overwrite…</button>
+                                <button id="profile-preset-export" class="button" type="button" disabled>Export</button>
+                                <button id="profile-preset-import" class="button" type="button">Import</button>
+                            </div>
+                        </div>
+                        <input id="profile-preset-file" class="profile-preset-file" type="file" accept="application/json,.json" tabindex="-1" aria-hidden="true" hidden>
+                        <p id="profile-preset-status" class="profile-preset-status" role="status" aria-live="polite"></p>
+                    </div>
                     <section class="settings-section">
                         <h2>⚙ Profile Core</h2>
                         <div class="profile-core-grid">
@@ -87,7 +115,7 @@
             </div>
         </section>
 
-        <section id="npcs-page" class="page" hidden>
+        <section id="npcs-page" class="page" hidden role="tabpanel" aria-labelledby="tab-npcs">
         <section class="toolbar" aria-label="NPC filters">
             <div class="scope-switch" role="group" aria-label="NPC scope">
                 <button type="button" class="scope-button active" data-scope="nearby">Nearby</button>
@@ -114,6 +142,23 @@
             <span id="page-label">Page 1</span>
             <button id="next-page" class="button secondary compact" type="button">Next</button>
         </footer>
+        </section>
+
+        <section id="mcm-page" class="page" hidden role="tabpanel" aria-labelledby="tab-mcm">
+            <div id="mcm-sub-tabs" class="sub-tabs mcm-sub-tabs" role="tablist" aria-label="CHIM MCM pages"></div>
+            <div class="mcm-status-row">
+                <span id="mcm-status" class="mcm-status" role="status" aria-live="polite">Waiting for CHIM MCM data...</span>
+                <div class="mcm-status-actions">
+                    <button id="mcm-refresh" class="button secondary compact" type="button">Refresh</button>
+                    <button id="mcm-save" class="button compact mcm-save-button" type="button" disabled>Save</button>
+                </div>
+            </div>
+            <div id="mcm-save-bar" class="mcm-save-bar" data-staged="false" data-saving="false">
+                <span id="mcm-staged-summary" class="mcm-staged-summary">No unsaved changes</span>
+                <button id="mcm-discard" class="button secondary compact" type="button" disabled>Discard</button>
+                <span id="mcm-save-note" class="mcm-save-note" role="status" aria-live="polite"></span>
+            </div>
+            <div id="mcm-panels" class="mcm-panels"></div>
         </section>
     </main>
     <div id="editor-backdrop" class="editor-backdrop hidden" role="presentation">
@@ -268,6 +313,31 @@
                     <button id="save-button" class="button primary" type="submit">Save NPC</button>
                 </footer>
             </form>
+        </section>
+    </div>
+
+    <div id="preset-name-backdrop" class="mcm-confirm-backdrop hidden" role="presentation">
+        <section class="mcm-confirm" role="dialog" aria-modal="true" aria-labelledby="preset-name-title" aria-describedby="preset-name-body">
+            <h2 id="preset-name-title">Save preset</h2>
+            <p id="preset-name-body">Name this preset. It stores safe Global Settings currently on screen, including context selections and unsaved edits. Connector choices and service URLs stay unchanged.</p>
+            <label class="field preset-name-field" for="preset-name-input"><span>Preset name</span>
+                <input id="preset-name-input" type="text" maxlength="60" autocomplete="off" spellcheck="false"></label>
+            <p id="preset-name-error" class="preset-name-error" hidden></p>
+            <div class="mcm-confirm-actions">
+                <button id="preset-name-cancel" class="button secondary" type="button">Cancel</button>
+                <button id="preset-name-accept" class="button primary" type="button">Save preset</button>
+            </div>
+        </section>
+    </div>
+
+    <div id="mcm-confirm-backdrop" class="mcm-confirm-backdrop hidden" role="presentation">
+        <section class="mcm-confirm" role="dialog" aria-modal="true" aria-labelledby="mcm-confirm-title" aria-describedby="mcm-confirm-body">
+            <h2 id="mcm-confirm-title">Confirm</h2>
+            <p id="mcm-confirm-body"></p>
+            <div class="mcm-confirm-actions">
+                <button id="mcm-confirm-cancel" class="button secondary" type="button">Cancel</button>
+                <button id="mcm-confirm-accept" class="button primary" type="button">Confirm</button>
+            </div>
         </section>
     </div>
 

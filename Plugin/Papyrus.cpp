@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <chrono>
 #include <cmath>
@@ -45,8 +46,9 @@
 extern int VoiceRecord(int bindedKey);
 
 extern void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
-extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
 extern void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
+extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
+                                        bool synchronous, std::function<void(bool)> completion = {});
 
 void SkipNextPlayerMenuTopicLocalPlayback();
 
@@ -91,7 +93,7 @@ namespace
         auto* tm = RE::MenuTopicManager::GetSingleton();
         if (tm) {
             if (auto* responseNode = tm->selectedResponseNode) {
-                if (auto* selectedDialogue = responseNode->front()) {
+                if (auto* selectedDialogue = responseNode->item) {
                     std::string selectedLine = selectedDialogue->topicText.c_str();
                     selectedLine = SanitizePlayerMenuDialogueLine(std::move(selectedLine));
                     if (!selectedLine.empty()) {
@@ -334,6 +336,7 @@ std::mutex Papyrus::papyrusMutex;
 extern void MutexSetMakeShotActive(bool newVal);
 extern void MutexSetMakeShotNativeActive(bool newVal);
 extern void MutexSetScreenShotSendMode(int newVal);
+extern int BeginSoulgazeCapture(int captureType, RE::Actor* actor);
 
 extern std::string globalHints;
 extern bool NewActionMode;
@@ -343,8 +346,11 @@ extern int GlobalEndConversationCooldown;
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 extern RE::TESFaction* AIAgentRoleMasterFaction;
 
+extern float GlobalLegacyDistanceScaler;
+
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
+bool GlobalForceMono = false;
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
 
@@ -355,12 +361,14 @@ extern int GlobalCombatBarksPeriod;
 bool PreserveQueueDuringAction = false;
 bool PauseDialogueWhenMenuOpen = false;
 bool PlayerTtsTraditionalDialogueEnabled = false;
+bool CaptureBackgroundChatEnabled = true;
 bool AIQuestProgressionEnabled = false;
 bool AllowActorsOnScene = true;
 bool GodMode = false;
 bool AutoAddHostile = false;
 
 bool AutoAddAllRaces = false;
+bool AutoAddCreatureNPCs = false;
 
 // Open Mic functionality
 bool OpenMicEnabled = false;
@@ -373,7 +381,9 @@ std::thread openMicThread;
 std::atomic<bool> openMicMonitoringActive{false};
 std::atomic<bool> openMicCurrentlyRecording{false};
 
-// Helper function to trigger open mic recording start
+extern int MAINTENANCE_TIMEOUT;
+
+    // Helper function to trigger open mic recording start
 void triggerOpenMicRecording() {
     if (OpenMicEnabled && !OpenMicMuted) {
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
@@ -1601,7 +1611,7 @@ int sendMessageReal(
         
         // Crosshair and fallback logic (only if not already sent to narrator)
         if (!sent) {
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
             if (cameraObject) {
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
@@ -1757,6 +1767,33 @@ int sendMessageReal(
 
 }
 
+// Share the race gate between proximity activation and crosshair promotion.
+static bool isAutoActivationRaceAllowed(RE::Actor* actor, RE::TESRace* race) {
+    if (AutoAddAllRaces || (race->AllowsPCDialogue() && !race->HasKeywordString("ActorTypeCreature"))) {
+        return true;
+    }
+    if (!AutoAddCreatureNPCs) {
+        return false;
+    }
+
+    if (race->HasKeywordString("ActorTypeDragon") || race->HasKeywordString("ActorTypeDwarven") ||
+        (race->HasKeywordString("ActorTypeUndead") && race->HasKeywordString("ActorTypeCreature")) ||
+        (race->HasKeywordString("ActorTypeAnimal") && actor->IsPlayerTeammate())) {
+        return true;
+    }
+
+    // These vanilla/DLC races have no distinct actor-type keyword. Match exact
+    // editor IDs, never display names or partial names that could admit other creatures.
+    const std::string_view editorID{race->GetFormEditorID()};
+    return editorID == "HagravenRace" || editorID == "GiantRace" ||
+           editorID == "C00GiantOutsideWhiterunRace" || editorID == "DLC2GhostFrostGiantRace" ||
+           editorID == "FalmerRace" || editorID == "FalmerFrozenVampRace" ||
+           editorID == "SprigganRace" || editorID == "SprigganMatronRace" ||
+           editorID == "SprigganSwarmRace" || editorID == "SprigganEarthMotherRace" ||
+           editorID == "DLC2SprigganBurntRace" || editorID == "WerewolfBeastRace" ||
+           editorID == "dlc2SpectralDragonRace" || editorID == "DLC2RigidSkeletonRace";
+}
+
 void addAllNPC() {
     static std::mutex mtx;
     std::lock_guard<std::mutex> lock(mtx);  // Lock the function, unlocks at the end
@@ -1818,11 +1855,9 @@ void addAllNPC() {
                 if (!race) {
                     continue;
                 }
-                if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) {
+                if (!isAutoActivationRaceAllowed(actor, race)) {
                     continue;
                 } else if (actor->IsHostileToActor(player) && AutoAddHostile == false) {
-                    continue;
-                } else if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) {
                     continue;
                 }
 
@@ -1856,9 +1891,9 @@ bool promoteCrosshairTargetToAI() {
     if (!cell) return false;
 
     auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
-    if (!crosshairPickData || !crosshairPickData->target) return false;
+    if (!crosshairPickData) return false;
 
-    auto targetRef = crosshairPickData->target.get();
+    auto targetRef = crosshairPickData->GetActiveTarget().get();
     if (!targetRef || targetRef->GetFormType() != RE::FormType::ActorCharacter) return false;
 
     auto* actor = targetRef->As<RE::Actor>();
@@ -1886,9 +1921,8 @@ bool promoteCrosshairTargetToAI() {
 
     auto* race = actor->GetRace();
     if (!race) return false;
-    if (!race->AllowsPCDialogue() && AutoAddAllRaces == false) return false;
+    if (!isAutoActivationRaceAllowed(actor, race)) return false;
     if (actor->IsHostileToActor(player) && AutoAddHostile == false) return false;
-    if (race->HasKeywordString("ActorTypeCreature") && AutoAddAllRaces == false) return false;
 
     const float maxDistance = playerInterior ? DISTANCE_ACTIVATING_NPC_IN : DISTANCE_ACTIVATING_NPC_OUT;
     const float distance = player->GetPosition().GetDistance(actor->GetPosition());
@@ -2003,6 +2037,39 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         GlobalCombatBarksPeriod = static_cast<int>(f_Value);
         logger::info("Setting _combat_barks_period to {}s", GlobalCombatBarksPeriod);
 
+    } else if (code == "_curve_legacy_distance") {
+        
+        float fValueCasted = static_cast<int>(f_Value);
+        if (fValueCasted < 0.01) {
+            AudioManagerController::GetInstance().setLegacyDistanceScaler(1.0);
+            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(true);
+        } else {
+            AudioManagerController::GetInstance().setLegacyAudioNoattenuation(false);
+            GlobalLegacyDistanceScaler = fValueCasted;
+            AudioManagerController::GetInstance().setLegacyDistanceScaler(fValueCasted);
+            
+        }
+
+        logger::info("Setting _curve_legacy_distance to {}", fValueCasted);
+
+    } else if (code == "_force_mono") {
+        float fValueCasted = static_cast<int>(f_Value);
+        if (fValueCasted > 0) {
+            GlobalForceMono = true;
+            
+        } else {
+            GlobalForceMono = false;
+        }
+
+        logger::info("Setting _force_mono to {}", GlobalForceMono);
+
+    } else if (code == "_maintenance_period") {
+        int fValueCasted = static_cast<int>(f_Value);
+        
+        MAINTENANCE_TIMEOUT = fValueCasted;
+
+        logger::info("Setting _maintenance_period to {}", fValueCasted);
+
     } else if (code == "_pause_dialogue_when_menu_open") {
         if (f_Value > 0)
             PauseDialogueWhenMenuOpen = true;
@@ -2016,6 +2083,11 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         else
             PlayerTtsTraditionalDialogueEnabled = false;
         logger::info("Setting _player_tts_traditional_dialogue to {} ", f_Value);
+
+    } else if (code == "_capture_background_chat") {
+        CaptureBackgroundChatEnabled = f_Value > 0;
+        logger::info("Setting _capture_background_chat to {}", CaptureBackgroundChatEnabled);
+        PrismaUIBridge::PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
 
     } else if (code == "_preserve_queue") {
         if (f_Value > 0)
@@ -2107,6 +2179,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
             AutoAddHostile = false;
 
         logger::info("Setting _autoadd_hostile to {} ", AutoAddHostile);
+
+    } else if (code == "_autoadd_creature_npcs") {
+        AutoAddCreatureNPCs = f_Value > 0;
+        logger::info("Setting _autoadd_creature_npcs to {} ", AutoAddCreatureNPCs);
 
     } else if (code == "_autoadd_allraces") {
         if (f_Value > 0)
@@ -2213,20 +2289,25 @@ int Papyrus::sendMessageToActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE
 int Papyrus::logMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         std::string msg, std::string type) {
     ScopedPapyrusLock lock("logMessage");
-    auto player = RE::PlayerCharacter::GetSingleton();
-    RE::TESObjectCELL* cell = player->GetParentCell();
-    auto result =
-        InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+    const bool isSetConf = type == "setconf" || type == "setConf";
+    const bool isCellTelemetry = type == "named_cell" || type == "named_cell_static";
 
-    if (type == "setconf" || (type == "setConf")) {
+    // Cell telemetry carries its complete payload and should not trigger an unrelated actor scan.
+    if (!isSetConf && !isCellTelemetry) {
+        if (auto player = RE::PlayerCharacter::GetSingleton()) {
+            auto result = InspectSurroundings(
+                player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+            HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                         "(beings in range:" + result + ")"));
+        }
+    }
+
+    if (isSetConf) {
         constexpr std::string_view modePrefix = "chim_mode@";
         if (msg.starts_with(modePrefix)) {
             PrismaUIBridge::SetCurrentChatboxMode(
                 msg.substr(modePrefix.size()), "Papyrus Mode Selection", false);
         }
-    } else {
-        HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(beings in range:" + result + ")"));
     }
 
     HTTPManager::log(std::format("{}|{}|{}|{}", type, getCurrentTimeMillis(), GetGameTimeStamp(), msg));
@@ -2288,10 +2369,12 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
     // Route through sendMessageReal which includes camera pitch detection for Narrator
     if (type == "diary" && (npc.empty() || trim(npc).empty())) {
         logger::info("[requestMessageForActor] Diary request with no target, routing through sendMessageReal");
-        return sendMessageReal(msg, type);
+        const int untargetedResult = sendMessageReal(msg, type);
+        return untargetedResult == 0 ? 1 : untargetedResult;
     }
     
     auto actorPtr = aiam.getAgentByName(npc);
+
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg
@@ -2316,7 +2399,7 @@ int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm
                                         GetGameTimeStamp(), GetPlayerLocation(), requestText));
     }
 
-    return 0;
+    return 1;
 }
 
 int Papyrus::setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
@@ -2557,6 +2640,36 @@ int Papyrus::commandEndedForActor(RE::BSScript::Internal::VirtualMachine* a_vm, 
         agentPtr.get()->setCurrentCommand("");
         agentPtr.get()->setCommandBusy(false);
         return 0;
+    } else if (command.contains("brawl") || command.contains("Brawl")) {
+        AIAgentManager& aiam = AIAgentManager::getInstance();
+        auto agentPtr = aiam.getAgentByName(npc);
+
+        if (!agentPtr) {
+            logger::info("No AI actor found, can't end brawl command");
+            return -1;
+        }
+
+        auto* opponent = agentPtr->getAttackTarget();
+        if (opponent) {
+            auto opponentAgent = aiam.getAgentByFormId(opponent->GetFormID());
+            if (opponentAgent &&
+                (opponentAgent->getCurrentCommand().contains("brawl") ||
+                 opponentAgent->getCurrentCommand().contains("Brawl"))) {
+                auto* opponentTarget = opponentAgent->getAttackTarget();
+                if (opponentTarget && opponentTarget->GetFormID() == agentPtr->GetFormId()) {
+                    logger::info("Releasing brawl opponent {}", opponentAgent->getActorName());
+                    opponentAgent->setAttackTarget(nullptr);
+                    opponentAgent->setCurrentCommand("");
+                    opponentAgent->setCommandBusy(false);
+                }
+            }
+        }
+
+        logger::info("Releasing actor {} after brawl outcome", npc);
+        agentPtr->setAttackTarget(nullptr);
+        agentPtr->setCurrentCommand("");
+        agentPtr->setCommandBusy(false);
+        return 0;
     } else {
         EndCommand(command, npc);
         return 0;
@@ -2616,6 +2729,19 @@ int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
     VoiceRecordControl::getInstance().setRecording(true);
 
     VoiceRecord(bindedKey);
+    return 0;
+}
+
+bool Papyrus::isGameFocused(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                           RE::StaticFunctionTag*) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &processId);
+    return processId != 0 && processId == GetCurrentProcessId();
+}
+
+int Papyrus::stopAllDialogue(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                            RE::StaticFunctionTag*) {
+    PrismaUIBridge::StopAllDialogueNow("Voice hotkey");
     return 0;
 }
 
@@ -2687,6 +2813,71 @@ std::string Papyrus::getCurrentRecordingDeviceName(RE::BSScript::Internal::Virtu
     return GetCurrentRecordingDeviceName();
 }
 
+int Papyrus::beginChimMcmSnapshot(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("beginChimMcmSnapshot");
+    PrismaUIBridge::BeginChimMcmSnapshot();
+    return 1;
+}
+
+int Papyrus::publishChimMcmEntry(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*,
+    std::string page, std::string section, std::string key, std::string label, std::string description,
+    std::string type, std::string value, std::string options) {
+    ScopedPapyrusLock lock("publishChimMcmEntry");
+    std::array<std::string, 6> parsedOptions{};
+    std::istringstream optionStream(options);
+    for (auto& option : parsedOptions) {
+        std::getline(optionStream, option, '|');
+    }
+    const auto parseFloat = [](const std::string& raw) {
+        try {
+            return raw.empty() ? 0.0f : std::stof(raw);
+        } catch (...) {
+            return 0.0f;
+        }
+    };
+    PrismaUIBridge::PublishChimMcmEntry(
+        page, section, key, label, description, type, value,
+        parseFloat(parsedOptions[0]), parseFloat(parsedOptions[1]), parseFloat(parsedOptions[2]), parsedOptions[3],
+        parsedOptions[4] == "1", parsedOptions[5] == "1");
+    return 1;
+}
+
+int Papyrus::commitChimMcmSnapshot(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*, int revision) {
+    ScopedPapyrusLock lock("commitChimMcmSnapshot");
+    PrismaUIBridge::CommitChimMcmSnapshot(revision);
+    return 1;
+}
+
+int Papyrus::beginChimMcmAgents(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("beginChimMcmAgents");
+    PrismaUIBridge::BeginChimMcmAgents();
+    return 1;
+}
+
+int Papyrus::publishChimMcmAgent(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*,
+    std::string bucket, int formId, std::string name) {
+    ScopedPapyrusLock lock("publishChimMcmAgent");
+    PrismaUIBridge::PublishChimMcmAgent(bucket, formId, name);
+    return 1;
+}
+
+int Papyrus::commitChimMcmAgents(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("commitChimMcmAgents");
+    PrismaUIBridge::CommitChimMcmAgents();
+    return 1;
+}
+
+int Papyrus::publishChimMcmCommandResult(
+    RE::BSScript::Internal::VirtualMachine*, RE::VMStackID, RE::StaticFunctionTag*,
+    std::string request, bool ok, std::string message) {
+    ScopedPapyrusLock lock("publishChimMcmCommandResult");
+    PrismaUIBridge::PublishChimMcmCommandResult(request, ok, message);
+    return 1;
+}
+
 int Papyrus::setConf(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                      std::string code, float f_Value, int i_value, std::string s_value) {
     ScopedPapyrusLock lock("setConf");
@@ -2702,12 +2893,13 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
                            RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("setDrivenByAI");
 
-    auto targetObject = RE::CrosshairPickData::GetSingleton()->targetActor;
+    auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
+    auto targetObject = crosshairPickData ? crosshairPickData->GetActiveTarget() : RE::ObjectRefHandle{};
 
     if (!targetObject && REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
         logger::info("Checking NPC via grabbed ref");
         auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
-        targetObject = targetObjectRef.get();
+        targetObject = targetObjectRef ? targetObjectRef->GetHandle() : RE::ObjectRefHandle{};
         if (targetObject) logger::info("Checked NPC via grabbed ref {}", targetObject.get()->GetDisplayFullName());
     } else if (!targetObject) {
         logger::debug("Skipping grabbed ref target fallback in VR");
@@ -2898,6 +3090,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_player_tts_traditional_dialogue") {
         result = PlayerTtsTraditionalDialogueEnabled ? 1 : 0;
 
+    } else if (code == "_capture_background_chat") {
+        result = CaptureBackgroundChatEnabled ? 1 : 0;
+
     } else if (code == "_restrict_onscene") {
         
         result = AllowActorsOnScene ? 0 : 1;
@@ -2916,10 +3111,16 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_openmic_muted") {
         result = OpenMicMuted ? 1 : 0;
 
-    } else {
+    } else if (code == "_combat_barks_period") {
+        result = GlobalCombatBarksPeriod;
+
+    } else if (code == "_curve_legacy_distance") {
+        result = AudioManagerController::GetInstance().getDistanceScaler();
+
+    }  else {
         logger::info("Unknown configuration code: {}", code);
         result=-1;
-    }
+    } 
     return result;
 }
 
@@ -3118,8 +3319,8 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
 
     if (cell) {
         cell->ForEachReference([&ref, &player, &position, &minDistance, restriction,
-                                &maxdistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+                                &maxdistance](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
             if ((restriction == false) ||
                 (baseForm->formType == RE::FormType::Armor || baseForm->formType == RE::FormType::Book ||
                  baseForm->formType == RE::FormType::Misc || baseForm->formType == RE::FormType::Weapon ||
@@ -3133,21 +3334,21 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
                  baseForm->formType == RE::FormType::NPC
                  
                     )) {
-                std::string name(object.GetName());
+                std::string name(object->GetName());
                 if (name.empty() && restriction) return RE::BSContainer::ForEachResult::kContinue;
 
-                name.assign(object.GetName());
+                name.assign(object->GetName());
                 if (name == "Generic Note") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Amulet") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Ring") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Necklace") return RE::BSContainer::ForEachResult::kContinue;
 
-                if (object.IsDeleted() || object.IsDisabled() || !object.Is3DLoaded())
+                if (object->IsDeleted() || object->IsDisabled() || !object->Is3DLoaded())
                     return RE::BSContainer::ForEachResult::kContinue;
 
-                float localDistance = position.GetDistance(object.GetPosition());
+                float localDistance = position.GetDistance(object->GetPosition());
                 if ((localDistance > minDistance) && (localDistance < maxdistance)) {
-                    ref = &object;
+                    ref = object;
                     minDistance = localDistance;
                 }
             }
@@ -3422,9 +3623,9 @@ RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, 
     auto cell = player->GetParentCell();
     RE::TESObjectREFR* buffer = nullptr;
     if (cell) {
-        cell->ForEachReference([&buffer](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
-            auto ref2 = &object;
+        cell->ForEachReference([&buffer](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
+            auto ref2 = object;
             if (baseForm->formType == RE::FormType::Door) {
                 auto door = baseForm->As<RE::TESObjectDOOR>();
                 if (door) {
@@ -3612,6 +3813,29 @@ int Papyrus::shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
         MutexSetMakeShotActive(true);
     }  
     return 0;
+}
+
+int Papyrus::startSoulgazeCapture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                  RE::StaticFunctionTag*, std::string hints, int captureType, int renderMode,
+                                  RE::Actor* target) {
+    ScopedPapyrusLock lock("startSoulgazeCapture");
+    const int sendMode = BeginSoulgazeCapture(captureType, target);
+    if (sendMode <= 0) {
+        return sendMode;
+    }
+
+    logger::info("startSoulgazeCapture fired, captureType={} renderMode={} target={}", captureType, renderMode,
+                 target ? target->GetDisplayFullName() : "");
+    globalHints.assign(hints);
+    MutexSetScreenShotSendMode(sendMode);
+
+    if (REL::Module::GetRuntime() == REL::Module::Runtime::VR || renderMode == 0) {
+        MutexSetMakeShotNativeActive(true);
+        RE::MenuControls::GetSingleton()->screenshotHandler->screenshotQueued = true;
+    } else {
+        MutexSetMakeShotActive(true);
+    }
+    return 1;
 }
 
 int Papyrus::isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
@@ -5252,6 +5476,23 @@ int Papyrus::updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE:
     
 }
 
+
+ int Papyrus::removeFromRenamedNPCList(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                      RE::StaticFunctionTag*, RE::Actor *actor) {
+    ScopedPapyrusLock lock("removeFromRenamedNPCList");
+    if (!actor) {
+        logger::error("removeFromRenamedNPCList, no actor");
+    }
+
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    logger::info("Removing actor {} from renamed list", actor->GetDisplayFullName());
+    aiam.removeRenamedNpcByFormId(actor->GetFormID());
+
+    return 0;
+
+
+}
+
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
@@ -5269,15 +5510,26 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("requestArrestConfirmation", "AIAgentFunctions", requestArrestConfirmation, false);
     a_vm->RegisterFunction("sendRequest", "AIAgentFunctions", sendRequest, false);
     a_vm->RegisterFunction("stopRecording", "AIAgentFunctions", stopRecording, false);
+    a_vm->RegisterFunction("stopAllDialogue", "AIAgentFunctions", stopAllDialogue, false);
+    a_vm->RegisterFunction("isGameFocused", "AIAgentFunctions", isGameFocused, false);
     a_vm->RegisterFunction("startOpenMicMonitoring", "AIAgentFunctions", startOpenMicMonitoring, false);
     a_vm->RegisterFunction("stopOpenMicMonitoring", "AIAgentFunctions", stopOpenMicMonitoring, false);
     a_vm->RegisterFunction("setOpenMicMuted", "AIAgentFunctions", setOpenMicMuted, false);
     a_vm->RegisterFunction("getCurrentRecordingDeviceName", "AIAgentFunctions", getCurrentRecordingDeviceName, false);
+    a_vm->RegisterFunction("beginChimMcmSnapshot", "AIAgentFunctions", beginChimMcmSnapshot, false);
+    a_vm->RegisterFunction("publishChimMcmEntry", "AIAgentFunctions", publishChimMcmEntry, false);
+    a_vm->RegisterFunction("commitChimMcmSnapshot", "AIAgentFunctions", commitChimMcmSnapshot, false);
+    a_vm->RegisterFunction("beginChimMcmAgents", "AIAgentFunctions", beginChimMcmAgents, false);
+    a_vm->RegisterFunction("publishChimMcmAgent", "AIAgentFunctions", publishChimMcmAgent, false);
+    a_vm->RegisterFunction("commitChimMcmAgents", "AIAgentFunctions", commitChimMcmAgents, false);
+    a_vm->RegisterFunction(
+        "publishChimMcmCommandResult", "AIAgentFunctions", publishChimMcmCommandResult, false);
     a_vm->RegisterFunction("requestMessage", "AIAgentFunctions", requestMessage, false);
     a_vm->RegisterFunction("requestMessageForActor", "AIAgentFunctions", requestMessageForActor, false);
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
     a_vm->RegisterFunction("hardResetExpression", "AIAgentFunctions", hardResetExpression, false);
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
+    a_vm->RegisterFunction("startSoulgazeCapture", "AIAgentFunctions", startSoulgazeCapture, false);
     a_vm->RegisterFunction("isGameVR", "AIAgentFunctions", isGameVR, false);
     a_vm->RegisterFunction("setConf", "AIAgentFunctions", setConf, false);
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);
@@ -5380,5 +5632,6 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);
     a_vm->RegisterFunction("sendFactionFast", "AIAgentFunctions", sendFactionFast, false);
     a_vm->RegisterFunction("sendNPCFast", "AIAgentFunctions", sendNPCFast, false);
+    a_vm->RegisterFunction("removeFromRenamedNPCList", "AIAgentFunctions", removeFromRenamedNPCList, false);
     return true;
 }

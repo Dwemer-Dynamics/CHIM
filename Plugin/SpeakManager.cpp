@@ -43,10 +43,15 @@ namespace logger = SKSE::log;
 using json = nlohmann::json;
 extern const wchar_t* StringToWideString(std::string& str);
 
+float GlobalLegacyDistanceScaler = 1.0;
+
+constexpr double MIN_SEGMENT_DURATION = 0.080;  // 80 ms
+
 constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
 extern bool GlobalEnable3DAudioPlayback;
+extern bool GlobalForceMono;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
 extern int GlobalConfiguredTimeout;
@@ -897,7 +902,277 @@ std::string toUppercase(const std::string& inputString) {
     return result;
 }
 
+
+std::vector<TextSegment> segmentTextV2(const std::string& text_p, double soundDuration) {
+    int currentPosition = 0;
+    std::vector<TextSegment> segments;
+
+    std::string text = toUppercase(text_p);
+
+    // ------------------------------------------------------------
+    // FIRST PASS
+    // Create segments from phonemes
+    // ------------------------------------------------------------
+
+    while (currentPosition < text.size()) {
+        bool foundPhoneme = false;
+        int viseme = -2;
+        double visemeDuration = 0;
+        int visemeLength;
+
+        // Try to match 2-character phonemes first
+        for (const auto& entry : phonemeLabelToIdentifier) {
+            const std::string& phoneme = entry.first;
+            int phonemeIdentifier = entry.second;
+            size_t phonemeLength = phoneme.length();
+
+            if (phonemeLength == 2 && text.compare(currentPosition, phonemeLength, phoneme) == 0) {
+                viseme = phonemeToViseme[phonemeIdentifier];
+
+                visemeDuration = (double(soundDuration) * phonemeLength) / text.length();
+
+                visemeLength = 2;
+                break;
+            }
+        }
+
+        // Try 1-character phonemes
+        if (viseme == -2) {
+            for (const auto& entry : phonemeLabelToIdentifier) {
+                const std::string& phoneme = entry.first;
+                int phonemeIdentifier = entry.second;
+                size_t phonemeLength = phoneme.length();
+
+                if (phonemeLength == 1 && text[currentPosition] == phoneme[0]) {
+                    viseme = phonemeToViseme[phonemeIdentifier];
+
+                    visemeDuration = (double(soundDuration) * phonemeLength) / text.length();
+
+                    visemeLength = 1;
+                    break;
+                }
+            }
+        }
+
+        if (viseme != -2) {
+            segments.push_back(
+                {std::to_string(viseme), text.substr(currentPosition, visemeLength), visemeDuration, visemeLength});
+
+            currentPosition += visemeLength;
+            foundPhoneme = true;
+        }
+
+        if (!foundPhoneme) {
+            currentPosition++;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // SECOND PASS
+    // Recalculate durations based on total viseme length
+    // ------------------------------------------------------------
+
+    int totalVisemeLength = 0;
+
+    for (const auto& segment : segments) {
+        totalVisemeLength += segment.visemeLength;
+    }
+
+    for (auto& segment : segments) {
+        segment.duration = (double(soundDuration) * segment.visemeLength) / totalVisemeLength;
+
+        // logger::info("Text {}, Viseme: {} {} ,Duration {}, Length:{}", text, segment.text, segment.sourcetext, segment.duration,segment.visemeLength);
+    }
+
+    double minDuration = 1000;
+    for (const auto& segment : segments) {
+        // logger::info("[TextSegments][Original] Text {}, Viseme: {} {} ,Duration {}", text, segment.text,segment.sourcetext, segment.duration);
+        
+        if (segment.duration < minDuration)    
+            minDuration = segment.duration;
+    }
+    logger::info("[TextSegments][Original] Total segments: {}", segments.size());
+    
+
+    if (minDuration < 0.05) {
+        // ------------------------------------------------------------
+        // THIRD PASS
+        // Reduce the number of segments to approximately 60%.
+        //
+        // Merges are distributed across the complete sequence.
+        // A merge keeps the phoneme/source text of the last segment
+        // and combines the durations.
+        //
+        // Separator segments using viseme 7 are never merged.
+        // ------------------------------------------------------------
+
+        constexpr std::size_t targetPercentage = 80;
+
+        const std::size_t originalSegmentCount = segments.size();
+
+        if (originalSegmentCount > 1) {
+            // Integer ceiling:
+            // 110 * 60% -> 66
+            const std::size_t targetSegmentCount = (originalSegmentCount * targetPercentage + 99) / 100;
+
+            std::size_t requiredMerges =
+                originalSegmentCount > targetSegmentCount ? originalSegmentCount - targetSegmentCount : 0;
+
+            auto isProtectedSeparator = [](const TextSegment& segment) {
+                if (segment.text != "7" || segment.sourcetext.empty()) {
+                    return false;
+                }
+
+                // Protect spaces, commas, periods, apostrophes, etc.
+                return std::all_of(segment.sourcetext.begin(), segment.sourcetext.end(), [](unsigned char character) {
+                    return std::isspace(character) || std::ispunct(character);
+                });
+            };
+
+            // Each value is the right-hand index of an eligible boundary.
+            //
+            // For example, boundary 5 represents:
+            //     segments[4] + segments[5]
+            //
+            // The resulting segment will use the phoneme from segments[5].
+            std::vector<std::size_t> eligibleBoundaries;
+            eligibleBoundaries.reserve(originalSegmentCount - 1);
+
+            for (std::size_t i = 1; i < originalSegmentCount; ++i) {
+                const TextSegment& previous = segments[i - 1];
+                const TextSegment& current = segments[i];
+
+                // Neither side of a merge may be a protected separator.
+                if (isProtectedSeparator(previous) || isProtectedSeparator(current)) {
+                    continue;
+                }
+
+                eligibleBoundaries.push_back(i);
+            }
+
+            if (requiredMerges > eligibleBoundaries.size()) {
+                logger::warn(
+                    "[TextSegments][Reduced] Requested {} merges, but only {} "
+                    "eligible merge boundaries exist because separators are protected",
+                    requiredMerges, eligibleBoundaries.size());
+
+                requiredMerges = eligibleBoundaries.size();
+            }
+
+            if (requiredMerges > 0) {
+                // selectedBoundary[i] means merge segments[i - 1] with
+                // segments[i].
+                std::vector<bool> selectedBoundary(originalSegmentCount, false);
+
+                /*
+                 * Divide all eligible boundaries into requiredMerges buckets.
+                 * Select one boundary from each bucket.
+                 *
+                 * This distributes merges throughout the complete text instead
+                 * of applying every merge near the beginning.
+                 *
+                 * Inside each bucket, prefer the adjacent pair with the shortest
+                 * combined duration.
+                 */
+                const std::size_t eligibleCount = eligibleBoundaries.size();
+
+                for (std::size_t bucket = 0; bucket < requiredMerges; ++bucket) {
+                    const std::size_t bucketBegin = (bucket * eligibleCount) / requiredMerges;
+
+                    const std::size_t bucketEnd = ((bucket + 1) * eligibleCount) / requiredMerges;
+
+                    std::size_t bestBoundary = eligibleBoundaries[bucketBegin];
+
+                    double bestCombinedDuration = segments[bestBoundary - 1].duration + segments[bestBoundary].duration;
+
+                    for (std::size_t candidateIndex = bucketBegin + 1; candidateIndex < bucketEnd; ++candidateIndex) {
+                        const std::size_t candidateBoundary = eligibleBoundaries[candidateIndex];
+
+                        const double combinedDuration =
+                            segments[candidateBoundary - 1].duration + segments[candidateBoundary].duration;
+
+                        if (combinedDuration < bestCombinedDuration) {
+                            bestCombinedDuration = combinedDuration;
+                            bestBoundary = candidateBoundary;
+                        }
+                    }
+
+                    selectedBoundary[bestBoundary] = true;
+                }
+
+                std::vector<TextSegment> reducedSegments;
+                reducedSegments.reserve(originalSegmentCount - requiredMerges);
+
+                for (std::size_t i = 0; i < originalSegmentCount; ++i) {
+                    if (i > 0 && selectedBoundary[i]) {
+                        TextSegment& merged = reducedSegments.back();
+                        const TextSegment& last = segments[i];
+
+                        // Preserve the complete duration.
+                        merged.duration += last.duration;
+
+                        // Use the viseme/phoneme of the last segment.
+                        merged.text = last.text;
+
+                        // This produces the requested behavior:
+                        //
+                        //     4 S + 6 E -> 6 E
+                        //
+                        // If you need the complete source sequence instead,
+                        // replace this with:
+                        //
+                        // merged.sourcetext += last.sourcetext;
+                        merged.sourcetext = last.sourcetext;
+
+                        // Keep this consistent if visemeLength is used later.
+                        merged.visemeLength += last.visemeLength;
+                    } else {
+                        reducedSegments.push_back(segments[i]);
+                    }
+                }
+
+                segments = std::move(reducedSegments);
+            }
+
+            logger::info(
+                "[TextSegments][Reduced] Original: {}, target: {}, actual: {}, "
+                "merges: {}",
+                originalSegmentCount, targetSegmentCount, segments.size(), originalSegmentCount - segments.size());
+            /*
+            for (const auto& segment : segments) {
+                logger::info(
+                    "[TextSegments][Reduced] Text {}, Phoneme: {} {}, "
+                    "Duration {}, Length: {}",
+                    text, segment.text, segment.sourcetext, segment.duration, segment.visemeLength);
+            }
+            */
+        }
+    }
+
+    // ------------------------------------------------------------
+    // FINAL PASS
+    // Close mouth at end
+    // ------------------------------------------------------------
+
+    segments.push_back({"-1", "_", 0.10, 1});
+
+    int n = 0;
+    if (false) {
+        for (const auto& segment : segments) {
+            logger::info(
+                "[TextSegments][Final] Text {}, Phoneme: {} {}, "
+                "Duration {}, Length: {}, Segment {}",
+                text, segment.text, segment.sourcetext, segment.duration, segment.visemeLength, ++n);
+        }
+    }
+
+    return segments;
+}
+
 std::vector<TextSegment> segmentText(const std::string& text_p, double soundDuration) {
+    if (true) {
+        return segmentTextV2(text_p, soundDuration);
+    }
     int currentPosition = 0;
     std::vector<TextSegment> segments;
 
@@ -964,12 +1239,15 @@ std::vector<TextSegment> segmentText(const std::string& text_p, double soundDura
         totalVisemeLength += segment.visemeLength;
     }
 
+
     for (auto& segment : segments) {
         double interpolatedDuration = (double(soundDuration) * segment.visemeLength) / totalVisemeLength;
         segment.duration = interpolatedDuration;
         //logger::info("Text {}, Viseme: {} {} ,Duration {}", text, segment.text, segment.sourcetext, segment.duration);
     }
 
+    logger::info("[SpeakerManager] [TextSegment] Segments after seconds pass: {}", segments.size());
+    
     // TO close mouth at end
     segments.push_back({"-1", "_", 0.15, 1});
 
@@ -1200,6 +1478,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             }
         }
     };
+
+    
     ScopedVolumeRestore scopedVolumeRestore{am, am.defaultVolume, false};
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -1262,6 +1542,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         logger::info(
             "[SpeakManager] SpatialAudioDBG skipped for '{}' (narrator={}, speakerPtr={}, listenerPtr={})",
             speaker, isNarrator ? 1 : 0, speakerActorPointer ? 1 : 0, playbackListenerActor ? 1 : 0);
+        
+        // Default to 1.0f for non-spatial playback, so that the volume multiplier is not affected by spatial
+        // calculations.
+        am.setDistanceScaler(GlobalLegacyDistanceScaler);
     }
 
     //
@@ -1270,15 +1554,54 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     bool hasBeenAborted = false;
     logger::debug("[SpeakManager] Loading WAV");
+
     am.setSpatialUpdatesEnabled(enable3DAudioPlayback);
+
     auto updatePlaybackSpatialPosition = [&]() {
         if (!DXinitOK) {
             return;
         }
 
-        if (!enable3DAudioPlayback) {
+        if (GlobalForceMono) {
             const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
-            am.Update(noopPosition, noopPosition, 0.0f);
+            
+            am.UpdateLegacy(
+                noopPosition,
+                noopPosition, 
+                0.0f);
+
+             return;
+        }
+
+        if (!enable3DAudioPlayback) {
+            // This is the legacy behavior.
+            auto ppos = RE::PlayerCharacter::GetSingleton()->GetLookingAtLocation();
+            auto headingAngle = RE::PlayerCharacter::GetSingleton()->GetAngleZ();
+            auto camera = RE::PlayerCamera::GetSingleton();
+            auto speakerPos = speakerActorPointer->GetPosition();
+
+            if (GlobalCameraBasedAudio && camera) {
+                auto cameraState = camera->currentState.get();
+                if (cameraState) {
+                    RE::NiQuaternion rotation;
+                    cameraState->GetRotation(rotation);
+                    auto cameraHeadingAngle = GetYawFromQuaternionForAudio(rotation);
+                    if (std::isfinite(cameraHeadingAngle)) {
+                        headingAngle = cameraHeadingAngle;
+                    }
+                }
+            }
+
+            if (GlobalInvertHeadingState) headingAngle += 3.14159265f;  // Add PI radians = 180 degrees
+
+
+            am.UpdateLegacy(
+                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(speakerPos),
+                AudioManager::ConvertNiPoint3ToX3DAUDIO_VECTOR(RE::PlayerCharacter::GetSingleton()->GetPosition()),
+                headingAngle);
+
+            //const X3DAUDIO_VECTOR noopPosition{ 0.0f, 0.0f, 0.0f };
+            //am.Update(noopPosition, noopPosition, 0.0f);
             return;
         }
 
@@ -1310,22 +1633,30 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                       SpatialAwareness::GetEffectiveActorPosition(RE::PlayerCharacter::GetSingleton())),
                   headingAngle);
     };
+
     _dap_phase("before_LoadWAV");
+
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
-        _dap_phase("after_LoadWAV_ok");
-        am.setMuffledPlayback(runtimeMuffleFilter);
-        // Always set base playback volume. AudioManager ramps from 0 during Update(),
-        // even when spatial positioning is disabled.
-        if (std::abs(runtimeLineVolumeMultiplier - 1.0f) > 0.001f || enable3DAudioPlayback) {
-            logger::info("[SpeakManager] Applying line volume multiplier: {}", runtimeLineVolumeMultiplier);
+        if (enable3DAudioPlayback) {
+            _dap_phase("after_LoadWAV_ok");
+            am.setMuffledPlayback(runtimeMuffleFilter);
+            // Always set base playback volume. AudioManager ramps from 0 during Update(),
+            // even when spatial positioning is disabled.
+            if (std::abs(runtimeLineVolumeMultiplier - 1.0f) > 0.001f || enable3DAudioPlayback) {
+                logger::info("[SpeakManager] Applying line volume multiplier: {}", runtimeLineVolumeMultiplier);
+            }
+            am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
+            scopedVolumeRestore.active = true;
+            DXinitOK = true;
+            updatePlaybackSpatialPosition();
+            _dap_phase("before_Play");
+            if (!am.Play()) DXinitOK = false;
+            _dap_phase("after_Play");
+        } else {
+            DXinitOK = true;
+            if (!am.Play()) 
+                DXinitOK = false;
         }
-        am.setVolume(scopedVolumeRestore.originalVolume * 100.0f * runtimeLineVolumeMultiplier);
-        scopedVolumeRestore.active = true;
-        DXinitOK = true;
-        updatePlaybackSpatialPosition();
-        _dap_phase("before_Play");
-        if (!am.Play()) DXinitOK = false;
-        _dap_phase("after_Play");
     } else {
         _dap_phase("after_LoadWAV_failed");
     }
@@ -1399,7 +1730,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     bool lastLost = false;
 
-    auto endTimeWithBlankSegment = endTime + std::chrono::duration<double>(0.15);
+    auto endTimeWithBlankSegment = endTime + std::chrono::duration<double>(0.10);
     auto lastRuntimeSpatialRefresh = std::chrono::steady_clock::now();
     auto lastRuntimeSpatialHeartbeatLog = std::chrono::steady_clock::now();
     std::string lastRuntimeSpatialLogSignature;
@@ -1479,6 +1810,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     } _watchdogGuard{loopRunning, loopWakeCv, loopWatchdog};
     _dap_phase("post_watchdog_thread_spawn");
 
+    int lastSegmentIndex = 1;
+    TextSegment lastSegment{};
+    ;
+    logger::info("[SPEAKERMANAGER] Starting playback loop for speaker={} text={}, resolution {}", speaker, text,
+                 animationDelayMicroSecs);
     while (std::chrono::steady_clock::now() < endTimeWithBlankSegment) {
         loopIterCount.fetch_add(1, std::memory_order_relaxed);
         setPhase("iter_top");
@@ -1649,10 +1985,14 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         if (!isNarrator) {
             TextSegment currentSegment;
             double totalDuration = 0.0;
+            int nSegment = 0;
+            int currentNSegment = 0;
             for (const TextSegment& segment : textSegments) {
                 totalDuration += segment.duration;
+                ++nSegment;
                 if (elapsedSeconds <= totalDuration) {
                     currentSegment = segment;
+                    currentNSegment = nSegment;
                     break;
                 }
             }
@@ -1750,32 +2090,89 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                                              speaker);
                     }
                 } else if (fgen) {
-                        commitVisemeCandidate();
-                        setPhase("write_voice_timer");
+                        
+                    // Legacy behavior
+                        if (lastViseme == visemeCode) {
+                            // intensity += intensityStep;
+                            intensity = (intensity + intensityStep) * 1.01;
+
+                        } else {
+                        
+                            lastViseme = visemeCode;
+                            intensity = 0;
+                        }
+
+
+                        //if (intensity > 0.99) intensity = 1.00f;
+                        
+                        if (intensity > 0.99) {
+                            
+                            if (visemeCode >= 0) {
+                                if (lastSegmentIndex == currentNSegment) {
+                                    // Only apply intensity modifier adjustment if we are still in the same segment
+                                    if (lastSegment.text != currentSegment.text) {
+                                        // But maybe last segment has the same viseme code, so it's normal
+                                        // in this case we don't want to adjust the intensity modifier, because it's
+                                        // normal to have the intensity high from last segment
+                                        logger::info(
+                                            "[SpeakManager] Intensity capped at 1.0 for viseme code {} (label: "
+                                            "{}),intensityModifier: {}, adjusting intensityModifier to {}, segment {}",
+                                            visemeCode, getVISEMEName(visemeCode), intensityModifier,
+                                            intensityModifier - 0.01, currentNSegment);
+                                        
+                                        // So, last segment viseme is different, we are in the same segment,
+                                        // and reached max intensity, so we will adjust the intensity modifier down to
+                                        // avoid this in the future
+
+                                        intensityModifier -= 0.01;
+                                        if (intensityModifier < 0.01) {
+                                            intensityModifier = 0.01;
+                                        }
+                                    }
+                                } 
+                            }
+                            intensity = 1.00f;
+                        }
+
+                        if (lastSegmentIndex != currentNSegment) {
+                            lastSegment = currentSegment;
+                        }
+                        
+                        lastSegmentIndex = currentNSegment;
+                        
+
+                        intensityStepDecal = intensityStep/2;
+                            
+                        
+
                         speakerActorPointer->GetActorRuntimeData().voiceTimer = 10.0;
 
-                        setPhase("queue_viseme_task");
                         auto* taskInterface = SKSE::GetTaskInterface();
                         if (taskInterface) {
                             auto actorHandle = speakerActorPointer->GetHandle();
                             const int queuedLastViseme = lastViseme;
                             const float queuedIntensity = intensity;
-                            taskInterface->AddTask(
-                                [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
-                                    auto* actor = actorHandle.get().get();
-                                    if (!actor || !actor->Is3DLoaded()) {
-                                        return;
-                                    }
+                            
+                            auto now = std::chrono::steady_clock::now();
+                            
+                                taskInterface->AddTask(
+                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
+                                        auto* actor = actorHandle.get().get();
+                                        if (!actor || !actor->Is3DLoaded()) {
+                                            return;
+                                        }
 
-                                    auto deferredFgen = actor->GetFaceGenAnimationData();
-                                    if (!deferredFgen) {
-                                        return;
-                                    }
+                                        auto deferredFgen = actor->GetFaceGenAnimationData();
+                                        if (!deferredFgen) {
+                                            return;
+                                        }
 
-                                    RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                    ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                     intensityStepDecal);
-                                });
+                                        RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                        ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                         intensityStepDecal);
+                                    });
+                            
+                            
                         } else {
                             logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                         }
@@ -1788,7 +2185,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         setPhase("avoid_click_check");
         if (DXinitOK) {  // Only if audio being reproduced,
             const bool shouldUpdatePlaybackState =
-                !enable3DAudioPlayback || std::chrono::steady_clock::now() > avoidClick;
+                std::chrono::steady_clock::now() > avoidClick;
             if (shouldUpdatePlaybackState) {
                 setPhase("spatial_audio_position_update");
                 updatePlaybackSpatialPosition();
@@ -1805,6 +2202,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         
         setPhase("iter_sleep");
 
+        
 
         std::this_thread::sleep_for(std::chrono::microseconds(animationDelayMicroSecs));
     }
@@ -1852,8 +2250,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         SpeakManager::getInstance().deleteQueue();
     }
 
-    if (currentActor)
-        logger::info("End talking sentence. {}", currentActor->getCurrentAnimation());
+    if (currentActor) logger::info("End talking sentence.<{}>, anim:<{}>", text, currentActor->getCurrentAnimation());
 
     // Free memory
     delete[] buffer;
@@ -2594,7 +2991,7 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     }
 
     if (!commandInQueue) {
-        if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+        if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
             logger::debug("[RECHAT] Avoiding rechat event because player is in dialogue");
             return 0;
         }
@@ -2615,6 +3012,17 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
         rechatPayload["origin_line"] = debugLauncherLine;
         rechatPayload["rechat_depth"] = rechatDepth;
         rechatPayload["chain_id"] = rechatChainId;
+        json activeAgents = json::array();
+        for (const auto& activeAgent : aiam.getAgents()) {
+            if (!activeAgent || activeAgent->isNarrator()) {
+                continue;
+            }
+            const std::string activeAgentName = trim(activeAgent->getActorName());
+            if (!activeAgentName.empty()) {
+                activeAgents.push_back(activeAgentName);
+            }
+        }
+        rechatPayload["active_agents"] = activeAgents;
 
         HTTPManager::stream(
             std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
@@ -2949,7 +3357,15 @@ void SpeakManager::process(AIAgent *agent) {
             std::string phoneticTrimmed = SM::trim(scriptLine.phonetic);
             bool unfinished = spgResponse.isUnfinished();
             const bool whisperModeActive = PrismaUIBridge::GetCurrentChatboxMode() == "WHISPER";
-            if (GlobalRechatPolicyAsap == 0 && !whisperModeActive) {
+
+            bool bypassAllrechat = false;
+
+            if (!scriptLine.rechatTargetHint.empty()  && scriptLine.rechatTargetHint == "explicit_disable_rechat") {
+                logger::info("[EARLY RECHAT {}] Disabled by explicit_disable_rechat", tid);
+                bypassAllrechat = true;
+            }
+
+            if (GlobalRechatPolicyAsap == 0 && !whisperModeActive && bypassAllrechat == false ) {
                 if (countItems() == 1 && !unfinished) {
                     // Last item in queue and SGPQueue is finished
                     std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
@@ -3019,98 +3435,99 @@ void SpeakManager::process(AIAgent *agent) {
             } else {
                 // New policy
                 bool playerInDialog = false;
-                if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+                if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
                     playerInDialog = true;
                 }
 
-                logger::info("[RECHAT {}] Rechat evaluation", tid);
-                if (playerInDialog) {
-                    logger::info("[RECHAT {}] Avoiding rechat, player is in dialog", tid);
-                } else if (whisperModeActive) {
-                    logger::info("[RECHAT {}] Avoiding rechat, WHISPER mode is private", tid);
-                } else if (GlobalRechatPolicyAsap == 0 && res != 2 && earlyRechat == false) {
-                    bool unfinished = spgResponse.isUnfinished();
+                if (bypassAllrechat == false) {
+                    logger::info("[RECHAT {}] Rechat evaluation", tid);
+                    if (playerInDialog) {
+                        logger::info("[RECHAT {}] Avoiding rechat, player is in dialog", tid);
+                    } else if (whisperModeActive) {
+                        logger::info("[RECHAT {}] Avoiding rechat, WHISPER mode is private", tid);
+                    } else if (GlobalRechatPolicyAsap == 0 && res != 2 && earlyRechat == false) {
+                        bool unfinished = spgResponse.isUnfinished();
 
-                    if (countItems() == 1 && !unfinished) {
-                        // Only one item pending. Lets launch rechat event here
+                        if (countItems() == 1 && !unfinished) {
+                            // Only one item pending. Lets launch rechat event here
 
-                        std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
-                        std::string rechatTargetHint = ResolveScriptLineRechatTargetHint(scriptLine);
+                            std::string rechatListenerHint = ResolveScriptLineListenerHint(scriptLine);
+                            std::string rechatTargetHint = ResolveScriptLineRechatTargetHint(scriptLine);
 
-                        /* But, maybe listener is different in the last line. Can happen when scriptlines are queued,
-                        and they come from different generation, like for example, return a function call */
+                            /* But, maybe listener is different in the last line. Can happen when scriptlines are
+                            queued, and they come from different generation, like for example, return a function call */
 
-                        auto lastLine = getLastItem();
+                            auto lastLine = getLastItem();
 
-                        if (!lastLine.action.empty()) {
-                            rechatListenerHint = ResolveScriptLineListenerHint(lastLine);
-                        }
-                        if (!SM::trim(lastLine.rechatTargetHint).empty()) {
-                            rechatTargetHint = ResolveScriptLineRechatTargetHint(lastLine);
-                        }
-
-                        const bool sameSpeakerAsLastRechatter = (agent->getActorName() == getLastRechatter());
-                        const bool sameSpeakerRechatInFlight = isRechatInFlightFor(agent->getActorName());
-                        if (isRechatChainClosed()) {
-                        } else if (!sameSpeakerAsLastRechatter && !sameSpeakerRechatInFlight) {
-                            logger::info("[RECHAT {}] LAUNCH Response queue has 1 items and is finished.", tid);
-                            if (rechat(agent->getActorName(), rechatListenerHint, 0, scriptLine.subtitle,
-                                       rechatTargetHint) > 0) {
-                                beginRechatAttempt(agent->getActorName());
+                            if (!lastLine.action.empty()) {
+                                rechatListenerHint = ResolveScriptLineListenerHint(lastLine);
                             }
-                        } else if (sameSpeakerRechatInFlight) {
+                            if (!SM::trim(lastLine.rechatTargetHint).empty()) {
+                                rechatTargetHint = ResolveScriptLineRechatTargetHint(lastLine);
+                            }
+
+                            const bool sameSpeakerAsLastRechatter = (agent->getActorName() == getLastRechatter());
+                            const bool sameSpeakerRechatInFlight = isRechatInFlightFor(agent->getActorName());
+                            if (isRechatChainClosed()) {
+                            } else if (!sameSpeakerAsLastRechatter && !sameSpeakerRechatInFlight) {
+                                logger::info("[RECHAT {}] LAUNCH Response queue has 1 items and is finished.", tid);
+                                if (rechat(agent->getActorName(), rechatListenerHint, 0, scriptLine.subtitle,
+                                           rechatTargetHint) > 0) {
+                                    beginRechatAttempt(agent->getActorName());
+                                }
+                            } else if (sameSpeakerRechatInFlight) {
+                                logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.",
+                                             tid, agent->getActorName());
+                                queueRechatRetry(agent->getActorName(), rechatListenerHint, rechatTargetHint,
+                                                 scriptLine.subtitle, 0);
+                            } else {
+                                logger::info("[RECHAT {}] AVOIDED because lastRechatter is same.", tid);
+                            }
+
+                        } else if (countItems() == 0 && !unfinished && getLastRechatter() != agent->getActorName() &&
+                                   !isRechatInFlightFor(agent->getActorName())) {  // One liners
+                            // Last item item pending. Lets launch rechat event here
+                            if (isRechatChainClosed()) {
+                                setLastRechatter("");
+                                resetRechatChainState();
+                            } else {
+                                logger::info("[RECHAT {}] LAUNCH Response queue has 0 items and is finished. ", tid);
+                                if (rechat(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine), 0,
+                                           scriptLine.subtitle, ResolveScriptLineRechatTargetHint(scriptLine)) > 0) {
+                                    beginRechatAttempt(agent->getActorName());
+                                }
+                            }
+                        } else if (countItems() == 0 && !unfinished && isRechatInFlightFor(agent->getActorName())) {
                             logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.", tid,
                                          agent->getActorName());
-                            queueRechatRetry(agent->getActorName(), rechatListenerHint, rechatTargetHint,
-                                             scriptLine.subtitle, 0);
+                            queueRechatRetry(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine),
+                                             ResolveScriptLineRechatTargetHint(scriptLine), scriptLine.subtitle, 0);
                         } else {
-                            logger::info("[RECHAT {}] AVOIDED because lastRechatter is same.", tid);
-                        }
-
-                    } else if (countItems() == 0 && !unfinished &&
-                               getLastRechatter() != agent->getActorName() &&
-                               !isRechatInFlightFor(agent->getActorName())) {  // One liners
-                        // Last item item pending. Lets launch rechat event here
-                        if (isRechatChainClosed()) {
-                            setLastRechatter("");
-                            resetRechatChainState();
-                        } else {
-                            logger::info("[RECHAT {}] LAUNCH Response queue has 0 items and is finished. ", tid);
-                            if (rechat(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine), 0,
-                                       scriptLine.subtitle, ResolveScriptLineRechatTargetHint(scriptLine)) > 0) {
-                                beginRechatAttempt(agent->getActorName());
+                            const int queueItems = countItems();
+                            const bool keepChainState =
+                                unfinished || queueItems > 0 || isRechatInFlightFor(agent->getActorName());
+                            logger::info("[RECHAT {}] NO RECHAT! Items in queue {}, unfinished {}, last rechatter {}",
+                                         tid, queueItems, unfinished, getLastRechatter());
+                            if (!keepChainState) {
+                                setLastRechatter("");
+                                resetRechatChainState();
                             }
                         }
-                    } else if (countItems() == 0 && !unfinished &&
-                               isRechatInFlightFor(agent->getActorName())) {
-                        logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.", tid,
-                                     agent->getActorName());
-                        queueRechatRetry(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine),
-                                         ResolveScriptLineRechatTargetHint(scriptLine), scriptLine.subtitle, 0);
                     } else {
-                        const int queueItems = countItems();
-                        const bool keepChainState = unfinished || queueItems > 0 ||
-                                                    isRechatInFlightFor(agent->getActorName());
-                        logger::info("[RECHAT {}] NO RECHAT! Items in queue {}, unfinished {}, last rechatter {}", tid,
-                                     queueItems, unfinished, getLastRechatter());
-                        if (!keepChainState) {
-                            setLastRechatter("");
-                            resetRechatChainState();
+                        if (GlobalRechatPolicyAsap == 0) {
+                            const int queueItems = countItems();
+                            const bool keepChainState =
+                                earlyRechat || queueItems > 0 || isRechatInFlightFor(agent->getActorName());
+                            logger::info(
+                                "[RECHAT {}] NO RECHAT! Last DownloadAndPlay return value was {},earlyRechat {} ", tid,
+                                res, earlyRechat ? 1 : 0);
+                            if (!keepChainState) {
+                                setLastRechatter("");
+                                resetRechatChainState();
+                            }
+                        } else {
+                            logger::info("[RECHAT {}] NO RECHAT! Using ASAP policy", tid, res);
                         }
-                    }
-                } else {
-                    if (GlobalRechatPolicyAsap == 0) {
-                        const int queueItems = countItems();
-                        const bool keepChainState = earlyRechat || queueItems > 0 ||
-                                                    isRechatInFlightFor(agent->getActorName());
-                        logger::info("[RECHAT {}] NO RECHAT! Last DownloadAndPlay return value was {},earlyRechat {} ",
-                                     tid, res, earlyRechat ? 1 : 0);
-                        if (!keepChainState) {
-                            setLastRechatter("");
-                            resetRechatChainState();
-                        }
-                    } else {
-                        logger::info("[RECHAT {}] NO RECHAT! Using ASAP policy", tid, res);
                     }
                 }
             }
@@ -3397,7 +3814,10 @@ void SpeakManager::process(AIAgent *agent) {
 
         setProcessing(false);
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // Speaker Manager sets a time stamp on agent to know when it finishes talking.
+            // 15 seconds are a too high value. Recommended is to have a MCM/Prisma setting to adjust MAINTENANCE_TIMEOUT
+            // and let user decide.
+            // ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15)); 
         }
 
         // Narrator cleanup MUST run before checking for more queue items.
@@ -3489,7 +3909,13 @@ void SpeakManager::processPlayer() {
             clearVisibleSubtitles();
         }
         if (hasTalked) {
-            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            // 15 seconds is too high if using fast llm.
+            //ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(15));
+            auto aproximatedTimeToSupressMaintenance = trimmedSubtitle.length() * 0.2f;  // 0.1 seconds per character
+            long roundedTimeToSupressMaintenance = static_cast<long>(aproximatedTimeToSupressMaintenance);
+            logger::info("Maintenance suppression for {} seconds", roundedTimeToSupressMaintenance);
+            ExtendPostSpeechMaintenanceSuppress(std::chrono::seconds(roundedTimeToSupressMaintenance));
+
         }
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -3628,6 +4054,8 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
 
     auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
     auto args = RE::MakeFunctionArguments(std::move(npc));
+
+    
 
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "EndDialogue",
                                                                                args, callback);

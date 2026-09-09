@@ -88,6 +88,8 @@ namespace Papyrus {
                       int bindedKey);
     int stopRecording(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       int bindedKey);
+    int stopAllDialogue(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
+    bool isGameFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int startOpenMicMonitoring(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                RE::StaticFunctionTag*);
@@ -96,7 +98,24 @@ namespace Papyrus {
     int setOpenMicMuted(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         bool muted);
     std::string getCurrentRecordingDeviceName(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                              RE::StaticFunctionTag*);
+                                               RE::StaticFunctionTag*);
+
+    int beginChimMcmSnapshot(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                             RE::StaticFunctionTag*);
+    int publishChimMcmEntry(
+        RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
+        std::string page, std::string section, std::string key, std::string label, std::string description,
+        std::string type, std::string value, std::string options);
+    int commitChimMcmSnapshot(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                              RE::StaticFunctionTag*, int revision);
+    int beginChimMcmAgents(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                           RE::StaticFunctionTag*);
+    int publishChimMcmAgent(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                            RE::StaticFunctionTag*, std::string bucket, int formId, std::string name);
+    int commitChimMcmAgents(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                            RE::StaticFunctionTag*);
+    int publishChimMcmCommandResult(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                    RE::StaticFunctionTag*, std::string request, bool ok, std::string message);
 
     bool RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm);
 
@@ -139,6 +158,10 @@ namespace Papyrus {
 
     int shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       std::string hints, int mode);
+
+    int startSoulgazeCapture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                             RE::StaticFunctionTag*, std::string hints, int captureType, int renderMode,
+                             RE::Actor* target);
 
     int isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
@@ -334,5 +357,8 @@ namespace Papyrus {
                          std::string songName, std::string singerName );
     int stopMusicScene(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                         std::string singerName);
+
+    int removeFromRenamedNPCList(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                 RE::StaticFunctionTag*, RE::Actor *actor);
 }
     

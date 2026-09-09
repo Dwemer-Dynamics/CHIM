@@ -1,11 +1,11 @@
 #ifndef SPEAKMANAGER_H
 #define SPEAKMANAGER_H
 
-#include <cstdint>
-#include <cstdarg>
-#include <cstddef>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <iostream>
@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+
 #include "Globals.h"
 #include "HeadVoiceVolumeUtils.h"
 
@@ -23,22 +24,29 @@ extern std::string lastEventType;
 struct ScriptLine {
     std::string subtitle;
     std::string expression;
-    std::string action;// or listener
+    std::string action;  // or listener
     std::string animation;
     std::string actor;
-	std::string phonetic;// text in the Latin alphabet to use with lip sync when using non-Latin languages
+    std::string phonetic;  // text in the Latin alphabet to use with lip sync when using non-Latin languages
     std::string rechatTargetHint;
     std::string utteranceId;
     bool rechatGenerated = false;
-    float volumeBoost; // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
-    float duration;      // Duration of the line in seconds, used for timing animations and lip sync
-
+    float volumeBoost;  // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
+    float duration;     // Duration of the line in seconds, used for timing animations and lip sync
 
     ScriptLine(const std::string& sub, const std::string& exp, const std::string& act, const std::string& anim,
-               const std::string& targetactor, const std::string& ph, float volBoost = 1.0f, float duration=-1,
+               const std::string& targetactor, const std::string& ph, float volBoost = 1.0f, float duration = -1,
                const std::string& rechatTarget = "", const std::string& utterance = "")
-        : subtitle(sub), expression(exp), action(act), animation(anim), actor(targetactor), phonetic(ph),
-          rechatTargetHint(rechatTarget), utteranceId(utterance), volumeBoost(volBoost), duration(duration) {}
+        : subtitle(sub),
+          expression(exp),
+          action(act),
+          animation(anim),
+          actor(targetactor),
+          phonetic(ph),
+          rechatTargetHint(rechatTarget),
+          utteranceId(utterance),
+          volumeBoost(volBoost),
+          duration(duration) {}
 
     static ScriptLine parse(const std::string& input, const std::string& actor, char delimiter = '/') {
         logger::debug("Parsing input: {} for actor: {}", input, actor);
@@ -52,32 +60,34 @@ struct ScriptLine {
         size_t secondDelim = input.find(delimiter, firstDelim + 1);
         if (secondDelim == std::string::npos) {
             logger::debug("Second delimiter not found");
-            return ScriptLine(sub, "", "", "", actor, "", 1.0f);  // Handle the case when the second delimiter is not found
+            return ScriptLine(sub, "", "", "", actor, "",
+                              1.0f);  // Handle the case when the second delimiter is not found
         }
 
         std::string exp = input.substr(firstDelim + 1, secondDelim - firstDelim - 1);
         size_t thirdDelim = input.find(delimiter, secondDelim + 1);
         if (thirdDelim == std::string::npos) {
             logger::debug("Third delimiter not found");
-            return ScriptLine(sub, exp, "", "", actor, "", 1.0f);  // Handle the case when the third delimiter is not found
+            return ScriptLine(sub, exp, "", "", actor, "",
+                              1.0f);  // Handle the case when the third delimiter is not found
         }
 
         std::string act = input.substr(secondDelim + 1, thirdDelim - secondDelim - 1);
-		size_t fourthDelim = input.find(delimiter, thirdDelim + 1);
+        size_t fourthDelim = input.find(delimiter, thirdDelim + 1);
         if (fourthDelim == std::string::npos) {
             logger::debug("Fourth delimiter not found");
-            return ScriptLine(sub, exp, act, "", actor, "", 1.0f);  // Handle the case when the fourth delimiter is not found
+            return ScriptLine(sub, exp, act, "", actor, "",
+                              1.0f);  // Handle the case when the fourth delimiter is not found
         }
 
-        
         std::string anim = input.substr(thirdDelim + 1, fourthDelim - thirdDelim - 1);
-		size_t fifthDelim = input.find(delimiter, fourthDelim + 1);
+        size_t fifthDelim = input.find(delimiter, fourthDelim + 1);
         if (fifthDelim == std::string::npos) {
             // No volume boost field, just phonetic
             std::string phonetic = input.substr(fourthDelim + 1);
             return ScriptLine(sub, exp, act, anim, actor, phonetic, 1.0f);
         }
-        
+
         std::string phonetic = input.substr(fourthDelim + 1, fifthDelim - fourthDelim - 1);
         size_t sixthDelim = input.find(delimiter, fifthDelim + 1);
         std::string volumeBoostStr;
@@ -95,7 +105,7 @@ struct ScriptLine {
                 utteranceId = input.substr(seventhDelim + 1);
             }
         }
-        
+
         float volumeBoost = 1.0f;
         try {
             if (!volumeBoostStr.empty()) {
@@ -116,8 +126,8 @@ private:
     std::mutex mtx;  // Mutex for thread safety
     bool isProcessing;
     std::chrono::high_resolution_clock::time_point lastUsedTime;
-    float preClip=0.1;
-    float postClip=0.1;
+    float preClip = 0.1;
+    float postClip = 0.1;
 
     int resolution = 500 * 1;  // 10 def value
     float animIntensity = 1.0f;
@@ -156,12 +166,14 @@ private:
     std::string pendingPlayerSubtitleText;
     bool pendingPlayerSubtitleActive = false;
     std::chrono::high_resolution_clock::time_point pendingPlayerSubtitleLastRefresh{};
+    std::chrono::high_resolution_clock::time_point lastVisemeApplied;
     std::string narratorDisplayName = NARRATOR_NAME;
 
     SpeakManager() : isProcessing(false) {}  // Private constructor for Singleton pattern
 
     std::chrono::high_resolution_clock::time_point rechatCooldown = std::chrono::high_resolution_clock::now();
 
+   
 
 public:
     // Get the singleton instance of SpeakManager
@@ -174,9 +186,7 @@ public:
         headVoiceVolumeMultiplier.store(HeadVoiceVolumeUtils::PercentToMultiplier(percent), std::memory_order_relaxed);
     }
 
-    float getHeadVoiceVolumeMultiplier() const {
-        return headVoiceVolumeMultiplier.load(std::memory_order_relaxed);
-    }
+    float getHeadVoiceVolumeMultiplier() const { return headVoiceVolumeMultiplier.load(std::memory_order_relaxed); }
 
     int getResolution() {
         std::lock_guard<std::mutex> lock(mtx);
@@ -195,7 +205,7 @@ public:
         animIntensity = i;
     }
 
-     void setLastRechatter(std::string i) {
+    void setLastRechatter(std::string i) {
         std::lock_guard<std::mutex> lock(mtx);
         lastRechatter.assign(i);
     }
@@ -220,8 +230,7 @@ public:
 
     bool beginRechatAttempt(const std::string& speaker);
     void queueRechatRetry(const std::string& speaker, const std::string& listenerHint,
-                          const std::string& explicitTarget, const std::string& debugLauncherLine,
-                          int rechatDepth);
+                          const std::string& explicitTarget, const std::string& debugLauncherLine, int rechatDepth);
     void completeRechatAttempt(const std::string& speaker, bool success);
 
     void abortPlay(bool forceCurrentPlayback = false) {
@@ -231,7 +240,7 @@ public:
             forceInterruptCurrentPlayback = true;
         }
     }
-   
+
     bool shouldAbortPlaybackForSpeaker(const std::string& speakerName);
 
     bool isAborted() {
@@ -272,7 +281,7 @@ public:
     void setLastUsedTime();
 
     // Method to process the queue
-    void process(AIAgent *agent);
+    void process(AIAgent* agent);
     void processPlayer();
     void setPendingPlayerSubtitle(const std::string& subtitleText);
     void releasePendingPlayerSubtitle();
@@ -283,7 +292,7 @@ public:
 
     // Setter for isProcessing
     void setProcessing(bool processing);
-    void endDialogue(RE::Actor* npc,std::string lastLine );
+    void endDialogue(RE::Actor* npc, std::string lastLine);
 
     void setPreclip(float val);
     void setPostclip(float val);
@@ -302,13 +311,19 @@ public:
     bool isRecentAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
 
     bool downloadFakeNote(std::string name);
-    
+
     int rechat(std::string speaker, std::string targetedNpc, int rechatDepth, std::string debugLauncherLine,
                std::string explicitRechatTarget = "");
 
-  
-    
+     void setLastVisemeApplied(std::chrono::high_resolution_clock::time_point timePoint) {
+        std::lock_guard<std::mutex> lock(mtx);
+        lastVisemeApplied = timePoint;
+    }
 
+    std::chrono::high_resolution_clock::time_point getLastVisemeApplied() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return lastVisemeApplied;
+    }
 };
 
 void ProcessVrVisemePumpOnGameThread(float deltaSeconds);

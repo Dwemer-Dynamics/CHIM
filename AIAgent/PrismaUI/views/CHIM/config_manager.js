@@ -7,9 +7,11 @@
     let profileData = null;
     let selectedProfileId = 0;
     let activeGlobalTab = 'prompt-rechat';
+    const SETTINGS_PAGES = ['globals', 'profiles', 'npcs', 'mcm'];
     let selectSequence = 0;
 
     function command(value) { if (window.chimConfigManagerCommand) window.chimConfigManagerCommand(value); }
+    function syncInputCapture() { command(document.activeElement && document.activeElement.matches('input, textarea, select') ? 'input_capture|on' : 'input_capture|off'); }
     function asBool(value) {
         if (typeof value === 'boolean') return value;
         return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -24,6 +26,10 @@
             if (selector === except) return;
             selector.classList.remove('expanded');
             selector.querySelector('.settings-tile-trigger').setAttribute('aria-expanded', 'false');
+            /* Single choke point for closing, so MCM enum rows release their help suppression here
+               too; otherwise a click-outside or Escape would leave the marker stuck on. */
+            const enumRow = selector.closest('.mcm-row-enum');
+            if (enumRow) enumRow.classList.remove('mcm-enum-open');
         });
     }
     function syncTileSelect(select) {
@@ -38,8 +44,32 @@
             option.setAttribute('aria-selected', active ? 'true' : 'false');
         });
     }
+    // Rebuilds the visible option tiles after a server-driven select changes its options.
+    function refreshTileSelectOptions(select, selector) {
+        const options = selector.querySelector('.settings-tile-options');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        if (!options || !trigger) return;
+        options.replaceChildren();
+        Array.from(select.options).forEach((nativeOption) => {
+            const option = document.createElement('button');
+            option.type = 'button'; option.className = 'settings-tile-option'; option.dataset.value = nativeOption.value;
+            option.disabled = nativeOption.disabled;
+            option.setAttribute('role', 'option'); option.textContent = nativeOption.textContent;
+            option.addEventListener('click', () => {
+                select.value = nativeOption.value;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+                syncTileSelect(select); closeTileSelectors(); trigger.focus();
+            });
+            options.appendChild(option);
+        });
+        syncTileSelect(select);
+    }
     function enhanceSelect(select) {
-        if (select.closest('.settings-tile-selector')) return select.closest('.settings-tile-selector');
+        const existing = select.closest('.settings-tile-selector');
+        if (existing) {
+            refreshTileSelectOptions(select, existing);
+            return existing;
+        }
         const selector = document.createElement('div');
         const trigger = document.createElement('button');
         const value = document.createElement('span');
@@ -51,17 +81,6 @@
         trigger.setAttribute('aria-haspopup', 'listbox'); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', listId);
         value.className = 'settings-tile-value'; arrow.className = 'settings-tile-arrow'; arrow.setAttribute('aria-hidden', 'true');
         options.className = 'settings-tile-options'; options.id = listId; options.setAttribute('role', 'listbox');
-        Array.from(select.options).forEach((nativeOption) => {
-            const option = document.createElement('button');
-            option.type = 'button'; option.className = 'settings-tile-option'; option.dataset.value = nativeOption.value;
-            option.setAttribute('role', 'option'); option.textContent = nativeOption.textContent;
-            option.addEventListener('click', () => {
-                select.value = nativeOption.value;
-                select.dispatchEvent(new Event('change', { bubbles: true }));
-                syncTileSelect(select); closeTileSelectors(); trigger.focus();
-            });
-            options.appendChild(option);
-        });
         trigger.append(value, arrow);
         trigger.addEventListener('click', () => {
             const opening = !selector.classList.contains('expanded');
@@ -77,7 +96,7 @@
         select.parentNode.insertBefore(selector, select);
         selector.append(trigger, options, select);
         select.addEventListener('change', () => syncTileSelect(select));
-        syncTileSelect(select);
+        refreshTileSelectOptions(select, selector);
         return selector;
     }
     function setControlDisabled(control, disabled) {
@@ -124,7 +143,7 @@
     async function loadGlobals() {
         status('Loading Global Settings...', false);
         globalData = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_global_settings.php`, { cache: 'no-store' }));
-        renderGlobals(); status('Global Settings loaded.', false);
+        renderGlobals(); status('Global Settings loaded.', false); ensurePresets();
     }
     function renderGlobals() {
         const tabs = byId('global-tabs'); tabs.replaceChildren();
@@ -151,8 +170,8 @@
         });
         byId('prompt-context-options').closest('.settings-section').hidden = activeGlobalTab !== 'context-knowledge';
     }
-    async function saveGlobals(event) {
-        event.preventDefault();
+    // Captures the globals form exactly as saveGlobals() posts it, unsaved edits included.
+    function serializeGlobalsForm() {
         const settings = {}; const promptContext = {};
         byId('globals-form').querySelectorAll('[name]').forEach((control) => {
             if (control.name.startsWith('global:')) settings[control.name.slice(7)] = control.type === 'checkbox' ? control.checked : control.value;
@@ -162,8 +181,13 @@
                 if (control.checked) promptContext[bucket].push(id);
             }
         });
+        return { settings: settings, prompt_context_options: promptContext };
+    }
+    async function saveGlobals(event) {
+        event.preventDefault();
+        const payload = serializeGlobalsForm();
         status('Saving Global Settings...', false);
-        await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_global_settings.php`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ settings, prompt_context_options: promptContext }) }));
+        await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_global_settings.php`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ settings: payload.settings, prompt_context_options: payload.prompt_context_options }) }));
         await loadGlobals(); status('Global Settings saved.', false);
     }
 
@@ -171,6 +195,7 @@
         status('Loading Profiles...', false);
         profileData = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { cache: 'no-store' }));
         renderProfileList();
+        renderProfilePresets();
         const id = Number(preferredId || selectedProfileId || (profileData.profiles[0] && profileData.profiles[0].id));
         if (id) await loadProfile(id); else status('No profiles found.', true);
     }
@@ -199,6 +224,8 @@
         selectedProfileId = Number(id); renderProfileList(); status('Loading profile...', false);
         const payload = await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php?id=${selectedProfileId}`, { cache: 'no-store' }));
         profileData.profiles = payload.profiles; profileData.connector_options = payload.connector_options;
+        if (Array.isArray(payload.profile_presets)) profileData.profile_presets = payload.profile_presets;
+        renderProfilePresets();
         renderProfile(payload.detail); status('Profile loaded.', false);
     }
     function renderProfile(detail) {
@@ -249,8 +276,8 @@
         });
         byId('profile-metadata-json').value = JSON.stringify(detail.metadata || {}, null, 2);
     }
-    async function saveProfile(event) {
-        event.preventDefault();
+    // Captures the profile form metadata exactly as saveProfile() posts it, unsaved edits included.
+    function serializeProfileMetadata() {
         let metadata; try { metadata = JSON.parse(byId('profile-metadata-json').value || '{}'); } catch (_error) { throw new Error('Advanced Metadata JSON is invalid.'); }
         const multi = {};
         byId('profile-form').querySelectorAll('[name^="metadata:"]').forEach((control) => { metadata[control.name.slice(9)] = control.type === 'checkbox' ? control.checked : (control.type === 'number' && control.value !== '' ? Number(control.value) : control.value); });
@@ -263,6 +290,11 @@
             if (!control) return;
             metadata[key] = control.type === 'checkbox' ? control.checked : (control.type === 'number' && control.value !== '' ? Number(control.value) : control.value);
         });
+        return metadata;
+    }
+    async function saveProfile(event) {
+        event.preventDefault();
+        const metadata = serializeProfileMetadata();
         const connectors = {}; byId('profile-form').querySelectorAll('[name^="connector:"]').forEach((control) => { connectors[control.name.slice(10)] = control.value; });
         const core = { label: event.currentTarget.elements.label.value, slot: event.currentTarget.elements.slot.value, default_npc: event.currentTarget.elements.default_npc.checked, prompt: event.currentTarget.elements.prompt.value };
         status('Saving profile...', false);
@@ -284,28 +316,1714 @@
         await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({operation:'delete',id:selectedProfileId}) }));
         selectedProfileId = 0; await loadProfiles();
     }
+    /* ----- CHIM MCM (mirrors the six SkyUI MCM pages, rendered from native state) ----- */
+    const MCM_PAGES = [
+        { id: 'hotkeys', label: 'Hotkeys' },
+        { id: 'auto_activate', label: 'Auto Activate' },
+        { id: 'behavior', label: 'Behavior' },
+        { id: 'sound', label: 'Sound' },
+        { id: 'ai_agents', label: 'AI Agents' },
+        { id: 'tools', label: 'Tools' }
+    ];
+    const MCM_PAGE_ALIASES = { hotkey: 'hotkeys', keys: 'hotkeys', keymaps: 'hotkeys', auto: 'auto_activate', autoactivate: 'auto_activate', agents: 'ai_agents', aiagents: 'ai_agents', audio: 'sound', tool: 'tools' };
+    /* DirectInput (DIK) scan codes used by Skyrim and SkyUI keymaps.
+       Rows are [scan code, KeyboardEvent.code ('' when the device cannot be captured in-view), display name]. */
+    const MCM_KEY_CODES = [
+        [1, 'Escape', 'Esc'], [2, 'Digit1', '1'], [3, 'Digit2', '2'], [4, 'Digit3', '3'], [5, 'Digit4', '4'],
+        [6, 'Digit5', '5'], [7, 'Digit6', '6'], [8, 'Digit7', '7'], [9, 'Digit8', '8'], [10, 'Digit9', '9'],
+        [11, 'Digit0', '0'], [12, 'Minus', 'Minus'], [13, 'Equal', 'Equals'], [14, 'Backspace', 'Backspace'],
+        [15, 'Tab', 'Tab'], [16, 'KeyQ', 'Q'], [17, 'KeyW', 'W'], [18, 'KeyE', 'E'], [19, 'KeyR', 'R'],
+        [20, 'KeyT', 'T'], [21, 'KeyY', 'Y'], [22, 'KeyU', 'U'], [23, 'KeyI', 'I'], [24, 'KeyO', 'O'],
+        [25, 'KeyP', 'P'], [26, 'BracketLeft', 'Left Bracket'], [27, 'BracketRight', 'Right Bracket'],
+        [28, 'Enter', 'Enter'], [29, 'ControlLeft', 'Left Ctrl'], [30, 'KeyA', 'A'], [31, 'KeyS', 'S'],
+        [32, 'KeyD', 'D'], [33, 'KeyF', 'F'], [34, 'KeyG', 'G'], [35, 'KeyH', 'H'], [36, 'KeyJ', 'J'],
+        [37, 'KeyK', 'K'], [38, 'KeyL', 'L'], [39, 'Semicolon', 'Semicolon'], [40, 'Quote', 'Apostrophe'],
+        [41, 'Backquote', 'Grave'], [42, 'ShiftLeft', 'Left Shift'], [43, 'Backslash', 'Backslash'],
+        [44, 'KeyZ', 'Z'], [45, 'KeyX', 'X'], [46, 'KeyC', 'C'], [47, 'KeyV', 'V'], [48, 'KeyB', 'B'],
+        [49, 'KeyN', 'N'], [50, 'KeyM', 'M'], [51, 'Comma', 'Comma'], [52, 'Period', 'Period'],
+        [53, 'Slash', 'Slash'], [54, 'ShiftRight', 'Right Shift'], [55, 'NumpadMultiply', 'Num *'],
+        [56, 'AltLeft', 'Left Alt'], [57, 'Space', 'Space'], [58, 'CapsLock', 'Caps Lock'],
+        [59, 'F1', 'F1'], [60, 'F2', 'F2'], [61, 'F3', 'F3'], [62, 'F4', 'F4'], [63, 'F5', 'F5'],
+        [64, 'F6', 'F6'], [65, 'F7', 'F7'], [66, 'F8', 'F8'], [67, 'F9', 'F9'], [68, 'F10', 'F10'],
+        [69, 'NumLock', 'Num Lock'], [70, 'ScrollLock', 'Scroll Lock'], [71, 'Numpad7', 'Num 7'],
+        [72, 'Numpad8', 'Num 8'], [73, 'Numpad9', 'Num 9'], [74, 'NumpadSubtract', 'Num -'],
+        [75, 'Numpad4', 'Num 4'], [76, 'Numpad5', 'Num 5'], [77, 'Numpad6', 'Num 6'], [78, 'NumpadAdd', 'Num +'],
+        [79, 'Numpad1', 'Num 1'], [80, 'Numpad2', 'Num 2'], [81, 'Numpad3', 'Num 3'], [82, 'Numpad0', 'Num 0'],
+        [83, 'NumpadDecimal', 'Num .'], [87, 'F11', 'F11'], [88, 'F12', 'F12'], [100, 'F13', 'F13'],
+        [101, 'F14', 'F14'], [102, 'F15', 'F15'], [141, 'NumpadEqual', 'Num ='], [156, 'NumpadEnter', 'Num Enter'],
+        [157, 'ControlRight', 'Right Ctrl'], [179, 'NumpadComma', 'Num ,'], [181, 'NumpadDivide', 'Num /'],
+        [183, 'PrintScreen', 'Print Screen'], [184, 'AltRight', 'Right Alt'], [197, 'Pause', 'Pause'],
+        [199, 'Home', 'Home'], [200, 'ArrowUp', 'Up Arrow'], [201, 'PageUp', 'Page Up'],
+        [203, 'ArrowLeft', 'Left Arrow'], [205, 'ArrowRight', 'Right Arrow'], [207, 'End', 'End'],
+        [208, 'ArrowDown', 'Down Arrow'], [209, 'PageDown', 'Page Down'], [210, 'Insert', 'Insert'],
+        [211, 'Delete', 'Delete'], [219, 'MetaLeft', 'Left Win'], [220, 'MetaRight', 'Right Win'],
+        [221, 'ContextMenu', 'Menu'], [256, '', 'Mouse 1'], [257, '', 'Mouse 2'], [258, '', 'Mouse 3'],
+        [259, '', 'Mouse 4'], [260, '', 'Mouse 5'], [261, '', 'Mouse 6'], [262, '', 'Mouse 7'],
+        [263, '', 'Mouse 8'], [264, '', 'Mouse Wheel Up'], [265, '', 'Mouse Wheel Down'],
+        [266, '', 'Gamepad D-Pad Up'], [267, '', 'Gamepad D-Pad Down'], [268, '', 'Gamepad D-Pad Left'],
+        [269, '', 'Gamepad D-Pad Right'], [270, '', 'Gamepad Start'], [271, '', 'Gamepad Back'],
+        [272, '', 'Gamepad Left Stick'], [273, '', 'Gamepad Right Stick'], [274, '', 'Gamepad Left Shoulder'],
+        [275, '', 'Gamepad Right Shoulder'], [276, '', 'Gamepad A'], [277, '', 'Gamepad B'],
+        [278, '', 'Gamepad X'], [279, '', 'Gamepad Y'], [280, '', 'Gamepad Left Trigger'], [281, '', 'Gamepad Right Trigger']
+    ];
+    /* Printable KeyboardEvent.key values for the rows whose code is not the key itself. */
+    const MCM_KEY_CHARS = {
+        Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+        Backquote: '`', Backslash: '\\', Comma: ',', Period: '.', Slash: '/', Space: ' '
+    };
+    const MCM_KEY_NAMES = new Map();
+    const MCM_KEY_FROM_BROWSER = new Map();
+    /* Prisma Ultralight can deliver an empty or unusable event.code, so keep an event.key map too. */
+    const MCM_KEY_FROM_KEY = new Map();
+    MCM_KEY_CODES.forEach((row) => {
+        MCM_KEY_NAMES.set(row[0], row[2]);
+        const code = row[1];
+        if (!code) return;
+        MCM_KEY_FROM_BROWSER.set(code, row[0]);
+        const letter = /^Key([A-Z])$/.exec(code);
+        const digit = /^Digit([0-9])$/.exec(code);
+        /* Named keys and function keys report event.key === event.code; modifiers drop the side suffix. */
+        const alias = letter ? letter[1].toLowerCase()
+            : digit ? digit[1]
+            : MCM_KEY_CHARS[code] || code.replace(/^(Shift|Control|Alt|Meta)(Left|Right)$/, '$1');
+        /* First row wins so main-row keys keep priority over their numpad twins. */
+        if (!MCM_KEY_FROM_KEY.has(alias)) MCM_KEY_FROM_KEY.set(alias, row[0]);
+    });
+    const MCM_SAVE_TIMEOUT_MS = 12000;
+    /* The MCM payload carries only numbers, so "enum" rows get their labels from here rather than
+       from extra metadata fields. A key with no entry falls back to a read-only row. */
+    const MCM_ENUM_OPTIONS = {
+        audio_mode: [
+            { value: 2, label: '3D Advanced' },
+            { value: 1, label: '3D Legacy' },
+            { value: 0, label: '2D Flat' },
+            { value: 3, label: 'Mono' },
+            { value: 4, label: 'Mono + Advanced Effects' }
+        ]
+    };
+    const MCM_AUDIO_CONTROL_MODES = {
+        sound_distance_scale: [2, 4], playback_dropoff_inside: [2, 4], playback_dropoff_outside: [2, 4],
+        curve_legacy_distance: [1], camera_based_audio: [0, 1, 2], invert_heading: [0, 1, 2]
+    };
+    let mcmState = null;
+    let mcmAgents = null;
+    let mcmRequested = false;
+    let activeMcmPage = MCM_PAGES[0].id;
+    let mcmSequence = 0;
+    let mcmConfirmInvoker = null;
+    let mcmConfirmAction = null;
+    const mcmPending = new Map();
+    /* Edits are staged in the view and only pushed to the game by Save. */
+    const mcmStaged = new Map();
+    const mcmSaveErrors = new Map();
+    let mcmSaving = false;
+    let mcmCapture = null;
+
+    function mcmStatus(message, error) {
+        const line = byId('mcm-status');
+        if (!line) return;
+        line.textContent = message || '';
+        line.classList.toggle('error', !!error);
+    }
+    function parseMcmPayload(payload) {
+        if (payload === null || payload === undefined) return null;
+        if (typeof payload === 'string') { try { return JSON.parse(payload); } catch (_error) { return null; } }
+        return typeof payload === 'object' ? payload : null;
+    }
+    function normalizeMcmPage(value) {
+        const slug = String(value === null || value === undefined ? '' : value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (MCM_PAGES.some((page) => page.id === slug)) return slug;
+        return MCM_PAGE_ALIASES[slug.replace(/_/g, '')] || MCM_PAGE_ALIASES[slug] || slug;
+    }
+    function decimalsFor(step) {
+        const text = String(step);
+        const dot = text.indexOf('.');
+        return dot < 0 ? 0 : Math.min(4, text.length - dot - 1);
+    }
+    function clampToStep(value, min, max, step) {
+        let numeric = Number(value);
+        if (!Number.isFinite(numeric)) numeric = min;
+        numeric = Math.min(max, Math.max(min, numeric));
+        numeric = min + Math.round((numeric - min) / step) * step;
+        return Number(Math.min(max, Math.max(min, numeric)).toFixed(decimalsFor(step)));
+    }
+    function setMcmBusy(button, busy) {
+        if (!button) return;
+        if (busy) {
+            if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent;
+            button.textContent = button.dataset.busyLabel || 'Working...';
+        } else if (button.dataset.idleLabel) {
+            button.textContent = button.dataset.idleLabel;
+        }
+        button.disabled = !!busy;
+        button.setAttribute('aria-busy', busy ? 'true' : 'false');
+    }
+    function mcmResultNode(button) {
+        const card = button && button.closest('.mcm-tool-card, .mcm-agent-toolbar, .mcm-agent-row');
+        return card ? card.querySelector('.mcm-result') : null;
+    }
+    function sendMcmCommand(request, options) {
+        const settings = options || {};
+        const button = settings.button || null;
+        if (button) {
+            if (settings.busyLabel) button.dataset.busyLabel = settings.busyLabel;
+            setMcmBusy(button, true);
+        }
+        const result = mcmResultNode(button);
+        if (result) { result.textContent = settings.pendingMessage || 'Working...'; result.classList.remove('error'); }
+        mcmStatus(settings.pendingMessage || 'Sending command...', false);
+        const record = { buttonId: button ? button.id : '', onResult: settings.onResult, timeoutId: 0 };
+        mcmPending.set(request, record);
+        if (Number(settings.timeoutMs) > 0) {
+            record.timeoutId = setTimeout(() => {
+                if (mcmPending.get(request) !== record) return;
+                mcmPending.delete(request);
+                setMcmBusy(record.buttonId ? byId(record.buttonId) : null, false);
+                const message = 'The game did not respond in time.';
+                mcmStatus(message, true);
+                if (typeof record.onResult === 'function') record.onResult(false, message);
+            }, Number(settings.timeoutMs));
+        }
+        command(request);
+    }
+    function matchingMcmPendingRequest(request) {
+        const exact = `mcm|${request}`;
+        if (mcmPending.has(exact)) return exact;
+        const withValue = Array.from(mcmPending.keys()).find((key) => key.startsWith(`${exact}|`));
+        if (withValue) return withValue;
+        const family = request.split('|', 1)[0];
+        if (family === 'agent_add' || family === 'agent_remove') {
+            return Array.from(mcmPending.keys()).find((key) => key.startsWith(`mcm|${family}|`)) || '';
+        }
+        return '';
+    }
+
+    function mcmHelp(row, entry) {
+        const text = String(entry.description === null || entry.description === undefined ? '' : entry.description).trim();
+        if (!text) return '';
+        const id = `mcm-help-${++mcmSequence}`;
+        const help = document.createElement('span');
+        help.className = 'mcm-help';
+        help.id = id;
+        help.setAttribute('role', 'tooltip');
+        help.textContent = text;
+        row.appendChild(help);
+        row.classList.add('has-help');
+        return id;
+    }
+    function mcmRowHead(entry) {
+        const head = document.createElement('div');
+        head.className = 'mcm-row-head';
+        const label = document.createElement('span');
+        label.className = 'mcm-label';
+        label.id = `mcm-label-${++mcmSequence}`;
+        label.textContent = String(entry.label || entry.key || '');
+        head.appendChild(label);
+        const unit = String(entry.unit === null || entry.unit === undefined ? '' : entry.unit).trim();
+        if (unit) {
+            const badge = document.createElement('span');
+            badge.className = 'mcm-unit';
+            badge.textContent = unit;
+            head.appendChild(badge);
+        }
+        return { head: head, labelId: label.id };
+    }
+    function mcmControlId(kind, key) {
+        return `mcm-${kind}-${String(key === null || key === undefined ? '' : key).replace(/[^A-Za-z0-9_-]/g, '')}`;
+    }
+    function mcmEntryList() { return mcmState && Array.isArray(mcmState.entries) ? mcmState.entries : []; }
+    function mcmBaseValue(entry) {
+        const numeric = Number(entry.value);
+        return Number.isFinite(numeric) ? numeric : 0;
+    }
+    function mcmValue(entry) {
+        const key = String(entry.key || '');
+        return mcmStaged.has(key) ? mcmStaged.get(key) : mcmBaseValue(entry);
+    }
+    function mcmNumberText(value) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? String(Number(numeric.toFixed(4))) : '0';
+    }
+    function mcmKeyName(value) {
+        const code = Number(value);
+        if (!Number.isFinite(code) || code <= 0) return 'Unbound';
+        const known = MCM_KEY_NAMES.get(code);
+        if (known) return known;
+        return 'Unknown key';
+    }
+    function mcmDescribe(control, ids) {
+        const list = ids.filter(Boolean);
+        if (list.length) control.setAttribute('aria-describedby', list.join(' '));
+    }
+    /* Every editable row carries a hidden "Unsaved" pill and an error line, both wired into aria-describedby. */
+    function mcmRowState(row, entry, host) {
+        const key = String(entry.key || '');
+        const pill = document.createElement('span');
+        pill.className = 'mcm-staged-pill';
+        pill.id = `mcm-staged-${++mcmSequence}`;
+        pill.textContent = 'Unsaved';
+        pill.hidden = !mcmStaged.has(key);
+        (host || row).appendChild(pill);
+        const error = document.createElement('p');
+        error.className = 'mcm-row-error';
+        error.id = `mcm-error-${++mcmSequence}`;
+        const message = mcmSaveErrors.get(key) || '';
+        error.textContent = message;
+        error.hidden = !message;
+        row.appendChild(error);
+        row.classList.toggle('is-staged', mcmStaged.has(key));
+        row.classList.toggle('has-error', !!message);
+        return { pillId: pill.id, errorId: error.id };
+    }
+    function mcmSyncRowState(row, entry) {
+        if (!row) return;
+        const key = String(entry.key || '');
+        const staged = mcmStaged.has(key);
+        const message = mcmSaveErrors.get(key) || '';
+        row.classList.toggle('is-staged', staged);
+        row.classList.toggle('has-error', !!message);
+        const pill = row.querySelector('.mcm-staged-pill');
+        if (pill) pill.hidden = !staged;
+        const error = row.querySelector('.mcm-row-error');
+        if (error) { error.textContent = message; error.hidden = !message; }
+    }
+    function stageMcmValue(entry, value, row) {
+        const key = String(entry.key || '');
+        if (!key) return;
+        if (Number(value) === mcmBaseValue(entry)) mcmStaged.delete(key);
+        else mcmStaged.set(key, Number(value));
+        mcmSaveErrors.delete(key);
+        mcmSyncRowState(row, entry);
+        refreshMcmSaveBar();
+    }
+
+    /* ----- Staged edits: dirty state, ordered save, explicit discard ----- */
+    function refreshMcmSaveBar() {
+        const bar = byId('mcm-save-bar');
+        if (!bar) return;
+        const count = mcmStaged.size;
+        bar.dataset.staged = count ? 'true' : 'false';
+        bar.dataset.saving = mcmSaving ? 'true' : 'false';
+        const summary = byId('mcm-staged-summary');
+        if (summary) {
+            summary.textContent = mcmSaving
+                ? 'Applying staged settings...'
+                : (count ? `${count} setting${count === 1 ? '' : 's'} staged, not applied yet` : 'No unsaved changes');
+        }
+        const save = byId('mcm-save');
+        if (save) {
+            save.disabled = mcmSaving || !count;
+            save.setAttribute('aria-busy', mcmSaving ? 'true' : 'false');
+        }
+        const discard = byId('mcm-discard');
+        if (discard) discard.disabled = mcmSaving || !count;
+        const refresh = byId('mcm-refresh');
+        if (refresh) refresh.disabled = mcmSaving;
+    }
+    function mcmSaveNote(message, state) {
+        const line = byId('mcm-save-note');
+        if (!line) return;
+        line.textContent = message || '';
+        line.dataset.state = state || 'idle';
+    }
+    function mcmStagedQueue() {
+        const queue = [];
+        const seen = new Set();
+        mcmEntryList().forEach((entry) => {
+            const key = String(entry.key || '');
+            if (!mcmStaged.has(key) || seen.has(key)) return;
+            seen.add(key);
+            queue.push({ key: key, label: String(entry.label || key), value: mcmStaged.get(key) });
+        });
+        mcmStaged.forEach((value, key) => {
+            if (seen.has(key)) return;
+            seen.add(key);
+            queue.push({ key: key, label: key, value: value });
+        });
+        return queue;
+    }
+    function mcmEntryFocusTargets(key) {
+        const targets = ['toggle', 'range', 'keycap'].map((kind) => byId(mcmControlId(kind, key))).filter(Boolean);
+        /* An enum row hides its native select, so the tile trigger is the real focus target. */
+        const select = byId(mcmControlId('select', key));
+        const selector = select ? select.closest('.settings-tile-selector') : null;
+        if (selector) targets.push(selector.querySelector('.settings-tile-trigger'));
+        return targets.filter(Boolean);
+    }
+    function mcmFocusEntryControl(key) {
+        const candidates = mcmEntryFocusTargets(key);
+        const target = candidates.find((node) => !node.disabled) || candidates[0];
+        if (target) target.focus();
+    }
+    function saveMcmChanges() {
+        if (mcmSaving || !mcmStaged.size) return;
+        stopMcmCapture();
+        const queue = mcmStagedQueue();
+        const failures = [];
+        mcmSaveErrors.clear();
+        mcmSaving = true;
+        refreshMcmSaveBar();
+        renderMcmPanel(activeMcmPage);
+        let index = 0;
+        const finish = () => {
+            mcmSaving = false;
+            failures.forEach((failure) => mcmSaveErrors.set(failure.key, failure.message));
+            refreshMcmSaveBar();
+            renderMcmPanel(activeMcmPage);
+            const applied = queue.length - failures.length;
+            if (!failures.length) {
+                const done = `Applied ${applied} setting${applied === 1 ? '' : 's'}.`;
+                mcmSaveNote(done, 'ok');
+                mcmStatus(done, false);
+                const save = byId('mcm-save');
+                if (save) save.focus();
+                return;
+            }
+            const note = `${applied} of ${queue.length} applied. Still staged: ${failures.map((failure) => failure.label).join(', ')}.`;
+            mcmSaveNote(note, 'error');
+            mcmStatus(note, true);
+            mcmFocusEntryControl(failures[0].key);
+        };
+        const step = () => {
+            if (index >= queue.length) { finish(); return; }
+            const item = queue[index];
+            const position = `${index + 1} of ${queue.length}`;
+            mcmSaveNote(`Applying ${position}: ${item.label}...`, 'busy');
+            sendMcmCommand(`mcm|set|${item.key}|${mcmNumberText(item.value)}`, {
+                pendingMessage: `Applying ${item.label} (${position})...`,
+                timeoutMs: MCM_SAVE_TIMEOUT_MS,
+                onResult: (ok, message) => {
+                    if (ok) mcmStaged.delete(item.key);
+                    else failures.push({ key: item.key, label: item.label, message: message || 'The game rejected this value.' });
+                    index += 1;
+                    step();
+                }
+            });
+        };
+        step();
+    }
+    function discardMcmChanges(note) {
+        stopMcmCapture();
+        mcmStaged.clear();
+        mcmSaveErrors.clear();
+        refreshMcmSaveBar();
+        renderMcmPanel(activeMcmPage);
+        mcmSaveNote(note === undefined ? 'Staged changes discarded.' : note, 'idle');
+    }
+    function confirmDiscardMcmChanges(options) {
+        const count = mcmStaged.size;
+        openMcmConfirm({
+            title: options.title,
+            body: `${options.body} ${count} staged change${count === 1 ? '' : 's'} will be lost. Use Save first to keep them.`,
+            confirmLabel: options.confirmLabel,
+            danger: true,
+            onConfirm: options.onConfirm
+        });
+    }
+
+    /* ----- Hotkey capture: only runs while the keycap button owns focus ----- */
+    function mcmSyncKeycap(button, entry) {
+        if (!button) return;
+        const value = Number(mcmValue(entry));
+        const name = mcmKeyName(value);
+        const label = String(entry.label || entry.key || 'Hotkey');
+        button.textContent = name;
+        button.dataset.unbound = value > 0 ? 'false' : 'true';
+        button.setAttribute('aria-label', `${label} hotkey, currently ${name}. Activate to capture a new key.`);
+        const row = button.closest('.mcm-row');
+        const clear = row ? row.querySelector('.mcm-keycap-clear') : null;
+        if (clear) clear.disabled = mcmSaving || value <= 0;
+    }
+    function stopMcmCapture(message, state) {
+        const capture = mcmCapture;
+        if (!capture) {
+            if (message) mcmSaveNote(message, state);
+            return;
+        }
+        mcmCapture = null;
+        document.removeEventListener('keydown', mcmCaptureKeydown, true);
+        const button = byId(capture.buttonId);
+        if (button) {
+            button.dataset.capturing = 'false';
+            mcmSyncKeycap(button, capture.entry);
+        }
+        command('input_capture|off');
+        if (message) mcmSaveNote(message, state);
+    }
+    function startMcmCapture(entry, button) {
+        if (mcmSaving || button.disabled) return;
+        if (mcmCapture && mcmCapture.buttonId === button.id) { stopMcmCapture('Rebind cancelled.', 'idle'); return; }
+        stopMcmCapture();
+        mcmCapture = { entry: entry, buttonId: button.id };
+        button.dataset.capturing = 'true';
+        button.textContent = 'Press a key';
+        button.setAttribute('aria-label', `${entry.label || entry.key} hotkey: press a key to stage it, Escape to cancel, Backspace to unbind, Tab to leave.`);
+        if (document.activeElement !== button) button.focus();
+        command('input_capture|on');
+        document.addEventListener('keydown', mcmCaptureKeydown, true);
+        mcmSaveNote('Press a key to stage a new binding. Escape cancels, Backspace unbinds, Tab leaves.', 'busy');
+    }
+    function stageMcmCapturedKey(code) {
+        const capture = mcmCapture;
+        if (!capture) return;
+        const entry = capture.entry;
+        const button = byId(capture.buttonId);
+        const row = button ? button.closest('.mcm-row') : null;
+        const conflict = code > 0 ? mcmEntryList().find((candidate) => {
+            return String(candidate.type || '').toLowerCase() === 'keymap' &&
+                String(candidate.key || '') !== String(entry.key || '') &&
+                Number(mcmValue(candidate)) === Number(code);
+        }) : null;
+        if (conflict) {
+            stopMcmCapture(`${mcmKeyName(code)} is already assigned to ${conflict.label || conflict.key}. Nothing was changed.`, 'error');
+            return;
+        }
+        stopMcmCapture();
+        stageMcmValue(entry, code, row);
+        mcmSyncKeycap(button, entry);
+        mcmSaveNote(`${entry.label || entry.key} staged as ${mcmKeyName(code)}. Use Save to apply.`, 'idle');
+    }
+    /* Either field can be the usable one in-game, so a named key matches on whichever arrives. */
+    function mcmEventIs(event, name) {
+        return event.key === name || event.code === name;
+    }
+    function mcmResolveKeyCode(event) {
+        const byCode = MCM_KEY_FROM_BROWSER.get(event.code);
+        if (byCode) return byCode;
+        const key = String(event.key || '');
+        if (!key) return 0;
+        /* Single characters are folded to their unshifted form so Shift+X still resolves to X. */
+        return MCM_KEY_FROM_KEY.get(key.length === 1 ? key.toLowerCase() : key) || 0;
+    }
+    function mcmCaptureKeydown(event) {
+        if (!mcmCapture) return;
+        const button = byId(mcmCapture.buttonId);
+        /* Capture is released as soon as the keycap button stops owning focus. */
+        if (!button || document.activeElement !== button || mcmEventIs(event, 'Tab')) {
+            stopMcmCapture('Rebind cancelled.', 'idle');
+            return;
+        }
+        /* Swallow the key so it never reaches the global Escape-to-close handler or the game. */
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        if (mcmEventIs(event, 'Escape')) { stopMcmCapture('Rebind cancelled.', 'idle'); return; }
+        if (mcmEventIs(event, 'Backspace')) { stageMcmCapturedKey(-1); return; }
+        const code = mcmResolveKeyCode(event);
+        if (!code) { stopMcmCapture('That key is not in the Skyrim key map, so nothing was staged.', 'error'); return; }
+        stageMcmCapturedKey(code);
+    }
+
+    function mcmToggleRow(entry, readonly) {
+        const row = document.createElement('div');
+        row.className = 'mcm-row mcm-row-toggle';
+        const wrapper = document.createElement('label');
+        wrapper.className = 'toggle-field mcm-toggle';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = mcmControlId('toggle', entry.key);
+        input.checked = Number(mcmValue(entry)) > 0.5;
+        input.disabled = readonly || mcmSaving;
+        const label = document.createElement('span');
+        label.textContent = String(entry.label || entry.key || '');
+        wrapper.append(input, label);
+        row.appendChild(wrapper);
+        const state = mcmRowState(row, entry);
+        const helpId = mcmHelp(row, entry);
+        mcmDescribe(input, [helpId, state.pillId, state.errorId]);
+        input.addEventListener('change', () => stageMcmValue(entry, input.checked ? 1 : 0, row));
+        return row;
+    }
+    function mcmSliderRow(entry, readonly) {
+        const row = document.createElement('div');
+        row.className = 'mcm-row mcm-row-slider';
+        const min = Number.isFinite(Number(entry.min)) ? Number(entry.min) : 0;
+        const max = Number.isFinite(Number(entry.max)) && Number(entry.max) > min ? Number(entry.max) : min + 100;
+        const step = Number(entry.step) > 0 ? Number(entry.step) : 1;
+        const heading = mcmRowHead(entry);
+        const controls = document.createElement('div');
+        controls.className = 'mcm-slider-controls';
+        const range = document.createElement('input');
+        const number = document.createElement('input');
+        const current = clampToStep(mcmValue(entry), min, max, step);
+        [range, number].forEach((control) => {
+            control.min = String(min);
+            control.max = String(max);
+            control.step = String(step);
+            control.disabled = readonly || mcmSaving;
+            control.value = String(current);
+        });
+        range.type = 'range';
+        range.id = mcmControlId('range', entry.key);
+        range.className = 'mcm-range';
+        range.setAttribute('aria-labelledby', heading.labelId);
+        number.type = 'number';
+        number.id = mcmControlId('number', entry.key);
+        number.className = 'mcm-number';
+        number.setAttribute('aria-label', `${entry.label || entry.key} exact value`);
+        controls.append(range, number);
+        row.append(heading.head, controls);
+        const state = mcmRowState(row, entry, heading.head);
+        const helpId = mcmHelp(row, entry);
+        if (helpId) heading.head.setAttribute('aria-describedby', helpId);
+        mcmDescribe(range, [helpId, state.pillId, state.errorId]);
+        mcmDescribe(number, [helpId, state.pillId, state.errorId]);
+        const commit = (raw) => {
+            const value = clampToStep(raw, min, max, step);
+            range.value = String(value);
+            number.value = String(value);
+            stageMcmValue(entry, value, row);
+        };
+        range.addEventListener('input', () => { number.value = range.value; });
+        range.addEventListener('change', () => commit(range.value));
+        number.addEventListener('change', () => commit(number.value));
+        return row;
+    }
+    function mcmEnumRow(entry, readonly) {
+        const options = MCM_ENUM_OPTIONS[String(entry.key || '')] || [];
+        /* Without a known option list the number cannot be labelled, so show it read-only. */
+        if (!options.length) return mcmReadonlyRow(entry, 'text');
+        const row = document.createElement('div');
+        row.className = 'mcm-row mcm-row-enum';
+        const heading = mcmRowHead(entry);
+        const controls = document.createElement('div');
+        controls.className = 'mcm-enum-controls';
+        const select = document.createElement('select');
+        select.id = mcmControlId('select', entry.key);
+        options.forEach((option) => select.appendChild(new Option(option.label, String(option.value))));
+        const current = Number(mcmValue(entry));
+        const match = options.find((option) => Number(option.value) === current) || options[0];
+        select.value = String(match.value);
+        select.disabled = readonly || mcmSaving;
+        controls.appendChild(select);
+        row.append(heading.head, controls);
+        const state = mcmRowState(row, entry, heading.head);
+        const helpId = mcmHelp(row, entry);
+        if (helpId) heading.head.setAttribute('aria-describedby', helpId);
+        const selector = enhanceSelect(select);
+        select.tabIndex = -1;
+        select.setAttribute('aria-hidden', 'true');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        const value = selector.querySelector('.settings-tile-value');
+        value.id = `mcm-enum-value-${++mcmSequence}`;
+        /* Reads as "Audio Mode, 3D Advanced" instead of just the bare option name. */
+        trigger.setAttribute('aria-labelledby', `${heading.labelId} ${value.id}`);
+        mcmDescribe(trigger, [helpId, state.pillId, state.errorId]);
+        /* The option list and the hover help both drop below the row, so one hides the other. */
+        trigger.addEventListener('click', () => {
+            row.classList.toggle('mcm-enum-open', selector.classList.contains('expanded'));
+        });
+        selector.addEventListener('keydown', (event) => {
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || select.disabled) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (!selector.classList.contains('expanded')) trigger.click();
+            const choices = Array.from(selector.querySelectorAll('.settings-tile-option:not(:disabled)'));
+            const index = choices.indexOf(document.activeElement);
+            let next = index < 0 ? select.selectedIndex : index;
+            if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = choices.length - 1;
+            else if (index >= 0) next = (index + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+            if (choices[next]) choices[next].focus();
+        });
+        select.addEventListener('change', () => {
+            row.classList.remove('mcm-enum-open');
+            stageMcmValue(entry, Number(select.value), row);
+            // Redraw from staged mode without discarding edits to the now-inactive controls.
+            renderMcmPanel(activeMcmPage);
+            mcmFocusEntryControl(entry.key);
+        });
+        return row;
+    }
+    function mcmKeymapRow(entry) {
+        const row = document.createElement('div');
+        row.className = 'mcm-row mcm-row-keymap';
+        const heading = mcmRowHead(entry);
+        const controls = document.createElement('div');
+        controls.className = 'mcm-keymap-controls';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = mcmControlId('keycap', entry.key);
+        button.className = 'mcm-keycap';
+        button.dataset.capturing = 'false';
+        button.disabled = mcmSaving;
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.id = mcmControlId('keyclear', entry.key);
+        clear.className = 'button secondary compact mcm-keycap-clear';
+        clear.textContent = 'Unbind';
+        clear.setAttribute('aria-label', `Unbind ${entry.label || entry.key} hotkey`);
+        const hint = document.createElement('span');
+        hint.className = 'mcm-keycap-hint';
+        hint.textContent = 'Enter to rebind';
+        controls.append(button, clear, hint);
+        row.append(heading.head, controls);
+        const state = mcmRowState(row, entry, heading.head);
+        const helpId = mcmHelp(row, entry);
+        mcmDescribe(button, [helpId, state.pillId, state.errorId]);
+        button.addEventListener('click', () => startMcmCapture(entry, button));
+        button.addEventListener('blur', () => {
+            if (mcmCapture && mcmCapture.buttonId === button.id) stopMcmCapture('Rebind cancelled.', 'idle');
+        });
+        clear.addEventListener('click', () => {
+            stopMcmCapture();
+            stageMcmValue(entry, -1, row);
+            mcmSyncKeycap(button, entry);
+            mcmSaveNote(`${entry.label || entry.key} staged as Unbound. Use Save to apply.`, 'idle');
+        });
+        mcmSyncKeycap(button, entry);
+        return row;
+    }
+    function mcmReadonlyRow(entry, type) {
+        const row = document.createElement('div');
+        row.className = `mcm-row mcm-row-${type} mcm-row-readonly`;
+        const heading = mcmRowHead(entry);
+        const badge = document.createElement('span');
+        badge.className = 'mcm-readonly-badge';
+        badge.textContent = 'Read-only';
+        heading.head.appendChild(badge);
+        const text = String(entry.value === null || entry.value === undefined ? '' : entry.value).trim();
+        const value = document.createElement('span');
+        value.className = 'mcm-readonly-value';
+        if (type === 'keymap') value.textContent = mcmKeyName(text);
+        else value.textContent = text ? text : 'Not reported';
+        value.setAttribute('aria-labelledby', heading.labelId);
+        row.append(heading.head, value);
+        const helpId = mcmHelp(row, entry);
+        if (helpId) {
+            value.setAttribute('aria-describedby', helpId);
+            value.tabIndex = 0;
+        }
+        return row;
+    }
+    function mcmRow(entry) {
+        const type = String(entry.type || 'text').toLowerCase();
+        let readonly = entry.readonly === true;
+        const modes = MCM_AUDIO_CONTROL_MODES[String(entry.key || '')];
+        const audioMode = modes && mcmEntryList().find((candidate) => candidate.key === 'audio_mode');
+        if (audioMode) readonly = !modes.includes(Number(mcmValue(audioMode)));
+        if (type === 'toggle') return mcmToggleRow(entry, readonly);
+        if (type === 'slider') return mcmSliderRow(entry, readonly);
+        if (type === 'enum') return mcmEnumRow(entry, readonly);
+        /* Keymaps stay editable through key capture; the payload readonly flag only mirrors the legacy MCM display. */
+        if (type === 'keymap') return mcmKeymapRow(entry);
+        return mcmReadonlyRow(entry, 'text');
+    }
+    function mcmNote(text) {
+        const note = document.createElement('p');
+        note.className = 'mcm-note';
+        note.textContent = text;
+        return note;
+    }
+    function renderMcmSettingsPanel(pageId, panel) {
+        if (!mcmState) { panel.appendChild(mcmNote('Waiting for CHIM MCM data from the game.')); return; }
+        const entries = (mcmState.entries || []).filter((entry) => normalizeMcmPage(entry.page) === pageId);
+        if (!entries.length) { panel.appendChild(mcmNote('No settings were reported for this page.')); return; }
+        const grid = document.createElement('div');
+        grid.className = 'settings-grid';
+        const sections = new Map();
+        entries.forEach((entry) => {
+            const name = String(entry.section || 'General');
+            if (!sections.has(name)) sections.set(name, []);
+            sections.get(name).push(entry);
+        });
+        sections.forEach((items, name) => {
+            const card = document.createElement('section');
+            card.className = 'settings-section mcm-section';
+            const title = document.createElement('h2');
+            title.textContent = name;
+            card.appendChild(title);
+            items.filter((item) => item.deprecated !== true).forEach((item) => card.appendChild(mcmRow(item)));
+            const deprecated = items.filter((item) => item.deprecated === true);
+            if (deprecated.length) {
+                const details = document.createElement('details');
+                details.className = 'mcm-deprecated';
+                const summary = document.createElement('summary');
+                summary.textContent = `Deprecated (${deprecated.length})`;
+                details.appendChild(summary);
+                deprecated.forEach((item) => details.appendChild(mcmRow(item)));
+                card.appendChild(details);
+            }
+            grid.appendChild(card);
+        });
+        panel.appendChild(grid);
+    }
+    function mcmAgentRow(agent, mode) {
+        const row = document.createElement('div');
+        row.className = 'mcm-agent-row';
+        const identity = document.createElement('div');
+        identity.className = 'mcm-agent-identity';
+        const name = document.createElement('strong');
+        name.textContent = String(agent.name || agent.refid || 'Unknown');
+        const refid = document.createElement('small');
+        refid.textContent = String(agent.refid || '');
+        identity.append(name, refid);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = `mcm-agent-${mode}-${String(agent.refid || ++mcmSequence).replace(/[^A-Za-z0-9_-]/g, '')}`;
+        button.className = `button compact${mode === 'remove' ? ' danger' : ' secondary'}`;
+        button.textContent = mode === 'remove' ? 'Remove' : 'Add';
+        button.addEventListener('click', () => openMcmConfirm({
+            title: mode === 'remove' ? 'Remove AI Agent' : 'Add AI Agent',
+            body: mode === 'remove'
+                ? `Remove ${name.textContent} from the active AI Agents? Their stored CHIM NPC profile is not deleted.`
+                : `Add ${name.textContent} as an active AI Agent for this session?`,
+            confirmLabel: mode === 'remove' ? 'Remove' : 'Add',
+            danger: mode === 'remove',
+            onConfirm: () => sendMcmCommand(`mcm|agent_${mode}|${agent.refid}`, {
+                button: button,
+                busyLabel: mode === 'remove' ? 'Removing...' : 'Adding...',
+                pendingMessage: `${mode === 'remove' ? 'Removing' : 'Adding'} ${name.textContent}...`
+            })
+        }));
+        const result = document.createElement('p');
+        result.className = 'mcm-result';
+        result.setAttribute('role', 'status');
+        result.setAttribute('aria-live', 'polite');
+        row.append(identity, button, result);
+        return row;
+    }
+    function renderMcmAgentsPanel(panel) {
+        const banner = document.createElement('div');
+        banner.className = 'mcm-runtime-banner';
+        const badge = document.createElement('span');
+        badge.className = 'mcm-runtime-badge';
+        badge.textContent = 'Runtime';
+        const copy = document.createElement('p');
+        copy.textContent = 'Live session state from the running game. These are not the stored CHIM NPC profiles on the CHIM NPCs tab.';
+        banner.append(badge, copy);
+        panel.appendChild(banner);
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'mcm-agent-toolbar';
+        const stamp = document.createElement('span');
+        stamp.className = 'mcm-agent-stamp';
+        stamp.textContent = mcmAgents && mcmAgents.updated_at ? `Updated ${mcmAgents.updated_at}` : 'Not refreshed yet';
+        const refresh = document.createElement('button');
+        refresh.type = 'button';
+        refresh.id = 'mcm-agents-refresh';
+        refresh.className = 'button secondary compact';
+        refresh.textContent = 'Refresh';
+        refresh.addEventListener('click', () => sendMcmCommand('mcm|agents_refresh', { button: refresh, busyLabel: 'Refreshing...', pendingMessage: 'Refreshing AI Agents...' }));
+        const addAll = document.createElement('button');
+        addAll.type = 'button';
+        addAll.id = 'mcm-agents-add-all';
+        addAll.className = 'button secondary compact';
+        addAll.textContent = 'Add All Available';
+        addAll.addEventListener('click', () => sendMcmCommand('mcm|agents_add_all', { button: addAll, busyLabel: 'Adding...', pendingMessage: 'Adding all available NPCs as AI Agents...' }));
+        const removeAll = document.createElement('button');
+        removeAll.type = 'button';
+        removeAll.id = 'mcm-agents-remove-all';
+        removeAll.className = 'button danger compact';
+        removeAll.textContent = 'Remove All';
+        removeAll.addEventListener('click', () => openMcmConfirm({
+            title: 'Remove all AI Agents',
+            body: 'Remove every active AI Agent from this session? Stored CHIM NPC profiles are not deleted.',
+            confirmLabel: 'Remove All',
+            danger: true,
+            onConfirm: () => sendMcmCommand('mcm|agents_remove_all', { button: removeAll, busyLabel: 'Removing...', pendingMessage: 'Removing all AI Agents...' })
+        }));
+        const result = document.createElement('p');
+        result.className = 'mcm-result';
+        result.setAttribute('role', 'status');
+        result.setAttribute('aria-live', 'polite');
+        toolbar.append(stamp, refresh, addAll, removeAll, result);
+        panel.appendChild(toolbar);
+
+        const columns = document.createElement('div');
+        columns.className = 'mcm-agent-columns';
+        [['active', 'Active AI Agents', 'remove'], ['available', 'Nearby Available NPCs', 'add']].forEach((definition) => {
+            const list = (mcmAgents && Array.isArray(mcmAgents[definition[0]])) ? mcmAgents[definition[0]] : [];
+            const card = document.createElement('section');
+            card.className = 'settings-section mcm-agent-card';
+            const heading = document.createElement('h2');
+            heading.textContent = `${definition[1]} (${list.length})`;
+            card.appendChild(heading);
+            if (!list.length) card.appendChild(mcmNote(mcmAgents ? 'None reported.' : 'Refresh to load runtime agents.'));
+            list.forEach((agent) => card.appendChild(mcmAgentRow(agent, definition[2])));
+            columns.appendChild(card);
+        });
+        panel.appendChild(columns);
+    }
+    function mcmToolCard(config) {
+        const card = document.createElement('article');
+        card.className = 'mcm-tool-card';
+        const copy = document.createElement('div');
+        copy.className = 'mcm-tool-copy';
+        const title = document.createElement('h3');
+        title.textContent = config.title;
+        const description = document.createElement('p');
+        description.textContent = config.description;
+        copy.append(title, description);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = config.id;
+        button.className = 'button secondary';
+        button.textContent = config.action;
+        const result = document.createElement('p');
+        result.className = 'mcm-result';
+        result.setAttribute('role', 'status');
+        result.setAttribute('aria-live', 'polite');
+        const run = () => sendMcmCommand(config.request, { button: button, busyLabel: config.busyLabel, pendingMessage: config.pendingMessage });
+        button.addEventListener('click', () => {
+            if (!config.confirm) { run(); return; }
+            openMcmConfirm({ title: config.confirm.title, body: config.confirm.body, confirmLabel: config.confirm.label, onConfirm: run });
+        });
+        card.append(copy, button, result);
+        return card;
+    }
+    function renderMcmToolsPanel(panel) {
+        const list = document.createElement('div');
+        list.className = 'mcm-tool-list';
+        list.appendChild(mcmToolCard({
+            id: 'mcm-tool-sync-factions',
+            title: 'Sync Factions and Locations',
+            description: 'Rebuilds the factions and locations database from the loaded game. The game stays blocked for the whole run, which usually takes 3 to 5 minutes.',
+            action: 'Run Sync',
+            busyLabel: 'Syncing...',
+            pendingMessage: 'Syncing factions and locations. The game stays blocked until this finishes, usually 3 to 5 minutes.',
+            request: 'mcm|tool|sync_factions_locations',
+            confirm: {
+                title: 'Sync factions and locations',
+                body: 'This blocks the game for roughly 3 to 5 minutes and cannot be cancelled once it starts. Continue?',
+                label: 'Start Sync'
+            }
+        }));
+        list.appendChild(mcmToolCard({
+            id: 'mcm-tool-voice-samples',
+            title: 'Send Voice Samples',
+            description: 'Uploads the local voice sample set to the CHIM server so voices can be matched.',
+            action: 'Send Samples',
+            busyLabel: 'Sending...',
+            pendingMessage: 'Sending voice samples...',
+            request: 'mcm|tool|send_voice_samples'
+        }));
+        panel.appendChild(list);
+    }
+    function renderMcmPanel(pageId) {
+        const panel = byId(`mcm-panel-${pageId}`);
+        if (!panel) return;
+        panel.replaceChildren();
+        if (pageId === 'ai_agents') renderMcmAgentsPanel(panel);
+        else if (pageId === 'tools') renderMcmToolsPanel(panel);
+        else renderMcmSettingsPanel(pageId, panel);
+    }
+    function mcmTabButtons() { return Array.from(document.querySelectorAll('.mcm-sub-tab')); }
+    function switchMcmPage(pageId) {
+        const id = MCM_PAGES.some((page) => page.id === pageId) ? pageId : MCM_PAGES[0].id;
+        stopMcmCapture();
+        command('input_capture|off');
+        closeMcmConfirm(false);
+        activeMcmPage = id;
+        mcmTabButtons().forEach((tab) => {
+            const active = tab.dataset.mcmPage === id;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+            tab.tabIndex = active ? 0 : -1;
+        });
+        document.querySelectorAll('.mcm-panel').forEach((panel) => { panel.hidden = panel.id !== `mcm-panel-${id}`; });
+        renderMcmPanel(id);
+        if (id === 'ai_agents' && !mcmAgents) sendMcmCommand('mcm|agents_refresh', { pendingMessage: 'Loading AI Agents...' });
+    }
+    function tabListKeydown(event, buttons) {
+        const index = buttons.indexOf(document.activeElement);
+        if (index < 0) return;
+        let next = -1;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % buttons.length;
+        else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
+        else if (event.key === 'Home') next = 0;
+        else if (event.key === 'End') next = buttons.length - 1;
+        else return;
+        event.preventDefault();
+        buttons.forEach((button, position) => { button.tabIndex = position === next ? 0 : -1; });
+        buttons[next].focus();
+    }
+    function buildMcmTabs() {
+        const list = byId('mcm-sub-tabs');
+        const panels = byId('mcm-panels');
+        list.replaceChildren();
+        panels.replaceChildren();
+        MCM_PAGES.forEach((page, index) => {
+            const tab = document.createElement('button');
+            tab.type = 'button';
+            tab.id = `mcm-tab-${page.id}`;
+            tab.className = `sub-tab mcm-sub-tab${index === 0 ? ' active' : ''}`;
+            tab.dataset.mcmPage = page.id;
+            tab.textContent = page.label;
+            tab.setAttribute('role', 'tab');
+            tab.setAttribute('aria-controls', `mcm-panel-${page.id}`);
+            tab.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
+            tab.tabIndex = index === 0 ? 0 : -1;
+            tab.addEventListener('click', () => switchMcmPage(page.id));
+            list.appendChild(tab);
+            const panel = document.createElement('div');
+            panel.id = `mcm-panel-${page.id}`;
+            panel.className = 'mcm-panel';
+            panel.setAttribute('role', 'tabpanel');
+            panel.setAttribute('aria-labelledby', tab.id);
+            panel.hidden = index !== 0;
+            panels.appendChild(panel);
+        });
+        list.addEventListener('keydown', (event) => tabListKeydown(event, mcmTabButtons()));
+    }
+    function requestMcmSnapshot() {
+        mcmRequested = true;
+        mcmStatus('Loading CHIM MCM state...', false);
+        command('mcm|snapshot');
+    }
+    function openMcmPage() {
+        renderMcmPanel(activeMcmPage);
+        if (!mcmRequested || !mcmState) requestMcmSnapshot();
+        if (activeMcmPage === 'ai_agents' && !mcmAgents) command('mcm|agents_refresh');
+    }
+
+    let mcmConfirmFocusCancel = false;
+    function mcmConfirmFocusable() {
+        return Array.from(byId('mcm-confirm-backdrop').querySelectorAll('button:not([disabled])'));
+    }
+    function openMcmConfirm(options) {
+        const backdrop = byId('mcm-confirm-backdrop');
+        const accept = byId('mcm-confirm-accept');
+        byId('mcm-confirm-title').textContent = options.title;
+        byId('mcm-confirm-body').textContent = options.body;
+        accept.textContent = options.confirmLabel || 'Confirm';
+        accept.classList.toggle('danger', !!options.danger);
+        accept.classList.toggle('primary', !options.danger);
+        mcmConfirmInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        mcmConfirmAction = typeof options.onConfirm === 'function' ? options.onConfirm : null;
+        backdrop.classList.remove('hidden');
+        command('input_capture|off');
+        mcmConfirmFocusCancel = !!options.focusCancel;
+        if (mcmConfirmFocusCancel) byId('mcm-confirm-cancel').focus(); else accept.focus();
+    }
+    function closeMcmConfirm(restoreFocus) {
+        const backdrop = byId('mcm-confirm-backdrop');
+        if (!backdrop || backdrop.classList.contains('hidden')) return;
+        backdrop.classList.add('hidden');
+        mcmConfirmAction = null;
+        const invoker = mcmConfirmInvoker;
+        mcmConfirmInvoker = null;
+        if (restoreFocus !== false && invoker && document.contains(invoker) && !invoker.disabled) invoker.focus();
+    }
+    function initMcm() {
+        buildMcmTabs();
+        byId('mcm-refresh').addEventListener('click', () => {
+            requestMcmSnapshot();
+            if (mcmStaged.size) mcmSaveNote('Refreshing game values; your unsaved changes remain staged.', 'busy');
+        });
+        byId('mcm-save').addEventListener('click', saveMcmChanges);
+        byId('mcm-discard').addEventListener('click', () => {
+            if (!mcmStaged.size || mcmSaving) return;
+            confirmDiscardMcmChanges({
+                title: 'Discard unsaved changes?',
+                body: 'Discard the edits in this CHIM MCM tab?',
+                confirmLabel: 'Discard',
+                onConfirm: () => discardMcmChanges()
+            });
+        });
+        refreshMcmSaveBar();
+        const backdrop = byId('mcm-confirm-backdrop');
+        backdrop.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMcmConfirm(); return; }
+            if (event.key !== 'Tab') return;
+            const focusable = mcmConfirmFocusable();
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        });
+        backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop) closeMcmConfirm(); });
+        byId('mcm-confirm-cancel').addEventListener('click', () => closeMcmConfirm());
+        byId('mcm-confirm-accept').addEventListener('click', () => {
+            const action = mcmConfirmAction;
+            closeMcmConfirm();
+            if (action) action();
+        });
+        document.addEventListener('focusin', (event) => {
+            if (backdrop.classList.contains('hidden') || backdrop.contains(event.target)) return;
+            byId(mcmConfirmFocusCancel ? 'mcm-confirm-cancel' : 'mcm-confirm-accept').focus();
+        });
+    }
+
+    window.updateChimMcmState = (payload) => {
+        const data = parseMcmPayload(payload);
+        if (!data) { mcmStatus('CHIM MCM state payload could not be read.', true); return; }
+        const revision = Number(data.revision);
+        const previous = mcmState ? Number(mcmState.revision) : NaN;
+        if (Number.isFinite(revision) && Number.isFinite(previous) && revision < previous) return;
+        mcmState = { revision: revision, entries: Array.isArray(data.entries) ? data.entries : [] };
+        mcmStaged.forEach((value, key) => {
+            const entry = mcmState.entries.find((candidate) => String(candidate.key || '') === key);
+            if (entry && Number(value) === mcmBaseValue(entry)) mcmStaged.delete(key);
+        });
+        refreshMcmSaveBar();
+        const unknown = new Set();
+        mcmState.entries.forEach((entry) => {
+            const page = normalizeMcmPage(entry.page);
+            if (!MCM_PAGES.some((known) => known.id === page)) unknown.add(String(entry.page || 'unknown'));
+        });
+        renderMcmPanel(activeMcmPage);
+        const retained = mcmStaged.size ? ` ${mcmStaged.size} unsaved change${mcmStaged.size === 1 ? '' : 's'} retained.` : '';
+        const summary = `${mcmState.entries.length} settings loaded.${retained}`;
+        if (unknown.size) mcmStatus(`${summary} Unrecognised page(s) not shown: ${Array.from(unknown).join(', ')}.`, true);
+        else mcmStatus(summary, false);
+    };
+    window.updateChimMcmAgents = (payload) => {
+        const data = parseMcmPayload(payload);
+        if (!data) { mcmStatus('CHIM MCM agent payload could not be read.', true); return; }
+        mcmAgents = {
+            active: Array.isArray(data.active) ? data.active : [],
+            available: Array.isArray(data.available) ? data.available : [],
+            updated_at: String(data.updated_at || '')
+        };
+        if (activeMcmPage === 'ai_agents') renderMcmPanel('ai_agents');
+    };
+    window.chimMcmCommandResult = (payload) => {
+        const data = parseMcmPayload(payload);
+        if (!data) return;
+        const request = String(data.request || '');
+        const pendingRequest = matchingMcmPendingRequest(request);
+        const entry = pendingRequest ? mcmPending.get(pendingRequest) : null;
+        if (pendingRequest) mcmPending.delete(pendingRequest);
+        const ok = data.ok !== false;
+        const message = String(data.message || (ok ? 'Done.' : 'Command failed.'));
+        if (entry) {
+            if (entry.timeoutId) clearTimeout(entry.timeoutId);
+            const button = entry.buttonId ? byId(entry.buttonId) : null;
+            setMcmBusy(button, false);
+            const result = mcmResultNode(button);
+            if (result) { result.textContent = message; result.classList.toggle('error', !ok); }
+            if (typeof entry.onResult === 'function') entry.onResult(ok, message);
+        }
+        mcmStatus(message, !ok);
+    };
+
+
+    /* ----- Settings Presets: preset- prefixed, only used by #globals-page ----- */
+    const PRESET_ENDPOINT = '/ui/api/chim_settings_presets.php';
+    let presetList = [];
+    let presetsRequested = false;
+    let presetBusy = false;
+    let presetNameBusy = false;
+    let presetNameAction = null;
+    let presetNameInvoker = null;
+    let presetNameDefaults = null;
+
+    function presetStatus(message, error) {
+        const line = byId('preset-status');
+        if (!line) return;
+        line.textContent = message || '';
+        line.classList.toggle('error', !!error);
+    }
+    function presetError(error) {
+        const message = error && error.message ? String(error.message) : String(error || '');
+        return message === '' ? 'Unknown error.' : message;
+    }
+    function findPreset(id) {
+        return presetList.find((preset) => preset && String(preset.id) === String(id)) || null;
+    }
+    function selectedPreset() {
+        const select = byId('preset-select');
+        return select ? findPreset(select.value) : null;
+    }
+    function presetIdleMessage() {
+        const preset = selectedPreset();
+        if (preset && preset.description) return String(preset.description);
+        if (presetList.length === 0) return 'No presets available.';
+        return '';
+    }
+    function syncPresetBar() {
+        const select = byId('preset-select');
+        const preset = selectedPreset();
+        if (select) setControlDisabled(select, presetBusy || presetList.length === 0);
+        byId('preset-apply').disabled = presetBusy || !preset;
+        byId('preset-save-new').disabled = presetBusy;
+        byId('preset-overwrite').disabled = presetBusy || !preset || preset.built_in === true;
+    }
+    function setPresetBusy(busy) {
+        presetBusy = !!busy;
+        syncPresetBar();
+    }
+    // Rebuilt as a fresh element each time so the tile selector never stacks listeners.
+    function renderPresetOptions(preferredId) {
+        const host = document.querySelector('#preset-bar .preset-select-host');
+        if (!host) return;
+        const current = byId('preset-select');
+        const previous = preferredId || (current ? current.value : '');
+        host.replaceChildren();
+        const select = document.createElement('select');
+        select.id = 'preset-select';
+        select.setAttribute('aria-labelledby', 'preset-bar-label');
+        select.setAttribute('aria-describedby', 'preset-status');
+        if (presetList.length === 0) {
+            const placeholder = new Option('No presets available', '');
+            placeholder.disabled = true;
+            select.appendChild(placeholder);
+        } else {
+            const addGroup = (label, items) => {
+                if (items.length === 0) return;
+                const group = document.createElement('optgroup');
+                group.label = label;
+                // The suffix keeps built-ins distinguishable inside the tile menu too.
+                items.forEach((preset) => group.appendChild(new Option(`${preset.name || preset.id} (${label})`, String(preset.id))));
+                select.appendChild(group);
+            };
+            addGroup('Built-in', presetList.filter((preset) => preset.built_in === true));
+            addGroup('Custom', presetList.filter((preset) => preset.built_in !== true));
+        }
+        host.appendChild(select);
+        if (previous && findPreset(previous)) select.value = previous;
+        else if (presetList.length > 0) select.value = String(presetList[0].id);
+        // Selecting alone changes nothing beyond button availability and the description.
+        select.addEventListener('change', () => { syncPresetBar(); presetStatus(presetIdleMessage(), false); });
+        const selector = enhanceSelect(select);
+        // Name the tile trigger from the bar label plus its current value, and keep the status line as its description.
+        const value = selector.querySelector('.settings-tile-value');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        if (value) value.id = 'preset-select-value';
+        if (trigger) {
+            trigger.setAttribute('aria-labelledby', 'preset-bar-label preset-select-value');
+            trigger.setAttribute('aria-describedby', 'preset-status');
+        }
+        syncPresetBar();
+    }
+    async function presetRequest(body) {
+        const options = { cache: 'no-store' };
+        if (body) {
+            options.method = 'POST';
+            options.headers = { 'Content-Type': 'application/json' };
+            options.body = JSON.stringify(body);
+        }
+        const response = await fetch(`${serverBaseUrl}${PRESET_ENDPOINT}`, options);
+        let payload;
+        try { payload = await response.json(); } catch (_error) { throw new Error(`Invalid preset response (HTTP ${response.status})`); }
+        if (!response.ok || !payload || payload.success !== true) throw new Error((payload && payload.error) || `HTTP ${response.status}`);
+        return payload.data || payload.result || {};
+    }
+    async function loadPresets(preferredId) {
+        const bar = byId('preset-bar');
+        presetStatus('Loading presets...', false);
+        setPresetBusy(true);
+        try {
+            const data = await presetRequest(null);
+            presetList = Array.isArray(data.presets) ? data.presets.filter((preset) => preset && preset.id) : [];
+            if (bar) bar.hidden = false;
+            renderPresetOptions(preferredId);
+            presetStatus(presetIdleMessage(), false);
+        } catch (error) {
+            presetList = [];
+            if (bar) bar.hidden = true;
+        } finally {
+            setPresetBusy(false);
+        }
+    }
+    function ensurePresets() {
+        if (presetsRequested) return;
+        presetsRequested = true;
+        loadPresets().catch(() => { presetsRequested = false; });
+    }
+
+    function presetNameFocusable() {
+        return Array.from(byId('preset-name-backdrop').querySelectorAll('button:not([disabled]), input:not([disabled])'));
+    }
+    function setPresetNameError(message) {
+        const line = byId('preset-name-error');
+        line.textContent = message || '';
+        line.hidden = !message;
+    }
+    function setPresetNameBusy(busy, label) {
+        presetNameBusy = !!busy;
+        byId('preset-name-accept').disabled = presetNameBusy;
+        byId('preset-name-cancel').disabled = presetNameBusy;
+        byId('preset-name-input').disabled = presetNameBusy;
+        byId('preset-name-accept').textContent = label || 'Save preset';
+    }
+    function openPresetNameDialog(options) {
+        const backdrop = byId('preset-name-backdrop');
+        // The markup carries the Global Settings copy, so it doubles as the default for callers that pass none.
+        if (!presetNameDefaults) presetNameDefaults = { title: byId('preset-name-title').textContent, body: byId('preset-name-body').textContent };
+        byId('preset-name-title').textContent = options.title || presetNameDefaults.title;
+        byId('preset-name-body').textContent = options.body || presetNameDefaults.body;
+        presetNameAction = typeof options.onConfirm === 'function' ? options.onConfirm : null;
+        presetNameInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        byId('preset-name-input').value = options.value || '';
+        setPresetNameError('');
+        setPresetNameBusy(false, options.confirmLabel);
+        backdrop.classList.remove('hidden');
+        command('input_capture|off');
+        byId('preset-name-input').focus();
+        byId('preset-name-input').select();
+    }
+    function closePresetNameDialog(restoreFocus) {
+        const backdrop = byId('preset-name-backdrop');
+        if (!backdrop || backdrop.classList.contains('hidden')) return;
+        backdrop.classList.add('hidden');
+        presetNameAction = null;
+        setPresetNameBusy(false, 'Save preset');
+        const invoker = presetNameInvoker;
+        presetNameInvoker = null;
+        if (restoreFocus !== false && invoker && document.contains(invoker) && !invoker.disabled) invoker.focus();
+        syncInputCapture();
+    }
+    function submitPresetNameDialog() {
+        if (presetNameBusy || !presetNameAction) return;
+        const action = presetNameAction;
+        const name = byId('preset-name-input').value.trim();
+        if (name === '') {
+            setPresetNameError('Enter a name for this preset.');
+            byId('preset-name-input').focus();
+            return;
+        }
+        setPresetNameError('');
+        setPresetNameBusy(true, 'Saving...');
+        Promise.resolve()
+            .then(() => action(name))
+            .then(() => closePresetNameDialog())
+            .catch((error) => {
+                setPresetNameBusy(false, 'Save preset');
+                setPresetNameError(presetError(error));
+                byId('preset-name-accept').focus();
+            });
+    }
+
+    function applyPresetConfirmBody(preset) {
+        let body = `Apply "${preset.name || preset.id}"? This saves the settings included in this preset immediately.`;
+        if (preset.affects_profiles) body += ' It also updates context and response limits for all NPC profiles.';
+        return `${body} Unsaved edits on this page will be lost.`;
+    }
+    async function applySelectedPreset(preset) {
+        const name = String(preset.name || preset.id);
+        setPresetBusy(true);
+        presetStatus(`Applying "${name}"...`, false);
+        try {
+            const result = await presetRequest({ operation: 'apply', preset_id: String(preset.id) });
+            const settingsUpdated = Number(result.settings_updated || 0);
+            const profilesUpdated = Number(result.profiles_updated || 0);
+            setPresetBusy(false);
+            await loadGlobals();
+            let message = `Applied "${String(result.name || name)}". ${settingsUpdated} setting${settingsUpdated === 1 ? '' : 's'} updated`;
+            message += profilesUpdated > 0
+                ? `, ${profilesUpdated} NPC profile${profilesUpdated === 1 ? '' : 's'} updated.`
+                : '.';
+            presetStatus(message, false);
+        } catch (error) {
+            setPresetBusy(false);
+            presetStatus(`Apply failed: ${presetError(error)}`, true);
+        }
+    }
+    async function savePresetAsNew(name) {
+        const payload = serializeGlobalsForm();
+        setPresetBusy(true);
+        presetStatus(`Saving "${name}"...`, false);
+        try {
+            const result = await presetRequest({ operation: 'save_new', name: name, settings: payload.settings, prompt_context_options: payload.prompt_context_options });
+            const saved = result.preset || {};
+            setPresetBusy(false);
+            await loadPresets(saved.id ? String(saved.id) : undefined);
+            presetStatus(`Saved preset "${String(saved.name || name)}".`, false);
+        } catch (error) {
+            setPresetBusy(false);
+            presetStatus(`Save failed: ${presetError(error)}`, true);
+            throw error;
+        }
+    }
+    async function overwriteSelectedPreset(preset) {
+        const name = String(preset.name || preset.id);
+        const payload = serializeGlobalsForm();
+        setPresetBusy(true);
+        presetStatus(`Overwriting "${name}"...`, false);
+        try {
+            const result = await presetRequest({ operation: 'overwrite', preset_id: String(preset.id), settings: payload.settings, prompt_context_options: payload.prompt_context_options });
+            const saved = result.preset || {};
+            setPresetBusy(false);
+            await loadPresets(String(saved.id || preset.id));
+            presetStatus(`Overwrote preset "${String(saved.name || name)}".`, false);
+        } catch (error) {
+            setPresetBusy(false);
+            presetStatus(`Overwrite failed: ${presetError(error)}`, true);
+        }
+    }
+
+    function initPresets() {
+        renderPresetOptions();
+        byId('preset-apply').addEventListener('click', () => {
+            const preset = selectedPreset();
+            if (!preset || presetBusy) return;
+            openMcmConfirm({
+                title: 'Apply settings preset',
+                body: applyPresetConfirmBody(preset),
+                confirmLabel: 'Apply preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { applySelectedPreset(preset).catch(showError); }
+            });
+        });
+        byId('preset-save-new').addEventListener('click', () => {
+            if (presetBusy) return;
+            openPresetNameDialog({ confirmLabel: 'Save preset', onConfirm: (name) => savePresetAsNew(name) });
+        });
+        byId('preset-overwrite').addEventListener('click', () => {
+            const preset = selectedPreset();
+            if (!preset || preset.built_in === true || presetBusy) return;
+            openMcmConfirm({
+                title: 'Overwrite settings preset',
+                body: `Overwrite "${preset.name || preset.id}" with the safe Global Settings currently on screen, including unsaved edits? Connector choices and service URLs stay unchanged. The stored preset values are replaced and cannot be recovered.`,
+                confirmLabel: 'Overwrite preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { overwriteSelectedPreset(preset).catch(showError); }
+            });
+        });
+
+        const backdrop = byId('preset-name-backdrop');
+        backdrop.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                if (presetNameBusy) return;
+                event.preventDefault(); event.stopPropagation(); closePresetNameDialog(); return;
+            }
+            if (event.key === 'Enter' && event.target === byId('preset-name-input')) {
+                event.preventDefault(); submitPresetNameDialog(); return;
+            }
+            if (event.key !== 'Tab') return;
+            const focusable = presetNameFocusable();
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        });
+        backdrop.addEventListener('mousedown', (event) => { if (event.target === backdrop && !presetNameBusy) closePresetNameDialog(); });
+        byId('preset-name-cancel').addEventListener('click', () => { if (!presetNameBusy) closePresetNameDialog(); });
+        byId('preset-name-accept').addEventListener('click', submitPresetNameDialog);
+        document.addEventListener('focusin', (event) => {
+            if (backdrop.classList.contains('hidden') || backdrop.contains(event.target)) return;
+            byId('preset-name-input').focus();
+        });
+    }
+
+    /* ----- Profile Presets: profile-preset- prefixed, only used by #profiles-page ----- */
+    const PROFILE_PRESET_ENDPOINT = '/ui/api/chim_profile_manager.php';
+    const PROFILE_PRESET_IMPORT_LIMIT = 256 * 1024;
+    let profilePresetBusy = false;
+
+    function profilePresets() {
+        const list = profileData && Array.isArray(profileData.profile_presets) ? profileData.profile_presets : [];
+        return list.filter((preset) => preset && preset.id !== undefined && preset.id !== null && String(preset.id) !== '');
+    }
+    function profilePresetStatus(message, error) {
+        const line = byId('profile-preset-status');
+        if (!line) return;
+        line.textContent = message || '';
+        line.classList.toggle('error', !!error);
+    }
+    function findProfilePreset(id) {
+        return profilePresets().find((preset) => String(preset.id) === String(id)) || null;
+    }
+    function selectedProfilePreset() {
+        const select = byId('profile-preset-select');
+        return select ? findProfilePreset(select.value) : null;
+    }
+    function currentProfileLabel() {
+        const profile = ((profileData && profileData.profiles) || []).find((item) => Number(item.id) === Number(selectedProfileId));
+        return String((profile && profile.label) || byId('profile-editor-name').textContent || 'this profile');
+    }
+    // Builds that predate custom profile presets omit built_in, so the custom actions stay hidden there.
+    function profilePresetsSupportCustom() {
+        return profilePresets().some((preset) => Object.prototype.hasOwnProperty.call(preset, 'built_in'));
+    }
+    function syncProfilePresetRow() {
+        const select = byId('profile-preset-select');
+        const apply = byId('profile-preset-apply');
+        if (!select || !apply) return;
+        const available = profilePresets().length > 0;
+        const preset = selectedProfilePreset();
+        const custom = !!preset && preset.built_in !== true;
+        setControlDisabled(select, profilePresetBusy || !available);
+        apply.disabled = profilePresetBusy || !available || !selectedProfileId || !preset;
+        byId('profile-preset-custom-actions').hidden = !profilePresetsSupportCustom();
+        byId('profile-preset-save-new').disabled = profilePresetBusy || !selectedProfileId;
+        byId('profile-preset-overwrite').disabled = profilePresetBusy || !selectedProfileId || !custom;
+        byId('profile-preset-export').disabled = profilePresetBusy || !custom;
+        byId('profile-preset-import').disabled = profilePresetBusy;
+        byId('profile-preset-row').querySelectorAll('.profile-preset-actions .button').forEach((button) => button.setAttribute('aria-busy', profilePresetBusy ? 'true' : 'false'));
+    }
+    // Disabling a button during a request drops focus to the body; put it back on the row once nothing is modal.
+    function restoreProfilePresetFocus(preferredId) {
+        if (!byId('preset-name-backdrop').classList.contains('hidden')) return;
+        if (!byId('mcm-confirm-backdrop').classList.contains('hidden')) return;
+        if (document.activeElement && document.activeElement !== document.body) return;
+        const preferred = preferredId ? byId(preferredId) : null;
+        if (preferred && !preferred.disabled) { preferred.focus(); return; }
+        const select = byId('profile-preset-select');
+        if (select && !select.disabled) {
+            const trigger = select.closest('.settings-tile-selector')?.querySelector('.settings-tile-trigger');
+            (trigger || select).focus();
+        }
+    }
+    function setProfilePresetBusy(busy) {
+        profilePresetBusy = !!busy;
+        syncProfilePresetRow();
+    }
+    // Options come straight from the server list; no preset id, name, description or value is repeated here.
+    function renderProfilePresets(reset, preferredId) {
+        const select = byId('profile-preset-select');
+        const row = byId('profile-preset-row');
+        if (!select || !row) return;
+        const presets = profilePresets();
+        // Older HerikaServer builds omit profile_presets, so the row stays hidden instead of failing.
+        row.hidden = presets.length === 0;
+        const preferred = preferredId === undefined || preferredId === null ? '' : String(preferredId);
+        const previous = preferred || (reset ? '' : select.value);
+        select.replaceChildren(new Option('Choose preset...', ''));
+        presets.forEach((preset) => {
+            const option = new Option(String(preset.name || preset.id), String(preset.id));
+            if (preset.description) option.title = String(preset.description);
+            select.appendChild(option);
+        });
+        select.value = findProfilePreset(previous) ? String(previous) : '';
+        enhanceSelect(select);
+        syncProfilePresetRow();
+    }
+    function profilePresetConfirmBody(preset) {
+        const description = preset.description ? `${String(preset.description)} ` : '';
+        return `${description}Apply "${String(preset.name || preset.id)}" to profile "${currentProfileLabel()}"? This profile is saved immediately, and unsaved edits on this page are discarded.`;
+    }
+    async function applyProfilePreset(preset) {
+        const profileId = selectedProfileId;
+        const fallbackName = String(preset.name || preset.id);
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Applying "${fallbackName}"...`, false);
+        try {
+            const result = await profilePresetRequest({ operation: 'apply_preset', id: profileId, preset_id: String(preset.id) });
+            await loadProfiles(profileId);
+            // The select is an action picker, not a saved identity, so it returns to the placeholder.
+            renderProfilePresets(true);
+            profilePresetStatus(`Applied ${String(result.preset_name || fallbackName)} to ${String(result.profile_name || currentProfileLabel())}.`, false);
+        } catch (error) {
+            profilePresetStatus(`Apply failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus();
+        }
+    }
+    async function profilePresetRequest(body) {
+        return responseData(await fetch(`${serverBaseUrl}${PROFILE_PRESET_ENDPOINT}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+    }
+    // Only the preset list is refreshed, so unsaved profile edits on screen survive save, overwrite and import.
+    async function refreshProfilePresetList(data, preferredId) {
+        let list = data && Array.isArray(data.profile_presets) ? data.profile_presets : null;
+        if (!list) {
+            const payload = await responseData(await fetch(`${serverBaseUrl}${PROFILE_PRESET_ENDPOINT}`, { cache: 'no-store' }));
+            list = Array.isArray(payload.profile_presets) ? payload.profile_presets : [];
+        }
+        if (profileData) profileData.profile_presets = list;
+        renderProfilePresets(false, preferredId);
+    }
+    // The write already landed on the server, so a failed refresh is reported as its own problem.
+    async function settleProfilePresetWrite(data, preferredId, message) {
+        try {
+            await refreshProfilePresetList(data, preferredId);
+            profilePresetStatus(message, false);
+        } catch (error) {
+            profilePresetStatus(`${message} The preset list could not be refreshed: ${presetError(error)}`, true);
+        }
+    }
+    async function saveProfilePresetAsNew(name, metadata) {
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Saving "${name}"...`, false);
+        try {
+            const data = await profilePresetRequest({ operation: 'save_preset_new', id: selectedProfileId, name: name, metadata: metadata });
+            const saved = (data && data.preset) || {};
+            await settleProfilePresetWrite(data, saved.id, `Saved preset "${String(saved.name || name)}".`);
+        } catch (error) {
+            profilePresetStatus(`Save failed: ${presetError(error)}`, true);
+            throw error;
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-save-new');
+        }
+    }
+    async function overwriteProfilePreset(preset, metadata) {
+        const fallbackName = String(preset.name || preset.id);
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Overwriting "${fallbackName}"...`, false);
+        try {
+            const data = await profilePresetRequest({ operation: 'overwrite_preset', id: selectedProfileId, preset_id: String(preset.id), metadata: metadata });
+            const saved = (data && data.preset) || {};
+            await settleProfilePresetWrite(data, saved.id || preset.id, `Overwrote preset "${String(saved.name || fallbackName)}".`);
+        } catch (error) {
+            profilePresetStatus(`Overwrite failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-overwrite');
+        }
+    }
+    // The server owns the filename and the document body; this only turns them into a download.
+    function downloadJsonDocument(filename, doc) {
+        const text = typeof doc === 'string' ? doc : JSON.stringify(doc, null, 2);
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url; link.download = filename; link.rel = 'noopener'; link.hidden = true;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+    async function exportProfilePreset(preset) {
+        const fallbackName = String(preset.name || preset.id);
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Exporting "${fallbackName}"...`, false);
+        try {
+            const data = await profilePresetRequest({ operation: 'export_preset', preset_id: String(preset.id) });
+            const doc = data ? data.document : null;
+            if (!doc || (typeof doc !== 'object' && typeof doc !== 'string')) throw new Error('The server returned no preset document.');
+            const filename = String((data && data.filename) || '').trim() || 'chim-profile-preset.json';
+            downloadJsonDocument(filename, doc);
+            profilePresetStatus(`Exported "${fallbackName}" as ${filename}.`, false);
+        } catch (error) {
+            profilePresetStatus(`Export failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-export');
+        }
+    }
+    // The file is only checked far enough to post it; the server decides what a valid preset export contains.
+    async function readProfilePresetDocument(file) {
+        if (file.size > PROFILE_PRESET_IMPORT_LIMIT) throw new Error('That file is larger than 256 KB.');
+        let text;
+        try { text = await file.text(); } catch (_error) { throw new Error('That file could not be read.'); }
+        let doc;
+        try { doc = JSON.parse(text); } catch (_error) { throw new Error('That file is not valid JSON.'); }
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('That file is not a preset export.');
+        return doc;
+    }
+    async function importProfilePreset(file) {
+        const fallbackName = String(file.name || 'preset');
+        setProfilePresetBusy(true);
+        profilePresetStatus(`Importing "${fallbackName}"...`, false);
+        try {
+            const doc = await readProfilePresetDocument(file);
+            const data = await profilePresetRequest({ operation: 'import_preset', document: doc });
+            const saved = (data && data.preset) || {};
+            await settleProfilePresetWrite(data, saved.id, `Imported preset "${String(saved.name || fallbackName)}".`);
+        } catch (error) {
+            profilePresetStatus(`Import failed: ${presetError(error)}`, true);
+        } finally {
+            setProfilePresetBusy(false);
+            restoreProfilePresetFocus('profile-preset-import');
+        }
+    }
+    // Save and overwrite reuse the Save Profile serializer; core identity, prompt and connectors are left out.
+    function profilePresetMetadata() {
+        try { return serializeProfileMetadata(); } catch (error) { profilePresetStatus(presetError(error), true); return null; }
+    }
+    function initProfilePresets() {
+        const select = byId('profile-preset-select');
+        const apply = byId('profile-preset-apply');
+        renderProfilePresets(true);
+        // Selecting only surfaces the server description; nothing is written until Apply.
+        select.addEventListener('change', () => {
+            const preset = selectedProfilePreset();
+            syncProfilePresetRow();
+            profilePresetStatus(preset && preset.description ? String(preset.description) : '', false);
+        });
+        // The row sits inside #profile-form, so Enter here must not reach Save Profile.
+        select.addEventListener('keydown', (event) => { if (event.key === 'Enter') event.preventDefault(); });
+        apply.addEventListener('click', () => {
+            const preset = selectedProfilePreset();
+            if (!preset || profilePresetBusy || !selectedProfileId) return;
+            openMcmConfirm({
+                title: 'Apply profile preset',
+                body: profilePresetConfirmBody(preset),
+                confirmLabel: 'Apply preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { applyProfilePreset(preset).catch(showError); }
+            });
+        });
+        byId('profile-preset-save-new').addEventListener('click', () => {
+            if (profilePresetBusy || !selectedProfileId) return;
+            const metadata = profilePresetMetadata();
+            if (!metadata) return;
+            openPresetNameDialog({
+                title: 'Save profile preset',
+                body: `Name this preset. It stores the Profile Settings currently on screen for "${currentProfileLabel()}", including unsaved edits. The profile name, slot, prompt and connector choices are not stored.`,
+                confirmLabel: 'Save preset',
+                onConfirm: (name) => saveProfilePresetAsNew(name, metadata)
+            });
+        });
+        byId('profile-preset-overwrite').addEventListener('click', () => {
+            const preset = selectedProfilePreset();
+            if (!preset || preset.built_in === true || profilePresetBusy || !selectedProfileId) return;
+            const metadata = profilePresetMetadata();
+            if (!metadata) return;
+            openMcmConfirm({
+                title: 'Overwrite profile preset',
+                body: `Overwrite "${String(preset.name || preset.id)}" with the Profile Settings currently on screen, including unsaved edits? The profile name, slot, prompt and connector choices are not stored. The saved preset values are replaced and cannot be recovered.`,
+                confirmLabel: 'Overwrite preset',
+                danger: true,
+                focusCancel: true,
+                onConfirm: () => { overwriteProfilePreset(preset, metadata).catch(showError); }
+            });
+        });
+        byId('profile-preset-export').addEventListener('click', () => {
+            const preset = selectedProfilePreset();
+            if (!preset || preset.built_in === true || profilePresetBusy) return;
+            exportProfilePreset(preset).catch(showError);
+        });
+        const file = byId('profile-preset-file');
+        byId('profile-preset-import').addEventListener('click', () => {
+            if (profilePresetBusy) return;
+            // Clearing first keeps change firing when the same file is picked twice.
+            file.value = '';
+            file.click();
+        });
+        file.addEventListener('change', () => {
+            const chosen = file.files && file.files[0];
+            file.value = '';
+            if (!chosen) return;
+            importProfilePreset(chosen).catch(showError);
+        });
+    }
+
     function switchPage(page) {
-        if (!['globals', 'profiles', 'npcs'].includes(page)) page = 'globals';
-        document.querySelectorAll('.top-tab').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
+        if (!SETTINGS_PAGES.includes(page)) page = 'globals';
+        stopMcmCapture();
+        command('input_capture|off');
+        closeMcmConfirm(false);
+        closePresetNameDialog(false);
+        document.querySelectorAll('.top-tab').forEach((button) => {
+            const active = button.dataset.page === page;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+            button.tabIndex = active ? 0 : -1;
+        });
         document.querySelectorAll('.page').forEach((element) => { const active = element.id === `${page}-page`; element.hidden = !active; element.classList.toggle('active', active); });
-        byId('status-line').hidden = page === 'npcs';
+        byId('status-line').hidden = page === 'npcs' || page === 'mcm';
         if (page === 'globals' && !globalData) loadGlobals().catch(showError);
         if (page === 'profiles' && !profileData) loadProfiles().catch(showError);
         if (page === 'npcs' && window.onNpcManagerShown) window.onNpcManagerShown();
+        if (page === 'mcm') openMcmPage();
     }
     function showError(error) { status(error.message || String(error), true); }
     function init() {
         enhanceSelect(byId('profile-form').elements.slot);
-        byId('close-button').addEventListener('click', () => command('close'));
-        document.querySelectorAll('.top-tab').forEach((button) => button.addEventListener('click', () => switchPage(button.dataset.page)));
+        initMcm();
+        initPresets();
+        initProfilePresets();
+        byId('close-button').addEventListener('click', () => { stopMcmCapture(); closeMcmConfirm(false); closePresetNameDialog(false); command('input_capture|off'); command('close'); });
+        const topTabs = Array.from(document.querySelectorAll('.top-tab'));
+        topTabs.forEach((button) => button.addEventListener('click', () => switchPage(button.dataset.page)));
+        document.querySelector('.top-tabs').addEventListener('keydown', (event) => tabListKeydown(event, topTabs));
         byId('globals-form').addEventListener('submit', (event) => saveGlobals(event).catch(showError));
         byId('profile-form').addEventListener('submit', (event) => saveProfile(event).catch(showError));
         byId('new-profile').addEventListener('click', () => createProfile().catch(showError));
         byId('delete-profile').addEventListener('click', () => deleteProfile().catch(showError));
-        document.addEventListener('focusin', (event) => { if (event.target.matches('input, textarea, select')) command('input_capture|on'); });
-        document.addEventListener('focusout', () => command('input_capture|off'));
+        document.addEventListener('focusin', syncInputCapture);
+        document.addEventListener('focusout', () => queueMicrotask(syncInputCapture));
         document.addEventListener('click', (event) => { if (!event.target.closest('.settings-tile-selector')) closeTileSelectors(); });
-        document.addEventListener('keydown', (event) => { if (event.key === 'Escape') command('close'); });
+        document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { command('input_capture|off'); command('close'); } });
         command('dom_ready');
     }
     window.setConfigManagerServerUrl = (value) => {
@@ -315,11 +2033,12 @@
             loadGlobals().catch(showError);
         }
     };
-    window.setConfigManagerTab = (tab) => switchPage(['globals', 'profiles', 'npcs'].includes(tab) ? tab : 'globals');
+    window.setConfigManagerTab = (tab) => switchPage(SETTINGS_PAGES.includes(tab) ? tab : 'globals');
     window.onConfigManagerShown = () => {
         const page = document.querySelector('.top-tab.active').dataset.page;
         if (page === 'profiles') loadProfiles(selectedProfileId).catch(showError);
         else if (page === 'npcs' && window.onNpcManagerShown) window.onNpcManagerShown();
+        else if (page === 'mcm') openMcmPage();
         else loadGlobals().catch(showError);
     };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();

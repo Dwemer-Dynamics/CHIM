@@ -1,6 +1,8 @@
 #include "SpatialSnapshotManager.h"
 
+#include "PlayerConversationRouter.h"
 #include "SpatialAwareness.h"
+#include "SpatialGeometryPolicy.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -100,27 +102,8 @@ namespace
     struct DoorBarrierScan {
         int openDoorCount = 0;
         int closedDoorCount = 0;
+        RE::FormID closedDoorCandidateFormId = 0;
     };
-
-    float DoorTriangulationTolerance(float airDistance, const SpatialAwareness::Settings& settings)
-    {
-        const float scaledTolerance = airDistance * settings.doorTriangulationPercentTolerance;
-        return std::max(settings.doorTriangulationAbsoluteTolerance, scaledTolerance);
-    }
-
-    bool IsBetweenActors(const RE::NiPoint3& playerPosition, const RE::NiPoint3& targetPosition,
-                         const RE::NiPoint3& candidatePosition, float airDistance,
-                         const SpatialAwareness::Settings& settings)
-    {
-        if (airDistance <= 0.001f || !std::isfinite(airDistance)) {
-            return false;
-        }
-
-        const float playerToCandidate = playerPosition.GetDistance(candidatePosition);
-        const float targetToCandidate = targetPosition.GetDistance(candidatePosition);
-        const float combinedDistance = playerToCandidate + targetToCandidate;
-        return combinedDistance <= airDistance + DoorTriangulationTolerance(airDistance, settings);
-    }
 
     bool IsClosedDoorState(RE::BGSOpenCloseForm::OPEN_STATE state)
     {
@@ -162,27 +145,33 @@ namespace
             return scan;
         }
 
-        const auto playerPosition = player->GetPosition();
-        const auto targetPosition = target->GetPosition();
+        const auto playerPosition = SpatialAwareness::GetEffectiveActorPosition(player);
+        const auto targetPosition = SpatialAwareness::GetEffectiveActorPosition(target);
         const float airDistance = playerPosition.GetDistance(targetPosition);
         if (!std::isfinite(airDistance) || airDistance <= 0.001f) {
             return scan;
         }
 
-        const float scanRadius = airDistance + DoorTriangulationTolerance(airDistance, settings);
-        playerCell->ForEachReferenceInRange(playerPosition, scanRadius, [&](RE::TESObjectREFR& reference) {
-            const auto* baseObject = reference.GetBaseObject();
+        const float corridorHalfWidth = std::max(settings.doorTriangulationAbsoluteTolerance, 0.0f);
+        const float scanRadius = airDistance + corridorHalfWidth;
+        playerCell->ForEachReferenceInRange(playerPosition, scanRadius, [&](RE::TESObjectREFR* reference) {
+            const auto* baseObject = reference->GetBaseObject();
             if (!baseObject || baseObject->GetFormType() != RE::FormType::Door) {
                 return RE::BSContainer::ForEachResult::kContinue;
             }
 
-            if (!IsBetweenActors(playerPosition, targetPosition, reference.GetPosition(), airDistance, settings)) {
+            const auto doorPosition = reference->GetPosition();
+            if (!SpatialGeometryPolicy::IsPointWithinSegmentCorridor(
+                    {playerPosition.x, playerPosition.y, playerPosition.z},
+                    {targetPosition.x, targetPosition.y, targetPosition.z},
+                    {doorPosition.x, doorPosition.y, doorPosition.z}, corridorHalfWidth)) {
                 return RE::BSContainer::ForEachResult::kContinue;
             }
 
-            const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
+            const auto openState = RE::BGSOpenCloseForm::GetOpenState(reference);
             if (IsClosedDoorState(openState)) {
                 ++scan.closedDoorCount;
+                scan.closedDoorCandidateFormId = reference->GetFormID();
                 return RE::BSContainer::ForEachResult::kStop;
             }
 
@@ -697,13 +686,7 @@ namespace
                 const auto doorScan = ScanDoorBarrierBetween(playerActor, targetActor, settings);
                 result.openDoorCount = doorScan.openDoorCount;
                 result.closedDoorCount = doorScan.closedDoorCount;
-                if (doorScan.closedDoorCount > 0) {
-                    result.canCommunicate = false;
-                    result.volume = 0.0f;
-                    result.reason = "closed_door_between";
-                    storeResult(result);
-                    return;
-                }
+                result.closedDoorCandidateFormId = doorScan.closedDoorCandidateFormId;
             }
 
             bool hasLineOfSight = false;
@@ -712,8 +695,17 @@ namespace
             result.losQueryOk = losQueryOk;
             result.hasLineOfSight = losQueryOk && hasLineOfSight;
             if (result.hasLineOfSight) {
+                result.closedDoorCount = 0;
                 result.canCommunicate = true;
                 result.reason = "line_of_sight_clear";
+                storeResult(result);
+                return;
+            }
+
+            if (result.closedDoorCount > 0) {
+                result.canCommunicate = false;
+                result.volume = 0.0f;
+                result.reason = "closed_door_between";
                 storeResult(result);
                 return;
             }
@@ -772,28 +764,29 @@ namespace
     bool IsAutoBlocked(const std::shared_ptr<AIAgent>& agent, RE::Actor* actor, RE::Actor* player,
                        std::string& status)
     {
-        if (!agent || !actor || !player) {
-            status = "Unavailable";
-            return true;
+        const std::string reason =
+            PlayerConversationRouter::GetAutomaticBlockReason(agent, actor, player);
+        if (reason.empty()) {
+            return false;
         }
-        if (agent->hasConversationCooldown()) {
+        if (reason == "cooldown") {
             status = "Busy";
-            return true;
-        }
-        if (actor->IsHostileToActor(player) && !AutoAddHostile) {
+        } else if (reason == "hostile") {
             status = "Hostile";
-            return true;
-        }
-        if (!CombatDialogueEnabled && (actor->IsInCombat() || actor->IsAttacking() || actor->IsInKillMove())) {
+        } else if (reason == "combat") {
             status = "In combat";
-            return true;
-        }
-        if (actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
+        } else if (reason == "restrained") {
             status = "Restrained";
-            return true;
+        } else if (reason == "unconscious") {
+            status = "Unconscious";
+        } else if (reason == "sleeping") {
+            status = "Sleeping";
+        } else if (reason == "scene") {
+            status = "In scene";
+        } else {
+            status = "Unavailable";
         }
-
-        return false;
+        return true;
     }
 
     std::shared_ptr<AIAgent> FindDisplayAgentByFormId(RE::FormID formId)
@@ -1321,9 +1314,8 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
     const bool spatialRefinementSettling = ShouldDeferPlayerSpatialForCell(playerCell, now, reason);
 
     RE::FormID crosshairFormId = 0;
-    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
-        crosshairPickData && crosshairPickData->target) {
-        if (auto crosshairTarget = crosshairPickData->target.get();
+    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton(); crosshairPickData) {
+        if (auto crosshairTarget = crosshairPickData->GetActiveTarget().get();
             crosshairTarget && crosshairTarget->GetFormType() == RE::FormType::ActorCharacter) {
             crosshairFormId = crosshairTarget->GetFormID();
         }
@@ -1626,7 +1618,6 @@ std::vector<PlayerSpatialCandidate> SpatialSnapshotManager::GetPlayerConversatio
 
         std::string blockedStatus;
         if (target.targetable && IsAutoBlocked(target.agent, target.actor, player, blockedStatus)) {
-            target.targetable = false;
             target.autoEligible = false;
             target.status = blockedStatus;
             target.sortBucket = std::max(target.sortBucket, 2);
@@ -1767,6 +1758,10 @@ bool SpatialSnapshotManager::IsValidPlayerSpeechTarget(
     }
     if (mode == PlayerSpeechTargetMode::Manual && !target.targetable) {
         return false;
+    }
+
+    if (mode == PlayerSpeechTargetMode::Manual) {
+        return true;
     }
 
     std::string blockedStatus;

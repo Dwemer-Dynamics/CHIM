@@ -16,6 +16,8 @@
     // Update timer
     let updateInterval = null;
     let lastSpatialAgentsAt = 0;
+    // The DLL owns the persistent mode once it has pushed it; server payloads must not repaint it.
+    let pluginModeApplied = false;
     const agentRowsByKey = new Map();
 
     function setHtmlIfChanged(element, html) {
@@ -95,11 +97,15 @@
     const modeConfig = {
         'STANDARD': { label: 'Standard', class: 'standard' },
         'WHISPER': { label: 'Whisper', class: 'whisper' },
+        'CLOSE': { label: 'Close', class: 'close' },
+        'SHOUT': { label: 'Shout', class: 'shout' },
+        'NARRATOR': { label: 'Narrator', class: 'narrator' },
         'DIRECTOR': { label: 'Director', class: 'director' },
         'CHEATMODE': { label: 'Cheat Mode', class: 'cheatmode' },
         'AUTOCHAT': { label: 'Auto Chat', class: 'autochat' },
         'INJECTION_LOG': { label: 'Event Inject', class: 'director' },
-        'INJECT_LOG': { label: 'Event Inject', class: 'director' }
+        'INJECT_LOG': { label: 'Event Inject', class: 'director' },
+        'INJECTION_CHAT': { label: 'Inject & Chat', class: 'director' }
     };
 
     /**
@@ -120,14 +126,16 @@
             
             console.log('Overlay data received:', overlay);
             
-            // Update mode
-            updateMode(overlay.mode);
+            // Update mode only until the DLL claims it as the single persistent authority.
+            if (!pluginModeApplied) {
+                updateMode(overlay.mode);
+            }
             
             // Update active model
             updateActiveModel(overlay.active_model_slot, overlay.active_model_label, overlay.active_model_name);
             
             // Update Compact Chat
-            updateFocusChat(overlay.focus_chat);
+            updateFocusChat(overlay.compact_chat);
             
             // Update active agents from server only until the DLL starts pushing local spatial truth.
             if (!lastSpatialAgentsAt || Date.now() - lastSpatialAgentsAt > 5000) {
@@ -150,6 +158,15 @@
         const config = modeConfig[modeUpper] || { label: mode || 'Unknown', class: 'standard' };
         setHtmlIfChanged(modeElement, `<span class="mode-badge ${config.class}">${config.label}</span>`);
     }
+
+    /**
+     * Apply the persistent CHIM mode pushed by the DLL. This is the same normalized
+     * value the chatbox selector receives, so both views can never disagree.
+     */
+    window.updateOverlayMode = function(mode) {
+        pluginModeApplied = true;
+        updateMode(mode);
+    };
 
     /**
      * Update the active model display
@@ -300,6 +317,29 @@
     }
 
     /**
+     * Map the displayed listener status to a semantic tone class. Classification reads the
+     * rendered string rather than transient C++ reasons because the status cache can keep
+     * text stable across spatial refreshes. Returns '' for neutral (no target, bare source,
+     * combat, or anything unrelated to hearing).
+     */
+    function classifyListenerStatus(status) {
+        const match = /^(?:Crosshair|Nearest):\s*(.+)$/.exec(String(status || '').trim());
+        if (!match) return '';
+
+        const detail = match[1].toLowerCase();
+        if (detail.startsWith("can't hear you clearly") || detail.indexOf('muffled by door') !== -1) {
+            return 'hearing-partial';
+        }
+        if (detail.startsWith('can hear you')) {
+            return 'hearing-ok';
+        }
+        if (detail.startsWith('too far away') || detail.startsWith("can't hear you")) {
+            return 'hearing-blocked';
+        }
+        return '';
+    }
+
+    /**
      * Update the crosshair target display
      * @param {string} name - Name of the targeted NPC
      * @param {number} distance - Distance to the NPC in meters
@@ -309,7 +349,9 @@
     window.updateCrosshairTarget = function(name, distance, status, targetable) {
         const targetElement = document.getElementById('crosshair-target');
         const safeStatus = status ? escapeHtml(status) : '';
-        const statusHtml = safeStatus ? `<div class="target-status">${safeStatus}</div>` : '';
+        const toneClass = classifyListenerStatus(status);
+        const statusClass = toneClass ? `target-status ${toneClass}` : 'target-status';
+        const statusHtml = safeStatus ? `<div class="${statusClass}">${safeStatus}</div>` : '';
         const isTargetable = targetable !== false;
 
         if (name && name !== '') {

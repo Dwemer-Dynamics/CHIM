@@ -1,9 +1,18 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AIAgent VERSION 3.2.4)
+project(AIAgent VERSION 3.3.3)
+
+set(BUILD_TESTS OFF CACHE BOOL "Disable CommonLibSSE tests" FORCE)
+set(SKSE_SUPPORT_XBYAK ON CACHE BOOL "Enable CommonLibSSE Xbyak support" FORCE)
+set(COMMONLIB_PREBUILT ON CACHE BOOL "Use the pinned CommonLibSSE release build when compatible" FORCE)
+add_subdirectory(lib/CommonLibSSE-NG)
 
 find_package(SkyrimScripting.CMake CONFIG REQUIRED)
-find_package(SkyrimScripting.Plugin CONFIG REQUIRED)
+
+add_library(SkyrimScripting.Plugin INTERFACE)
+add_library(SkyrimScriptingPlugin::SkyrimScripting.Plugin ALIAS SkyrimScripting.Plugin)
+target_include_directories(SkyrimScripting.Plugin INTERFACE lib/SkyrimScripting.Plugin/include)
+target_link_libraries(SkyrimScripting.Plugin INTERFACE CommonLibSSE::CommonLibSSE)
 
 set(AIAGENT_SKYRIM_FOLDER_CANDIDATES
     "$ENV{CMAKE_SKYRIM_FOLDER}"
@@ -25,12 +34,24 @@ if(NOT AIAGENT_SKYRIM_FOLDER)
     message(FATAL_ERROR "Unable to locate a Skyrim install with a Data directory. Set CMAKE_SKYRIM_FOLDER or install Skyrim SE/VR in a known path.")
 endif()
 
-add_skse_plugin(${PROJECT_NAME}
-SKYRIM_FOLDER "${AIAGENT_SKYRIM_FOLDER}"
-
-SOURCES Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp  md5.cpp Voicerec.cpp HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp SpatialSnapshotManager.cpp PlayerConversationRouter.cpp ThreadPool.cpp Plugin.cpp ScriptProxy.cpp PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp ResourceFileReader.cpp DynamicDiaryBook.cpp ServerPluginSync.cpp
+add_library(${PROJECT_NAME} SHARED
+    Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp md5.cpp Voicerec.cpp
+    HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp
+    SpatialSnapshotManager.cpp PlayerConversationRouter.cpp ThreadPool.cpp Plugin.cpp PluginVersion.cpp ScriptProxy.cpp
+    PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp ResourceFileReader.cpp DynamicDiaryBook.cpp ServerPluginSync.cpp
 )
-target_link_libraries(${PROJECT_NAME} PRIVATE SkyrimScriptingPlugin::SkyrimScripting.Plugin)
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    AIAGENT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    AIAGENT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    AIAGENT_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
+target_skyrim_precompile_headers(${PROJECT_NAME})
+target_skyrim_data_folder(${PROJECT_NAME} SKYRIM_FOLDER "${AIAGENT_SKYRIM_FOLDER}")
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    CommonLibSSE::CommonLibSSE
+    SkyrimScriptingPlugin::SkyrimScripting.Plugin
+)
 
 include(CTest)
 if(BUILD_TESTING)

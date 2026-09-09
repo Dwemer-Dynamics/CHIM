@@ -2,14 +2,18 @@
 #include <Windows.h>
 #include <d3d11.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #include "Globals.h"
 #include "HTTPUploader.h"
@@ -18,9 +22,11 @@
 #include "RE/Skyrim.h"
 #include "SpatialAwareness.h"
 #include "ThreadPool.h"
+#include "json.hpp"
 #pragma comment(lib, "d3d11.lib")
 
 namespace logger = SKSE::log;
+using json = nlohmann::json;
 
 std::string globalHints;
 
@@ -71,7 +77,7 @@ namespace {
         std::string refId;
 
         auto* crosshairData = RE::CrosshairPickData::GetSingleton();
-        auto crosshairTarget = crosshairData ? crosshairData->target : RE::ObjectRefHandle{};
+        auto crosshairTarget = crosshairData ? crosshairData->GetActiveTarget() : RE::ObjectRefHandle{};
         if (crosshairTarget) {
             auto reference = crosshairTarget.get();
             if (reference) {
@@ -80,11 +86,13 @@ namespace {
                 subjectType = VisualSubjectType(reference.get());
 
                 if (auto* baseObject = reference->GetBaseObject()) {
-                    baseId = FormIdText(baseObject->GetLocalFormID());
                     if (auto* sourceFile = baseObject->GetFile(0)) {
+                        baseId = FormIdText(baseObject->GetLocalFormID());
                         pluginName = sourceFile->GetFilename();
+                        subjectKey = subjectType + ":" + pluginName + ":" + baseId;
+                    } else {
+                        subjectKey = subjectType + ":" + refId;
                     }
-                    subjectKey = subjectType + ":" + pluginName + ":" + baseId;
                 } else {
                     subjectKey = subjectType + ":" + refId;
                 }
@@ -106,6 +114,279 @@ namespace {
                "&visual_location=" + EncodeVisualQueryValue(location) +
                "&visual_perspective=first_person";
     }
+
+    struct VisualActorCandidate {
+        json data;
+        bool crosshairTarget;
+        float screenCenterDistance;
+        float worldDistance;
+    };
+
+    // Collect actor identities projected into the exact camera frame being uploaded.
+    std::string BuildVisualActorCandidates() {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* camera = RE::Main::WorldRootCamera();
+        auto* processLists = RE::ProcessLists::GetSingleton();
+        if (!player || !camera || !processLists) {
+            return "[]";
+        }
+
+        RE::FormID crosshairFormId = 0;
+        if (auto* crosshairData = RE::CrosshairPickData::GetSingleton(); crosshairData) {
+            if (auto target = crosshairData->GetActiveTarget().get()) {
+                crosshairFormId = target->GetFormID();
+            }
+        }
+
+        const auto& cameraData = camera->GetRuntimeData();
+        const auto& cameraData2 = camera->GetRuntimeData2();
+        std::vector<VisualActorCandidate> candidates;
+        candidates.reserve(16);
+
+        for (auto& actorHandle : processLists->highActorHandles) {
+            auto actorPointer = actorHandle.get();
+            auto* actor = actorPointer.get();
+            if (!actor || actor == player || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded()) {
+                continue;
+            }
+
+            const char* displayName = actor->GetDisplayFullName();
+            const std::string actorName = displayName ? displayName : "";
+            const float worldDistance = player->GetPosition().GetDistance(actor->GetPosition());
+            if (actorName.empty() || !std::isfinite(worldDistance) || worldDistance > HERIKA_MAX_VISION_RANGE) {
+                continue;
+            }
+
+            const bool isCrosshairTarget = actor->GetFormID() == crosshairFormId;
+            bool hasLineOfSight = false;
+            player->HasLineOfSight(actor, hasLineOfSight);
+            if (!isCrosshairTarget && !hasLineOfSight) {
+                continue;
+            }
+
+            auto* actor3D = actor->Get3D();
+            const RE::NiPoint3 screenPoint = actor3D ? actor3D->worldBound.center : actor->GetLookingAtLocation();
+            float screenX = 0.0f;
+            float screenY = 0.0f;
+            float screenZ = 0.0f;
+            if (!RE::NiCamera::WorldPtToScreenPt3(cameraData.worldToCam, cameraData2.port, screenPoint, screenX,
+                                                  screenY, screenZ, 1.0e-5f) ||
+                !std::isfinite(screenX) || !std::isfinite(screenY) || screenX < 0.0f || screenX > 1.0f ||
+                screenY < 0.0f || screenY > 1.0f) {
+                continue;
+            }
+
+            // The projection API reports Y from the bottom; the protocol uses image coordinates from the top.
+            screenY = 1.0f - screenY;
+            auto roundCoordinate = [](float value) { return std::round(value * 1000.0f) / 1000.0f; };
+
+            json candidate = {
+                {"name", actorName},
+                {"ref_id", FormIdText(actor->GetFormID())},
+                {"screen_x", roundCoordinate(screenX)},
+                {"screen_y", roundCoordinate(screenY)},
+                {"distance_game_units", static_cast<int>(std::round(worldDistance))},
+                {"crosshair_target", isCrosshairTarget},
+                {"dead", actor->IsDead()},
+            };
+            if (auto* baseObject = actor->GetBaseObject()) {
+                if (auto* sourceFile = baseObject->GetFile(0)) {
+                    candidate["base_id"] = FormIdText(baseObject->GetLocalFormID());
+                    candidate["plugin"] = sourceFile->GetFilename();
+                } else 
+                    candidate["base_id"] = FormIdText(baseObject->GetFormID());
+            }
+
+            const float deltaX = screenX - 0.5f;
+            const float deltaY = screenY - 0.5f;
+            candidates.push_back({std::move(candidate), isCrosshairTarget, deltaX * deltaX + deltaY * deltaY,
+                                  worldDistance});
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+            if (left.crosshairTarget != right.crosshairTarget) {
+                return left.crosshairTarget;
+            }
+            if (left.screenCenterDistance != right.screenCenterDistance) {
+                return left.screenCenterDistance < right.screenCenterDistance;
+            }
+            return left.worldDistance < right.worldDistance;
+        });
+
+        json payload = json::array();
+        constexpr std::size_t maxCandidates = 12;
+        for (std::size_t index = 0; index < std::min(candidates.size(), maxCandidates); ++index) {
+            payload.push_back(std::move(candidates[index].data));
+        }
+        return payload.dump();
+    }
+
+    struct SoulgazeCaptureRequest {
+        int sendMode{0};
+        RE::ActorHandle actor;
+        std::string actorName;
+    };
+
+    std::atomic_bool g_soulgazeCaptureInFlight{false};
+    std::mutex g_soulgazeCaptureMutex;
+    SoulgazeCaptureRequest g_soulgazeCaptureRequest;
+
+    // Freeze all camera-derived metadata before screenshot processing moves to a worker thread.
+    std::string BuildVisualCaptureHints(int sendMode) {
+        std::string hints = "&vc=" + EncodeVisualQueryValue(globalHints);
+        hints.append(BuildVisualCaptureMetadata());
+
+        const std::string actorCandidates = BuildVisualActorCandidates();
+        if (actorCandidates != "[]") {
+            hints.append("&visual_actor_candidates=" + EncodeVisualQueryValue(actorCandidates));
+        }
+
+        if (sendMode == 1) {
+            std::scoped_lock lock(g_soulgazeCaptureMutex);
+            if (g_soulgazeCaptureRequest.sendMode == 1) {
+                // Portrait zoom can clear or change the crosshair; keep the actor selected before capture.
+                hints.append("&fg=" + EncodeVisualQueryValue(g_soulgazeCaptureRequest.actorName));
+                return hints;
+            }
+        }
+
+        auto* crosshairData = RE::CrosshairPickData::GetSingleton();
+        auto crosshairTarget = crosshairData ? crosshairData->GetActiveTarget() : RE::ObjectRefHandle{};
+        if (crosshairTarget) {
+            if (auto target = crosshairTarget.get()) {
+                const char* displayName = target->GetDisplayFullName();
+                hints.append("&fg=" + EncodeVisualQueryValue(displayName ? displayName : ""));
+            }
+        }
+        return hints;
+    }
+
+    bool IsActivatedAiActor(RE::Actor* actor) {
+        if (!actor) {
+            return false;
+        }
+
+        const RE::FormID formId = actor->GetFormID();
+        for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+            if (agent && agent->getActor() && agent->getActor()->GetFormID() == formId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool IsSuccessfulSoulgazeResponse(int sendMode, const std::string& response) {
+        if (response.empty() || response == "...") {
+            return false;
+        }
+        if (sendMode == 1) {
+            return response.find("\"ok\":true") != std::string::npos ||
+                   response.find("\"ok\": true") != std::string::npos;
+        }
+        return true;
+    }
+
+    void FinishSoulgazeCapture(int sendMode, std::string response) {
+        if (!g_soulgazeCaptureInFlight.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        SoulgazeCaptureRequest request;
+        {
+            std::scoped_lock lock(g_soulgazeCaptureMutex);
+            if (g_soulgazeCaptureRequest.sendMode != sendMode) {
+                return;
+            }
+            request = g_soulgazeCaptureRequest;
+            g_soulgazeCaptureRequest = {};
+        }
+        g_soulgazeCaptureInFlight.store(false, std::memory_order_release);
+
+        const bool success = IsSuccessfulSoulgazeResponse(sendMode, response);
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!taskInterface) {
+            logger::error("[SOULGAZE] Cannot dispatch capture completion to the game thread");
+            return;
+        }
+
+        taskInterface->AddTask([request = std::move(request), response = std::move(response), success]() mutable {
+            if (!success) {
+                logger::warn("[SOULGAZE] Capture failed mode={} actor={}", request.sendMode, request.actorName);
+                RE::DebugNotification("[CHIM] Soulgaze capture failed. Check AIAgent.log.");
+                return;
+            }
+
+            if (request.sendMode == 3) {
+                logger::info("[SOULGAZE] Visual context capture completed");
+                RE::DebugNotification("[CHIM] Soulgaze visual context captured.");
+                return;
+            }
+
+            if (request.sendMode == 1) {
+                logger::info("[SOULGAZE] Portrait capture completed actor={}", request.actorName);
+                RE::DebugNotification(std::format("[CHIM] Update Profile Picture for {}", request.actorName).c_str());
+                return;
+            }
+
+            auto actorReference = request.actor.get();
+            auto* actor = actorReference ? actorReference.get()->As<RE::Actor>() : nullptr;
+            if (!actor || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded() ||
+                !IsActivatedAiActor(actor)) {
+                logger::warn("[SOULGAZE] Response actor is no longer available actor={}", request.actorName);
+                RE::DebugNotification("[CHIM] Soulgaze speaker is no longer nearby.");
+                return;
+            }
+
+            logger::info("[SOULGAZE] Dispatching scene description actor={}", request.actorName);
+            RE::DebugNotification(std::format("[CHIM] {} is describing the scene.", request.actorName).c_str());
+            HTTPManager::stream(
+                std::format("vision|{}|{}|{} {}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                            "(Context location: " + std::string(GetPlayerLocation()) + ")", response),
+                actor);
+        });
+    }
+
+    void FailSoulgazeCapture(int sendMode, const char* reason) {
+        logger::warn("[SOULGAZE] Capture aborted mode={} reason={}", sendMode, reason ? reason : "unknown");
+        FinishSoulgazeCapture(sendMode, {});
+    }
+}
+
+// Reserve the shared screenshot pipeline for one gesture capture and freeze its response actor.
+int BeginSoulgazeCapture(int captureType, RE::Actor* actor) {
+    int sendMode = 0;
+    if (captureType == 0) {
+        sendMode = 3;
+    } else if (captureType == 1) {
+        sendMode = 1;
+    } else if (captureType == 2) {
+        sendMode = 4;
+    } else {
+        return 0;
+    }
+
+    if (captureType != 0 && !IsActivatedAiActor(actor)) {
+        return 0;
+    }
+
+    bool expected = false;
+    if (!g_soulgazeCaptureInFlight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return -1;
+    }
+
+    SoulgazeCaptureRequest request;
+    request.sendMode = sendMode;
+    if (actor) {
+        request.actor = actor->GetHandle();
+        request.actorName = actor->GetDisplayFullName();
+    }
+    {
+        std::scoped_lock lock(g_soulgazeCaptureMutex);
+        g_soulgazeCaptureRequest = std::move(request);
+    }
+    logger::info("[SOULGAZE] Capture reserved mode={} actor={}", sendMode,
+                 actor ? actor->GetDisplayFullName() : "");
+    return sendMode;
 }
 
 extern int MutexGetScreenShotSendMode();
@@ -169,18 +450,23 @@ std::string ScenarioHints() {
 ImageData* TakeShotToMemory() {
     logger::info("Init DirectX stuff");
 
-    const auto renderer = RE::BSRenderManager::GetSingleton();
+    const auto renderer = RE::BSGraphics::Renderer::GetSingleton();
 
     if (!renderer) {
         logger::info("No renderer");
         return nullptr;
     }
 
-    auto rendererData = renderer->GetRuntimeData();
+    auto& rendererData = renderer->GetRuntimeData();
+    auto* rendererWindow = RE::BSGraphics::Renderer::GetCurrentRenderWindow();
+    if (!rendererWindow) {
+        logger::info("No active renderer window");
+        return nullptr;
+    }
 
-    ID3D11Device* device = rendererData.forwarder;
-    IDXGISwapChain* swapChain = rendererData.swapChain;
-    ID3D11DeviceContext* ctx = rendererData.context;
+    ID3D11Device* device = reinterpret_cast<ID3D11Device*>(rendererData.forwarder);
+    IDXGISwapChain* swapChain = reinterpret_cast<IDXGISwapChain*>(rendererWindow->swapChain);
+    ID3D11DeviceContext* ctx = reinterpret_cast<ID3D11DeviceContext*>(rendererData.context);
 
     // device->GetImmediateContext(&ctx);
 
@@ -239,7 +525,7 @@ ImageData* TakeShotToMemory() {
         return nullptr;
     }
 
-    logger::info("Backbuffer format: {} " , desc.Format);
+    logger::info("Backbuffer format: {} ", static_cast<std::uint32_t>(desc.Format));
     /*
     // BMP header
     const int bpp = 4;
@@ -339,13 +625,19 @@ void FreeImageData(ImageData* imageData) {
 void ProcedureTakeShot() {
     logger::info("Take a shot");
 
+    const int sendMode = MutexGetScreenShotSendMode();
+    MutexSetScreenShotSendMode(0);
+
     ImageData* id = TakeShotToMemory();
 
-    if (id == nullptr)
+    if (id == nullptr) {
         logger::info("Take a shot failed");
+        FailSoulgazeCapture(sendMode, "backbuffer_capture_failed");
+    }
 
     else {
-        ThreadPool::getInstance().enqueue("ProcessScreenshot", [id]() {
+        std::string captureHints = BuildVisualCaptureHints(sendMode);
+        ThreadPool::getInstance().enqueue("ProcessScreenshot", [id, captureHints = std::move(captureHints), sendMode]() {
             /* std::ofstream outputFile("eyeShot.bmp", std::ios::out | std::ios::binary);
             if (outputFile.is_open()) {
                 outputFile.write(reinterpret_cast<const char*>(id->bmpData), id->fileSize);
@@ -363,28 +655,16 @@ void ProcedureTakeShot() {
             std::string rawdata = reinterpret_cast<const char*>(id->bmpData);
             logger::info("Uploading...");
 
-            std::string hints;
-
-            hints.append("&vc=" + globalHints);
-            hints.append(BuildVisualCaptureMetadata());
-
-            // hints.append(ScenarioHints());
-
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-            if (cameraObject) {
-                hints.append("&fg=");
-                hints.append(cameraObject.get()->GetDisplayFullName());
-            }
-
-            std::string buffer = uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, hints);
+            std::string buffer =
+                uploader.UploadImage(reinterpret_cast<const char*>(id->bmpData), id->fileSize, captureHints, sendMode);
             logger::info("Done");
             FreeImageData(id);
 
-             if (MutexGetScreenShotSendMode() == 0)
+             if (sendMode == 0)
                 HTTPManager::stream(std::format("vision|{}|{}|{} {}", getCurrentTimeMillis(), GetGameTimeStamp(),
                               "(Context location: " + std::string(GetPlayerLocation()) + ")", buffer));
-             
-             MutexSetScreenShotSendMode(0);
+
+             FinishSoulgazeCapture(sendMode, std::move(buffer));
         });
     }
     return;
@@ -393,7 +673,11 @@ void ProcedureTakeShot() {
 void ProcedureSendShot(char const* a_path) {
     logger::info("Send  a shot");
 
-    ThreadPool::getInstance().enqueue("UploadScreenshot", [a_path]() {
+    const int sendMode = MutexGetScreenShotSendMode();
+    MutexSetScreenShotSendMode(0);
+    const std::string screenshotPath = a_path ? a_path : "";
+    std::string captureHints = BuildVisualCaptureHints(sendMode);
+    ThreadPool::getInstance().enqueue("UploadScreenshot", [screenshotPath, captureHints = std::move(captureHints), sendMode]() {
         logger::info(" HTTPUploader::getInstance()");
 
         HTTPUploader& uploader = HTTPUploader::getInstance();
@@ -404,10 +688,11 @@ void ProcedureSendShot(char const* a_path) {
         HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "(beings in range:" + result + ")"));
 
-        std::ifstream binaryFile(a_path, std::ios::binary);
+        std::ifstream binaryFile(screenshotPath, std::ios::binary);
 
         if (!binaryFile.is_open()) {
-            logger::info("Failed to open the binary file. {}", a_path);
+            logger::info("Failed to open the binary file. {}", screenshotPath);
+            FailSoulgazeCapture(sendMode, "native_screenshot_unavailable");
             return ;
         }
 
@@ -427,29 +712,17 @@ void ProcedureSendShot(char const* a_path) {
 
         logger::info("Uploading...");
 
-        std::string hints;
-
-        hints.append("&vc=" + globalHints);
-        hints.append(BuildVisualCaptureMetadata());
-
-        // hints.append(ScenarioHints());
-
-        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
-        if (cameraObject) {
-            hints.append("&fg=");
-            hints.append(cameraObject.get()->GetDisplayFullName());
-        }
-
-        std::string buffer = uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, hints);
+        std::string buffer =
+            uploader.UploadImagePng(reinterpret_cast<const char*>(prebuffer), fileSize, captureHints, sendMode);
         logger::info("Done");
 
         delete[] prebuffer;
 
-        if (MutexGetScreenShotSendMode() == 0)
+        if (sendMode == 0)
                    HTTPManager::stream(std::format("vision|{}|{}|{} {}", getCurrentTimeMillis(), GetGameTimeStamp(),
                           "(Context location: " + std::string(GetPlayerLocation()) + ")", buffer));
 
-        MutexSetScreenShotSendMode(0);
+        FinishSoulgazeCapture(sendMode, std::move(buffer));
     });
 
     return;
@@ -467,7 +740,7 @@ void ProcedureSendShot(char const* a_path) {
 // ---------------------------------------------------------------------------------------------------
 namespace {
     constexpr float       kGazeSeconds        = 6.0f;    // continuous dwell before a gaze fires
-    constexpr float       kGazeDwellGrace     = 0.75f;   // VR: brief target loss (head jitter) that does NOT reset the dwell
+    constexpr float       kGazeDwellGrace     = 3.0f;    // require a deliberate look-away; VR ray jitter must not rearm the same gaze
     constexpr float       kGazeDistance       = 350.0f;  // max player<->target distance (game units)
     constexpr float       kGazeCooldown       = 25.0f;   // matches SHARMAT's default server-side gaze cooldown
     constexpr float       kGazeNodeMaxDist    = 45.0f;   // hit must be within this of a mapped node, else "person"
@@ -621,11 +894,11 @@ namespace {
         } else {
             auto* pick = RE::CrosshairPickData::GetSingleton();
             if (!pick) { return; }
-            auto actorPtr = pick->targetActor.get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
+            auto actorPtr = pick->targetActor[0].get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
             actor = actorPtr ? actorPtr->As<RE::Actor>() : nullptr;
             if (!actor || actor->GetFormID() != expectActor) { return; }  // player looked away / not an actor
             if (actor == player || actor->IsDead()) { return; }
-            region = ClassifyGazeRegion(actor, pick->collisionPoint);
+            region = ClassifyGazeRegion(actor, pick->collisionPoint[0]);
         }
 
         const RE::NiPoint3 delta = actor->GetPosition() - player->GetPosition();
@@ -683,7 +956,7 @@ void PollPlayerGaze() {
     } else {
         auto* pick = RE::CrosshairPickData::GetSingleton();
         if (!pick) { return; }
-        auto actorPtr = pick->targetActor.get();
+        auto actorPtr = pick->targetActor[0].get();
         if (actorPtr) { cur = actorPtr->GetFormID(); }
     }
 

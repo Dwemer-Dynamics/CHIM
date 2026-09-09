@@ -9,7 +9,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, function() {
     'use strict';
 
-    const dialogueEvents = new Set(['chat', 'inputtext', 'ginputtext']);
+    const dialogueEvents = new Set(['chat', 'chat_background', 'inputtext', 'ginputtext']);
     const actionEvents = new Set(['infoaction', 'book', 'combat', 'itemfound']);
     const storyEvents = new Set(['quest', 'death', 'info_timeforward', 'instruction', 'narration']);
     const persistedDuplicateWindowMs = 10000;
@@ -199,6 +199,10 @@
             .map(function(entry) { return normalizeEvent(entry, narratorName, decode); })
             .filter(Boolean)
             .sort(function(left, right) {
+                if (left.occurredAtMs && right.occurredAtMs) {
+                    const timeDelta = left.occurredAtMs - right.occurredAtMs;
+                    if (timeDelta !== 0) return timeDelta;
+                }
                 if (left.rowId && right.rowId) return left.rowId - right.rowId;
                 return 0;
             });

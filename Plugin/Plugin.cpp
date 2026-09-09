@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -53,8 +54,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.2.4"
-#define PLUGIN_RELEASE_DATE "2026-08-13"
+#define PLUGIN_VERSION "3.3.3"
+#define PLUGIN_RELEASE_DATE "2026-09-05"
 
 const char* GetPluginVersion()
 {
@@ -291,6 +292,7 @@ std::string DialogueLastStringResponse;
 
 const long parameterMaxDistanceToListen = 1000000;
 const int CLEANING_TIMEOUT = 4;
+int MAINTENANCE_TIMEOUT = 4;
 
 bool NewActionMode = false;
 
@@ -464,21 +466,17 @@ namespace
 
         std::set<std::string> seenPluginNames;
 
-        if (REL::Module::IsVR()) {
-            if (auto* loadedMods = dataHandler->GetLoadedMods()) {
-                const auto loadedModCount = dataHandler->GetLoadedModCount();
-                for (std::uint32_t i = 0; i < loadedModCount; ++i) {
-                    AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedMods[i]);
-                }
+        if (auto* loadedMods = dataHandler->GetLoadedMods()) {
+            const auto loadedModCount = dataHandler->GetLoadedModCount();
+            for (std::uint32_t i = 0; i < loadedModCount; ++i) {
+                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedMods[i]);
             }
-        } else {
-            const auto& fileCollection = REL::RelocateMember<const RE::TESFileCollection>(dataHandler, 0xD70, 0);
-            for (auto* file : fileCollection.files) {
-                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, file);
-            }
+        }
 
-            for (auto* file : fileCollection.smallFiles) {
-                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, file);
+        if (auto* loadedLightMods = dataHandler->GetLoadedLightMods()) {
+            const auto loadedLightModCount = dataHandler->GetLoadedLightModCount();
+            for (std::uint32_t i = 0; i < loadedLightModCount; ++i) {
+                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedLightMods[i]);
             }
         }
 
@@ -504,6 +502,42 @@ namespace
             }
         }
         return serverVersion;
+    }
+
+    // Compare numeric release components so the warning names the component to update.
+    std::string GetVersionMismatchGuidance(const std::string& pluginVersion, const std::string& serverVersion)
+    {
+        const auto parseVersion = [](const std::string& version, std::array<unsigned int, 3>& parts) {
+            const char* cursor = version.data();
+            const char* end = cursor + version.size();
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                const auto result = std::from_chars(cursor, end, parts[i]);
+                if (result.ec != std::errc{}) {
+                    return false;
+                }
+                cursor = result.ptr;
+                if (i + 1 == parts.size()) {
+                    return cursor == end;
+                }
+                if (cursor == end || *cursor != '.') {
+                    return false;
+                }
+                ++cursor;
+            }
+            return false;
+        };
+
+        std::array<unsigned int, 3> pluginParts{};
+        std::array<unsigned int, 3> serverParts{};
+        if (parseVersion(pluginVersion, pluginParts) && parseVersion(serverVersion, serverParts)) {
+            if (pluginParts < serverParts) {
+                return "[CHIM] Update the plugin to match the server, or CHIM will not work.";
+            }
+            if (serverParts < pluginParts) {
+                return "[CHIM] Update the server to match the plugin, or CHIM will not work.";
+            }
+        }
+        return "[CHIM] Install matching plugin and server versions, or CHIM will not work.";
     }
 
     void ScheduleVersionMismatchStartupCheck()
@@ -537,9 +571,12 @@ namespace
                 rawServerVersion);
 
             logger::warn("[VersionCheck] {}", warning);
+            const std::string guidance = GetVersionMismatchGuidance(pluginVersion, normalizedServerVersion);
+            logger::warn("[VersionCheck] {}", guidance);
 
-            SKSE::GetTaskInterface()->AddTask([warning]() {
+            SKSE::GetTaskInterface()->AddTask([warning, guidance]() {
                 RE::DebugNotification(warning.c_str());
+                RE::DebugNotification(guidance.c_str());
             });
         }).detach();
     }
@@ -881,7 +918,7 @@ namespace
 
         RE::MenuTopicManager::Dialogue* selectedDialogue = nullptr;
         if (auto* responseNode = tm->selectedResponseNode) {
-            selectedDialogue = responseNode->front();
+            selectedDialogue = responseNode->item;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -1194,7 +1231,7 @@ namespace
 
         // Keep dialogue paused without flagging it as finished, otherwise Skyrim may skip the NPC line.
         actor->AllowPCDialogue(false);
-        actor->PauseCurrentDialogue();
+        actor->StopCurrentDialogue();
         actor->SetSpeakingDone(false);
     }
 
@@ -1519,6 +1556,8 @@ void MutexSetMakeShotNativeActive(bool newVal) {
 }
 
 void ProcedureListenToScene() {
+    if (!CaptureBackgroundChatEnabled) return;
+
     // Cell transitions can storm scene/subtitle events; skip until world maintenance settles.
     if (IsWorldMaintenanceSuppressed()) return;
 
@@ -1547,7 +1586,7 @@ void ProcedureListenToScene() {
                 if (localactor->GetFormID() == actor->GetFormID() &&
                     (s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), s.subtitle.c_str()))) {
                     logger::info("[ProcedureListenToScene] Skipped recognized AI dialogue, actor:{},text:{}", localactor->GetDisplayFullName(),
-                        s.subtitle);
+                        s.subtitle.c_str());
                     skipThisSubtitle = true;
                     break;
                 }
@@ -1951,6 +1990,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     auto sitSleepState = actorState ? actorState->GetSitSleepState() : RE::SIT_SLEEP_STATE::kNormal;
     const bool isSitting = sitSleepState == RE::SIT_SLEEP_STATE::kIsSitting;
     const bool isSleeping = sitSleepState == RE::SIT_SLEEP_STATE::kIsSleeping;
+    const bool isRestrained = actorState ? actorState->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained : false;
     const bool isMoving = !isDead && IsActorMovingForStatus(npc, isRunning, actorState);
 
     std::string furnitureName;
@@ -1987,7 +2027,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "dead";
     } else if (isUnconscious) {
         currentAction = "unconscious";
-    } else if (isSleeping || useType == "bed") {
+    } else if (isSleeping) {
         currentAction = "sleeping";
     } else if (isAttacking) {
         currentAction = "attacking";
@@ -1995,9 +2035,9 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "combat";
     } else if (hasNonSeatUse) {
         currentAction = isLeaningUse ? "leaning" : "using";
-    } else if (isSitting || useType == "chair") {
+    } else if (isSitting) {
         currentAction = "sitting";
-    } else if (!useType.empty()) {
+    } else if (!useType.empty() && useType != "bed" && useType != "chair") {
         currentAction = "using";
     } else if (isSneaking) {
         currentAction = "sneaking";
@@ -2012,7 +2052,8 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     if (agent) {
         auto* attackTarget = agent->getAttackTarget();
         if (attackTarget) {
-            attackTargetName = trim(attackTarget->GetDisplayFullName());
+            if (attackTarget->GetDisplayFullName())
+                attackTargetName = trim(attackTarget->GetDisplayFullName());
         }
     }
 
@@ -2036,6 +2077,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     payload["is_unconscious"] = isUnconscious;
     payload["is_dead"] = isDead;
     payload["is_weapon_drawn"] = isWeaponDrawn;
+    payload["is_restrained"] = isRestrained;
 
     if (!attackTargetName.empty()) {
         payload["attack_target"] = attackTargetName;
@@ -2046,7 +2088,8 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
 
 // Forward declarations for metadata refresh functions
 void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate = false);
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous);
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous,
+                             std::function<void(bool)> completion);
 void RefreshAIAgentSkills(RE::Actor* npc, const std::string& agentName, bool forceUpdate = false);
 void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate = false);
 void RefreshAIAgentActivityStatus(RE::Actor* npc, const std::string& agentName, const std::string* furnitureOverride = nullptr);
@@ -2163,7 +2206,7 @@ private:
     void threadFunction() {
         logger::info("[ManagerMainQueue] Thread function started");
         auto lastHealthCheck = std::chrono::high_resolution_clock::now();
-        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(20);
+        auto lastAgentMaintenanceAt = std::chrono::steady_clock::now() - std::chrono::seconds(MAINTENANCE_TIMEOUT);
         auto lastAgentMaintenanceDeferLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(5);
         auto lastAutoAddMaintenanceAt = std::chrono::steady_clock::now();
         auto lastBoredBusyLogAt = std::chrono::steady_clock::now() - std::chrono::seconds(30);
@@ -2459,7 +2502,7 @@ private:
                         
                     }
 
-                    if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+                    if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
                         logger::info("[BORED] Avoiding bored event because player is in dialogue");
                         playerInDialog = true;
                     }
@@ -2768,6 +2811,8 @@ private:
 
                 const auto maintenanceNow = std::chrono::steady_clock::now();
                 bool ranAgentMaintenance = false;
+
+                //const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                 const bool speechMaintenanceSuppressed = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                 const bool speechProcessing = SpeakManager::getInstance().getProcessing();
                 const bool deferHeavyAgentMaintenance =
@@ -2776,15 +2821,15 @@ private:
                 if (deferHeavyAgentMaintenance) {
                     if (maintenanceNow - lastAgentMaintenanceDeferLogAt >= std::chrono::seconds(5)) {
                         lastAgentMaintenanceDeferLogAt = maintenanceNow;
-                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={}",
+                        logger::trace("[AGENT_MAINT] Deferred speech={} speaking={} world_settling={},recordingActive={}",
                                       speechMaintenanceSuppressed,
-                                      speechProcessing,
-                                      worldMaintenanceSuppressed);
+                                      speechProcessing, worldMaintenanceSuppressed,
+                                      recordingActive);
                     }
                 } else {  // Run agent maintenance only when player/NPC speech is not active.
                     // Heavy cleanup touches actor state, packages, and voice types. Keep it slower and budgeted;
                     // cheap auto-add below stays responsive so NPC detection does not depend on this pass.
-                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(20)) {
+                    if (maintenanceNow - lastAgentMaintenanceAt >= std::chrono::seconds(MAINTENANCE_TIMEOUT)) {
                         lastAgentMaintenanceAt = maintenanceNow;
                         ranAgentMaintenance = true;
                         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -2792,7 +2837,7 @@ private:
                                                                   DISTANCE_ACTIVATING_NPC_OUT);  // Check far far away
                         auto allAgentsForMaintenance = aiam.getAgents();
                         std::vector<std::shared_ptr<AIAgent>> maintenanceAgents;
-                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 8;
+                        constexpr std::size_t kMaxAgentMaintenanceChecksPerPass = 32;
                         if (!allAgentsForMaintenance.empty()) {
                             if (agentMaintenanceCursor >= allAgentsForMaintenance.size()) {
                                 agentMaintenanceCursor = 0;
@@ -2823,271 +2868,273 @@ private:
                             return false;
                         };
 
-                // Delete dead actors
-                //logger::debug("[PRECLEANER] Evaluating");
-                for (const auto& agent : maintenanceAgents) {
-                        if (agent->isPresent(beings)) {
-                            agent->resetMissingPresenceCounter();
-                            if (agent->mustBeDeleted()) {
-                                if (queueAgentDelete(agent->getActorName())) {
-                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
-                                                  agent->getActorName());
-                                }
-                        } else {
-                            if (agent->getActor()) {
-                                // We must ensure actor is really dead
-                                auto actorForm = RE::TESForm::LookupByID(agent->GetFormId());
-                                if (!actorForm) continue;
-                                auto actor = RE::TESForm::LookupByID(agent->GetFormId())->As<RE::Actor>();
-                                if (actor && actor->IsDead() && !agent->isNarrator()) {
-                                    if (queueAgentDelete(agent->getActorName())) {
-                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}",
-                                                      agent->getActorName());
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Delete non present actors
-                        if (ENABLE_AUTOADDNPC) {
-                            if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
-                                !agent->isManuallyAdded()) {
-                                if (agent->mustBeDeleted()) {
-                                    if (queueAgentDelete(agent->getActorName())) {
-                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because auto-managed stale: {}",
-                                                      agent->getActorName());
-                                    }
-                                    continue;
-                                }
-
-                                agent->increaseMissingPresenceCounter();
-                                const int missingPasses = agent->getMissingPresenceCounter();
-                                if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
-                                    if (queueAgentDelete(agent->getActorName())) {
-                                        logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
-                                                      missingPasses, agent->getActorName());
-                                    }
-                                } else if (missingPasses == 1 || missingPasses % 30 == 0) {
-                                    logger::debug("[PRECLEANER] Actor not present yet retained ({}/{}): {}",
-                                                  missingPasses, kPrecleanerMissingPresenceDeletePasses,
-                                                  agent->getActorName());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                //logger::debug("[CLEANER] Evaluating");
-                // Delete the agents by name after collecting their names
-                for (const auto& name : agentsToDelete) {
-                    aiam.deleteAgentByName(name);
-                }
-
-                auto agents = maintenanceAgents;
-                bool performedActorCleanupThisPass = !agentsToDelete.empty();
-
-                //logger::debug("[RESTORE] Evaluating {} agents ", agents.size());
-                for (const auto& agent : agents) {
-                    //logger::debug("Checking agent");
-                    if (!agent) {
-                        logger::warn("Null agent encountered in thread function");
-                        continue;
-                    }
-
-                    try {
-                        // Verify agent pointer is valid
-                        if (!agent.get()) {
-                            logger::warn("Invalid agent pointer");
-                            continue;
-                        }
-
-                        // Add timeout to avoid deadlocks
-                        bool isTalking = false;
-                        bool isClean = false;
-                        bool isRestored = false;
-
-                        
-                        
-                        try {
-                            // logger::debug("Checking agent {}", agent->getActorName());
-                            /* isTalking is only used here. Better use isClean, as it has a timeout.
-                            * 
-                            isTalking = agent->isTalking();
-                            if (isTalking) continue;
-                            */
-                            
-                            auto elapsed =
-                                std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
-
-                            isRestored=agent->isRestored();
-                            isClean = agent->isClean();
-                           
-                            if (isClean && !isRestored) {
-                                if (performedActorCleanupThisPass) {
-                                    agent->SetLastTimeTalk();
-                                    continue;
-                                }
-                                if (!game->GameIsPaused()) {    // We're gonna call some papyrus functions, make sure game is running
-                                    if (elapsed >=
-                                        std::chrono::seconds(91)) {  // To restore packages override after 30 seconds of no speech
-                                        logger::debug("[RESTORE] Throwing out of the conversation : {}",
-                                                      agent->getActorName());
-
-                                        auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
-                                        if (actorByForm) {
-                                            auto actor = actorByForm->As<RE::Actor>();
-
-                                            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                                            auto args = RE::MakeFunctionArguments(std::move(actor));
-                                            RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
-                                                "AIAgentAIMind", "ReleaseFromConversation", args, callback);
-
-                                            if (agent->getWasOnScene()) {
-                                                // Try to restore scene
-                                                
-                                                logger::debug(
-                                                    "[RESTORE] Calling papyrus function for EndDialogueClearScene");
-                                                auto callback =
-                                                    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                                                auto args = RE::MakeFunctionArguments(std::move(actor));
-                                                RE::BSScript::Internal::VirtualMachine::GetSingleton()
-                                                    ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClearScene", args,
-                                                                         callback);
-
-                                            } else {
-                                                logger::debug(
-                                                    "[RESTORE] Calling papyrus function for EndDialogueClear");
-                                                auto callback =
-                                                    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                                                auto args = RE::MakeFunctionArguments(std::move(actor));
-                                                RE::BSScript::Internal::VirtualMachine::GetSingleton()
-                                                    ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClear", args,
-                                                                         callback);
-                                            }
-                                        } else {
-                                            logger::debug("[RESTORE] Unable to restore: {}", agent->getActorName());
+                        // Delete dead actors
+                        //logger::debug("[PRECLEANER] Evaluating");
+                        for (const auto& agent : maintenanceAgents) {
+                            if (agent->isPresent(beings)) {
+                                agent->resetMissingPresenceCounter();
+                                    if (agent->mustBeDeleted()) {
+                                        if (queueAgentDelete(agent->getActorName())) {
+                                            logger::debug("[PRECLEANER] Actor is gonna be deleted because marked: {}",
+                                                          agent->getActorName());
                                         }
-                                        agent->setOnScene(false);
-                                        agent->setRestored(true);
+                                    } else {
+                                        if (agent->getActor()) {
+                                            // We must ensure actor is really dead
+                                            auto actorForm = RE::TESForm::LookupByID(agent->GetFormId());
+                                            if (!actorForm) continue;
+                                            auto actor = RE::TESForm::LookupByID(agent->GetFormId())->As<RE::Actor>();
+                                            if (actor && actor->IsDead() && !agent->isNarrator()) {
+                                                if (queueAgentDelete(agent->getActorName())) {
+                                                    logger::debug("[PRECLEANER] Actor is gonna be deleted because dead: {}",
+                                                                  agent->getActorName());
+                                                }
+                                            }
+                                        }
                                     }
-                                    continue;
-                                }
-                            }
-                            
-                            if (isClean) 
-                                continue;
-
-                        } catch (const std::exception& e) {
-                            logger::error("Error checking agent state: {}", e.what());
-                            continue;
-                        }
-
-                        auto now = std::chrono::high_resolution_clock::now();
-                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
-
-                        if (elapsed <= std::chrono::seconds( CLEANING_TIMEOUT)) {
-                            continue;
-                        } else {
-                            if (agent->isNarrator()) {
-                                agent->setClean(true);
-                                agent->setRestored(true);
-
                             } else {
-                                if (agent->isPresent(beings)) {
-                                    if (performedActorCleanupThisPass) {
-                                        agent->SetLastTimeTalk();
-                                        continue;
-                                    }
-                                    performedActorCleanupThisPass = true;
-
-                                    if (agent->getActor()) {
-                                        if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
-                                            auto fgen = agent->getActor()->GetFaceGenAnimationData();
-                                            if (fgen) {
-                                                RE::BSSpinLockGuard locker(fgen->lock);
-
-                                                fgen->ClearExpressionOverride();
-                                                // fgen->Reset(0.0f, true, true, true, false);
-                                                for (int i = 0; i <= 15; i++) fgen->phenomeKeyFrame.SetValue(i, 0.0f);
-
-                                                /*
-                                                agent->getActor()->GetActorRuntimeData().currentProcess->Update3DModel(
-                                                    agent->getActor());
-                                                */
+                                // Delete non present actors
+                                if (ENABLE_AUTOADDNPC) {
+                                    if (!agent->isNarrator() && agent->isClean() && agent->isRestored() &&
+                                        !agent->isManuallyAdded()) {
+                                        if (agent->mustBeDeleted()) {
+                                            if (queueAgentDelete(agent->getActorName())) {
+                                                logger::debug("[PRECLEANER] Actor is gonna be deleted because auto-managed stale: {}",
+                                                              agent->getActorName());
                                             }
-
+                                            continue;
                                         }
 
-                                        agent->getActor()->AllowPCDialogue(true);
-
-                                        // Moved here 1.0.13
-                                        if (agent->getActor() && !agent->isNarrator()) {
-                                            if (agent->getActor()->IsDead()) {
-                                                agent->markToBeDeleted();
-                                                continue;
+                                        agent->increaseMissingPresenceCounter();
+                                        const int missingPasses = agent->getMissingPresenceCounter();
+                                        if (missingPasses >= kPrecleanerMissingPresenceDeletePasses) {
+                                            if (queueAgentDelete(agent->getActorName())) {
+                                                logger::debug("[PRECLEANER] Actor is gonna be deleted because not present for {} passes: {}",
+                                                              missingPasses, agent->getActorName());
                                             }
+                                        } else if (missingPasses == 1 || missingPasses % 30 == 0) {
+                                            logger::debug("[PRECLEANER] Actor not present yet retained ({}/{}): {}",
+                                                          missingPasses, kPrecleanerMissingPresenceDeletePasses,
+                                                          agent->getActorName());
                                         }
                                     }
-                                    agent->setClean(true);
-                                    agent->setAvailable(true);
-                                    auto npc = agent->getActor();
-                                    if (npc) {
-                                        npc->AllowPCDialogue(true);
-                                    }
-                                    agent->resetForgetCleanCounter();  // 1,0.14 Forget about this actor
-                                    // agent->getActor()->EndDialogue(); // 1.0.13
-                                    if (agent->getOriginalVoice() != nullptr) {
-                                        agent->getActor()->GetActorBase()->voiceType = agent->getOriginalVoice();
-                                    }
+                                }
+                            }
+                        }
 
-                                    logger::info("[CLEANER] Clean: Restoring voice for {} {:#x} ",
-                                                 npc->GetDisplayFullName(), agent->getOriginalVoice()->formID);
+                        //logger::debug("[CLEANER] Evaluating");
+                        // Delete the agents by name after collecting their names
+                        for (const auto& name : agentsToDelete) {
+                            aiam.deleteAgentByName(name);
+                        }
 
-                                } else {  // Actor not present
+                        auto agents = maintenanceAgents;
+                        bool performedActorCleanupThisPass = !agentsToDelete.empty();
 
-                                    agent->increaseForgetCleanCounter();
-                                    if (agent->getForgetCleanCounter() > 12) {  // Dirty clean
+                        //logger::debug("[RESTORE] Evaluating {} agents ", agents.size());
+                        for (const auto& agent : agents) {
+                            //logger::debug("Checking agent");
+                            if (!agent) {
+                                logger::warn("Null agent encountered in thread function");
+                                continue;
+                            }
+
+                            try {
+                                // Verify agent pointer is valid
+                                if (!agent.get()) {
+                                    logger::warn("Invalid agent pointer");
+                                    continue;
+                                }
+
+                                // Add timeout to avoid deadlocks
+                                bool isTalking = false;
+                                bool isClean = false;
+                                bool isRestored = false;
+
+                        
+                        
+                                try {
+                                    // logger::debug("Checking agent {}", agent->getActorName());
+                                    /* isTalking is only used here. Better use isClean, as it has a timeout.
+                                    * 
+                                    isTalking = agent->isTalking();
+                                    if (isTalking) continue;
+                                    */
+                            
+                                    auto elapsed =
+                                        std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
+
+                                    isRestored=agent->isRestored();
+                                    isClean = agent->isClean();
+                           
+                                    if (isClean && !isRestored) {
                                         if (performedActorCleanupThisPass) {
                                             agent->SetLastTimeTalk();
                                             continue;
                                         }
-                                        performedActorCleanupThisPass = true;
+                                        if (!game->GameIsPaused()) {    // We're gonna call some papyrus functions, make sure game is running
+                                            if (elapsed >=
+                                                std::chrono::seconds(91)) {  // To restore packages override after 30 seconds of no speech
+                                                logger::debug("[RESTORE] Throwing out of the conversation : {}",
+                                                              agent->getActorName());
 
-                                        logger::info("[CLEANER] Dirty clean {}, not present. ", agent->getActorName());
-                                        auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
-                                        if (actorByForm) {
-                                            auto actor = actorByForm->As<RE::Actor>();
-                                            if (actor) {
-                                                if (agent->getOriginalVoice() != nullptr) {
-                                                    logger::info("[CLEANER] Dirty: Restoring voice for {} {:#x} ",
-                                                                 actor->GetDisplayFullName(),
-                                                                 agent->getOriginalVoice()->formID);
-                                                    actor->GetActorBase()->voiceType = agent->getOriginalVoice();
-                                                    actor->AllowPCDialogue(true);
+                                                auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
+                                                if (actorByForm) {
+                                                    auto actor = actorByForm->As<RE::Actor>();
+
+                                                    auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                                                    auto args = RE::MakeFunctionArguments(std::move(actor));
+                                                    RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                                                        "AIAgentAIMind", "ReleaseFromConversation", args, callback);
+
+                                                    if (agent->getWasOnScene()) {
+                                                        // Try to restore scene
+                                                
+                                                        logger::debug(
+                                                            "[RESTORE] Calling papyrus function for EndDialogueClearScene");
+                                                        auto callback =
+                                                            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                                                        auto args = RE::MakeFunctionArguments(std::move(actor));
+                                                        RE::BSScript::Internal::VirtualMachine::GetSingleton()
+                                                            ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClearScene", args,
+                                                                                 callback);
+
+                                                    } else {
+                                                        logger::debug(
+                                                            "[RESTORE] Calling papyrus function for EndDialogueClear");
+                                                        auto callback =
+                                                            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                                                        auto args = RE::MakeFunctionArguments(std::move(actor));
+                                                        RE::BSScript::Internal::VirtualMachine::GetSingleton()
+                                                            ->DispatchStaticCall("AIAgentAIMind", "EndDialogueClear", args,
+                                                                                 callback);
+                                                    }
+                                                } else {
+                                                    logger::debug("[RESTORE] Unable to restore: {}", agent->getActorName());
                                                 }
+                                                agent->setOnScene(false);
+                                                agent->setRestored(true);
                                             }
+                                            continue;
                                         }
+                                    }
+                            
+                                    if (isClean) 
+                                        continue;
 
+                                } catch (const std::exception& e) {
+                                    logger::error("Error checking agent state: {}", e.what());
+                                    continue;
+                                }
+
+                                auto now = std::chrono::high_resolution_clock::now();
+                                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - agent->GetLastTimeTalk());
+
+                                if (elapsed <= std::chrono::seconds( CLEANING_TIMEOUT)) {
+                                    continue;
+                                } else {
+                                    if (agent->isNarrator()) {
                                         agent->setClean(true);
-                                        //agent->setRestored(true);
-                                        agent->setAvailable(true);
+                                        agent->setRestored(true);
 
                                     } else {
-                                        logger::info("[CLEANER]  NOT Cleaning state for {}, not present. Will do later",
-                                                     agent->getActorName());
-                                        agent->SetLastTimeTalk();  // Will check again in CLEANING_TIMEOUT secs.
+                                        if (agent->isPresent(beings)) {
+                                            if (performedActorCleanupThisPass) {
+                                                agent->SetLastTimeTalk();
+                                                continue;
+                                            }
+                                           
+                                            // This  makes the cleanup happen only once per maintenance pass, 
+                                            // performedActorCleanupThisPass = true;
+
+                                            if (agent->getActor()) {
+                                                if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
+                                                    auto fgen = agent->getActor()->GetFaceGenAnimationData();
+                                                    if (fgen) {
+                                                        RE::BSSpinLockGuard locker(fgen->lock);
+
+                                                        fgen->ClearExpressionOverride();
+                                                        // fgen->Reset(0.0f, true, true, true, false);
+                                                        for (int i = 0; i <= 15; i++) fgen->phenomeKeyFrame.SetValue(i, 0.0f);
+
+                                                        /*
+                                                        agent->getActor()->GetActorRuntimeData().currentProcess->Update3DModel(
+                                                            agent->getActor());
+                                                        */
+                                                    }
+
+                                                }
+
+                                                agent->getActor()->AllowPCDialogue(true);
+
+                                                // Moved here 1.0.13
+                                                if (agent->getActor() && !agent->isNarrator()) {
+                                                    if (agent->getActor()->IsDead()) {
+                                                        agent->markToBeDeleted();
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                            agent->setClean(true);
+                                            agent->setAvailable(true);
+                                            auto npc = agent->getActor();
+                                            if (npc) {
+                                                npc->AllowPCDialogue(true);
+                                            }
+                                            agent->resetForgetCleanCounter();  // 1,0.14 Forget about this actor
+                                            // agent->getActor()->EndDialogue(); // 1.0.13
+                                            if (agent->getOriginalVoice() != nullptr) {
+                                                agent->getActor()->GetActorBase()->voiceType = agent->getOriginalVoice();
+                                            }
+
+                                            logger::info("[CLEANER] Clean: Restoring voice for {} {:#x} ",
+                                                         npc->GetDisplayFullName(), agent->getOriginalVoice()->formID);
+
+                                        } else {  // Actor not present
+
+                                            agent->increaseForgetCleanCounter();
+                                            if (agent->getForgetCleanCounter() > 12) {  // Dirty clean
+                                                if (performedActorCleanupThisPass) {
+                                                    agent->SetLastTimeTalk();
+                                                    continue;
+                                                }
+                                                performedActorCleanupThisPass = true;
+
+                                                logger::info("[CLEANER] Dirty clean {}, not present. ", agent->getActorName());
+                                                auto actorByForm = RE::TESForm::LookupByID(agent->GetFormId());
+                                                if (actorByForm) {
+                                                    auto actor = actorByForm->As<RE::Actor>();
+                                                    if (actor) {
+                                                        if (agent->getOriginalVoice() != nullptr) {
+                                                            logger::info("[CLEANER] Dirty: Restoring voice for {} {:#x} ",
+                                                                         actor->GetDisplayFullName(),
+                                                                         agent->getOriginalVoice()->formID);
+                                                            actor->GetActorBase()->voiceType = agent->getOriginalVoice();
+                                                            actor->AllowPCDialogue(true);
+                                                        }
+                                                    }
+                                                }
+
+                                                agent->setClean(true);
+                                                //agent->setRestored(true);
+                                                agent->setAvailable(true);
+
+                                            } else {
+                                                logger::info("[CLEANER]  NOT Cleaning state for {}, not present. Will do later",
+                                                             agent->getActorName());
+                                                agent->SetLastTimeTalk();  // Will check again in CLEANING_TIMEOUT secs.
+                                            }
+                                        }
                                     }
-                                }
+                                }  // agent->getActor()->EvaluatePackage(false, false);
+
+                            } catch (const std::exception& e) {
+                                logger::error("Error processing agent: {}", e.what());
+                                continue;
                             }
-                        }  // agent->getActor()->EvaluatePackage(false, false);
+                        }
 
-                    } catch (const std::exception& e) {
-                        logger::error("Error processing agent: {}", e.what());
-                        continue;
                     }
-                }
-
-                }
 
                 }  // !deferHeavyAgentMaintenance
 
@@ -3881,13 +3928,13 @@ namespace ProcessorScreenShot {
 namespace ProcessorNativeScreenShot {
 
     struct Hook {
-        static void thunk(ID3D11Texture2D* a_texture_2d, char const* a_path,
+        static void thunk(REX::W32::ID3D11Texture2D* a_texture_2d, char const* a_path,
                           RE::BSGraphics::TextureFileFormat a_format);
 
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
-    void Hook::thunk(ID3D11Texture2D* a_texture_2d, char const* a_path, RE::BSGraphics::TextureFileFormat a_format) {
+    void Hook::thunk(REX::W32::ID3D11Texture2D* a_texture_2d, char const* a_path, RE::BSGraphics::TextureFileFormat a_format) {
         
         func(a_texture_2d, a_path, a_format);
         if (MutexIsMakeShotNativeActivated()) {
@@ -5995,6 +6042,9 @@ OnSaveGame{
 // Track last known equipment/inventory/skills/stats hashes to avoid duplicate updates
 std::unordered_map<uint32_t, std::string> lastEquipmentHash;
 std::unordered_map<uint32_t, std::string> lastInventoryHash;
+std::mutex lastInventoryHashMutex;
+std::unordered_map<uint32_t, std::unordered_map<std::string, std::vector<std::function<void(bool)>>>>
+    pendingInventoryDeliveries;
 std::unordered_map<uint32_t, std::string> lastSkillsHash;
 std::unordered_map<uint32_t, std::string> lastStatsHash;
 std::unordered_map<uint32_t, std::string> lastSpellsHash;
@@ -6080,8 +6130,7 @@ static bool HasArmorSlot(RE::TESObjectARMO* armor, RE::BGSBipedObjectForm::Biped
         return false;
     }
 
-    auto slotMask = static_cast<uint64_t>(armor->GetSlotMask());
-    return (slotMask & static_cast<uint64_t>(slot)) != 0;
+    return armor->HasPartOf(slot);
 }
 
 static json CollectItemKeywords(RE::TESBoundObject* boundObject)
@@ -6520,9 +6569,16 @@ void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool 
 
 
 // Helper function to refresh inventory for an AI Agent (with hash-based diffing)
-void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
-    if (!npc) return;
-    if (npc->IsPlayer()) return;  // Skip player
+void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous,
+                                 std::function<void(bool)> completion) {
+    if (!npc) {
+        if (completion) completion(false);
+        return;
+    }
+    if (npc->IsPlayer()) {
+        if (completion) completion(true);
+        return;  // Skip player
+    }
 
     std::string inventoryData;
     std::vector<InventoryItemSnapshot> inventoryItems;  // For sorted hash
@@ -6608,15 +6664,38 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
     auto formID = npc->GetFormID();
 
     // Check if inventory changed (or force update on save load)
-    if (!forceUpdate && lastInventoryHash.find(formID) != lastInventoryHash.end()) {
-        if (lastInventoryHash[formID] == inventoryHash) {
-            logger::trace("[INVENTORY_SKIP] {} inventory unchanged", agentName);
-            return;
+    bool inventoryUnchanged = false;
+    bool joinedPendingDelivery = false;
+    {
+        std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
+        auto actorPending = pendingInventoryDeliveries.find(formID);
+        if (!synchronous && actorPending != pendingInventoryDeliveries.end()) {
+            auto pendingHash = actorPending->second.find(inventoryHash);
+            if (pendingHash != actorPending->second.end()) {
+                if (completion) pendingHash->second.push_back(std::move(completion));
+                joinedPendingDelivery = true;
+            }
+        }
+
+        const auto lastHash = lastInventoryHash.find(formID);
+        inventoryUnchanged =
+            !joinedPendingDelivery && !forceUpdate && lastHash != lastInventoryHash.end() &&
+            lastHash->second == inventoryHash;
+
+        if (!joinedPendingDelivery && !inventoryUnchanged && !synchronous) {
+            auto& callbacks = pendingInventoryDeliveries[formID][inventoryHash];
+            if (completion) callbacks.push_back(std::move(completion));
         }
     }
-
-    // Inventory changed or first time tracking - send update
-    lastInventoryHash[formID] = inventoryHash;
+    if (joinedPendingDelivery) {
+        logger::trace("[INVENTORY_UPDATE] {} inventory delivery already pending", agentName);
+        return;
+    }
+    if (inventoryUnchanged) {
+        logger::trace("[INVENTORY_SKIP] {} inventory unchanged", agentName);
+        if (completion) completion(true);
+        return;
+    }
 
     json inventoryDataJson;
     inventoryDataJson["type"] = "inventory";
@@ -6637,37 +6716,74 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
             });
     }
 
-    if (synchronous) {
-        HTTPManager::postGameDataSync("gamedata.php", inventoryDataJson);
-    } else {
-        HTTPManager::postGameData("gamedata.php", inventoryDataJson);
-    }
+    auto acknowledgeDelivery = [formID, inventoryHash, agentName, itemCount = inventoryItems.size(),
+                                completion = std::move(completion), synchronous](bool success) mutable {
+        std::vector<std::function<void(bool)>> pendingCompletions;
+        {
+            std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
+            if (success) {
+                lastInventoryHash[formID] = inventoryHash;
+            }
 
-    logger::info("[INVENTORY_UPDATE] {} inventory updated ({} items{})", agentName, inventoryItems.size(),
-                 synchronous ? ", sync" : "");
+            if (!synchronous) {
+                auto actorPending = pendingInventoryDeliveries.find(formID);
+                if (actorPending != pendingInventoryDeliveries.end()) {
+                    auto pendingHash = actorPending->second.find(inventoryHash);
+                    if (pendingHash != actorPending->second.end()) {
+                        pendingCompletions = std::move(pendingHash->second);
+                        actorPending->second.erase(pendingHash);
+                    }
+                    if (actorPending->second.empty()) pendingInventoryDeliveries.erase(actorPending);
+                }
+            }
+        }
+
+        if (success) {
+            logger::info("[INVENTORY_UPDATE] {} inventory delivered ({} items)", agentName, itemCount);
+        } else {
+            logger::warn("[INVENTORY_UPDATE] {} inventory delivery failed; next refresh will retry", agentName);
+        }
+
+        if (synchronous && completion) completion(success);
+        for (auto& pendingCompletion : pendingCompletions) {
+            if (pendingCompletion) pendingCompletion(success);
+        }
+    };
+
+    if (synchronous) {
+        acknowledgeDelivery(HTTPManager::postGameDataSync("gamedata.php", inventoryDataJson));
+    } else {
+        HTTPManager::postGameData("gamedata.php", inventoryDataJson, acknowledgeDelivery);
+        logger::trace("[INVENTORY_UPDATE] {} inventory delivery queued ({} items)", agentName, inventoryItems.size());
+    }
 }
 
 
-void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous) {
-    if (!npc) return;
+void RefreshAIAgentInventory(RE::Actor* npc, const std::string& agentName, bool forceUpdate, bool synchronous,
+                             std::function<void(bool)> completion) {
+    if (!npc) {
+        if (completion) completion(false);
+        return;
+    }
 
     auto actorHandle = npc->GetHandle();
     auto* taskInterface = SKSE::GetTaskInterface();
     if (!taskInterface) {
         logger::warn("[INVENTORY_UPDATE] SKSE task interface unavailable; reading {} inventory directly", agentName);
-        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous);
+        RefreshAIAgentInventoryImpl(npc, agentName, forceUpdate, synchronous, std::move(completion));
         return;
     }
 
-    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous]() {
+    taskInterface->AddTask([actorHandle, agentName, forceUpdate, synchronous, completion = std::move(completion)]() mutable {
         auto actorRef = actorHandle.get();
         auto* actor = actorRef.get() ? actorRef.get()->As<RE::Actor>() : nullptr;
         if (!actor) {
             logger::trace("[INVENTORY_SKIP] {} - actor handle no longer valid", agentName);
+            if (completion) completion(false);
             return;
         }
 
-        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous);
+        RefreshAIAgentInventoryImpl(actor, agentName, forceUpdate, synchronous, std::move(completion));
     });
 }
 
@@ -6988,6 +7104,11 @@ void PostNearbyActivityStatus(RE::PlayerCharacter* player, float radius)
 void RefreshPlayerEquipment(bool forceUpdate) {
     auto player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
+
+    if (player->IsInCombat()) {
+        logger::info("[RefreshPlayerEquipment] Avoided equipment update under combat");
+        return;
+    }
     
     std::string helmet, helmet_baseid;
     std::string armor, armor_baseid;
@@ -7219,6 +7340,11 @@ void RefreshPlayerInventory(bool forceUpdate) {
     std::vector<InventoryItemSnapshot> inventoryItems;
     auto inventory = player->GetInventory();
     
+    if (player->IsInCombat()) {
+        logger::info("[RefreshPlayerInventory] Avoided equipment update under combat");
+        return;
+    }
+
     for (const auto& item : inventory) {
         RE::TESBoundObject* boundObject = item.first;
         auto count = item.second.first;
@@ -7273,13 +7399,14 @@ void RefreshPlayerInventory(bool forceUpdate) {
     
     auto formID = player->GetFormID();
     
-    if (!forceUpdate && lastInventoryHash.find(formID) != lastInventoryHash.end()) {
-        if (lastInventoryHash[formID] == inventoryHash) {
+    {
+        std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
+        const auto lastHash = lastInventoryHash.find(formID);
+        if (!forceUpdate && lastHash != lastInventoryHash.end() && lastHash->second == inventoryHash) {
             return;
         }
+        lastInventoryHash[formID] = inventoryHash;
     }
-    
-    lastInventoryHash[formID] = inventoryHash;
     
     if (!inventoryItems.empty()) {
         json inventoryDataJson;
@@ -7295,7 +7422,9 @@ void RefreshPlayerInventory(bool forceUpdate) {
                 {"name", item.name},
                 {"baseid", item.baseid},
                 {"count", item.count},
-                {"keywords", item.keywords.is_array() ? item.keywords : json::array()}
+                {"keywords", item.keywords.is_array() ? item.keywords : json::array()},
+                {"goldvalue", item.gold}
+                
             });
         }
         
@@ -8225,7 +8354,7 @@ EventHandlers {
             const RE::FormID currentPlayerCellFormId = playerCell->GetFormID();
             if (staticLastPlayerCellFormId == 0) {
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
-            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId) {
+            } else if (staticLastPlayerCellFormId != currentPlayerCellFormId && false) {
                 const RE::FormID previousPlayerCellFormId = staticLastPlayerCellFormId;
                 staticLastPlayerCellFormId = currentPlayerCellFormId;
 
@@ -8415,7 +8544,7 @@ EventHandlers {
 
                             // Use door's activate text as name
                             RE::BSString actText;
-                            door->GetActivateText(event->reference, actText);
+                            door->GetActivateText(event->reference.get(), actText);
 
                             // With the following code:
                             auto locNameFull = std::string(actText);
@@ -8432,7 +8561,7 @@ EventHandlers {
                                 locName = locName.substr(0, ltPos);
                             }
                             locName.append(" (door/passage)");
-                            LocationList::GetInstance().AddLocation(locName, ref);
+                            LocationList::GetInstance().AddLocation(locName, ref.get());
 
                             /*
                             RE::TESObjectCELL* cellDoor = destination->GetParentCell();
@@ -8480,7 +8609,7 @@ EventHandlers {
                 if (npc) {
                     
                     RE::ExtraDataList* extra = &ref->extraList;
-                    NPCList::GetInstance().AddNPC(npc->GetName(), ref);
+                    NPCList::GetInstance().AddNPC(npc->GetName(), ref.get());
 
                    
                 }
@@ -8510,7 +8639,8 @@ EventHandlers {
                                          item->GetDisplayFullName());
 
                             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                            auto args = RE::MakeFunctionArguments(std::move(item));
+                            auto* itemReference = item.get();
+                            auto args = RE::MakeFunctionArguments(std::move(itemReference));
                             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                                 "AIAgentAIMind", "AddDelayedHint", args, callback);
 
@@ -8528,7 +8658,7 @@ EventHandlers {
                                 item->GetDisplayFullName(), event->attached);
                    std::thread([item]() {
                         std::this_thread::sleep_for(std::chrono::seconds(1));
-                        RE::TESObjectREFR *localIitem = item;
+                        RE::TESObjectREFR *localIitem = item.get();
                         if (localIitem) {
                             logger::info("AIFaction item loaded {:#x} {}", localIitem->GetFormID(),
                                          localIitem->GetDisplayFullName());
@@ -8566,7 +8696,7 @@ EventHandlers {
                             // Use door's activate text as name
                             RE::BSString actText;
 
-                            door->GetActivateText(event->reference, actText);
+                            door->GetActivateText(event->reference.get(), actText);
 
                             // With the following code:
                             auto locNameFull = std::string(actText);
@@ -8658,18 +8788,59 @@ EventHandlers {
 
             if (event->objectActivated) objectPointer = event->objectActivated.get();
 
+            
             if (refObjActivator->GetFormID() ==
                 RE::PlayerCharacter::GetSingleton()->GetFormID()) {  // Player activates something
+
+
                 if (objectPointer) {
+                    logger::info("Player activated  {:#x}", objectPointer->GetFormID());
+                    
                     if (objectPointer->GetFactionOwner() == AIAgentRoleMasterFaction) {
                         HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
                                                      1, objectPointer->GetDisplayFullName()));
                     }
+                    auto activatedActor = objectPointer->As<RE::Actor>();
+                    if (activatedActor) {
+                        // logger::info("Player activated {}, type {}, horse {},mount {}",
+                        // activatedActor->GetName(),static_cast<std::uint8_t>(activatedActor->formType.get()),activatedActor->IsHorse(),activatedActor->IsAMount());
+                        if (activatedActor->IsAMount()) {
+                            if (!RE::PlayerCharacter::GetSingleton()->IsOnMount())
+                                HTTPManager::log(std::format(
+                                    "infoaction|{}|{}|{} mounts horse '{}'. The party ride now", getCurrentTimeMillis(),
+                                    GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
+                                    objectPointer->GetDisplayFullName()));
+                            else
+                                HTTPManager::log(
+                                    std::format("infoaction|{}|{}|{} unmounts horse '{}'.The party don't ride anymore",
+                                                getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                RE::PlayerCharacter::GetSingleton()->GetName(),
+                                                objectPointer->GetDisplayFullName()));
+                        }
+                    }
                 }
             }
 
             if (activatedS->formType == RE::FormType::ActorCharacter) {
+                /*
+                // To review. Seems followers don't trigger this event when they mount a horse, but the player does. 
+                logger::info("{} activates {}", activator, activated);
+                if (objectPointer) {
+                    auto activatorActor = refObjActivator->As<RE::Actor>();
+                    if (activatorActor) {
+                        if (activatorActor->IsPlayerTeammate()) {
+                            auto activatedActor = objectPointer->As<RE::Actor>();
+                            if (activatedActor && activatedActor->IsAMount()) {
+                                HTTPManager::log(std::format(
+                                    "infoaction|{}|{}|{} mounts horse {}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                    refObjActivator->GetDisplayFullName(), objectPointer->GetDisplayFullName()));
+                            }
+                        }
+                    }
+                    
+                }
+                */
 
             } else if (activated2->formType == RE::FormType::Book) {
                 // Herika reads a book
@@ -9255,7 +9426,7 @@ EventHandlers {
             return;
         }
 
-        auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
+        auto* topicForm = RE::TESForm::LookupByID(event->topicInfoFormID);
         RE::TESTopicInfo* source =
             topicForm && topicForm->GetFormType() == RE::FormType::Info
                 ? static_cast<RE::TESTopicInfo*>(topicForm)
@@ -9269,20 +9440,21 @@ EventHandlers {
         // Check if im involved
 
         auto lastSpeaker = tm ? tm->speaker.get() : nullptr;
-        auto* topicActor = event->speaker;
+        auto* topicActor = event->speakerRef ? event->speakerRef->As<RE::Actor>() : nullptr;
+        const bool topicEnded = event->type.get() == RE::TESTopicInfoEvent::TopicInfoEventType::kTopicEnd;
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
          //if (event->speaker) {
-        if (topicActor && event->flag) {
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+        if (topicActor && topicEnded) {
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
             // DISABLED
             if (cameraObject && false ) {   // Will do the audio search in the other condition branch
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
                     if (targetActor == topicActor) {
                         if (!source) {
-                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoID,
+                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoFormID,
                                          topicActor->GetDisplayFullName());
                             return;
                         }
@@ -9386,7 +9558,7 @@ EventHandlers {
                 } else {
                 }
             }
-        } else  if (topicActor && !event->flag) {
+        } else if (topicActor && !topicEnded) {
             if (topicActor) {
                 //std::string actorName(topicActor->GetDisplayFullName());
                 //auto agentPtr = aiam.getAgentByName(actorName);
@@ -9399,7 +9571,7 @@ EventHandlers {
                                  event->topicInfoID);*/
                 }
 
-                auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
                 if (!cameraObject) {
                     // logger::info("Checking NPC via grabbed ref");
                     // logger::info("TESTopicInfoEvent {} {}", source->GetFormID(), event->topicInfoID);
@@ -9409,7 +9581,7 @@ EventHandlers {
                         // logger::info("Grabbed ref is null");
                         auto cameraObject2 = targetObjectRef.get();
                         if (cameraObject2) {
-                            cameraObject = cameraObject2;
+                            cameraObject = cameraObject2->GetHandle();
                             logger::info("Checked NPC via grabbed ref {}", cameraObject.get()->GetDisplayFullName());
                         }
                     }
@@ -9483,7 +9655,7 @@ EventHandlers {
                                                 } else {
                                                     logger::warn("[VOICE] Skipping unreadable dialogue sample for {} from {} (topic {:08X}): {}",
                                                                  existingAgent->getActorName(), finalAudioPath,
-                                                                 event->topicInfoID, readFailure);
+                                                                 event->topicInfoFormID, readFailure);
                                                 }
                                             }
                                         }
@@ -9553,7 +9725,7 @@ EventHandlers {
             auto responseNode = tm->selectedResponseNode;
             if (responseNode) {
 
-                auto responseNodeCurrent = responseNode->front();
+                auto responseNodeCurrent = responseNode->item;
                  if (responseNodeCurrent) {
                       RE::Actor* menuListenerActor = lastSpeaker ? lastSpeaker->As<RE::Actor>() : nullptr;
                       ProcessorMenu::RememberRecentConversationTarget(menuListenerActor);
@@ -9569,68 +9741,59 @@ EventHandlers {
                           // Do not queue Player TTS from this late topic-event path. By this point vanilla dialogue has
                           // already advanced, so playback would overlap NPC dialogue and show delayed player subtitles.
                           // The supported traditional-dialogue Player TTS path is the optional SWF -> Papyrus bridge.
-                         const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
-                         const char* dialogueVerb = currentChatboxMode == "SHOUT"
-                             ? "Shouting to"
-                             : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
+                          controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
 
-                         HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
-                                                      getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
-                                                      aiam.getPlayerName(),
-                                                      DialogueLastStringSay, dialogueVerb, lastSpeaker->GetDisplayFullName()));
+                          if (CaptureBackgroundChatEnabled) {
+                              const std::string currentChatboxMode = PrismaUIBridge::GetCurrentChatboxMode();
+                              const char* dialogueVerb = currentChatboxMode == "SHOUT"
+                                  ? "Shouting to"
+                                  : (currentChatboxMode == "WHISPER" ? "Whispering to" : "Talking to");
 
-                         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
+                              HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {} ({} {})",
+                                                           getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
+                                                           aiam.getPlayerName(), DialogueLastStringSay, dialogueVerb,
+                                                           lastSpeaker->GetDisplayFullName()));
 
-                         try {
-                             json sData;
-                             sData["listener"] = lastSpeaker->GetDisplayFullName();
-                             sData["location"] = GetPlayerLocation();
-                             sData["speech"] = DialogueLastStringSay;
-                             sData["speaker"] = aiam.getPlayerName();
-                             sData["debug"] = (event->flag) ? "true" : "false";
-                             AddCachedSpeechAudience(sData, "traditional_player_speech");
-                             HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
-                                                          GetGameTimeStamp(), sData.dump()));
+                              try {
+                                  json sData;
+                                  sData["listener"] = lastSpeaker->GetDisplayFullName();
+                                  sData["location"] = GetPlayerLocation();
+                                  sData["speech"] = DialogueLastStringSay;
+                                  sData["speaker"] = aiam.getPlayerName();
+                                  sData["debug"] = topicEnded ? "true" : "false";
+                                  AddCachedSpeechAudience(sData, "traditional_player_speech");
+                                  HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
+                                                               GetGameTimeStamp(), sData.dump()));
 
-                             // Push to chatbox in real-time
-                             if (PrismaUIBridge::IsAvailable()) {
-                                 char timeDateString[200];
-                                 RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
-                                 // Use actual player character name instead of getPlayerName()
-                                 std::string playerName = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
-                                 logger::info("[Chatbox] Pushing player dialogue: {} says: {}", 
-                                            playerName, 
-                                            DialogueLastStringSay.substr(0, 50));
-                                 PrismaUIBridge::PushChatboxMessage(
-                                     playerName, 
-                                     DialogueLastStringSay,
-                                     std::string(timeDateString),
-                                     "player",
-                                     "subtitle"
-                                 );
-                                 // Also push to conversation history panel
-                                 PrismaUIBridge::PushDialogueEntry(
-                                     playerName, 
-                                     DialogueLastStringSay,
-                                     std::string(timeDateString),
-                                     "inputtext",
-                                     "subtitle"
-                                 );
-                             } else {
-                                 logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
-                             }
+                                  // Push to chatbox in real-time
+                                  if (PrismaUIBridge::IsAvailable()) {
+                                      char timeDateString[200];
+                                      RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                                      // Use actual player character name instead of getPlayerName()
+                                      std::string playerName = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
+                                      logger::info("[Chatbox] Pushing player dialogue: {} says: {}",
+                                                   playerName, DialogueLastStringSay.substr(0, 50));
+                                      PrismaUIBridge::PushChatboxMessage(
+                                          playerName, DialogueLastStringSay, std::string(timeDateString), "player", "subtitle");
+                                      // Also push to conversation history panel
+                                      PrismaUIBridge::PushDialogueEntry(
+                                          playerName, DialogueLastStringSay, std::string(timeDateString), "inputtext", "subtitle");
+                                  } else {
+                                      logger::warn("[Chatbox] Cannot push player dialogue - PrismaUI not available");
+                                  }
 
-                             auto result =
-                                 InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
-                                                      HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
-                             HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
-                                                          GetGameTimeStamp(), "(beings in range:" + result + ")"));
-                         } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
-                             logger::info("Error sending speech. Review encoding, {}", ex.what());
-                         }
+                                  auto result =
+                                      InspectManagedAgents(RE::PlayerCharacter::GetSingleton()->AsReference(),
+                                                           HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+                                  HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(),
+                                                               GetGameTimeStamp(), "(beings in range:" + result + ")"));
+                              } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
+                                  logger::info("Error sending speech. Review encoding, {}", ex.what());
+                              }
+                          }
                        }
 
-                    if (event->flag) {
+                    if (topicEnded) {
                         ResetPlayerMenuCustomPlaybackStateForNpcResponse();
 
                         auto responses = responseNodeCurrent->responses;
@@ -9641,7 +9804,7 @@ EventHandlers {
                             RE::DialogueResponse* response = *it;
                             if (!response) {
                                 logger::warn("[VOICE] Dialogue response was null for {} (topic {:08X})",
-                                             lastSpeaker->GetDisplayFullName(), event->topicInfoID);
+                                             lastSpeaker->GetDisplayFullName(), event->topicInfoFormID);
                                 continue;
                             }
 
@@ -9719,7 +9882,7 @@ EventHandlers {
                                         speakerAgent->setVoiceSamplePath(finalPath);
                                     } else {
                                         logger::warn("[VOICE] Skipping unreadable dialogue-menu sample for {} from {} (topic {:08X}): {}",
-                                                     speakerAgent->getActorName(), finalPath, event->topicInfoID,
+                                                     speakerAgent->getActorName(), finalPath, event->topicInfoFormID,
                                                      readFailure);
                                     }
                                 }
@@ -9730,54 +9893,44 @@ EventHandlers {
                         if (DialogueLastStringResponse.compare(fullResponse) != 0) {
                             DialogueLastStringResponse.assign(fullResponse);
 
+                            if (CaptureBackgroundChatEnabled) {
+                                HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {}",
+                                                             getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
+                                                             lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse));
 
+                                try {
+                                    json sData;
+                                    sData["speaker"] = lastSpeaker->GetDisplayFullName();
+                                    sData["location"] = GetPlayerLocation();
+                                    sData["speech"] = DialogueLastStringResponse;
+                                    sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
+                                    sData["audios"] = audioPaths;
+                                    sData["debug"] = topicEnded ? "true" : "false";
+                                    AddCachedSpeechAudience(sData, "traditional_npc_speech");
+                                    HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                                 sData.dump()));
 
-
-                            HTTPManager::log(std::format("chat|{}|{}|(Context location: {}){}: {}",
-                                                         getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
-                                                         lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse));
-
-                            try {
-                                json sData;
-                                sData["speaker"] = lastSpeaker->GetDisplayFullName();
-                                sData["location"] = GetPlayerLocation();
-                                sData["speech"] = DialogueLastStringResponse;
-                                sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
-                                sData["audios"] = audioPaths;
-                                sData["debug"] = (event->flag) ? "true" : "false";
-                                AddCachedSpeechAudience(sData, "traditional_npc_speech");
-                                HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                                             sData.dump()));
-
-                                // Push to chatbox in real-time
-                                if (PrismaUIBridge::IsAvailable()) {
-                                    char timeDateString[200];
-                                    RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
-                                    logger::info("[Chatbox] Pushing NPC dialogue: {} says: {}",
-                                                 lastSpeaker->GetDisplayFullName(),
-                                                 DialogueLastStringResponse.substr(0, 50));
-                                    PrismaUIBridge::PushChatboxMessage(
-                                        lastSpeaker->GetDisplayFullName(),
-                                        DialogueLastStringResponse,
-                                        std::string(timeDateString),
-                                        "npc",
-                                        "subtitle"
-                                    );
-                                    // Also push to conversation history panel
-                                    PrismaUIBridge::PushDialogueEntry(
-                                        lastSpeaker->GetDisplayFullName(),
-                                        DialogueLastStringResponse,
-                                        std::string(timeDateString),
-                                        "chat",
-                                        "subtitle"
-                                    );
-                                } else {
-                                    logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");
+                                    // Push to chatbox in real-time
+                                    if (PrismaUIBridge::IsAvailable()) {
+                                        char timeDateString[200];
+                                        RE::Calendar::GetSingleton()->GetTimeDateString(timeDateString, 200, false);
+                                        logger::info("[Chatbox] Pushing NPC dialogue: {} says: {}",
+                                                     lastSpeaker->GetDisplayFullName(),
+                                                     DialogueLastStringResponse.substr(0, 50));
+                                        PrismaUIBridge::PushChatboxMessage(
+                                            lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse,
+                                            std::string(timeDateString), "npc", "subtitle");
+                                        // Also push to conversation history panel
+                                        PrismaUIBridge::PushDialogueEntry(
+                                            lastSpeaker->GetDisplayFullName(), DialogueLastStringResponse,
+                                            std::string(timeDateString), "chat", "subtitle");
+                                    } else {
+                                        logger::warn("[Chatbox] Cannot push NPC dialogue - PrismaUI not available");
+                                    }
+                                } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
+                                    logger::info("Error sending speech. Review encoding, {}", ex.what());
                                 }
-                            } catch (nlohmann::json_abi_v3_11_2::detail::type_error& ex) {
-                                logger::info("Error sending speech. Review encoding, {}", ex.what());
                             }
-
                         }
                     }
                          
@@ -9916,7 +10069,7 @@ EventHandlers {
                     } catch (const std::exception& e) {
                         logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
                     }
-
+                    RE::DebugNotification("[CHIM] Book added to the CHIM library.");
                     logger::info("[TESEquipEvent] Book data analyzed and sent");
                 }
             } else if (object->formType == RE::FormType::Shout) {
@@ -9944,11 +10097,11 @@ EventHandlers {
 
     On<RE::TESBookReadEvent>([](const RE::TESBookReadEvent* event) {
         // Only triggers on PC?s
-        if (!event->book.get()) return;
+        if (!event->ref.get()) return;
 
         bool bypass = false;
-        auto bookRefPtr = event->book.get();
-        auto bookRef = event->book.get()->GetObjectReference();
+        auto bookRefPtr = event->ref.get();
+        auto bookRef = event->ref.get()->GetObjectReference();
         if (bookRef) {
 
             std::string fullName(bookRefPtr->GetDisplayFullName());
@@ -9961,7 +10114,7 @@ EventHandlers {
                 bypass = true;
             } else if (localName=="Generic Note") {
                 // AIAgent faction. is an ethereal note
-                std::string hashName=md5low(trim(event->book.get()->GetDisplayFullName()),false);
+                std::string hashName=md5low(trim(event->ref.get()->GetDisplayFullName()),false);
                 std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName+".png";
                 std::string destinationFilePath = "data/textures/AIAgent/Books/Note01.png";
 
@@ -10019,7 +10172,7 @@ EventHandlers {
                 } catch (const std::exception& e) {
                     logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
                 }
-
+                RE::DebugNotification("[CHIM] Book added to the CHIM library.");
                 logger::info("[TESBookReadEvent] Book data analyzed and sent");
             }
         }
@@ -10053,7 +10206,7 @@ EventHandlers {
                 RE::TESForm* spell = RE::TESForm::LookupByID(event->spell);
                 if (spell) {
                     if (spell->formType == RE::FormType::Spell) {
-                        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                        auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
                         if (cameraObject && cameraObject.get() &&
                             cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                             auto targetActor = cameraObject.get()->As<RE::Actor>();
@@ -10226,7 +10379,7 @@ EventHandlers {
             return;
         }
         if (false) 
-            logger::info("Quest started, name {} editorId {} , started {} ", qqData->GetName(), qqData->formEditorID,
+            logger::info("Quest started, name {} editorId {} , started {} ", qqData->GetName(), qqData->formEditorID.c_str(),
                      event->started);
         
         if (event->started) {
@@ -10278,7 +10431,7 @@ EventHandlers {
         PostQuestProgressionQuestStage(qqData, event->stage);
         
         if (false)
-            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID,
+            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID.c_str(),
                          event->stage);
         
         
@@ -10409,6 +10562,11 @@ EventHandlers {
          auto source = event->oldContainer;
          auto destination = event->newContainer;
 
+         // Container shuffles can report the same owner on both sides; they are not transfers.
+         if (source == destination) {
+             return;
+         }
+
          std::string itemName;
          std::string itemNameEx;
 
@@ -10489,7 +10647,7 @@ EventHandlers {
              
              AIAgentManager& aiam = AIAgentManager::getInstance();
              auto agent = aiam.getAgentByFormId(destinationPointer->GetFormID());
-             if (agent) {
+             if (agent && !agent->isNarrator()) {
                  if (agent->getActor()->GetFormID() == destinationPointer->GetFormID()) {
                      HTTPManager::log(std::format("itemfound|{}|{}|{} gave {} {} to {},(value {} gold)",
                                                   getCurrentTimeMillis(), GetGameTimeStamp(),
@@ -10591,6 +10749,7 @@ EventHandlers {
             // Only enqueue if not already running to prevent duplicate updates
             int runningTasks = ThreadPool::getInstance().runningTasksByType("PlayerInventoryUpdate");
             
+
             if (runningTasks == 0) {
                 ThreadPool::getInstance().enqueue(
                     "PlayerInventoryUpdate",

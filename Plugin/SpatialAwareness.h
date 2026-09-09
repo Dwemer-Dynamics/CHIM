@@ -44,7 +44,6 @@ namespace SpatialAwareness
         float openDoorPenaltyBase = 0.85f;
         float aroundCornerPenalty = 0.60f;
         float minimumAudibleVolume = 0.15f;
-        float doorTriangulationPercentTolerance = 0.20f;
         float doorTriangulationAbsoluteTolerance = 80.0f;
         float pathRatioReject = 4.0f;
         float pathRatioDistanceReject = 2.5f;
@@ -67,6 +66,7 @@ namespace SpatialAwareness
         int detectionLevel = -999;
         int openDoorCount = 0;
         int closedDoorCount = 0;
+        RE::FormID closedDoorCandidateFormId = 0;
         bool navmeshPathUsed = false;
         bool navmeshPathFound = false;
         bool losFallbackUsed = false;

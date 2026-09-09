@@ -12,6 +12,8 @@
 
 using json = nlohmann::json;
 
+struct PlayerConversationRoutingContext;
+
 namespace PrismaUIBridge {
 
     enum class ChatboxTargetMode : std::uint8_t {
@@ -141,6 +143,28 @@ namespace PrismaUIBridge {
     void HideConfigManagerPanel();
     bool IsConfigManagerPanelVisible();
 
+    // Stage one metadata-rich CHIM MCM setting before publishing the snapshot to Prisma.
+    void BeginChimMcmSnapshot();
+    void PublishChimMcmEntry(
+        const std::string& page,
+        const std::string& section,
+        const std::string& key,
+        const std::string& label,
+        const std::string& description,
+        const std::string& type,
+        const std::string& value,
+        float minValue,
+        float maxValue,
+        float step,
+        const std::string& unit,
+        bool readOnly,
+        bool deprecated);
+    void CommitChimMcmSnapshot(int revision);
+    void BeginChimMcmAgents();
+    void PublishChimMcmAgent(const std::string& bucket, int formId, const std::string& name);
+    void CommitChimMcmAgents();
+    void PublishChimMcmCommandResult(const std::string& request, bool ok, const std::string& message);
+
     // ===== CHIM Browser Functions =====
 
     // Create the CHIM browser panel
@@ -246,6 +270,9 @@ namespace PrismaUIBridge {
     // Create the CHIM chatbox panel
     void CreateChatboxPanel();
 
+    // Publish the authoritative per-save background-chat capture state to Prisma Chat.
+    void PublishCaptureBackgroundChatState(bool enabled);
+
     // Toggle the chatbox panel visibility
     void ToggleChatboxPanel();
 
@@ -277,9 +304,15 @@ namespace PrismaUIBridge {
     // Read the current CHIM mode tracked by the Prisma bridge
     std::string GetCurrentChatboxMode();
 
+    // Apply the mood saved in Prisma Chat to speech-to-text routing.
+    void ApplySavedPlayerMood(PlayerConversationRoutingContext& routingContext);
+
     // Synchronize the native mode state after a Prisma, Papyrus, or server selection.
+    // Pass persistToServer=true only when the caller has not already written the
+    // matching chim_mode setconf entry itself. Server hydration is startup-only.
     bool SetCurrentChatboxMode(const std::string& mode, const char* sourceTag,
-                               bool showNotification = false);
+                               bool showNotification = false, bool persistToServer = false,
+                               bool serverHydration = false);
 
     // Multiplier applied to player-spoken spatial reach for the active CHIM mode
     float GetPlayerSpeechDistanceMultiplier();
@@ -314,6 +347,9 @@ namespace PrismaUIBridge {
     std::uint64_t GetDialogueStopGeneration();
     void BumpDialogueStopGeneration();
 
+    // Shared by the chatbox and voice hotkey; does not require a Prisma view.
+    void StopAllDialogueNow(const char* sourceTag);
+
     // Push a new chat message to the chatbox (real-time)
     void PushChatboxMessage(const std::string& speaker, const std::string& text, 
                             const std::string& timestamp, const std::string& type,
@@ -324,7 +360,8 @@ namespace PrismaUIBridge {
                             const std::string& timestamp);
 
     // Send a message typed in the chatbox
-    void SendChatboxMessage(const std::string& message);
+    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood);
 
     // ===== CHIM Settings Menu Functions =====
 

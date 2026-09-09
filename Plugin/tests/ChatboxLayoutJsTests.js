@@ -9,7 +9,33 @@ const masterMenuHtml = fs.readFileSync(path.join(viewRoot, 'master_menu.html'), 
 const masterMenuScript = fs.readFileSync(path.join(viewRoot, 'master_menu.js'), 'utf8');
 const css = fs.readFileSync(path.join(viewRoot, 'chatbox.css'), 'utf8');
 const script = fs.readFileSync(path.join(viewRoot, 'chatbox.js'), 'utf8');
+const overlayScript = fs.readFileSync(path.join(viewRoot, 'overlay.js'), 'utf8');
+const overlayCss = fs.readFileSync(path.join(viewRoot, 'overlay.css'), 'utf8');
 const bridge = fs.readFileSync(path.resolve(__dirname, '../PrismaUIBridge.cpp'), 'utf8');
+const plugin = fs.readFileSync(path.resolve(__dirname, '../Plugin.cpp'), 'utf8');
+const conversationRouter = fs.readFileSync(path.resolve(__dirname, '../PlayerConversationRouter.h'), 'utf8');
+const httpManager = fs.readFileSync(path.resolve(__dirname, '../HTTPManager.cpp'), 'utf8');
+
+// Evaluate the small pure helper straight out of overlay.js so the mapping itself is tested.
+function loadOverlayFunction(name) {
+    const marker = 'function ' + name + '(';
+    const start = overlayScript.indexOf(marker);
+    assert.notEqual(start, -1, name + ' not found in overlay.js');
+    const end = overlayScript.indexOf('\n    }', start);
+    assert.notEqual(end, -1, name + ' body not delimited in overlay.js');
+    const source = overlayScript.slice(start, end + '\n    }'.length);
+    return new Function(source + '\nreturn ' + name + ';')();
+}
+
+function loadChatboxFunction(name) {
+    const marker = 'function ' + name + '(';
+    const start = script.indexOf(marker);
+    assert.notEqual(start, -1, name + ' not found in chatbox.js');
+    const end = script.indexOf('\n    }', start);
+    assert.notEqual(end, -1, name + ' body not delimited in chatbox.js');
+    const source = script.slice(start, end + '\n    }'.length);
+    return new Function(source + '\nreturn ' + name + ';')();
+}
 
 test('keeps a standalone recent-context viewer available outside the chat modal', () => {
     const viewerStart = html.indexOf('<div id="chim-chatbox-viewer">');
@@ -84,4 +110,488 @@ test('keeps standalone context expanded and reserves collapse for focused chat',
     assert.match(script, /function setContextPlacement\(focused\)[\s\S]*?if \(focused\)[\s\S]*?applyContextCollapsed\(loadContextCollapsed\(\)\)[\s\S]*?contextPanelElement\.classList\.remove\('collapsed'\)/);
     assert.match(html, /<div class="chatbox-control-label">LLM Model<\/div>/);
     assert.doesNotMatch(html, /<div class="chatbox-control-label">Global Model<\/div>/);
+});
+
+test('keeps one persistent CHIM mode authority for the chatbox and the overlay badge', () => {
+    assert.match(bridge, /static void PushCurrentModeToViews\(\)[\s\S]*?UpdateChatboxModeUI\(mode\);[\s\S]*?UpdateOverlayModeUI\(mode\);/);
+    assert.match(bridge, /static void OnOverlayDomReady[\s\S]*?PushCurrentModeToViews\(\);/);
+    assert.match(bridge, /static void OnChatboxDomReady[\s\S]*?PushCurrentModeToViews\(\);/);
+    // Periodic server payloads no longer repaint the persistent mode.
+    assert.match(overlayScript, /window\.updateOverlayMode = function\(mode\)[\s\S]*?pluginModeApplied = true/);
+    assert.match(overlayScript, /if \(!pluginModeApplied\) \{[\s\S]*?updateMode\(overlay\.mode\);/);
+    // Overlay label and colour parity with the chatbox selector.
+    ['CLOSE', 'SHOUT', 'NARRATOR', 'INJECTION_CHAT'].forEach((mode) => {
+        assert.ok(overlayScript.includes("'" + mode + "': { label:"), mode);
+    });
+    ['close', 'shout', 'narrator'].forEach((cls) => {
+        assert.ok(overlayCss.includes('.mode-badge.' + cls + ' {'), cls);
+    });
+});
+
+test('colors the overlay listener status semantically without changing its text', () => {
+    const classify = loadOverlayFunction('classifyListenerStatus');
+
+    assert.equal(classify('Crosshair: Can hear you'), 'hearing-ok');
+    assert.equal(classify('Nearest: Can hear you: around a wall'), 'hearing-ok');
+    assert.equal(classify('Crosshair: Can hear you: 3m above you'), 'hearing-ok');
+
+    assert.equal(classify("Crosshair: Can't hear you clearly"), 'hearing-partial');
+    assert.equal(classify('Nearest: Can hear you, muffled by door'), 'hearing-partial');
+
+    assert.equal(classify('Crosshair: Too far away'), 'hearing-blocked');
+    assert.equal(classify("Nearest: Can't hear you"), 'hearing-blocked');
+    assert.equal(classify("Crosshair: Can't hear you: closed door"), 'hearing-blocked');
+
+    assert.equal(classify('No target'), '');
+    assert.equal(classify('Crosshair'), '');
+    assert.equal(classify('Nearest'), '');
+    assert.equal(classify('Crosshair: In combat'), '');
+    assert.equal(classify(''), '');
+    assert.equal(classify(null), '');
+
+    assert.match(overlayScript, /const statusClass = toneClass \? `target-status \$\{toneClass\}` : 'target-status'/);
+    ['hearing-ok', 'hearing-partial', 'hearing-blocked'].forEach((cls) => {
+        assert.ok(overlayCss.includes('.target-status.' + cls + ' {'), cls);
+    });
+});
+
+test('accepts every Delete Events count the selector offers', () => {
+    const selectMatch = html.match(/<select id="chatbox-delete-events-select"[\s\S]*?<\/select>/);
+    assert.ok(selectMatch, 'delete events select not found in chatbox.html');
+    const offered = [...selectMatch[0].matchAll(/<option value="(\d+)"/g)].map((m) => Number(m[1]));
+    assert.deepEqual(offered, [5, 10, 20, 50, 100]);
+
+    const normalize = loadChatboxFunction('normalizeDeleteEventCount');
+    offered.forEach((count) => {
+        assert.equal(normalize(count), count, 'numeric ' + count);
+        assert.equal(normalize(String(count)), count, 'select value "' + count + '"');
+    });
+
+    // Anything outside the selector is refused instead of deleting a different amount.
+    [0, 1, 7, 15, 99, 200, -5, NaN, null, undefined, '', 'all'].forEach((bad) => {
+        assert.equal(normalize(bad), 0, String(bad));
+    });
+
+    // Click handling and the request path share the single validator.
+    assert.doesNotMatch(script, /\[20, 50, 100\]/);
+    assert.equal(script.match(/normalizeDeleteEventCount\(/g).length, 3);
+});
+
+test('requires two presses on Delete Events and asks "Are you sure?" in between', () => {
+    assert.match(script, /function armDeleteConfirmation\(deleteCount\)[\s\S]*?deleteEventConfirmButton\.textContent = 'Are you sure\?'/);
+    assert.doesNotMatch(script, /Confirm Delete/);
+
+    // The second press only fires when it confirms the same selected count.
+    assert.match(script, /if \(pendingDeleteCount === deleteCount\) \{[\s\S]*?window\.deleteRecentEvents\(deleteCount\);[\s\S]*?armDeleteConfirmation\(deleteCount\);/);
+});
+
+test('never leaves the Delete Events button stuck on the confirmation prompt', () => {
+    assert.match(script, /function clearPendingDeleteConfirmation\(\)[\s\S]*?pendingDeleteCount = 0;[\s\S]*?window\.clearTimeout\(pendingDeleteConfirmTimeoutId\)[\s\S]*?deleteEventConfirmButton\.textContent = 'Delete'/);
+    // Expiry, count changes, and every busy/error/success exit reset the label.
+    assert.match(script, /pendingDeleteConfirmTimeoutId = window\.setTimeout\(function\(\) \{\s*clearPendingDeleteConfirmation\(\);\s*\}, \d+\)/);
+    assert.match(script, /deleteEventSelect\.addEventListener\('change', function\(\) \{\s*clearPendingDeleteConfirmation\(\);/);
+    assert.match(script, /\} finally \{\s*setDeleteEventControlsBusy\(false\);\s*clearPendingDeleteConfirmation\(\);/);
+
+    // It stays a real focusable button, with the tooltip matching whichever state it shows.
+    assert.match(html, /<button id="chatbox-delete-events-confirm"[^>]*type="button"[^>]*title="Delete the selected number of recent events"[^>]*>Delete<\/button>/);
+    assert.match(script, /textContent = 'Are you sure\?';\s*deleteEventConfirmButton\.title = 'Press again to delete the selected events'/);
+    assert.match(script, /textContent = 'Delete';\s*deleteEventConfirmButton\.title = 'Delete the selected number of recent events'/);
+});
+
+// Rebuilds the toggle out of chatbox.js against stub DOM nodes so the pending/ON/OFF
+// contract is exercised, not just matched as text.
+function loadCaptureBackgroundChatControl() {
+    const setterStart = script.indexOf('window.setCaptureBackgroundChatState = function(enabled) {');
+    assert.notEqual(setterStart, -1, 'setCaptureBackgroundChatState not found in chatbox.js');
+    const setterEnd = script.indexOf('\n    };', setterStart);
+    assert.notEqual(setterEnd, -1, 'setCaptureBackgroundChatState body not delimited');
+    const setterSource = script.slice(setterStart, setterEnd + '\n    };'.length);
+
+    const sources = ['normalizeCaptureBackgroundChatState', 'renderCaptureBackgroundChatControl'].map((name) => {
+        const marker = 'function ' + name + '(';
+        const start = script.indexOf(marker);
+        assert.notEqual(start, -1, name + ' not found in chatbox.js');
+        const end = script.indexOf('\n    }', start);
+        assert.notEqual(end, -1, name + ' body not delimited in chatbox.js');
+        return script.slice(start, end + '\n    }'.length);
+    });
+
+    const button = {
+        className: 'focus-btn focus-btn-capture is-pending',
+        disabled: true,
+        title: '',
+        attributes: { 'aria-pressed': 'mixed' },
+        setAttribute(name, value) { this.attributes[name] = value; }
+    };
+    const stateElement = { textContent: '\u2026' };
+    const hostWindow = { chimChatboxCommand() {} };
+    const factory = new Function('window', 'captureBackgroundChatButton', 'captureBackgroundChatStateElement', [
+        'let captureBackgroundChatEnabled = null;',
+        'function setTextIfChanged(element, text) { if (element) element.textContent = text; }',
+        'function setClassNameIfChanged(element, className) { if (element) element.className = className; }',
+        sources.join('\n'),
+        setterSource,
+        'return window.setCaptureBackgroundChatState;'
+    ].join('\n'));
+
+    return { button, stateElement, setState: factory(hostWindow, button, stateElement) };
+}
+
+test('puts Vanilla Dialogue in the secondary action row as a real toggle button', () => {
+    const captureStart = html.indexOf('id="chatbox-capture-background-chat"');
+    const secondaryStart = html.indexOf('focus-chatbox-actions-row-secondary');
+    const soulgazeStart = html.indexOf('focus-chatbox-soulgaze-controls');
+    const gridStart = html.indexOf('chatbox-control-grid');
+
+    assert.notEqual(captureStart, -1, 'capture toggle not found in chatbox.html');
+    assert.ok(secondaryStart < captureStart, 'toggle must live inside the secondary action row');
+    assert.ok(captureStart < soulgazeStart, 'toggle leads the row ahead of Soulgaze and Delete Events');
+    assert.ok(gridStart < secondaryStart, 'toggle must not land in the four-column settings grid');
+
+    // Real button, short visible label, concise state, and pending until native answers.
+    assert.match(html, /<button id="chatbox-capture-background-chat"[^>]*type="button"[^>]*aria-pressed="mixed"[^>]*disabled/);
+    assert.match(html, /<span>Vanilla Dialogue<\/span>/);
+    assert.doesNotMatch(html, /<span>(Capture )?Background Chat<\/span>/, 'visible label uses the renamed wording');
+    assert.match(html, /<span id="chatbox-capture-background-chat-state" class="capture-background-chat-state">&#8230;<\/span>/);
+
+    // Compact hover/focus help only, with no persistent micro-caption beside the button.
+    const helpCopy = 'When on, vanilla dialogue-menu conversations and nearby ambient NPC chatter are added to AI context. When off, neither is captured; normal dialogue and subtitles still work.';
+    assert.match(html, /<span class="chatbox-mode-help" tabindex="0" aria-label="Vanilla Dialogue help" aria-describedby="chatbox-capture-background-chat-help">\?<\/span>/);
+    assert.ok(html.includes('role="tooltip">' + helpCopy + '</div>'), 'help copy must match the approved wording');
+    assert.equal(html.split(helpCopy).length - 1, 1, 'help copy appears once, inside the tooltip');
+});
+
+test('opens the bottom-row help upward and keeps the toggle focusable at a usable size', () => {
+    const helpRule = css.match(/\.chatbox-mode-shortcuts\.capture-background-chat-help\s*\{([\s\S]*?)\}/);
+    assert.ok(helpRule, 'capture help bubble rule not found');
+    // Same upward-opening precedent as the Soulgaze menu in this row.
+    assert.match(helpRule[1], /top:\s*auto/);
+    assert.match(helpRule[1], /bottom:\s*calc\(100% \+ 6px\)/);
+    assert.match(helpRule[1], /max-width:\s*calc\(100vw - 32px\)/);
+    assert.match(css, /\.focus-chatbox-capture-controls\s*\{[\s\S]*?position:\s*relative/);
+
+    assert.match(css, /\.focus-btn-capture\s*\{[\s\S]*?min-height:\s*32px/);
+    assert.match(css, /\.focus-btn-capture:focus-visible\s*\{[\s\S]*?box-shadow:/);
+    assert.match(css, /\.focus-btn-capture\.is-pending,\s*\r?\n\.focus-btn-capture\[disabled\]/);
+
+    // Compact at natural width: it must not stretch to fill the row or wrap its label.
+    const captureRule = css.match(/\.focus-btn-capture\s*\{([\s\S]*?)\}/);
+    assert.ok(captureRule, 'capture button rule not found');
+    assert.match(captureRule[1], /flex:\s*0 0 auto/);
+    assert.match(captureRule[1], /white-space:\s*nowrap/);
+
+    // Green when on and red when off, backing up the ON/OFF text rather than replacing it.
+    const onRule = css.match(/\.focus-btn-capture\.is-on\s*\{([\s\S]*?)\}/);
+    const offRule = css.match(/\.focus-btn-capture\.is-off\s*\{([\s\S]*?)\}/);
+    assert.ok(onRule && offRule, 'capture on/off rules not found');
+    assert.match(onRule[1], /border-color:\s*rgba\(46, 204, 113/);
+    assert.match(onRule[1], /background:\s*rgba\(46, 204, 113/);
+    assert.match(offRule[1], /border-color:\s*rgba\(231, 76, 60/);
+    assert.match(offRule[1], /background:\s*rgba\(231, 76, 60/);
+
+    // The narrow chat shell gives the toggle its own line instead of overflowing the row.
+    const narrowStart = css.indexOf('@media (max-width: 920px)');
+    assert.notEqual(narrowStart, -1);
+    const narrow = css.slice(narrowStart, css.indexOf('\n}', css.indexOf('.focus-chatbox-capture-controls', narrowStart)));
+    assert.match(narrow, /\.focus-chatbox-capture-controls\s*\{[\s\S]*?width:\s*100%[\s\S]*?margin-right:\s*0/);
+});
+
+test('waits for native before showing or changing Vanilla Dialogue state', () => {
+    // Asks on load and on every open, since the per-save value can change while closed.
+    assert.match(script, /sendControlCommand\('capture_background_chat\|request'\)/);
+    assert.match(script, /window\.openFocusChatbox = function\(\)[\s\S]*?requestCaptureBackgroundChatState\(\);/);
+    assert.match(script, /renderCaptureBackgroundChatControl\(\);\s*\r?\n\s*requestCaptureBackgroundChatState\(\);/);
+
+    // A click hands the flip to native and re-enters pending; repeated clicks are refused.
+    const toggleStart = script.indexOf('function toggleCaptureBackgroundChat()');
+    assert.notEqual(toggleStart, -1);
+    const toggleSource = script.slice(toggleStart, script.indexOf('\n    }', toggleStart));
+    assert.match(toggleSource, /if \(captureBackgroundChatEnabled === null\) return;/);
+    assert.match(toggleSource, /captureBackgroundChatEnabled = null;[\s\S]*?sendControlCommand\('capture_background_chat\|toggle'\);/);
+    // No timeout guessing and no optimistic flip anywhere in the toggle path.
+    assert.doesNotMatch(toggleSource, /setTimeout/);
+    assert.doesNotMatch(toggleSource, /captureBackgroundChatEnabled = (true|false|!)/);
+    assert.match(script, /captureBackgroundChatButton\.disabled = pending;/);
+    assert.match(script, /captureBackgroundChatButton\.addEventListener\('click', function\(\) \{\s*\r?\n\s*toggleCaptureBackgroundChat\(\);/);
+});
+
+test('accepts only authoritative Vanilla Dialogue state from native', () => {
+    const control = loadCaptureBackgroundChatControl();
+
+    [true, 1, '1'].forEach((on) => {
+        control.setState(on);
+        assert.equal(control.stateElement.textContent, 'ON', String(on));
+        assert.equal(control.button.attributes['aria-pressed'], 'true', String(on));
+        assert.equal(control.button.disabled, false, String(on));
+        assert.match(control.button.className, /\bis-on\b/, String(on));
+    });
+
+    [false, 0, '0'].forEach((off) => {
+        control.setState(off);
+        assert.equal(control.stateElement.textContent, 'OFF', String(off));
+        assert.equal(control.button.attributes['aria-pressed'], 'false', String(off));
+        assert.equal(control.button.disabled, false, String(off));
+        assert.match(control.button.className, /\bis-off\b/, String(off));
+    });
+
+    // Anything unauthoritative drops back to pending instead of guessing a state.
+    [undefined, null, '', ' ', 'maybe', 2, -1, NaN, {}, []].forEach((bad) => {
+        control.setState(true);
+        control.setState(bad);
+        assert.equal(control.stateElement.textContent, '\u2026', String(bad));
+        assert.equal(control.button.attributes['aria-pressed'], 'mixed', String(bad));
+        assert.equal(control.button.disabled, true, String(bad));
+        assert.match(control.button.className, /\bis-pending\b/, String(bad));
+    });
+});
+
+test('uses the Vanilla Dialogue setting for ambient and dialogue-menu context capture', () => {
+    assert.match(plugin, /void ProcedureListenToScene\(\) \{\s*if \(!CaptureBackgroundChatEnabled\) return;/);
+
+    const playerMenuStart = plugin.indexOf('if (DialogueLastStringSay.compare(responseNodeCurrent->topicText) != 0)');
+    const npcMenuStart = plugin.indexOf('if (DialogueLastStringResponse.compare(fullResponse) != 0)');
+    assert.notEqual(playerMenuStart, -1, 'player dialogue-menu capture block not found');
+    assert.notEqual(npcMenuStart, -1, 'NPC dialogue-menu capture block not found');
+
+    const playerMenuCapture = plugin.slice(playerMenuStart, npcMenuStart);
+    const npcMenuCapture = plugin.slice(npcMenuStart, plugin.indexOf('On<RE::TESEquipEvent>', npcMenuStart));
+    assert.match(playerMenuCapture, /if \(CaptureBackgroundChatEnabled\) \{[\s\S]*?traditional_player_speech/);
+    assert.match(npcMenuCapture, /if \(CaptureBackgroundChatEnabled\) \{[\s\S]*?traditional_npc_speech/);
+});
+test('offers a compact player mood selector with no mood as the default', () => {
+    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker"[^>]*>([\s\S]*?)<\/fieldset>/);
+    assert.ok(moodPicker, 'mood picker not found');
+
+    const values = [...moodPicker[1].matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
+        .map((match) => match[1]);
+    assert.deepEqual(values, ['', 'happy', 'sad', 'angry', 'annoyed', 'scared', 'surprised', 'confused', 'suspicious', 'playful', 'flirty', 'custom']);
+    assert.match(moodPicker[1], /value="" aria-label="No mood" checked/);
+    assert.match(css, /\.focus-chatbox-mood-input:checked \+ \.focus-chatbox-mood-option/);
+    assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option/);
+
+    // Custom carries its own free text, so it must not widen the validated predefined roster.
+    const normalizeMood = loadChatboxFunction('normalizePlayerMood');
+    values.slice(1, -1).forEach((mood) => assert.equal(normalizeMood(mood), mood));
+    ['', 'custom', 'neutral', 'mood=happy', null, undefined].forEach((mood) => assert.equal(normalizeMood(mood), ''));
+
+    // No mood is the fallback for an empty store, not a reset applied on every open.
+    assert.match(script, /function normalizeStoredPlayerMood\(value\)[\s\S]*?return stored === customPlayerMoodValue \? customPlayerMoodValue : normalizePlayerMood\(stored\)/);
+    assert.doesNotMatch(script, /resetPlayerMood/);
+});
+
+test('keeps every mood icon-only, with Custom last and its field beside the pencil', () => {
+    const moodPicker = html.match(/<fieldset class="focus-chatbox-mood-picker"[^>]*>([\s\S]*?)<\/fieldset>/);
+    assert.ok(moodPicker, 'mood picker not found');
+
+    // Each option keeps its icon visible and its concise mood name hidden until hover/focus.
+    const labels = [...moodPicker[1].matchAll(
+        /<label class="focus-chatbox-mood-option" for="chatbox-mood-([a-z]+)">((?:&#[0-9A-Fa-fx]+;)+)<span class="focus-chatbox-mood-tip" aria-hidden="true">([^<]+)<\/span><\/label>/g
+    )].map((match) => ({ id: match[1], icon: match[2], mood: match[3] }));
+    assert.equal(labels.length, 12, 'every mood radio needs an icon-only label');
+    assert.equal(labels[labels.length - 2].id, 'flirty');
+    assert.equal(labels[labels.length - 1].id, 'custom', 'Custom belongs directly after Flirty');
+    assert.equal(labels[labels.length - 1].icon, '&#x270F;&#xFE0F;', 'Custom uses the pencil icon');
+    assert.deepEqual(labels.map((label) => label.mood), [
+        'No mood', 'Happy', 'Sad', 'Angry', 'Annoyed', 'Scared',
+        'Surprised', 'Confused', 'Suspicious', 'Playful', 'Flirty', 'Custom'
+    ]);
+    assert.match(moodPicker[1], /id="chatbox-mood-custom"[^>]*value="custom" aria-label="Custom mood"/);
+    assert.doesNotMatch(moodPicker[1], /title="/, 'native tooltips must not duplicate the Prisma mood label');
+    assert.match(css, /\.focus-chatbox-mood-option:hover \.focus-chatbox-mood-tip/);
+    assert.match(css, /\.focus-chatbox-mood-input:focus-visible \+ \.focus-chatbox-mood-option \.focus-chatbox-mood-tip/);
+
+    // At rest the row is icons only, and the tip floats above the icon without swallowing the click.
+    const moodTipRule = css.match(/\.focus-chatbox-mood-tip\s*\{([\s\S]*?)\}/);
+    assert.ok(moodTipRule, 'mood tooltip styles not found');
+    assert.match(moodTipRule[1], /position:\s*absolute/);
+    assert.match(moodTipRule[1], /visibility:\s*hidden/);
+    assert.match(moodTipRule[1], /pointer-events:\s*none/);
+    assert.match(moodTipRule[1], /white-space:\s*nowrap/);
+    assert.match(css, /\.focus-chatbox-mood-option\s*\{[\s\S]*?position:\s*relative/);
+
+    // The free-text field sits immediately to the right of the pencil, inside the same wrapping row.
+    const customRadioIndex = moodPicker[1].indexOf('id="chatbox-mood-custom"');
+    const customLabelIndex = moodPicker[1].indexOf('for="chatbox-mood-custom"');
+    const customTextIndex = moodPicker[1].indexOf('id="chatbox-mood-custom-text"');
+    assert.ok(customRadioIndex !== -1 && customLabelIndex !== -1 && customTextIndex !== -1);
+    assert.ok(customRadioIndex < customLabelIndex && customLabelIndex < customTextIndex);
+
+    const customText = moodPicker[1].match(/<input\s+id="chatbox-mood-custom-text"[\s\S]*?>/);
+    assert.ok(customText, 'custom mood text input not found');
+    assert.match(customText[0], /type="text"/);
+    assert.match(customText[0], /maxlength="80"/);
+    assert.ok(!/placeholder=/.test(customText[0]), 'custom mood input should not carry example placeholder text');
+    assert.match(customText[0], /aria-label="Custom mood description"/);
+    assert.match(customText[0], /aria-describedby="chatbox-mood-custom-error"/);
+    assert.match(customText[0], /aria-invalid="false"/);
+
+    // Compact, keyboard-visible, and allowed to wrap rather than overflow the shell.
+    assert.match(css, /\.focus-chatbox-mood-options\s*\{[\s\S]*?flex-wrap:\s*wrap/);
+    const customTextRule = css.match(/\.focus-chatbox-mood-custom-input\s*\{([\s\S]*?)\}/);
+    assert.ok(customTextRule, 'custom mood input styles not found');
+    assert.match(customTextRule[1], /flex:\s*0 1 196px/);
+    assert.match(customTextRule[1], /min-width:\s*0/);
+    assert.match(customTextRule[1], /height:\s*30px/);
+    assert.match(css, /\.focus-chatbox-mood-custom-input:focus,\s*\.focus-chatbox-mood-custom-input:focus-visible\s*\{/);
+    assert.match(css, /\.focus-chatbox-mood-custom-input\[aria-invalid="true"\]\s*\{/);
+});
+
+test('ties the Custom mood radio and its text field to a single selection', () => {
+    // Picking Custom drops the caret in the field; focusing or typing in the field picks Custom.
+    assert.match(script, /if \(input\.value === customPlayerMoodValue\) \{\s*focusCustomPlayerMoodInput\(\);/);
+    assert.match(script, /playerMoodCustomTextInput\.addEventListener\('focus', function\(\) \{\s*if \(selectCustomPlayerMood\(\)\) \{/);
+    assert.match(script, /playerMoodCustomTextInput\.addEventListener\('input', function\(\) \{\s*selectCustomPlayerMood\(\);/);
+    assert.match(script, /function selectCustomPlayerMood\(\)[\s\S]*?playerMoodCustomRadio\.checked = true/);
+
+    // A predefined mood ignores the typed text without wiping it mid-session.
+    const predefinedBranch = script.match(/input\.addEventListener\('change', function\(\) \{[\s\S]*?\n        \}\);/);
+    assert.ok(predefinedBranch, 'mood change handler not found');
+    assert.doesNotMatch(predefinedBranch[0], /playerMoodCustomTextInput\.value = ''/);
+    assert.match(predefinedBranch[0], /setCustomPlayerMoodInvalid\(false\);/);
+
+    // Skyrim input behaviour: the field keeps Enter-to-send and Escape-to-close like the composer.
+    assert.match(script, /playerMoodCustomTextInput\.addEventListener\('keydown'[\s\S]*?'Escape'[\s\S]*?window\.closeFocusChatbox\(true\)[\s\S]*?'Enter'[\s\S]*?window\.sendFocusMessage\(\)/);
+
+    // Restoring re-checks the saved radio and refills the field instead of blanking both.
+    assert.match(script, /function restorePlayerMoodSelection\(\)[\s\S]*?input\.checked = input\.value === stored\.mood[\s\S]*?playerMoodCustomTextInput\.value = stored\.custom[\s\S]*?setCustomPlayerMoodInvalid\(false\)/);
+    assert.match(script, /window\.sendFocusMessage[\s\S]*?window\.closeFocusChatbox\(true\)/);
+});
+
+test('normalizes and caps the custom mood text at the field maxlength', () => {
+    const maxLength = Number(html.match(/id="chatbox-mood-custom-text"[\s\S]*?maxlength="(\d+)"/)[1]);
+    assert.equal(maxLength, 80);
+
+    const normalizeCustom = loadChatboxFunction('normalizeCustomPlayerMood');
+    assert.equal(normalizeCustom('  sarcastically  '), 'sarcastically');
+    assert.equal(normalizeCustom('very\n\tslowly   and   flatly'), 'very slowly and flatly');
+    assert.equal(normalizeCustom('a'.repeat(maxLength + 40)).length, maxLength);
+
+    // Blank-ish input is never a mood, so the send guard can rely on this alone.
+    ['', '   ', '\t', '\n', '  \r\n ', null, undefined].forEach((text) => {
+        assert.equal(normalizeCustom(text), '', JSON.stringify(text));
+    });
+});
+
+test('refuses to send a blank Custom mood and exposes the invalid state', () => {
+    // The composer stays open, the field takes focus, and the failure is announced.
+    assert.match(script, /if \(customSelected && !customMood\) \{\s*setCustomPlayerMoodInvalid\(true\);\s*focusCustomPlayerMoodInput\(\);\s*return;/);
+    assert.match(script, /function setCustomPlayerMoodInvalid\(invalid\)[\s\S]*?setAttribute\('aria-invalid', invalid \? 'true' : 'false'\)[\s\S]*?playerMoodCustomErrorElement\.hidden = !invalid/);
+    assert.match(html, /<span id="chatbox-mood-custom-error"[^>]*role="alert"[^>]*hidden>/);
+
+    // Typing clears the error instead of leaving a stale alert on screen.
+    assert.match(script, /if \(getCustomPlayerMoodText\(\)\) \{\s*setCustomPlayerMoodInvalid\(false\);/);
+
+    // The blank-custom bail happens before anything reaches the bridge.
+    const sendBody = script.match(/window\.sendFocusMessage = function\(\) \{[\s\S]*?\n    \};/);
+    assert.ok(sendBody, 'sendFocusMessage not found');
+    assert.ok(
+        sendBody[0].indexOf('setCustomPlayerMoodInvalid(true)') < sendBody[0].indexOf('sendMessageToBridge('),
+        'blank custom mood must bail out before sending'
+    );
+});
+
+test('sends the custom mood as JSON so pipes in player text stay intact', () => {
+    const buildCustomMoodCommand = loadChatboxFunction('buildCustomMoodCommand');
+    const command = buildCustomMoodCommand('sarcastically | dryly', 'Are you sure | about that?');
+
+    assert.ok(command.startsWith('send_custom_mood|'), 'custom mood needs its own bridge command');
+    // Everything after the single structural pipe is one JSON document, pipes and all.
+    const payload = JSON.parse(command.slice('send_custom_mood|'.length));
+    assert.deepEqual(payload, { custom_mood: 'sarcastically | dryly', message: 'Are you sure | about that?' });
+    assert.deepEqual(Object.keys(payload), ['custom_mood', 'message']);
+
+    // Quotes, newlines, and braces survive the same way.
+    const tricky = buildCustomMoodCommand('with "air quotes"', 'line one\nline "two" {}');
+    assert.deepEqual(JSON.parse(tricky.slice('send_custom_mood|'.length)), {
+        custom_mood: 'with "air quotes"',
+        message: 'line one\nline "two" {}'
+    });
+
+    // Predefined and no-mood transports are untouched, and custom never rides on send_mood|.
+    assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
+    assert.match(script, /function sendMessageToBridge\(message, playerMood, customMood\)[\s\S]*?if \(custom\) \{[\s\S]*?buildCustomMoodCommand\(custom, message\)/);
+    assert.match(script, /sendMessageToBridge\(message, customSelected \? '' : getSelectedPlayerMood\(\), customMood\)/);
+
+    // The optimistic row shows the typed message only; custom mood text travels out of band.
+    assert.doesNotMatch(script, /pushChatMessage\([^)]*customMood/);
+    assert.doesNotMatch(script, /customMood \+ /);
+
+    // The bridge parses the JSON at a fixed offset, so the prefix length has to agree with it.
+    const prefixLength = Number(bridge.match(/cmd\.starts_with\("send_custom_mood\|"\)[\s\S]*?json::parse\(cmd\.substr\((\d+)\)/)[1]);
+    assert.equal(prefixLength, 'send_custom_mood|'.length);
+    assert.match(bridge, /payload\.contains\("message"\)[\s\S]*?payload\.contains\("custom_mood"\)/);
+    assert.match(bridge, /SendChatboxMessage\(message, "custom", customPlayerMood\)/);
+
+    // The view caps text well under the plugin's own limit, so nothing typed can be silently rejected.
+    const bridgeCap = Number(bridge.match(/customPlayerMood\.size\(\) > (\d+)/)[1]);
+    const fieldMaxLength = Number(html.match(/id="chatbox-mood-custom-text"[\s\S]*?maxlength="(\d+)"/)[1]);
+    assert.ok(fieldMaxLength <= bridgeCap, `field maxlength ${fieldMaxLength} exceeds bridge cap ${bridgeCap}`);
+
+    // 'custom' rides as the mood sentinel with the phrasing in its own field, never as a predefined mood.
+    assert.match(httpManager, /audienceSnapshot\["player_mood_custom"\] = routingContext->customPlayerMood/);
+    assert.match(httpManager, /requestModeSnapshot\["player_mood_custom"\] = routingContext->customPlayerMood/);
+    assert.match(conversationRouter, /std::string customPlayerMood;/);
+});
+
+test('sends validated mood metadata and leaves the live story row undecorated', () => {
+    assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
+    assert.match(bridge, /cmd\.starts_with\("send_mood\|"\)[\s\S]*?SendChatboxMessage\(message, playerMood, ""\)/);
+    assert.match(bridge, /cmd\.starts_with\("send\|"\)[\s\S]*?SendChatboxMessage\(message, "", ""\)/);
+
+    // The optimistic row renders the submitted text verbatim; mood phrasing belongs to the server.
+    assert.match(bridge, /PushChatboxMessage\(playerName, message, "", "player"\)/);
+    assert.ok(!bridge.includes('displayMessage'), 'story row must not rewrite the submitted message');
+    assert.ok(!bridge.includes('[mood: '), 'raw mood tag must not reach the story row');
+    assert.ok(!bridge.includes('DefaultPlayerMoodSuffix'), 'plugin must not build mood phrasing');
+    assert.ok(!bridge.includes('speaks in a'), 'plugin must not build mood phrasing');
+
+    // Mood still travels as routing metadata, and every selectable mood must survive validation.
+    const supportedMood = bridge.match(/static bool IsSupportedFixedPlayerMood\(const std::string& playerMood\) \{\s*return([\s\S]*?);/);
+    assert.ok(supportedMood, 'mood allowlist not found');
+    // One allowlist covers both the typed send and the mood saved for speech-to-text.
+    assert.equal(bridge.match(/IsSupportedFixedPlayerMood\(playerMood\)/g).length, 2);
+    // 'custom' is resolved from its own JSON command, so it is deliberately absent from this allowlist.
+    const offeredMoods = [...html.matchAll(/name="chatbox-player-mood" value="([^"]*)"/g)]
+        .map((match) => match[1])
+        .filter((mood) => mood && mood !== 'custom');
+    assert.ok(offeredMoods.length >= 10, 'expected the full mood roster to be offered');
+    offeredMoods.forEach((mood) => assert.ok(
+        supportedMood[1].includes(`playerMood == "${mood}"`),
+        `mood allowlist missing ${mood}`
+    ));
+    assert.match(bridge, /routingContext\.playerMood = playerMood/);
+    assert.match(conversationRouter, /std::string playerMood;/);
+    assert.match(httpManager, /audienceSnapshot\["player_mood"\] = routingContext->playerMood/);
+    assert.match(httpManager, /requestModeSnapshot\["player_mood"\] = routingContext->playerMood/);
+});
+
+test('persists player mood and synchronizes it for speech-to-text', () => {
+    assert.match(script, /const playerMoodStorageKey = 'chim_chatbox_player_mood'/);
+    assert.match(script, /const playerMoodCustomTextStorageKey = 'chim_chatbox_custom_mood'/);
+    assert.match(script, /function loadPlayerMoodSelection\(\)[\s\S]*?try \{[\s\S]*?localStorage\.getItem\(playerMoodStorageKey\)[\s\S]*?catch \(_err\) \{/);
+    assert.match(script, /function savePlayerMoodSelection\(\)[\s\S]*?try \{[\s\S]*?localStorage\.setItem\(playerMoodStorageKey[\s\S]*?catch \(_err\) \{/);
+    assert.match(script, /function restorePlayerMoodSelection\(\)[\s\S]*?input\.checked = input\.value === stored\.mood[\s\S]*?playerMoodCustomTextInput\.value = stored\.custom[\s\S]*?syncPlayerMoodToNative\(\)/);
+    assert.match(script, /window\.openFocusChatbox[\s\S]*?restorePlayerMoodSelection\(\)/);
+    assert.match(script, /setContextPlacement\(false\);\s*restorePlayerMoodSelection\(\);/);
+    assert.match(script, /persistPlayerMoodSelection\(\)[\s\S]*?savePlayerMoodSelection\(\);\s*syncPlayerMoodToNative\(\)/);
+    assert.doesNotMatch(script, /resetPlayerMood/);
+
+    const buildPlayerMoodCommand = loadChatboxFunction('buildPlayerMoodCommand');
+    const command = buildPlayerMoodCommand('custom', 'dryly | with "quotes"');
+    assert.ok(command.startsWith('set_player_mood|'));
+    assert.deepEqual(JSON.parse(command.slice('set_player_mood|'.length)), {
+        player_mood: 'custom',
+        custom_mood: 'dryly | with "quotes"'
+    });
+    const prefixLength = Number(bridge.match(/cmd\.starts_with\("set_player_mood\|"\)[\s\S]*?json::parse\(cmd\.substr\((\d+)\)/)[1]);
+    assert.equal(prefixLength, 'set_player_mood|'.length);
+    assert.match(script, /const mood = customSelected \? \(customMood \? customPlayerMoodValue : ''\) : getSelectedPlayerMood\(\)/);
+    assert.match(bridge, /void ApplySavedPlayerMood\(PlayerConversationRoutingContext& routingContext\)[\s\S]*?routingContext\.playerMood = g_savedPlayerMood/);
+});
+
+test('applies the saved Prisma mood to both speech-to-text paths', () => {
+    const voicerec = fs.readFileSync(path.resolve(__dirname, '../Voicerec.cpp'), 'utf8');
+    const commands = fs.readFileSync(path.resolve(__dirname, '../Commands.cpp'), 'utf8');
+    assert.match(voicerec, /routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?HTTPManager::streamPlayer/);
+    assert.match(commands, /command\.contains\("ImpersonatePlayer"\)[\s\S]*?routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?sendMessageReal\(message, messageType, routingContext\)/);
 });

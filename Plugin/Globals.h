@@ -9,11 +9,22 @@
 #include <vector>
 
 #include "RE/Skyrim.h"
+#include "RE/S/SendHUDMessage.h"
 #include "SpatialAwareness.h"
 
 #define HERIKA_MAX_VISION_RANGE 5000
 
 namespace logger = SKSE::log;
+
+namespace RE
+{
+    // Preserve CHIM's notification call sites through CommonLibSSE-NG's renamed HUD API.
+    inline void DebugNotification(const char* notification, const char* soundToPlay = nullptr,
+                                  bool cancelIfAlreadyQueued = true)
+    {
+        SendHUDMessage::ShowHUDMessage(notification, soundToPlay, cancelIfAlreadyQueued);
+    }
+}
 
 const char* GetPluginVersion();
 
@@ -59,11 +70,13 @@ extern bool CombatDialogueEnabled;
 extern bool PreserveQueueDuringAction;
 extern bool PauseDialogueWhenMenuOpen;
 extern bool PlayerTtsTraditionalDialogueEnabled;
+extern bool CaptureBackgroundChatEnabled;
 extern bool AIQuestProgressionEnabled;
 extern bool AllowActorsOnScene;
 extern bool GodMode;
 extern bool AutoAddHostile;
 extern bool AutoAddAllRaces;
+extern bool AutoAddCreatureNPCs;
 extern void ResetQuestProgressionBridgeState();
 extern void ScheduleQuestProgressionFullResync(const char* reason, int delayMs, bool includeInventory);
 

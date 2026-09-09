@@ -41,14 +41,19 @@ public:
     void Resume();
     void setVolume(float vol);
     void setDistanceScaler(float vol);
+    float getDistanceScaler();
+    void setLegacyDistanceScaler(float vol);
     void setMuffledPlayback(bool enabled);
     void setSpatialUpdatesEnabled(bool enabled);
     void Update(const X3DAUDIO_VECTOR& sourcePosition, const X3DAUDIO_VECTOR& listenerPosition,
                 float headingAngle);
+    void UpdateLegacy(const X3DAUDIO_VECTOR& sourcePosition, const X3DAUDIO_VECTOR& listenerPosition, float headingAngle);
     float GetElapsedTimeSeconds();
     bool isPlaying() const;
     static X3DAUDIO_VECTOR ConvertNiPoint3ToX3DAUDIO_VECTOR(const RE::NiPoint3& niPoint);
 
+    bool getLegacyAudioNoattenuation() ;
+    void setLegacyAudioNoattenuation(bool value);
 
     IXAudio2* pXAudio2 = nullptr;
     IXAudio2MasteringVoice* pMasterVoice = nullptr;
@@ -64,6 +69,7 @@ public:
     bool spatialUpdatesEnabled = true;
     // Dirty flag: forces next Update() to recompute X3DAudio matrix even if emitter position hasn't moved past threshold. Set on Play/setSpatialUpdatesEnabled, cleared after successful SetOutputMatrix.
     bool forceSpatialMatrixUpdate = true;
+
 
     // Volume ramping members
     float currentVolume = 0.0f;
@@ -89,6 +95,7 @@ public:
 
     void InitializeXAudio2();
     void CleanupXAudio2();
+    void LogDebug();
 };
 
 class AudioManagerController {
@@ -106,10 +113,12 @@ public:
         }
         return instance;
     }
+    
 
 private:
     AudioManagerController() = default;
     ~AudioManagerController() = default;
     AudioManagerController(const AudioManagerController&) = delete;
     AudioManagerController& operator=(const AudioManagerController&) = delete;
+    
 };
