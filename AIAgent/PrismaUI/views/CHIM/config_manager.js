@@ -11,7 +11,11 @@
     let selectSequence = 0;
 
     function command(value) { if (window.chimConfigManagerCommand) window.chimConfigManagerCommand(value); }
-    function syncInputCapture() { command(document.activeElement && document.activeElement.matches('input, textarea, select') ? 'input_capture|on' : 'input_capture|off'); }
+    function syncInputCapture() {
+        const focused = document.activeElement;
+        const editing = focused && (focused.matches('input, textarea, select') || focused.closest('.mcm-hearing-preset-section .settings-tile-selector'));
+        command(editing ? 'input_capture|on' : 'input_capture|off');
+    }
     function asBool(value) {
         if (typeof value === 'boolean') return value;
         return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -312,10 +316,11 @@
         await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({operation:'delete',id:selectedProfileId}) }));
         selectedProfileId = 0; await loadProfiles();
     }
-    /* ----- CHIM MCM (mirrors the six SkyUI MCM pages, rendered from native state) ----- */
+    /* ----- CHIM MCM (mirrors the SkyUI MCM pages, rendered from native state) ----- */
     const MCM_PAGES = [
         { id: 'hotkeys', label: 'Hotkeys' },
         { id: 'auto_activate', label: 'Auto Activate' },
+        { id: 'hearing_awareness', label: 'Hearing & Awareness' },
         { id: 'behavior', label: 'Behavior' },
         { id: 'sound', label: 'Sound' },
         { id: 'ai_agents', label: 'AI Agents' },
@@ -576,6 +581,58 @@
         mcmSaveErrors.delete(key);
         mcmSyncRowState(row, entry);
         refreshMcmSaveBar();
+        const preset = byId('mcm-hearing-preset');
+        if (preset && HEARING_KEYS.includes(key)) {
+            preset.value = String(hearingPresetIndex());
+            syncTileSelect(preset);
+        }
+    }
+
+    // Keep these three-value presets aligned with ApplyHearingPreset in the MCM script.
+    const HEARING_KEYS = ['auto_hearing_radius_m', 'spatial_hearing_inside', 'spatial_hearing_outside'];
+    const HEARING_PRESETS = [
+        { label: 'Realistic', values: [4, 600, 1000] },
+        { label: 'Recommended', values: [10, 1000, 1800] },
+        { label: 'Extended', values: [15, 1600, 2400] }
+    ];
+    function hearingPresetIndex() {
+        const entries = HEARING_KEYS.map((key) => mcmEntryList().find((entry) => entry.key === key));
+        const index = HEARING_PRESETS.findIndex((preset) => entries.every((entry, i) => entry && Number(mcmValue(entry)) === preset.values[i]));
+        return index < 0 ? 3 : index;
+    }
+
+    // Stage the existing sliders together so Save/Discard and partial failures keep their normal behavior.
+    function mcmHearingPresetRow(entry, readonly) {
+        const row = document.createElement('div');
+        row.className = 'mcm-row';
+        const heading = mcmRowHead(entry);
+        const select = document.createElement('select');
+        select.id = 'mcm-hearing-preset';
+        select.setAttribute('aria-labelledby', heading.labelId);
+        HEARING_PRESETS.forEach((preset, index) => select.add(new Option(preset.label, String(index))));
+        const custom = new Option('Custom', '3');
+        custom.disabled = true;
+        select.add(custom);
+        select.value = String(hearingPresetIndex());
+        select.disabled = readonly || mcmSaving || HEARING_KEYS.some((key) => !mcmEntryList().some((item) => item.key === key && !item.readonly));
+        row.append(heading.head, select);
+        const helpId = mcmHelp(row, entry);
+        mcmDescribe(select, [helpId]);
+        const selector = enhanceSelect(select);
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        trigger.setAttribute('aria-labelledby', heading.labelId);
+        mcmDescribe(trigger, [helpId]);
+        select.addEventListener('change', () => {
+            const preset = HEARING_PRESETS[Number(select.value)];
+            if (!preset || select.disabled) return;
+            HEARING_KEYS.forEach((key, index) => {
+                const item = mcmEntryList().find((candidate) => candidate.key === key);
+                stageMcmValue(item, preset.values[index], null);
+            });
+            renderMcmPanel(activeMcmPage);
+            byId('mcm-hearing-preset')?.closest('.settings-tile-selector')?.querySelector('.settings-tile-trigger')?.focus();
+        });
+        return row;
     }
 
     /* ----- Staged edits: dirty state, ordered save, explicit discard ----- */
@@ -916,6 +973,7 @@
     function mcmRow(entry) {
         const type = String(entry.type || 'text').toLowerCase();
         const readonly = entry.readonly === true;
+        if (entry.key === 'hearing_preset') return mcmHearingPresetRow(entry, readonly);
         if (type === 'toggle') return mcmToggleRow(entry, readonly);
         if (type === 'slider') return mcmSliderRow(entry, readonly);
         /* Keymaps stay editable through key capture; the payload readonly flag only mirrors the legacy MCM display. */
@@ -943,6 +1001,7 @@
         sections.forEach((items, name) => {
             const card = document.createElement('section');
             card.className = 'settings-section mcm-section';
+            if (items.some((item) => item.key === 'hearing_preset')) card.classList.add('mcm-hearing-preset-section');
             const title = document.createElement('h2');
             title.textContent = name;
             card.appendChild(title);
