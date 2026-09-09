@@ -32,6 +32,11 @@
     let historySearchGeneration = 0;
     let historyEventType = '';
     const historyRecipients = new Map();
+    const VOICE_FILTER_NONE_ID = 'none';
+    let voiceFilterPresets = [];
+    let voiceFilterPreviewAudio = null;
+    let voiceFilterPreviewCache = null;
+    let voiceFilterPreviewGeneration = 0;
     const embeddedInSettings = !!byId('npcs-page');
 
     function sendCommand(command) {
@@ -209,6 +214,7 @@
     async function openEditor(id) {
         byId('editor-backdrop').classList.remove('hidden');
         byId('editor-title').textContent = 'Loading NPC...';
+        resetVoiceFilterPreview();
         byId('save-status').textContent = '';
         try {
             currentDetail = await parseResponse(await fetch(
@@ -239,6 +245,7 @@
         profileSelect.replaceChildren();
         (detail.profiles || []).forEach((profile) => profileSelect.appendChild(new Option(profile.label, String(profile.id))));
         profileSelect.value = String(fields.profile_id || '');
+        renderVoiceFilterPresets(detail);
         renderFeatureToggles(detail.toggles || {});
         renderRelationships(detail.relationships || {});
         byId('relationships-locked').checked = !!detail.relationships_locked;
@@ -253,6 +260,164 @@
         switchEditorTab('general');
         byId('save-status').textContent = '';
         byId('save-status').classList.remove('error');
+    }
+
+    function voiceFilterControl(name) {
+        return form.elements.namedItem(name);
+    }
+
+    function setVoiceFilterStatus(message, error) {
+        const status = byId('voice-filter-status');
+        status.textContent = message || '';
+        status.classList.toggle('error', !!error);
+    }
+
+    function stopVoiceFilterAudio() {
+        const audio = voiceFilterPreviewAudio;
+        voiceFilterPreviewAudio = null;
+        if (!audio) return;
+        try {
+            audio.pause();
+            audio.currentTime = 0;
+        } catch (_error) { /* the element may not be seekable yet */ }
+    }
+
+    function resetVoiceFilterPreview() {
+        voiceFilterPreviewGeneration += 1;
+        stopVoiceFilterAudio();
+        voiceFilterPreviewCache = null;
+        byId('voice-filter-preview').disabled = false;
+        setVoiceFilterStatus('', false);
+    }
+
+    function voiceFilterPreviewKey() {
+        const profileId = String((voiceFilterControl('profile_id') || {}).value || '');
+        const voiceId = String((voiceFilterControl('voiceid') || {}).value || '').trim();
+        const preset = String((voiceFilterControl('tts_filter_preset') || {}).value || '');
+        return `${profileId}|${voiceId}|${preset}`;
+    }
+
+    function renderVoiceFilterDescription() {
+        const select = voiceFilterControl('tts_filter_preset');
+        const preset = voiceFilterPresets.find((entry) => entry.id === select.value);
+        byId('voice-filter-description').textContent = (preset && preset.description) || '';
+    }
+
+    function renderVoiceFilterPresets(detail) {
+        const select = voiceFilterControl('tts_filter_preset');
+        const catalog = Array.isArray(detail && detail.tts_filter_presets) ? detail.tts_filter_presets : [];
+        const fields = (detail && detail.fields) || {};
+        const saved = fields.tts_filter_preset === null || fields.tts_filter_preset === undefined
+            ? ''
+            : String(fields.tts_filter_preset);
+        voiceFilterPresets = catalog
+            .map((preset) => ({
+                id: preset && preset.id !== null && preset.id !== undefined ? String(preset.id) : '',
+                label: String((preset && preset.label) || ''),
+                description: String((preset && preset.description) || '')
+            }))
+            .filter((preset) => preset.id !== '');
+        if (!voiceFilterPresets.some((preset) => preset.id === VOICE_FILTER_NONE_ID)) {
+            voiceFilterPresets.unshift({
+                id: VOICE_FILTER_NONE_ID,
+                label: 'None',
+                description: 'Play this NPC with their unfiltered voice.'
+            });
+        }
+        if (saved && !voiceFilterPresets.some((preset) => preset.id === saved)) {
+            voiceFilterPresets.push({
+                id: saved,
+                label: `${saved} (unavailable)`,
+                description: 'The server no longer offers this saved filter. Pick another to replace it.'
+            });
+        }
+        select.replaceChildren();
+        voiceFilterPresets.forEach((preset) => select.appendChild(new Option(preset.label || preset.id, preset.id)));
+        select.value = saved || VOICE_FILTER_NONE_ID;
+        if (!select.value) select.value = VOICE_FILTER_NONE_ID;
+        renderVoiceFilterDescription();
+    }
+
+    function invalidateVoiceFilterPreview() {
+        if (voiceFilterPreviewCache && voiceFilterPreviewCache.key === voiceFilterPreviewKey()) return;
+        voiceFilterPreviewGeneration += 1;
+        stopVoiceFilterAudio();
+        voiceFilterPreviewCache = null;
+        byId('voice-filter-preview').disabled = false;
+        setVoiceFilterStatus('', false);
+    }
+
+    function playVoiceFilterPreview(url) {
+        stopVoiceFilterAudio();
+        const audio = new Audio(url);
+        voiceFilterPreviewAudio = audio;
+        audio.addEventListener('ended', () => {
+            if (voiceFilterPreviewAudio !== audio) return;
+            voiceFilterPreviewAudio = null;
+            setVoiceFilterStatus('Preview finished.', false);
+        });
+        audio.addEventListener('error', () => {
+            if (voiceFilterPreviewAudio !== audio) return;
+            voiceFilterPreviewAudio = null;
+            setVoiceFilterStatus('Preview audio could not be played.', true);
+        });
+        setVoiceFilterStatus('Playing voice filter preview...', false);
+        const started = audio.play();
+        if (started && typeof started.catch === 'function') {
+            started.catch((error) => {
+                if (voiceFilterPreviewAudio !== audio) return;
+                voiceFilterPreviewAudio = null;
+                setVoiceFilterStatus(`Preview could not start: ${error.message || error}`, true);
+            });
+        }
+    }
+
+    async function requestVoiceFilterPreview() {
+        if (!currentDetail) return;
+        const button = byId('voice-filter-preview');
+        const voiceId = String(voiceFilterControl('voiceid').value || '').trim();
+        if (!voiceId) {
+            setVoiceFilterStatus('Enter a Voice Type before previewing.', true);
+            return;
+        }
+        const key = voiceFilterPreviewKey();
+        if (voiceFilterPreviewCache && voiceFilterPreviewCache.key === key) {
+            playVoiceFilterPreview(voiceFilterPreviewCache.url);
+            return;
+        }
+
+        const generation = ++voiceFilterPreviewGeneration;
+        stopVoiceFilterAudio();
+        button.disabled = true;
+        setVoiceFilterStatus('Generating voice filter preview...', false);
+        try {
+            const body = new FormData();
+            body.append('profile_id', String(voiceFilterControl('profile_id').value || ''));
+            body.append('voiceid', voiceId);
+            body.append('tts_filter_preset', String(voiceFilterControl('tts_filter_preset').value || ''));
+            const response = await fetch(`${serverBaseUrl}/ui/api/npc_voice_filter_preview.php`, {
+                method: 'POST',
+                body,
+                cache: 'no-store'
+            });
+            let payload;
+            try { payload = await response.json(); } catch (_error) {
+                throw new Error(`Server returned invalid JSON (HTTP ${response.status})`);
+            }
+            if (!response.ok || !payload || payload.ok !== true) {
+                throw new Error((payload && payload.error) || `HTTP ${response.status}`);
+            }
+            const url = resolveAssetUrl(payload.audio_url);
+            if (!url) throw new Error('Server did not return preview audio.');
+            if (generation !== voiceFilterPreviewGeneration) return;
+            voiceFilterPreviewCache = { key, url };
+            playVoiceFilterPreview(url);
+        } catch (error) {
+            if (generation !== voiceFilterPreviewGeneration) return;
+            setVoiceFilterStatus(`Preview failed: ${error.message || error}`, true);
+        } finally {
+            if (generation === voiceFilterPreviewGeneration) button.disabled = false;
+        }
     }
 
     function setHistoryStatus(message, error) {
@@ -621,7 +786,7 @@
             'npc_name', 'profile_id', 'lock_profile', 'npc_favorite', 'gender', 'race', 'base',
             'refid', 'voiceid', 'oghma_knowledge_tags', 'tags', 'prompt_head', 'core',
             'npc_static_bio', 'appearance', 'personality', 'occupation', 'skills', 'speechstyle',
-            'goals', 'emote_moods', 'middle_term_latest'
+            'goals', 'emote_moods', 'middle_term_latest', 'tts_filter_preset'
         ];
         const fields = {};
         names.forEach((name) => {
@@ -719,6 +884,7 @@
 
     function closeEditor() {
         byId('editor-backdrop').classList.add('hidden');
+        resetVoiceFilterPreview();
         currentDetail = null;
         sendCommand('input_capture|off');
     }
@@ -789,6 +955,13 @@
         historyRecipientSearchTimer = setTimeout(searchHistoryRecipients, 250);
     });
     byId('add-relationship').addEventListener('click', () => addRelationshipRow('', { aff: 0, type: 'neutral' }));
+    byId('voice-filter-preview').addEventListener('click', requestVoiceFilterPreview);
+    voiceFilterControl('tts_filter_preset').addEventListener('change', () => {
+        renderVoiceFilterDescription();
+        invalidateVoiceFilterPreview();
+    });
+    voiceFilterControl('voiceid').addEventListener('input', invalidateVoiceFilterPreview);
+    voiceFilterControl('profile_id').addEventListener('change', invalidateVoiceFilterPreview);
     form.addEventListener('submit', saveNpc);
     document.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape') return;
