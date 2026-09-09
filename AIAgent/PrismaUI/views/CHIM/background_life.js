@@ -60,7 +60,11 @@
             background_life_enabled: false,
             auto_actions: false,
             send_letters: false,
-            hourly_tracking: false
+            hourly_tracking: false,
+            combat_participation: false,
+            combat_initiate: false,
+            combat_lethal: false,
+            combat_loot: false
         };
     }
 
@@ -607,6 +611,10 @@
                 'Tracking',
                 'Hourly tracking'
             ));
+            actions.appendChild(cardSettingButton(entry, 'combat_participation', 'combat_participation', 'Combat', 'Combat participation'));
+            actions.appendChild(cardSettingButton(entry, 'combat_initiate', 'combat_initiate', 'Attack', 'Initiate combat'));
+            actions.appendChild(cardSettingButton(entry, 'combat_lethal', 'combat_lethal', 'Lethal', 'Lethal outcomes'));
+            actions.appendChild(cardSettingButton(entry, 'combat_loot', 'combat_loot', 'Loot', 'Loot encounters'));
             const remove = createElement('button', 'card-action remove', 'Remove');
             remove.type = 'button';
             remove.title = 'Remove NPC from Background Life';
@@ -754,7 +762,15 @@
             currentTarget.background_life_enabled;
         byId('target-menu-toggle').disabled = busy || nearbyTargets.length === 0;
         byId('enrollment-button').disabled = busy || !currentTarget.has_target;
-        ['auto-actions-toggle', 'send-letters-toggle', 'hourly-tracking-toggle'].forEach((id) => {
+        [
+            'auto-actions-toggle',
+            'send-letters-toggle',
+            'hourly-tracking-toggle',
+            'combat-participation-toggle',
+            'combat-initiate-toggle',
+            'combat-lethal-toggle',
+            'combat-loot-toggle'
+        ].forEach((id) => {
             byId(id).disabled = busy || !available;
         });
     }
@@ -778,6 +794,10 @@
         byId('auto-actions-toggle').checked = !!currentTarget.auto_actions;
         byId('send-letters-toggle').checked = !!currentTarget.send_letters;
         byId('hourly-tracking-toggle').checked = !!currentTarget.hourly_tracking;
+        byId('combat-participation-toggle').checked = !!currentTarget.combat_participation;
+        byId('combat-initiate-toggle').checked = !!currentTarget.combat_initiate;
+        byId('combat-lethal-toggle').checked = !!currentTarget.combat_lethal;
+        byId('combat-loot-toggle').checked = !!currentTarget.combat_loot;
         setTargetControlsBusy(false);
     }
 
@@ -1562,6 +1582,18 @@
             'hourly_tracking',
             byId('hourly-tracking-toggle').checked
         );
+    });
+    byId('combat-participation-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_participation', byId('combat-participation-toggle').checked);
+    });
+    byId('combat-initiate-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_initiate', byId('combat-initiate-toggle').checked);
+    });
+    byId('combat-lethal-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_lethal', byId('combat-lethal-toggle').checked);
+    });
+    byId('combat-loot-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_loot', byId('combat-loot-toggle').checked);
     });
     byId('npc-filter').addEventListener('change', () => {
         currentPage = 1;

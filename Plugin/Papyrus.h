@@ -227,6 +227,9 @@ namespace Papyrus {
     int updateRemoteInventory(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                                 RE::Actor* target);
 
+    int updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                   RE::StaticFunctionTag*, RE::Actor* target);
+
     RE::TESObjectREFR* getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                       RE::StaticFunctionTag*);
 

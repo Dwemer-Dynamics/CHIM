@@ -75,6 +75,7 @@ ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restric
 
 int function scanActorsAroundOffline(Actor akActor)  global Native; This will send data to server, should retun 0
 
+int function updateRemoteCombatSnapshot(Actor akActor) global Native
 int function updateRemoteInventory(Actor akActor)  global Native; This will send data to server, should retun 0
 
 string function GetLocationSpecialRefsString(int locationFormId)  Global Native

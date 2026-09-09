@@ -3968,6 +3968,79 @@ Int Function HexToInt(String hex) global
     return result
 EndFunction
 
+; Applies a server-resolved Background Life outcome once and reports the actual result.
+String Function ApplyBackgroundCombatOutcome(Actor participant, String encounterId, String intendedOutcome, Actor sceneAnchor) global
+	String storageKey = "CHIM_BGLCombat_" + encounterId
+	String appliedOutcome = StorageUtil.GetStringValue(participant, storageKey, "")
+	if appliedOutcome != ""
+		AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(participant.GetFormId()) + "@applied@" + appliedOutcome, "backgroundcombat_result", participant.GetDisplayName())
+		return appliedOutcome
+	endif
+
+	appliedOutcome = intendedOutcome
+	ActorBase participantBase = AIAgentNpcUtil.getProperActorBase(participant)
+	if intendedOutcome == "dead"
+		if !participantBase || participantBase.IsEssential() || participantBase.IsProtected()
+			appliedOutcome = "incapacitated"
+		elseif sceneAnchor && sceneAnchor != participant
+			participant.MoveTo(sceneAnchor, 32.0, 0.0, 0.0, false)
+		endif
+	endif
+
+	if appliedOutcome == "dead"
+		participant.KillEssential()
+		Utility.Wait(0.2)
+		if !participant.IsDead()
+			AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(participant.GetFormId()) + "@failed@dead", "backgroundcombat_result", participant.GetDisplayName())
+			return "failed"
+		endif
+	elseif appliedOutcome == "minor_wound" || appliedOutcome == "serious_wound" || appliedOutcome == "incapacitated"
+		float maximumHealth = participant.GetBaseActorValue("Health")
+		float currentHealth = participant.GetActorValue("Health")
+		float targetHealth = maximumHealth * 0.65
+		if appliedOutcome == "serious_wound"
+			targetHealth = maximumHealth * 0.35
+		elseif appliedOutcome == "incapacitated"
+			targetHealth = maximumHealth * 0.10
+		endif
+		if targetHealth < 1.0
+			targetHealth = 1.0
+		endif
+		if currentHealth > targetHealth
+			participant.DamageActorValue("Health", currentHealth - targetHealth)
+		endif
+	endif
+
+	StorageUtil.SetStringValue(participant, storageKey, appliedOutcome)
+	AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(participant.GetFormId()) + "@applied@" + appliedOutcome, "backgroundcombat_result", participant.GetDisplayName())
+	return appliedOutcome
+EndFunction
+
+; Transfers one reserved loot item exactly once and acknowledges the moved count.
+Int Function ApplyBackgroundLoot(Actor source, String encounterId, Actor recipient, Form itemForm, String itemId, Int requestedCount) global
+	String storageKey = "CHIM_BGLLoot_" + encounterId + "_" + itemId + "_" + DecToHex(recipient.GetFormId())
+	String storedCount = StorageUtil.GetStringValue(source, storageKey, "")
+	if storedCount != ""
+		AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(source.GetFormId()) + "@" + DecToHex(recipient.GetFormId()) + "@" + itemId + "@applied@" + storedCount, "backgroundloot_result", recipient.GetDisplayName())
+		return StringToInt(storedCount)
+	endif
+
+	Int availableCount = source.GetItemCount(itemForm)
+	Int movedCount = requestedCount
+	if movedCount > availableCount
+		movedCount = availableCount
+	endif
+	if movedCount <= 0
+		AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(source.GetFormId()) + "@" + DecToHex(recipient.GetFormId()) + "@" + itemId + "@failed@0", "backgroundloot_result", recipient.GetDisplayName())
+		return 0
+	endif
+
+	source.RemoveItem(itemForm, movedCount, true, recipient)
+	StorageUtil.SetStringValue(source, storageKey, movedCount as String)
+	AIAgentFunctions.logMessageForActor(encounterId + "@" + DecToHex(source.GetFormId()) + "@" + DecToHex(recipient.GetFormId()) + "@" + itemId + "@applied@" + movedCount, "backgroundloot_result", recipient.GetDisplayName())
+	return movedCount
+EndFunction
+
 bool Function BackgroundCmd(Form actorForm,string command) global
 
 	Actor aktarget = actorForm as Actor
@@ -4136,6 +4209,21 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		elseif 	(cmd[0] == "UpdateInventory") 
 			AIAgentFunctions.updateRemoteInventory(akTarget)
 			Debug.Trace("[CHIM] BackgroundCmd->UpdateInventory sent")
+		elseif 	(cmd[0] == "UpdateCombatSnapshot")
+			AIAgentFunctions.updateRemoteCombatSnapshot(akTarget)
+			Debug.Trace("[CHIM] BackgroundCmd->UpdateCombatSnapshot sent")
+		elseif 	(cmd[0] == "CombatOutcome")
+			Actor sceneAnchor = Game.GetFormEx(HexToInt(cmd[3])) as Actor
+			ApplyBackgroundCombatOutcome(akTarget, cmd[1], cmd[2], sceneAnchor)
+		elseif 	(cmd[0] == "BackgroundLoot")
+			Actor lootRecipient = Game.GetFormEx(HexToInt(cmd[2])) as Actor
+			Form lootItem = Game.GetFormEx(HexToInt(cmd[3]))
+			Int lootCount = StringToInt(cmd[4])
+			if lootRecipient && lootItem && lootCount > 0
+				ApplyBackgroundLoot(akTarget, cmd[1], lootRecipient, lootItem, cmd[3], lootCount)
+			else
+				AIAgentFunctions.logMessageForActor(cmd[1] + "@" + DecToHex(akTarget.GetFormId()) + "@" + cmd[2] + "@" + cmd[3] + "@failed@0", "backgroundloot_result", akTarget.GetDisplayName())
+			endif
 
 		elseif 	(cmd[0] == "RemoveFromBgL") 
 			AIAgentFunctions.removeFromRenamedNPCList(akTarget)
