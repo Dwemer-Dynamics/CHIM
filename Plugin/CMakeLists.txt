@@ -37,7 +37,7 @@ endif()
 add_library(${PROJECT_NAME} SHARED
     Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp Papyrus.cpp md5.cpp Voicerec.cpp
     HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp
-    SpatialSnapshotManager.cpp PlayerConversationRouter.cpp ThreadPool.cpp Plugin.cpp PluginVersion.cpp ScriptProxy.cpp
+    SpatialSnapshotManager.cpp SpatialDoorState.cpp PlayerConversationRouter.cpp ThreadPool.cpp Plugin.cpp PluginVersion.cpp ScriptProxy.cpp
     PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp ResourceFileReader.cpp DynamicDiaryBook.cpp ServerPluginSync.cpp
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)

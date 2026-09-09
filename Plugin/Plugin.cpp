@@ -7847,6 +7847,9 @@ void RefreshPlayerSpells(bool forceUpdate) {
 
 OnLoadedGame {
     logger::info("OnLoadedGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
     // Runs twice?
     auto player = RE::PlayerCharacter::GetSingleton();
     
@@ -8134,6 +8137,9 @@ OnLoadedGame {
 
 OnLoadingGame { 
     logger::info("OnLoadingGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
     
 
     if (pluginInited) {
@@ -8168,6 +8174,9 @@ OnLoadingGame {
 OnNewGame {
 
     logger::info("OnNewGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
 
     /*
     ManagerMainQueue& serverPooler = ManagerMainQueue::getInstance();
@@ -8327,6 +8336,9 @@ OnDataLoaded {
 EventHandlers {
 
     On<RE::TESCellFullyLoadedEvent>([](const RE::TESCellFullyLoadedEvent* event) {
+        auto* doorStatePlayer = RE::PlayerCharacter::GetSingleton();
+        auto* doorStateCell = doorStatePlayer ? doorStatePlayer->GetParentCell() : nullptr;
+        SpatialAwareness::SetDoorStateCell(doorStateCell ? doorStateCell->GetFormID() : 0);
         // Location Change trigger
         if (GetGameTimeStamp() == 13333334) return;
 
@@ -8952,21 +8964,33 @@ EventHandlers {
         }
     });
     
-    //Is this working?
-    /*
     On<RE::TESOpenCloseEvent>([](const RE::TESOpenCloseEvent* event) {
-        logger::info("TESOpenCloseEvent");
-        try {
-            auto ref = event->activeRef;
-            logger::info("[OPENCLOSE] {:X}, opened: ", ref->GetFormID(), event->opened);
-        } catch (...) {
-            std::exception_ptr p = std::current_exception();
-            logger::info("Error TESOpenCloseEvent");
+        auto* door = event ? event->ref.get() : nullptr;
+        auto* base = door ? door->GetBaseObject() : nullptr;
+        if (!pluginInited || !base || base->GetFormType() != RE::FormType::Door) {
+            return;
         }
-        
-
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* cell = door->GetParentCell();
+        if (!player || !cell || !cell->IsInteriorCell() || cell != player->GetParentCell()) {
+            return;
+        }
+        SpatialAwareness::RecordDoorState(door, event->opened);
+        // Every transition must invalidate, even when activation has already
+        // queued a delayed refresh. That refresh can precede the final state.
+        SpatialAwareness::InvalidateCache();
+        SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        logger::debug("[SpatialSnapshot] Door state changed door={:08X} opened={}",
+                      door->GetFormID(), event->opened);
     });
-    */
+    On<RE::TESResetEvent>([](const RE::TESResetEvent* event) {
+        auto* ref = event ? event->object.get() : nullptr;
+        auto* base = ref ? ref->GetBaseObject() : nullptr;
+        if (base && base->GetFormType() == RE::FormType::Door) {
+            SpatialAwareness::ForgetDoorState(ref->GetFormID());
+            InvalidateSpatialCachesForDoor(ref, "reset_event");
+        }
+    });
     On<RE::TESDeathEvent>([](const RE::TESDeathEvent* event) {
         try {
             if (!event->actorDying) return;

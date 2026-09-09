@@ -993,7 +993,7 @@ namespace SpatialAwareness
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
 
-                    const auto openState = RE::BGSOpenCloseForm::GetOpenState(reference);
+                    const auto openState = GetDoorState(reference);
                     if (IsClosedDoorState(openState)) {
                         ++closedDoorCount;
                         closedDoorCandidateFormId = reference->GetFormID();

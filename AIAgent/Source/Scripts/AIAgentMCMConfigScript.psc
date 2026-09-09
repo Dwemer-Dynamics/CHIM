@@ -108,13 +108,13 @@ int			_slider_max_distance_outside
 float		_max_distance_outside		= 2400.0
 
 int			_slider_spatial_hearing_inside
-float		_spatial_hearing_inside		= 500.0
+float		_spatial_hearing_inside		= 1000.0
 
 int			_slider_spatial_hearing_outside
-float		_spatial_hearing_outside	= 1000.0
+float		_spatial_hearing_outside	= 1800.0
 
 int			_slider_auto_hearing_radius_m
-float		_auto_hearing_radius_m	= 8.0
+float		_auto_hearing_radius_m	= 10.0
 
 int			_slider_bored_period
 float		_bored_period		= 60.0
@@ -511,7 +511,7 @@ event OnConfigInit()
 	if (spatialHearingInsideValue > 0)
 		_spatial_hearing_inside = spatialHearingInsideValue as float
 	else
-		_spatial_hearing_inside = 500.0
+		_spatial_hearing_inside = 1000.0
 	endIf
 	controlScript.setConf("_spatial_hearing_inside", _spatial_hearing_inside)
 
@@ -519,7 +519,7 @@ event OnConfigInit()
 	if (spatialHearingOutsideValue > 0)
 		_spatial_hearing_outside = spatialHearingOutsideValue as float
 	else
-		_spatial_hearing_outside = 1000.0
+		_spatial_hearing_outside = 1800.0
 	endIf
 	controlScript.setConf("_spatial_hearing_outside", _spatial_hearing_outside)
 
@@ -530,7 +530,7 @@ event OnConfigInit()
 	if (autoHearingRadiusValue >= 1 && autoHearingRadiusValue <= 20)
 		_auto_hearing_radius_m = autoHearingRadiusValue as float
 	else
-		_auto_hearing_radius_m = 8.0
+		_auto_hearing_radius_m = 10.0
 	endIf
 	controlScript.setConf("_auto_hearing_radius_m", _auto_hearing_radius_m)
 
@@ -1568,21 +1568,21 @@ event OnOptionSliderOpen(int a_option)
 
 	if (a_option == _slider_spatial_hearing_inside)
 		SetSliderDialogStartValue(_spatial_hearing_inside)
-		SetSliderDialogDefaultValue(471)
+		SetSliderDialogDefaultValue(1000)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
 
 	if (a_option == _slider_spatial_hearing_outside)
 		SetSliderDialogStartValue(_spatial_hearing_outside)
-		SetSliderDialogDefaultValue(1018)
+		SetSliderDialogDefaultValue(1800)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
 
 	if (a_option == _slider_auto_hearing_radius_m)
 		SetSliderDialogStartValue(_auto_hearing_radius_m)
-		SetSliderDialogDefaultValue(8)
+		SetSliderDialogDefaultValue(10)
 		SetSliderDialogRange(1, 20)
 		SetSliderDialogInterval(1)
 	endIf

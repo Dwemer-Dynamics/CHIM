@@ -1,5 +1,6 @@
 #include "PlayerConversationRoutingPolicy.h"
 #include "SpatialGeometryPolicy.h"
+#include "SpatialDoorStatePolicy.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -51,6 +52,27 @@ namespace
 
 int main()
 {
+    SpatialDoorStatePolicy::ObservedDoors doors;
+    doors.SetCell(1);
+    Check(!doors.Get(1, 10).has_value(), "Unobserved door was treated as closed");
+    doors.Record(10, true);
+    Check(doors.Get(1, 10) == true, "Open event was not retained independently of 3D");
+    doors.SetCell(1);
+    Check(doors.Get(1, 10) == true, "Same-cell streaming discarded the open event");
+    doors.Record(10, false);
+    Check(doors.Get(1, 10) == false, "Close event did not replace the open state");
+    Check(!doors.Get(2, 10).has_value(), "Door state leaked into another cell");
+    doors.Forget(10);
+    Check(!doors.Get(1, 10).has_value(), "Reset door retained its previous state");
+    doors.Record(10, true);
+    doors.SetCell(2);
+    doors.SetCell(1);
+    Check(!doors.Get(1, 10).has_value(), "Returning to a cell reused old door state");
+    doors.Record(10, false);
+    doors.Reset();
+    doors.SetCell(1);
+    Check(!doors.Get(1, 10).has_value(), "Save reload reused old door state");
+
     using namespace PlayerConversationRoutingPolicy;
 
     Check(IsPlayerInitiatedRequest("inputtext|1|date|Player: hello"),

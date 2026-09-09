@@ -7,7 +7,7 @@
 namespace SpatialAwareness
 {
     inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
-    inline constexpr float kAutoHearingRadiusMeters = 8.0f;
+    inline constexpr float kAutoHearingRadiusMeters = 10.0f;
     inline constexpr float kMinAutoHearingRadiusMeters = 1.0f;
     inline constexpr float kMaxAutoHearingRadiusMeters = 20.0f;
     inline constexpr float kAutoHearingDistance =
@@ -33,11 +33,9 @@ namespace SpatialAwareness
         float maxAirDistance = 4000.0f;
         float immediateDistance = 150.0f;
         float autoHearingDistance = kAutoHearingDistance;
-        // Tuned so clear-line practical audibility (volume >= 0.15) is roughly:
-        // - indoors:  ~22.5 ft (~750 units)
-        // - outdoors: ~37.5 ft (~1250 units)
-        float interiorMaxDistance = 750.0f;
-        float exteriorMaxDistance = 1250.0f;
+        // Range ceilings in Skyrim units; attenuation can make speech inaudible sooner.
+        float interiorMaxDistance = 1000.0f;
+        float exteriorMaxDistance = 1800.0f;
         float minDistanceFactor = 0.1f;
         float interiorBaseModifier = 1.0f;
         float exteriorBaseModifier = 0.7f;
@@ -95,6 +93,12 @@ namespace SpatialAwareness
     void SetAutoHearingRadiusMeters(float meters);
     float GetAutoHearingRadiusMeters();
     void InvalidateCache();
+
+    void SetDoorStateCell(RE::FormID cellId);
+    void ResetDoorStates();
+    void ForgetDoorState(RE::FormID doorId);
+    void RecordDoorState(RE::TESObjectREFR* door, bool opened);
+    RE::BGSOpenCloseForm::OPEN_STATE GetDoorState(RE::TESObjectREFR* door);
 
     PathResult EvaluatePath(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());
     Result Evaluate(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());
