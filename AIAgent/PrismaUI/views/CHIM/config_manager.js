@@ -26,6 +26,10 @@
             if (selector === except) return;
             selector.classList.remove('expanded');
             selector.querySelector('.settings-tile-trigger').setAttribute('aria-expanded', 'false');
+            /* Single choke point for closing, so MCM enum rows release their help suppression here
+               too; otherwise a click-outside or Escape would leave the marker stuck on. */
+            const enumRow = selector.closest('.mcm-row-enum');
+            if (enumRow) enumRow.classList.remove('mcm-enum-open');
         });
     }
     function syncTileSelect(select) {
@@ -386,6 +390,21 @@
         if (!MCM_KEY_FROM_KEY.has(alias)) MCM_KEY_FROM_KEY.set(alias, row[0]);
     });
     const MCM_SAVE_TIMEOUT_MS = 12000;
+    /* The MCM payload carries only numbers, so "enum" rows get their labels from here rather than
+       from extra metadata fields. A key with no entry falls back to a read-only row. */
+    const MCM_ENUM_OPTIONS = {
+        audio_mode: [
+            { value: 2, label: '3D Advanced' },
+            { value: 1, label: '3D Legacy' },
+            { value: 0, label: '2D Flat' },
+            { value: 3, label: 'Mono' },
+            { value: 4, label: 'Mono + Advanced Effects' }
+        ]
+    };
+    const MCM_AUDIO_CONTROL_MODES = {
+        sound_distance_scale: [2, 4], playback_dropoff_inside: [2, 4], playback_dropoff_outside: [2, 4],
+        curve_legacy_distance: [1], camera_based_audio: [0, 1, 2], invert_heading: [0, 1, 2]
+    };
     let mcmState = null;
     let mcmAgents = null;
     let mcmRequested = false;
@@ -623,8 +642,16 @@
         });
         return queue;
     }
+    function mcmEntryFocusTargets(key) {
+        const targets = ['toggle', 'range', 'keycap'].map((kind) => byId(mcmControlId(kind, key))).filter(Boolean);
+        /* An enum row hides its native select, so the tile trigger is the real focus target. */
+        const select = byId(mcmControlId('select', key));
+        const selector = select ? select.closest('.settings-tile-selector') : null;
+        if (selector) targets.push(selector.querySelector('.settings-tile-trigger'));
+        return targets.filter(Boolean);
+    }
     function mcmFocusEntryControl(key) {
-        const candidates = ['toggle', 'range', 'keycap'].map((kind) => byId(mcmControlId(kind, key))).filter(Boolean);
+        const candidates = mcmEntryFocusTargets(key);
         const target = candidates.find((node) => !node.disabled) || candidates[0];
         if (target) target.focus();
     }
@@ -852,6 +879,62 @@
         number.addEventListener('change', () => commit(number.value));
         return row;
     }
+    function mcmEnumRow(entry, readonly) {
+        const options = MCM_ENUM_OPTIONS[String(entry.key || '')] || [];
+        /* Without a known option list the number cannot be labelled, so show it read-only. */
+        if (!options.length) return mcmReadonlyRow(entry, 'text');
+        const row = document.createElement('div');
+        row.className = 'mcm-row mcm-row-enum';
+        const heading = mcmRowHead(entry);
+        const controls = document.createElement('div');
+        controls.className = 'mcm-enum-controls';
+        const select = document.createElement('select');
+        select.id = mcmControlId('select', entry.key);
+        options.forEach((option) => select.appendChild(new Option(option.label, String(option.value))));
+        const current = Number(mcmValue(entry));
+        const match = options.find((option) => Number(option.value) === current) || options[0];
+        select.value = String(match.value);
+        select.disabled = readonly || mcmSaving;
+        controls.appendChild(select);
+        row.append(heading.head, controls);
+        const state = mcmRowState(row, entry, heading.head);
+        const helpId = mcmHelp(row, entry);
+        if (helpId) heading.head.setAttribute('aria-describedby', helpId);
+        const selector = enhanceSelect(select);
+        select.tabIndex = -1;
+        select.setAttribute('aria-hidden', 'true');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        const value = selector.querySelector('.settings-tile-value');
+        value.id = `mcm-enum-value-${++mcmSequence}`;
+        /* Reads as "Audio Mode, 3D Advanced" instead of just the bare option name. */
+        trigger.setAttribute('aria-labelledby', `${heading.labelId} ${value.id}`);
+        mcmDescribe(trigger, [helpId, state.pillId, state.errorId]);
+        /* The option list and the hover help both drop below the row, so one hides the other. */
+        trigger.addEventListener('click', () => {
+            row.classList.toggle('mcm-enum-open', selector.classList.contains('expanded'));
+        });
+        selector.addEventListener('keydown', (event) => {
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || select.disabled) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (!selector.classList.contains('expanded')) trigger.click();
+            const choices = Array.from(selector.querySelectorAll('.settings-tile-option:not(:disabled)'));
+            const index = choices.indexOf(document.activeElement);
+            let next = index < 0 ? select.selectedIndex : index;
+            if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = choices.length - 1;
+            else if (index >= 0) next = (index + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+            if (choices[next]) choices[next].focus();
+        });
+        select.addEventListener('change', () => {
+            row.classList.remove('mcm-enum-open');
+            stageMcmValue(entry, Number(select.value), row);
+            // Redraw from staged mode without discarding edits to the now-inactive controls.
+            renderMcmPanel(activeMcmPage);
+            mcmFocusEntryControl(entry.key);
+        });
+        return row;
+    }
     function mcmKeymapRow(entry) {
         const row = document.createElement('div');
         row.className = 'mcm-row mcm-row-keymap';
@@ -915,9 +998,13 @@
     }
     function mcmRow(entry) {
         const type = String(entry.type || 'text').toLowerCase();
-        const readonly = entry.readonly === true;
+        let readonly = entry.readonly === true;
+        const modes = MCM_AUDIO_CONTROL_MODES[String(entry.key || '')];
+        const audioMode = modes && mcmEntryList().find((candidate) => candidate.key === 'audio_mode');
+        if (audioMode) readonly = !modes.includes(Number(mcmValue(audioMode)));
         if (type === 'toggle') return mcmToggleRow(entry, readonly);
         if (type === 'slider') return mcmSliderRow(entry, readonly);
+        if (type === 'enum') return mcmEnumRow(entry, readonly);
         /* Keymaps stay editable through key capture; the payload readonly flag only mirrors the legacy MCM display. */
         if (type === 'keymap') return mcmKeymapRow(entry);
         return mcmReadonlyRow(entry, 'text');
