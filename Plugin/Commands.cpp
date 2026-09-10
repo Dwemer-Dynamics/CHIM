@@ -1,4 +1,5 @@
 #include "Commands.h"
+#include "DirectorScene.h"
 
 #include "Globals.h"
 #include "DynamicDiaryBook.h"
@@ -101,13 +102,14 @@ void processActionConfirmationQueue() {
         : pending.text.substr(delimiterPosition + 1);
     const std::string title = "Allow " + (action.empty() ? std::string("action") : action) + "?";
     const std::string message = pending.actor + " wants to perform " +
-        (action.empty() ? std::string("this action") : action) + "." + describeActionParameter(parameter);
+        (action.empty() ? std::string("this action") : action) + "." +
+        (parameter.rfind("__DIRECTOR_SCENE__", 0) == 0 ? "" : describeActionParameter(parameter));
 
     g_actionConfirmationActive.store(true);
     const bool shown = PrismaUIBridge::ShowConfirmation(
         title, message, "Cancel", "Allow",
         [pending](bool accepted) mutable {
-            if (accepted) {
+            if (accepted && !DirectorScene::ApproveAction(pending.text)) {
                 SPGResponse::getInstance().enqueue(
                     "command",
                     makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
@@ -1096,7 +1098,12 @@ void parseRoleCommand(std::string rawCommand) {
     std::string command = rawCommand.substr(0, pos);
     std::string parameter = rawCommand.substr(pos + delimiter.length());
 
-    if (command.contains("spawnCharacter")) {
+    if (command == "DirectorScene") {
+        DirectorScene::Queue(parameter);
+    } else if (command == "DirectorSceneFailed") {
+        try { DirectorScene::RequestFailed(std::stoull(parameter)); }
+        catch (const std::exception&) { logger::warn("[DIRECTOR] Invalid failure response"); }
+    } else if (command.contains("spawnCharacter")) {
         std::vector<std::string> splitResult = splitString(parameter);
 
         if (splitResult.size() != 7) {
@@ -5745,7 +5752,7 @@ void StartAttack(std::string targetName, RE::Actor* actor) {
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "AttackTarget",
                                                                                    args, callback);
 
-        SpeakManager::getInstance().deleteQueue();  // 1.0.12
+        SpeakManager::getInstance().deleteQueue(true);  // Preserve authored turns while the attack starts.
         // I think some functions should interrupt speaking
 
         EndCommand("Attack", actor->GetDisplayFullName());  // Payrus will take care of ending
@@ -5838,7 +5845,7 @@ void StartBrawl(std::string targetName, RE::Actor* actor) {
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
         "AIAgentAIMind", "BrawlTarget", args, callback);
 
-    SpeakManager::getInstance().deleteQueue();
+    SpeakManager::getInstance().deleteQueue(true);
 }
 
 void Follow(std::string targetName) {}

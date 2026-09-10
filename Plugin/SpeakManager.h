@@ -30,6 +30,11 @@ struct ScriptLine {
     std::string phonetic;  // text in the Latin alphabet to use with lip sync when using non-Latin languages
     std::string rechatTargetHint;
     std::string utteranceId;
+    std::string directorSceneId;
+    std::string ttsCacheKey;
+    std::uint64_t directorGeneration = 0;
+    int directorLine = 0;
+    bool directorHasActions = false;
     bool rechatGenerated = false;
     float volumeBoost;  // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
     float duration;     // Duration of the line in seconds, used for timing animations and lip sync
