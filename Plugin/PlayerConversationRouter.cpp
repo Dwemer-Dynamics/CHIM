@@ -367,25 +367,19 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     }
 
     const float baseListenerRadius =
-        baseSettings.autoHearingDistance > 0.0f
-            ? baseSettings.autoHearingDistance
-            : SpatialAwareness::kAutoHearingDistance;
-    const float baseDirectRadius =
         playerInterior ? baseSettings.interiorMaxDistance : baseSettings.exteriorMaxDistance;
     result.listenerRadiusUnits = context.mode == PlayerConversationSpeechMode::Close
         ? GetCloseRadiusUnits(player->IsSneaking())
         : baseListenerRadius * modifier;
     result.audienceRadiusUnits = result.listenerRadiusUnits;
-    const float directAddressRadius =
-        context.mode == PlayerConversationSpeechMode::Close
-            ? result.listenerRadiusUnits
-            : std::max(result.listenerRadiusUnits, baseDirectRadius * modifier);
+    const float directAddressRadius = result.listenerRadiusUnits;
 
     SpatialAwareness::Settings audienceSettings = baseSettings;
     audienceSettings.maxAirDistance = result.audienceRadiusUnits;
     audienceSettings.interiorMaxDistance = result.audienceRadiusUnits;
     audienceSettings.exteriorMaxDistance = result.audienceRadiusUnits;
-    audienceSettings.autoHearingDistance = 0.0f;
+    audienceSettings.autoHearingDistance = context.mode == PlayerConversationSpeechMode::Close
+        ? 0.0f : std::min(baseSettings.autoHearingDistance * modifier, result.audienceRadiusUnits);
     audienceSettings.immediateDistance = 0.0f;
     SpatialAwareness::InvalidateCache();
 
@@ -482,7 +476,8 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         context.mode != PlayerConversationSpeechMode::Whisper &&
         context.mode != PlayerConversationSpeechMode::Close;
     policyRequest.narratorGesture = IsNarratorGesture(player);
-    policyRequest.blockSleepingDirectTarget = context.mode != PlayerConversationSpeechMode::Shout;
+    // Direct address can reach a sleeper; automatic selection still uses autoEligible.
+    policyRequest.blockSleepingDirectTarget = false;
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);
     result.reason = selection.reason;

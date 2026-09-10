@@ -2113,12 +2113,18 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         logger::info("Setting _max_distance_outside to {} ", f_Value);
 
     } else if (code == "_spatial_hearing_inside") {
-        if (f_Value > 0) SpatialAwareness::SetInteriorMaxDistance(f_Value);
+        if (f_Value > 0) {
+            SpatialAwareness::SetInteriorMaxDistance(f_Value);
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        }
 
         logger::info("Setting _spatial_hearing_inside to {} ", f_Value);
 
     } else if (code == "_spatial_hearing_outside") {
-        if (f_Value > 0) SpatialAwareness::SetExteriorMaxDistance(f_Value);
+        if (f_Value > 0) {
+            SpatialAwareness::SetExteriorMaxDistance(f_Value);
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        }
 
         logger::info("Setting _spatial_hearing_outside to {} ", f_Value);
 
@@ -2356,48 +2362,58 @@ int Papyrus::requestMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VM
     return 0;
 }
 
-int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                    RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc) {
-    ScopedPapyrusLock lock("requestMessageForActor");
+// Both script APIs share delivery and status handling; only automatic eligibility differs.
+static int RequestMessageForActor(std::string msg, std::string type, std::string npc,
+                                 PlayerConversationRoutingPolicy::RequestEligibility eligibility) {
+    Papyrus::ScopedPapyrusLock lock("requestMessageForActor");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     SpeakManager::getInstance().getLastUsedTime();  // To avoid trigger bored event from now
     AIAgentManager& aiam = AIAgentManager::getInstance();
     
     // Special handling for diary requests with empty npc name (looking at sky/ground)
     // Route through sendMessageReal which includes camera pitch detection for Narrator
-    if (type == "diary" && (npc.empty() || trim(npc).empty())) {
+    if (eligibility == PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget &&
+        type == "diary" && trim(npc).empty()) {
         logger::info("[requestMessageForActor] Diary request with no target, routing through sendMessageReal");
         const int untargetedResult = sendMessageReal(msg, type);
         return untargetedResult == 0 ? 1 : untargetedResult;
     }
     
-    auto actorPtr = aiam.getAgentByName(npc);
+    auto actorPtr = aiam.getAgentByName(trim(npc));
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* actor = actorPtr ? actorPtr->getActor() : nullptr;
+    if (!player || !actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) {
+        logger::warn("[requestMessageForActor] Target '{}' is unavailable; request was not queued", npc);
+        return -1;
+    }
 
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg
-        : std::format("{}:{}", RE::PlayerCharacter::GetSingleton()->GetName(), msg);
+        : std::format("{}:{}", player->GetName(), msg);
 
-    if (actorPtr) {
-        auto player = RE::PlayerCharacter::GetSingleton();
-        RE::TESObjectCELL* cell = player->GetParentCell();
-        auto result =
-            InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+    auto result =
+        InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
 
-        HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(beings in range:" + result + ")"));
+    HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                 "(beings in range:" + result + ")"));
 
-        HTTPManager::stream(
-            std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
-                        GetPlayerLocation(), requestText),
-            actorPtr->getActor());
-    } else {
-        // Fallback
-        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(),
-                                        GetGameTimeStamp(), GetPlayerLocation(), requestText));
-    }
+    const bool accepted = HTTPManager::streamForActor(
+        std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
+                    GetPlayerLocation(), requestText), actor, eligibility);
+    return accepted ? 1 : 0;
+}
 
-    return 1;
+int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                                    RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc) {
+    return RequestMessageForActor(std::move(msg), std::move(type), std::move(npc),
+        PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget);
+}
+
+int Papyrus::requestMessageForEligibleActor(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                                            RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc) {
+    return RequestMessageForActor(std::move(msg), std::move(type), std::move(npc),
+        PlayerConversationRoutingPolicy::RequestEligibility::RequireEligible);
 }
 
 int Papyrus::setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
@@ -5508,6 +5524,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
         "publishChimMcmCommandResult", "AIAgentFunctions", publishChimMcmCommandResult, false);
     a_vm->RegisterFunction("requestMessage", "AIAgentFunctions", requestMessage, false);
     a_vm->RegisterFunction("requestMessageForActor", "AIAgentFunctions", requestMessageForActor, false);
+    a_vm->RegisterFunction("requestMessageForEligibleActor", "AIAgentFunctions", requestMessageForEligibleActor, false);
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
     a_vm->RegisterFunction("hardResetExpression", "AIAgentFunctions", hardResetExpression, false);
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);

@@ -4649,9 +4649,13 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
         spatialSettings.maxAirDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
         spatialSettings.exteriorMaxDistance *= distanceMultiplier;
+        spatialSettings.autoHearingDistance *= distanceMultiplier;
         spatialSettings.immediateDistance = spatialSettings.autoHearingDistance;
     }
 
+    // Hearing sliders must not be silently capped by the separate vision scan limit.
+    spatialSettings.maxAirDistance = std::max({spatialSettings.maxAirDistance,
+        spatialSettings.interiorMaxDistance, spatialSettings.exteriorMaxDistance});
     return spatialSettings;
 }
 

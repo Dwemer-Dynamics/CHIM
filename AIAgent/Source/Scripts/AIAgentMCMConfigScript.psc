@@ -678,15 +678,16 @@ endEvent
 
 int function GetVersion()
 
-	return 76
+	return 77
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
-	if (a_version == 76 && a_version > CurrentVersion)
-		; Version 76: Present the original five audio combinations without resetting settings.
+	if (a_version == 77 && a_version > CurrentVersion)
+		; Refresh hearing navigation and option IDs, retaining saved sliders and hotkeys.
+		; Keep the version 76 audio migration for saves upgrading directly to 77.
 		ApplyAudioMode(true)
 		RegisterPrismaMCMEvent()
 		_prismaMcmRevision += 1
@@ -996,9 +997,9 @@ Function PublishPrismaMCMState()
 
 	PublishPrismaMCMEntry("Auto Activate", "Auto Activate", "enable_auto_activate", "Enable Auto Activate", "Automatically activate eligible NPCs around the player.", "toggle", PrismaMCMBool(_toggleAddAllNPCState), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Preset", "hearing_preset", "Hearing Preset", "Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.", "menu", GetHearingPreset() as String, "0|3|1||0|0")
-	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
-	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_inside", "Interior Hearing Distance", "Maximum indoor hearing range in Skyrim units. Doors, paths, and attenuation can reduce it.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_outside", "Exterior Hearing Distance", "Maximum outdoor hearing range in Skyrim units. Paths and attenuation can reduce it.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "auto_hearing_radius_m", "Auto Hearing Radius", "Nearby NPCs hear you without door or path checks, within the hearing distance. In meters; 1 meter is 70 Skyrim units. Whispering and sneaking reduce it. Close mode does not use this allowance.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_inside", "Interior Hearing Distance", "Indoor range for listeners and the audience, in Skyrim units. Closed doors can block hearing outside the Auto Hearing Radius. Speech mode and sneaking adjust the range.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_outside", "Exterior Hearing Distance", "Outdoor range for listeners and the audience, in Skyrim units. Distance fading can reduce audibility. Speech mode and sneaking adjust the range.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Hearing & Awareness", "Automatic Activation", "max_distance_inside", "Interior Auto Activate Distance", "Auto Activate NPCs within this distance indoors.", "slider", _max_distance_inside as String, "10|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Hearing & Awareness", "Automatic Activation", "max_distance_outside", "Exterior Auto Activate Distance", "Auto Activate NPCs within this distance outdoors.", "slider", _max_distance_outside as String, "10|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
@@ -1046,8 +1047,7 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
 EndFunction
 
-; Prisma label only. The native MCM uses the "$chim_soulgaze_hotkey" translation key so
-; SkyUI resolves the casing in Scaleform instead of relying on the Papyrus string table.
+; Shared proper-name label for MCM and Prisma, independent of translation-file overrides.
 ; Build the label at runtime so the assembler cannot merge it with the "soulgaze" ID.
 ; A local variable prevents the optimizer from folding the concatenation into a literal.
 String Function SoulGazeDisplayName()
@@ -1465,7 +1465,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_soulgaze = AddKeyMapOption("$chim_soulgaze_hotkey", _soulgaze_key)
+		_keymap_soulgaze = AddKeyMapOption(SoulGazeDisplayName(), _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
@@ -3077,15 +3077,15 @@ event OnOptionHighlight(int a_option)
 	endIf
 
 	if (a_option == _slider_spatial_hearing_inside)
-		SetInfoText("Maximum indoor hearing range in Skyrim units. Doors, paths, and attenuation can reduce it.")
+		SetInfoText("Indoor range for listeners and the audience, in Skyrim units. Closed doors can block hearing outside the Auto Hearing Radius. Speech mode and sneaking adjust the range.")
 	endIf
 
 	if (a_option == _slider_spatial_hearing_outside)
-		SetInfoText("Maximum outdoor hearing range in Skyrim units. Paths and attenuation can reduce it.")
+		SetInfoText("Outdoor range for listeners and the audience, in Skyrim units. Distance fading can reduce audibility. Speech mode and sneaking adjust the range.")
 	endIf
 
 	if (a_option == _slider_auto_hearing_radius_m)
-		SetInfoText("Direct auto hearing radius in meters. Uses straight-line distance and does not require LOS or navmesh.")
+		SetInfoText("Nearby NPCs hear you without door or path checks, within the hearing distance. In meters; 1 meter is 70 Skyrim units. Whispering and sneaking reduce it. Close mode does not use this allowance.")
 	endIf
 	
 	if (a_option == _toggleAddAllNPC)
