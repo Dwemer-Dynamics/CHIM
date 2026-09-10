@@ -1,4 +1,5 @@
 #include <SKSE/Events.h>
+#include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
 
 #include <algorithm>
@@ -2393,6 +2394,7 @@ private:
                     }
 
                     SpeakManager::getInstance().refreshPendingPlayerSubtitle();
+                    DirectorScene::ProcessActions();
 
                     ScriptLine l = SpeakManager::getInstance().getFirstItem();
 
@@ -2509,7 +2511,7 @@ private:
 
                     const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                     avoidBored = playerSpeechSuppressActive || player->IsInCombat() || player->IsAttacking() || player->IsSneaking()
-                        || CheckScene(player->GetCurrentScene()) || playerInDialog;
+                        || CheckScene(player->GetCurrentScene()) || playerInDialog || DirectorScene::Active();
 
                     if (boredElapsedSeconds >= std::chrono::seconds(GlobalBoredEventTimeOut) && !avoidBored) {
                         controlLastBoredTriggerTS = currentTime;
