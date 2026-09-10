@@ -7840,6 +7840,7 @@ R"CHIM(
         PlayerConversationRoutingContext routingContext{};
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        routingContext.executionMode = submission.mode;
         routingContext.playerMood = playerMood;
         routingContext.customPlayerMood = customPlayerMood;
         if (submission.symbolOverride) {

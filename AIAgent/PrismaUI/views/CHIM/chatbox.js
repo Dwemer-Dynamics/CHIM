@@ -968,7 +968,9 @@
         const message = focusInput.value;
         if (!message.trim()) return;
 
-        const customSelected = isCustomPlayerMoodSelected();
+        const symbolMode = detectSymbolMode(message);
+        const director = (symbolMode ? symbolMode.mode : currentMode) === 'DIRECTOR';
+        const customSelected = !director && isCustomPlayerMoodSelected();
         const customMood = customSelected ? getCustomPlayerMoodText() : '';
         // Custom mood with nothing typed keeps the composer open instead of silently dropping the mood.
         if (customSelected && !customMood) {
@@ -978,7 +980,7 @@
         }
 
         setCustomPlayerMoodInvalid(false);
-        sendMessageToBridge(message, customSelected ? '' : getSelectedPlayerMood(), customMood);
+        sendMessageToBridge(message, director || customSelected ? '' : getSelectedPlayerMood(), customMood);
         focusInput.value = '';
         renderModeIndicator();
         window.closeFocusChatbox(true);
