@@ -4201,6 +4201,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				if (!destMarker)
 					destMarker=AIAgentFunctions.getWorldLocationMarkerFor(currParentLvl1);
 					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.parent.GetPosition , Track: "+currParentLvl1.GetName()+ ": "+x+","+y+","+z);
+					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.parent.GetPosition , Track: "+DecToHex(currParentLvl1.GetFormId())+ ": "+x+","+y+","+z);
 				endif;
 				if (destMarker)
 					
