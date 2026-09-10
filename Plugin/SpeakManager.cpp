@@ -1,4 +1,5 @@
 #include "SpeakManager.h"
+#include "DirectorScene.h"
 
 #include <Windows.h>
 #include <WinInet.h>
@@ -1329,7 +1330,8 @@ bool isSilentAt(const std::vector<SilenceSegment>& silences, double elapsedSecon
 
 
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
-                    float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false) {
+                    float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
+                    const std::string& cacheKey = "") {
     // [DAP-PHASE] markers: on freeze, last logged phase names the hung call.
     auto _dap_t0 = std::chrono::high_resolution_clock::now();
     auto _dap_phase = [&](const char* name) {
@@ -1373,7 +1375,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     std::filesystem::path fullPath = path;
     std::filesystem::path dirName = fullPath.parent_path();
     path.assign(fullPath.parent_path().string());
-    std::string hashedName = md5(trim(text),false);
+    std::string hashedName = cacheKey.empty() ? md5(trim(text),false) : cacheKey;
     std::string fullPathFile = path.append("/soundcache/" + hashedName + ".wav").c_str();
 
     // Convert path to wide string
@@ -2520,6 +2522,12 @@ void SpeakManager::abortPendingUtterances(const std::string& reason, bool includ
 }
 
 void SpeakManager::deleteQueue(bool isActionCommand) {
+    if (DirectorScene::IsDispatchingAction()) return;
+    if (isActionCommand && DirectorScene::Active()) return;
+    if (!isActionCommand) {
+        DirectorScene::Cancel();
+        abortPendingUtterances("queue_cleared");
+    }
     // logger::debug("[SpeakManager] Attempting to acquire mutex for deleteQueue");
     std::lock_guard<std::mutex> lock(mtx);
     // logger::debug("[SpeakManager] Mutex acquired for deleteQueue");
@@ -2664,6 +2672,7 @@ void SpeakManager::recoverFromProcessingFailure(const std::string& actorName) {
     }
 
     if (droppedHead) {
+        DirectorScene::CompleteLine(droppedLine, false);
         logger::warn("[SpeakManager] Recovered from processing failure. Dropped stuck head item for {}: '{}'",
                      droppedLine.actor, droppedLine.subtitle);
     } else {
@@ -3069,6 +3078,7 @@ void SpeakManager::process(AIAgent *agent) {
     if (!agent->isNarrator() && (!npc->GetActorRuntimeData().currentProcess || !npc->Is3DLoaded())) {
         logger::info("[SPEAKERMANAGER {}] Agent {} is not currently loaded for dialogue. Skipping.", tid,
                      agent->getActorName());
+        DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
         return;
@@ -3087,6 +3097,7 @@ void SpeakManager::process(AIAgent *agent) {
 
     if (distance > MIN_DISTANCE) {
         logger::info("[SPEAKERMANAGER {}] {} is too far ({} units). Discarding speech.", tid,npc->GetDisplayFullName(), distance);
+        DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
         return;
@@ -3111,6 +3122,15 @@ void SpeakManager::process(AIAgent *agent) {
                      tid,agent->getActorName());
         
         ScriptLine scriptLine = getFirstItem();
+        if (!scriptLine.directorSceneId.empty() && !DirectorScene::ReadyToSpeak()) {
+            setProcessing(false);
+            return;
+        }
+        if (!scriptLine.directorSceneId.empty() && scriptLine.directorGeneration != DirectorScene::Generation()) {
+            dequeueFirstItem();
+            setProcessing(false);
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(mtx);
             currentPlaybackUtteranceId = scriptLine.utteranceId;
@@ -3421,7 +3441,7 @@ void SpeakManager::process(AIAgent *agent) {
             }
 
             res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
-                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter);
+                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey);
 
             const bool playbackAborted = (res == 2);
             if (playbackAborted) {
@@ -3790,12 +3810,15 @@ void SpeakManager::process(AIAgent *agent) {
                 {
                     std::lock_guard<std::mutex> lock(mtx);
                     if (currentPlaybackUtteranceId == scriptLine.utteranceId) {
-                        currentPlaybackUtteranceConfirmed = !scriptLine.utteranceId.empty();
+                        currentPlaybackUtteranceConfirmed = !scriptLine.utteranceId.empty() &&
+                            (scriptLine.directorSceneId.empty() || res == 0 || res == 5);
                     }
                 }
 
-                HTTPManager::log(
-                    std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), sData.dump()));
+                if (scriptLine.directorSceneId.empty() || res == 0 || res == 5) {
+                    HTTPManager::log(
+                        std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), sData.dump()));
+                }
             } catch (nlohmann::json_abi_v3_11_2::detail::type_error* exception) {
                 logger::info("Error sending speech. Review encoding");
             }
@@ -3812,6 +3835,7 @@ void SpeakManager::process(AIAgent *agent) {
             }
         }
 
+        DirectorScene::CompleteLine(scriptLine, res == 0 || res == 5);
         setProcessing(false);
         if (hasTalked) {
             // Speaker Manager sets a time stamp on agent to know when it finishes talking.

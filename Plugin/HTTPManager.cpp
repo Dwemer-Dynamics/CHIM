@@ -1,4 +1,5 @@
 #include "HTTPManager.h"
+#include "DirectorScene.h"
 
 #include <algorithm>
 #include <winsock2.h>
@@ -112,6 +113,8 @@ static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, 
         }
 
         if (enforceAutomaticEligibility) {
+            // Action results and automatic events must not cut into an authored scene.
+            if (DirectorScene::Active()) return;
             const std::string blockReason = PlayerConversationRouter::GetAutomaticBlockReason(
                 agent, resolvedActor, RE::PlayerCharacter::GetSingleton());
             if (!blockReason.empty()) {
@@ -683,7 +686,8 @@ namespace HTTPManager {
     }
 
 int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rechatDepth = 0,
-                  bool godmode = false, std::uint64_t dialogueStopGenerationSnapshot = 0) {
+                  bool godmode = false, std::uint64_t dialogueStopGenerationSnapshot = 0,
+                  std::uint64_t directorGeneration = 0) {
         constexpr size_t MAX_RESPONSE_SIZE = 1024 * 1024 * 20;  // 20MB limit
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int MAX_RECHAT_DEPTH = 10;  // Maximum allowed rechat depth
@@ -829,8 +833,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         
 
         std::string httpRealRequest =
-            std::format("GET /{0}?DATA={1}&profile={2} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n", destination,
-                        msg, md5(speaker,true), Conf::getInstance().getServer());
+            std::format("GET /{0}?DATA={1}&profile={2}&director_generation={4} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n", destination,
+                        msg, md5(speaker,true), Conf::getInstance().getServer(), directorGeneration);
 
         iResult = send(rawSocket, httpRealRequest.c_str(), httpRealRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
@@ -2310,9 +2314,13 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         const bool forceGodMode = GodMode && isPlayerInputRequest;
+        const bool directorRequest = isPlayerInputRequest && (forceGodMode ||
+            PrismaUIBridge::GetCurrentChatboxMode() == "DIRECTOR" ||
+            (routingContext && routingContext->symbolRoutingMode == "DIRECTOR"));
+        const auto directorGeneration = directorRequest ? DirectorScene::BeginRequest() : DirectorScene::Generation();
         const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
         auto queueStreamRequest =
-            [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration](bool inventoryDelivered) {
+            [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration, directorGeneration](bool inventoryDelivered) {
                 if (!inventoryDelivered) {
                     logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
                 }
@@ -2321,10 +2329,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     : "HTTPStreamRechat";
                 ThreadPool::getInstance().enqueue(
                     taskName,
-                    [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration]() {
+                    [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration, directorGeneration]() {
                         std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
                         sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, forceGodMode,
-                                      dialogueStopGeneration);
+                                      dialogueStopGeneration, directorGeneration);
                     },
                     listener, std::chrono::seconds(90));
             };
