@@ -1706,7 +1706,16 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void streamPlayer(std::string msg, const PlayerConversationRoutingContext& context) {
-        streamInternal(std::move(msg), 0, &context);
+        auto requestContext = context;
+        if (requestContext.executionMode.empty()) {
+            requestContext.executionMode = requestContext.symbolRoutingMode.empty()
+                ? PrismaUIBridge::GetCurrentChatboxMode() : requestContext.symbolRoutingMode;
+        }
+        if (requestContext.executionMode == "DIRECTOR") {
+            requestContext.playerMood.clear();
+            requestContext.customPlayerMood.clear();
+        }
+        streamInternal(std::move(msg), 0, &requestContext);
     }
 
     static void streamInternal(
@@ -2255,7 +2264,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 speechLogPayload["spatial_can_communicate"] = listenerCanCommunicate;
                 speechLogPayload["spatial_volume"] = hasSpatialContext ? listenerSpatial.volume : 0.0f;
                 speechLogPayload["spatial_reason"] = hasSpatialContext ? listenerSpatial.reason : "no_listener_context";
-                shouldLogSpeech = true;
+                shouldLogSpeech = !routingContext || routingContext->executionMode != "DIRECTOR";
 
                 if (isSpatialSnapshotEligibleRequest) {
                     json audienceSnapshot;
@@ -2272,6 +2281,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     if (unifiedPlayerRouting) {
                         audienceSnapshot["routing_reason"] = playerRoute.reason;
                         audienceSnapshot["speech_mode"] = playerRoute.modeName;
+                        audienceSnapshot["execution_mode"] = routingContext->executionMode;
                         if (!routingContext->symbolRoutingMode.empty()) {
                             audienceSnapshot["chat_shortcut_routed"] = true;
                         }
@@ -2289,9 +2299,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
                 } else if (unifiedPlayerRouting &&
-                           (!routingContext->symbolRoutingMode.empty() || !routingContext->playerMood.empty())) {
+                           (!routingContext->executionMode.empty() || !routingContext->symbolRoutingMode.empty() || !routingContext->playerMood.empty())) {
                     json requestModeSnapshot;
                     requestModeSnapshot["source"] = "plugin_player_routing_v2";
+                    requestModeSnapshot["execution_mode"] = routingContext->executionMode;
                     if (!routingContext->symbolRoutingMode.empty()) {
                         requestModeSnapshot["chat_shortcut_routed"] = true;
                     }
@@ -2315,8 +2326,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         const bool forceGodMode = GodMode && isPlayerInputRequest;
         const bool directorRequest = isPlayerInputRequest && (forceGodMode ||
-            PrismaUIBridge::GetCurrentChatboxMode() == "DIRECTOR" ||
-            (routingContext && routingContext->symbolRoutingMode == "DIRECTOR"));
+            (routingContext ? routingContext->executionMode == "DIRECTOR"
+                            : PrismaUIBridge::GetCurrentChatboxMode() == "DIRECTOR"));
         const auto directorGeneration = directorRequest ? DirectorScene::BeginRequest() : DirectorScene::Generation();
         const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
         auto queueStreamRequest =
