@@ -1,4 +1,5 @@
 #include "HTTPManager.h"
+#include "PlaythroughNotices.h"
 #include "DirectorScene.h"
 
 #include <algorithm>
@@ -37,6 +38,20 @@ using json = nlohmann::json;
 #define AGENT_MAX_DISTANCE_CHAT 2000
 
 namespace logger = SKSE::log;
+
+// Reuse Skyrim's HUD and menu events; a loading screen leaves the message queued.
+void HTTPManager::ShowPlaythroughNotices() {
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui || !RE::PlayerCharacter::GetSingleton() || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) return;
+    PlaythroughNotices::Notice notice;
+    while (PlaythroughNotices::Take(notice)) RE::DebugNotification(("[CHIM] " + notice.text).c_str());
+}
+
+static void QueuePlaythroughNotices(const std::string& headers) {
+    if (PlaythroughNotices::AcceptHeaders(headers)) {
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([]() { HTTPManager::ShowPlaythroughNotices(); });
+    }
+}
 
 static bool EqualsIgnoreCaseHttp(const std::string& left, const std::string& right)
 {
@@ -682,6 +697,7 @@ namespace HTTPManager {
         // Extract body from response
         std::size_t headerEnd = responseBody.find("\r\n\r\n");
         if (headerEnd != std::string::npos) {
+            QueuePlaythroughNotices(responseBody.substr(0,headerEnd));
             responseBody = responseBody.substr(headerEnd + 4);
         }
 
@@ -913,6 +929,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     size_t headerEnd = response.find("\r\n\r\n");
                     if (headerEnd != std::string::npos) {
                         std::string headers = response.substr(0, headerEnd);
+                        QueuePlaythroughNotices(headers);
                         
                         // Look for X-Event-Type header
                         // This tells us if the server converted the request (e.g., rechat -> narration)
@@ -1482,6 +1499,12 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         if (iResult > 0) {
             buffer[iResult] = '\0';
             fullResponse = std::string(buffer);
+            while (fullResponse.find("\r\n\r\n") == std::string::npos && fullResponse.size() < 16384) {
+                const int more = recv(rawSocket,buffer,sizeof(buffer),0);
+                if (more <= 0) break;
+                fullResponse.append(buffer,static_cast<std::size_t>(more));
+            }
+            QueuePlaythroughNotices(fullResponse);
 
             if (fullResponse.find("200 OK") != std::string::npos ||
                 fullResponse.find("HTTP/1.1 200") != std::string::npos ||
@@ -1632,6 +1655,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         if (outStatusCode) {
             *outStatusCode = parseHttpStatusCode(fullResponse);
         }
+        QueuePlaythroughNotices(fullResponse);
         return parseHttpBody(fullResponse);
     }
 

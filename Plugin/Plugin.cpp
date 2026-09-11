@@ -3750,6 +3750,9 @@ namespace ProcessorMenu {
 
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
                                               RE::BSTEventSource<RE::MenuOpenCloseEvent>* source) override {
+            if (event && !event->opening) {
+                if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([]() { HTTPManager::ShowPlaythroughNotices(); });
+            }
            
             if (event->menuName == RE::JournalMenu::MENU_NAME) {
                 if (event->opening) {
