@@ -19,6 +19,7 @@
 #include <windows.h>
 #include <eh.h>
 #include <dbghelp.h>
+#include <RE/S/SendHUDMessage.h>
 
 template <> 
 struct fmt::formatter<std::thread::id> {
@@ -27,7 +28,7 @@ struct fmt::formatter<std::thread::id> {
     }
 
     template <typename FormatContext>
-    auto format(const std::thread::id& id, FormatContext& ctx) -> decltype(ctx.out()) {
+    auto format(const std::thread::id& id, FormatContext& ctx) const -> decltype(ctx.out()) {
         std::ostringstream oss;
         oss << id;
         return fmt::format_to(ctx.out(), "{}", oss.str());
@@ -318,7 +319,7 @@ private:
                                 
                                 // Check if this is an SEH exception by looking for the SEH: prefix
                                 if (errorMessage.find("SEH: ") != std::string::npos) {
-                                    RE::DebugNotification("[CHIM] Caught SEH Exception in task (Prevented CTD). Check logs.");
+                                    RE::SendHUDMessage::ShowHUDMessage("[CHIM] Caught SEH Exception in task (Prevented CTD). Check logs.");
                                 }
                                 
                                 throw; // Re-throw to mark the future as having an exception
@@ -383,7 +384,7 @@ private:
                         
                         // Check if this is an SEH exception by looking for the SEH: prefix
                         if (errorMessage.find("SEH: ") != std::string::npos) {
-                            RE::DebugNotification("[CHIM] Caught SEH Exception in task (Prevented CTD). Check logs.");
+                            RE::SendHUDMessage::ShowHUDMessage("[CHIM] Caught SEH Exception in task (Prevented CTD). Check logs.");
                         }
                         
                         std::lock_guard<std::mutex> lock(metrics_mutex);
@@ -471,7 +472,7 @@ public:
                 auto timeSinceLastWarning = std::chrono::duration_cast<std::chrono::seconds>(now - lastWarningTime).count();
                 
                 if (timeSinceLastWarning >= 30) {  // Only show warning every 30 seconds
-                    RE::DebugNotification("[CHIM] Warning: Can't keep up with game load. Check AIAgent.log.");
+                    RE::SendHUDMessage::ShowHUDMessage("[CHIM] Warning: Can't keep up with game load. Check AIAgent.log.");
                     lastWarningTime = now;
                 }
                 

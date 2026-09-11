@@ -97,8 +97,8 @@ an explicit NPC form ID when the user chooses a target.
 
 `Everyone` is not offered in Whisper mode. Whisper must resolve exactly one
 private target: an explicit NPC selection is preferred, while Auto may resolve
-one specific eligible NPC when no explicit selection is active. Close mode is
-also private and retains the same single-target restriction.
+one specific eligible NPC when no explicit selection is active. Close mode also
+selects one responder, but other eligible audible NPCs in its radius can hear.
 
 ## Mode Contract
 
@@ -106,7 +106,7 @@ also private and retains the same single-target restriction.
 | --- | --- | --- | --- |
 | Standard | Configured base auto-hearing radius | Responder plus eligible audible NPCs | Normal speech |
 | Whisper | Base radius multiplied by 0.35 | Plugin snapshot is reduced; server narrows context to player and responder | Quiet/private speech treatment |
-| Close | Fixed 200 Skyrim units | Player and resolved responder only | Private close-range speech |
+| Close | Fixed 200 Skyrim units | Player, responder, and eligible audible NPCs in the radius | Close-range group speech |
 | Shout | Base radius multiplied by 2.0 | Responder plus eligible audible NPCs inside the expanded radius | Loud speech treatment |
 
 Sneaking multiplies the effective radius by 0.5 after the mode policy is
@@ -146,6 +146,41 @@ An explicit Prisma target, exact named target, or true crosshair target may
 bypass soft eligibility. This permits a dialogue response only; it does not
 authorize a package, animation, scene, quest, or gameplay-action interruption.
 
+### Sleeping direct targets
+
+Sleep is the one soft blocker that direct address cannot silently bypass. An
+actor counts as sleeping only when its exact Skyrim sit/sleep state is
+`kIsSleeping`. Furniture keywords and idle markers are not used.
+
+In Standard, Whisper, and Close modes, a direct request aimed at a sleeping
+actor is rejected before any HTTP dispatch. The request is not rerouted to
+another NPC and not rerouted to the Narrator. The player sees:
+
+```
+[CHIM] <Name> is asleep. Use Shout mode to reach them.
+```
+
+Shout mode is the documented exception: a direct Shout request reaches a
+sleeping target exactly as before.
+
+Direct intent is preserved before the rejection is raised. An explicit FormID
+is authoritative, so a sleeping exact target is rejected even when an awake
+actor shares its display name. For name-only targeting, the resolver prefers an
+eligible same-name actor and only rejects when every matching actor is asleep.
+The addressed name still decides who was meant, so a longer exact name match
+that is asleep rejects rather than falling back to a shorter awake name.
+
+Automatic routing is unchanged. Sleeping actors remain excluded from
+field-of-view and proximity selection, so an untargeted utterance still reaches
+the nearest eligible awake NPC or the Narrator.
+
+A targeted diary request is the non-dialogue exception: it can be generated
+while the actor is sleeping. Only the `sleeping` automatic blocker is bypassed;
+cooldown, combat, unconscious, scene, and every other blocker remain in force.
+The request does not interrupt or wake the actor. Papyrus diary callers show
+their "is writing diary entry" notification only after the native request
+reports an accepted status.
+
 ## Responder Priority
 
 The resolver evaluates these rules in order:
@@ -161,6 +196,10 @@ The resolver evaluates these rules in order:
 8. A bare `Hey` selects the best eligible field-of-view candidate.
 9. Otherwise, the nearest eligible and physically audible NPC is selected.
 10. If no eligible NPC exists, the Narrator is selected.
+
+Rules 4, 5, and 6 stop with an explicit rejection instead of continuing to the
+next rule when the intended direct actor is asleep and the mode is not Shout.
+`HTTPManager` reports that rejection once and does not open a request.
 
 The true crosshair is the game crosshair reference. A forward-cone fallback is
 not represented as a crosshair target.
@@ -195,9 +234,9 @@ candidate snapshot:
 
 - the player is always included;
 - the resolved NPC responder is included;
-- in Standard, Whisper, and Shout, other hard-eligible and physically audible
+- in Standard, Whisper, Close, and Shout, other hard-eligible and physically audible
   NPCs inside the effective radius are included;
-- in Close mode, no incidental NPC is included; and
+- Whisper's server context still narrows to player and responder; and
 - Narrator requests do not add nearby NPCs.
 
 The responder is ordered first, followed by incidental audience members sorted
@@ -205,6 +244,9 @@ by distance and form ID. Duplicate names are removed.
 
 Audience membership supplies context only. It does not cause every audience
 member to generate a response.
+
+Close rechat uses the recorded audience, without widening to other nearby NPCs.
+Random Narrator interjections remain disabled in Close and Whisper.
 
 ## Physical Presence
 
@@ -302,7 +344,13 @@ Each routed player utterance logs one `[PLAYER-ROUTING]` record with:
 - effective listener and audience radii;
 - audience count;
 - physical-presence and inactive-presence counts; and
-- rejected candidates with reasons.
+- candidates excluded from the actual audience with hard or spatial reasons; and
+- audible audience members that remain ineligible for automatic responder selection.
+
+A rejected sleeping direct target logs a shorter `[PLAYER-ROUTING]` record with
+the input source, mode, normalized utterance, rejected target name, and the
+`direct_target_sleeping` reason. No audience or presence snapshot is built for a
+rejected request.
 
 This record is the primary evidence for target, range, cooldown, loading,
 privacy, and spatial-audibility reports.
@@ -338,15 +386,18 @@ privacy, and spatial-audibility reports.
    action using RefID with name fallback.
 3. Creatures are excluded unless **Add All races** is enabled, and duplicate
    generic creature names collapse to one entry.
-4. An explicit sleeping or scene-bound NPC can answer without a gameplay
-   package interruption.
+4. An explicit scene-bound NPC can answer without a gameplay package
+   interruption. An explicit sleeping NPC answers in Shout mode; in Standard,
+   Whisper, and Close the request is rejected with the sleeping notification
+   and is not rerouted.
 5. `Hey Lydia` resolves the closest present exact Lydia.
 6. Bare `Hey` selects a deterministic eligible FOV candidate.
 7. No crosshair and no special phrase selects the nearest eligible audible NPC.
 8. The skyward gesture selects the Narrator before proximity fallback.
 9. Standard speech includes eligible audible nearby NPCs as context.
 10. Whisper and sneaking reduce both responder and audience scope.
-11. Close mode at 200 units includes only player and responder.
+11. Close mode at 200 units includes the player, responder, and all other eligible
+    audible NPCs in that radius, regardless of which NPC is targeted.
 12. Close mode while sneaking uses a 100-unit boundary.
 13. `Everyone` cannot remain active after switching to Whisper or Close mode.
 14. Ctrl+Enter selects persistent Close mode in Prisma and legacy text.
@@ -358,6 +409,11 @@ privacy, and spatial-audibility reports.
     standard player audience.
 19. NPC-to-NPC, Background Life, scripted dialogue, diaries, vision,
     instructions, and action callbacks continue through their existing routes.
+20. A targeted diary request can proceed for a sleeping NPC without interrupting
+    or waking the actor, while every non-sleeping automatic blocker remains in
+    force.
+21. A restrained actor can continue an established rechat chain, while restraint
+    remains a blocker for untargeted automatic responder selection.
 
 ## Source References
 
@@ -369,7 +425,8 @@ privacy, and spatial-audibility reports.
   actor action targeting with name fallback.
 - `Plugin/SpatialAwareness.cpp`: request-local physical audibility.
 - `Plugin/PrismaUIBridge.cpp`: Prisma mode/target transport and target display.
-- `Plugin/Papyrus.cpp`: legacy text routing and mode synchronization.
+- `Plugin/Papyrus.cpp`: legacy text routing, mode synchronization, and the diary
+  request's accepted-status return value.
 - `Plugin/Voicerec.cpp`: voice/STT routing context.
 - `AIAgent/PrismaUI/views/CHIM/chatbox.js`: Prisma controls and Ctrl+Enter.
 - `AIAgent/Source/Scripts/AIAgentPapyrusFunctions.psc`: legacy controls and mode

@@ -88,6 +88,8 @@ namespace Papyrus {
                       int bindedKey);
     int stopRecording(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       int bindedKey);
+    int stopAllDialogue(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
+    bool isGameFocused(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int startOpenMicMonitoring(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                RE::StaticFunctionTag*);
@@ -131,6 +133,9 @@ namespace Papyrus {
     int requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc);
 
+    int requestMessageForEligibleActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                       RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc);
+
     int setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                          int busy, std::string actor);
 
@@ -156,6 +161,10 @@ namespace Papyrus {
 
     int shotAndUpload(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                       std::string hints, int mode);
+
+    int startSoulgazeCapture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                             RE::StaticFunctionTag*, std::string hints, int captureType, int renderMode,
+                             RE::Actor* target);
 
     int isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 

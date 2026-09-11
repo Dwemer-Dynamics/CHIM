@@ -323,10 +323,17 @@ EndFunction
 
 function sendCellInfoPlayer() 
 
-	
-	
 	ObjectReference player = Game.GetPlayer()
+	
+	if (!player)
+		Return
+	endif;
+	
 	Cell localCell = player.getParentCell()
+	
+	if (!localCell)
+		Return
+	endif;
 	
 	Debug.Trace("[CHIM] AIAgentPlayerScript sendCellInfoPlayer, cell <0x"+DecToHex(localCell.GetFormId())+"> " );
 	
@@ -347,18 +354,25 @@ function sendCellInfoPlayer()
 	float yhint = -dx * Math.Sin(northRotation) + dy * Math.Cos(northRotation)
 
 	Location currLoc = player.getCurrentLocation();
-
+	int curLocFormid =0
+	if (currLoc)
+		curLocFormid=currLoc.GetFormId()
+	endif
 	int isInterior = 0
 	if (localCell.IsInterior())
 		isInterior = 1
 	endIf
 	string cellName = localCell.GetName();
 	if (!cellName)
-		cellName = currLoc.GetName()+" area"
+		if (currLoc)
+			cellName = currLoc.GetName()+" area"
+		else
+			cellName = "Unknown area"
+		endif
 	endif
 	
 	
-	AIAgentFunctions.logMessage(cellName+ "/0/" + currLoc.GetFormId() + "/" +isInterior+ "/-1/-1/0/"+worldSpaceName+"///"+(xhint)+"/"+(yhint),"named_cell")
+	int n=AIAgentFunctions.logMessage(cellName+ "/0/" + curLocFormid + "/" +isInterior+ "/-1/-1/0/"+worldSpaceName+"///"+(xhint)+"/"+(yhint),"named_cell")
 	MarkCellInfoPlayerSent(localCell,currLoc)
 	
 EndFunction
@@ -471,7 +485,8 @@ bool Function ShouldSendCellInfoPlayer(Cell localCell, Location currLoc)
 	if (localCell != lastCellInfoPlayerCell || currLoc != lastCellInfoPlayerLocation)
 		return true
 	endif
-	return (Utility.GetCurrentRealTime() - lastCellInfoPlayerSentAt) >= 60.0
+	; OnUpdate runs every five seconds; allow a little scheduler jitter.
+	return (Utility.GetCurrentRealTime() - lastCellInfoPlayerSentAt) >= 4.0
 EndFunction
 
 function ProcessExteriorCellInfoEnrichment(int maxDoors = 2) global
@@ -588,7 +603,7 @@ Event OnUpdate()
 	ObjectReference player = Game.GetPlayer()
 	Cell currCell = player.GetParentCell()
 	Location currLoc = player.GetCurrentLocation()
-	if (!processedDeferredCellInfo && ShouldSendCellInfoPlayer(currCell,currLoc) || true)
+	if (!processedDeferredCellInfo && ShouldSendCellInfoPlayer(currCell,currLoc))
 		sendCellInfoPlayer()
 	endif
 	

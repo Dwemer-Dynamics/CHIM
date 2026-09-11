@@ -1,4 +1,6 @@
 #include "HTTPManager.h"
+#include "PlaythroughNotices.h"
+#include "DirectorScene.h"
 
 #include <algorithm>
 #include <winsock2.h>
@@ -36,6 +38,20 @@ using json = nlohmann::json;
 #define AGENT_MAX_DISTANCE_CHAT 2000
 
 namespace logger = SKSE::log;
+
+// Reuse Skyrim's HUD and menu events; a loading screen leaves the message queued.
+void HTTPManager::ShowPlaythroughNotices() {
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui || !RE::PlayerCharacter::GetSingleton() || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) return;
+    PlaythroughNotices::Notice notice;
+    while (PlaythroughNotices::Take(notice)) RE::DebugNotification(("[CHIM] " + notice.text).c_str());
+}
+
+static void QueuePlaythroughNotices(const std::string& headers) {
+    if (PlaythroughNotices::AcceptHeaders(headers)) {
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([]() { HTTPManager::ShowPlaythroughNotices(); });
+    }
+}
 
 static bool EqualsIgnoreCaseHttp(const std::string& left, const std::string& right)
 {
@@ -82,15 +98,27 @@ static bool IsPlayerStreamActor(const std::string& actorName)
 }
 
 static std::string AutomaticResponseBlockReason(
-    std::string_view message, const std::shared_ptr<AIAgent>& agent, RE::Actor* actor)
+    std::string_view message, const std::shared_ptr<AIAgent>& agent, RE::Actor* actor,
+    PlayerConversationRoutingPolicy::RequestEligibility eligibility =
+        PlayerConversationRoutingPolicy::RequestEligibility::EventDefault,
+    RE::FormID requestedActor = 0)
 {
-    if (PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(message) ||
-        !agent || agent->isNarrator() || !actor) {
+    if (agent && agent->isNarrator()) {
+        return {};
+    }
+    if (!actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) {
+        return "actor_unavailable";
+    }
+    if (!PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(
+            message, eligibility, actor->GetFormID() == requestedActor)) {
         return {};
     }
 
+    PlayerConversationRoutingPolicy::AutomaticEligibilityOptions options{};
+    options.ignoreSleeping = eligibility != PlayerConversationRoutingPolicy::RequestEligibility::RequireEligible &&
+        PlayerConversationRoutingPolicy::IsDiaryRequest(message);
     return PlayerConversationRouter::GetAutomaticBlockReason(
-        agent, actor, RE::PlayerCharacter::GetSingleton());
+        agent, actor, RE::PlayerCharacter::GetSingleton(), options);
 }
 
 static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, const std::string& listener,
@@ -109,6 +137,8 @@ static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, 
         }
 
         if (enforceAutomaticEligibility) {
+            // Action results and automatic events must not cut into an authored scene.
+            if (DirectorScene::Active()) return;
             const std::string blockReason = PlayerConversationRouter::GetAutomaticBlockReason(
                 agent, resolvedActor, RE::PlayerCharacter::GetSingleton());
             if (!blockReason.empty()) {
@@ -130,6 +160,34 @@ static void QueueInterruptNPC(RE::Actor* actor, std::shared_ptr<AIAgent> agent, 
         } catch (const std::exception& e) {
             logger::error("[HTTPStream] InterruptNPC failed for {}: {}", listener, e.what());
         }
+    });
+}
+
+// Return player control when a server timeout leaves Skyrim's dialogue menu open without a response.
+static void QueueDialogueMenuReleaseAfterStreamTimeout(const std::string& speaker)
+{
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) {
+        logger::warn("[HTTPManager] Task interface unavailable; cannot release dialogue menu after timeout for {}",
+                     speaker);
+        return;
+    }
+
+    taskInterface->AddTask([speaker]() {
+        auto* ui = RE::UI::GetSingleton();
+        if (!ui || !ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME)) {
+            return;
+        }
+
+        auto* messageQueue = RE::UIMessageQueue::GetSingleton();
+        if (!messageQueue) {
+            logger::warn("[HTTPManager] UI message queue unavailable; cannot release dialogue menu after timeout for {}",
+                         speaker);
+            return;
+        }
+
+        messageQueue->AddMessage(RE::DialogueMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+        logger::warn("[HTTPManager] Released dialogue menu after stream timeout without a response for {}", speaker);
     });
 }
 
@@ -639,6 +697,7 @@ namespace HTTPManager {
         // Extract body from response
         std::size_t headerEnd = responseBody.find("\r\n\r\n");
         if (headerEnd != std::string::npos) {
+            QueuePlaythroughNotices(responseBody.substr(0,headerEnd));
             responseBody = responseBody.substr(headerEnd + 4);
         }
 
@@ -652,7 +711,11 @@ namespace HTTPManager {
     }
 
 int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rechatDepth = 0,
-                  bool godmode = false, std::uint64_t dialogueStopGenerationSnapshot = 0) {
+                  bool godmode = false, std::uint64_t dialogueStopGenerationSnapshot = 0,
+                  std::uint64_t directorGeneration = 0,
+                  PlayerConversationRoutingPolicy::RequestEligibility eligibility =
+                      PlayerConversationRoutingPolicy::RequestEligibility::EventDefault,
+                  RE::FormID requestedActor = 0) {
         constexpr size_t MAX_RESPONSE_SIZE = 1024 * 1024 * 20;  // 20MB limit
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int MAX_RECHAT_DEPTH = 10;  // Maximum allowed rechat depth
@@ -798,8 +861,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         
 
         std::string httpRealRequest =
-            std::format("GET /{0}?DATA={1}&profile={2} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n", destination,
-                        msg, md5(speaker,true), Conf::getInstance().getServer());
+            std::format("GET /{0}?DATA={1}&profile={2}&director_generation={4} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n", destination,
+                        msg, md5(speaker,true), Conf::getInstance().getServer(), directorGeneration);
 
         iResult = send(rawSocket, httpRealRequest.c_str(), httpRealRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
@@ -866,6 +929,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     size_t headerEnd = response.find("\r\n\r\n");
                     if (headerEnd != std::string::npos) {
                         std::string headers = response.substr(0, headerEnd);
+                        QueuePlaythroughNotices(headers);
                         
                         // Look for X-Event-Type header
                         // This tells us if the server converted the request (e.g., rechat -> narration)
@@ -951,15 +1015,31 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         }
 
                         AIAgentManager& responseAgentManager = AIAgentManager::getInstance();
-                        auto responseAgent = responseAgentManager.getAgentByName(trim(lineParts[0]));
+                        const std::string responseActorName = trim(lineParts[0]);
+                        auto responseAgent = responseAgentManager.getAgentByName(responseActorName);
                         RE::Actor* responseActor = responseAgent ? responseAgent->getActor() : nullptr;
-                        const std::string responseBlockReason =
-                            AutomaticResponseBlockReason(decodedMsg, responseAgent, responseActor);
+                        const bool unknownAutomaticActor =
+                            PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(
+                                decodedMsg, eligibility, responseActor && responseActor->GetFormID() == requestedActor) &&
+                            !IsPlayerStreamActor(responseActorName) && !responseAgent;
+                        std::string responseBlockReason;
+                        if (unknownAutomaticActor) {
+                            responseBlockReason = "not_managed";
+                        } else if (!IsPlayerStreamActor(responseActorName)) {
+                            responseBlockReason = AutomaticResponseBlockReason(
+                                decodedMsg, responseAgent, responseActor, eligibility, requestedActor);
+                        }
                         if (!responseBlockReason.empty()) {
                             logger::info(
                                 "[AUTO_ELIGIBILITY] Dropping automatic streamed response for {} "
                                 "(event={}, reason={})",
-                                trim(lineParts[0]), requestEventType, responseBlockReason);
+                                responseActorName, requestEventType, responseBlockReason);
+                            if (rechatDepth > 0 && unknownAutomaticActor) {
+                                SpeakManager::getInstance().cancelRechatChain();
+                                closeReason = "inactive_response_actor";
+                                breakloop = true;
+                                break;
+                            }
                             continue;
                         }
 
@@ -1037,6 +1117,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         if (!firstReceived) {
             logger::info("[HTTPManager] Cancelled server side {}, taskid {}", speaker,tid);
+        }
+
+        if (closeReason == "timeout" && streamedLineCount == 0) {
+            QueueDialogueMenuReleaseAfterStreamTimeout(speaker);
         }
 
         if (rechatDepth > 0 && !rechatResponseReceived) {
@@ -1415,6 +1499,12 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         if (iResult > 0) {
             buffer[iResult] = '\0';
             fullResponse = std::string(buffer);
+            while (fullResponse.find("\r\n\r\n") == std::string::npos && fullResponse.size() < 16384) {
+                const int more = recv(rawSocket,buffer,sizeof(buffer),0);
+                if (more <= 0) break;
+                fullResponse.append(buffer,static_cast<std::size_t>(more));
+            }
+            QueuePlaythroughNotices(fullResponse);
 
             if (fullResponse.find("200 OK") != std::string::npos ||
                 fullResponse.find("HTTP/1.1 200") != std::string::npos ||
@@ -1565,6 +1655,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         if (outStatusCode) {
             *outStatusCode = parseHttpStatusCode(fullResponse);
         }
+        QueuePlaythroughNotices(fullResponse);
         return parseHttpBody(fullResponse);
     }
 
@@ -1603,15 +1694,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data) {
+        postGameData(endpoint, data, {});
+    }
+
+    void postGameData(const std::string& endpoint, const nlohmann::json& data,
+                      std::function<void(bool)> completion) {
         try {
             std::string actorName = data.contains("actor_name") ? data["actor_name"].get<std::string>() : "Unknown";
             ThreadPool::getInstance().enqueue(
                 "HTTPGameData",
-                [endpoint, data]() {
+                [endpoint, data, completion]() mutable {
+                    bool success = false;
                     try {
-                        postGameDataInternal(endpoint, data);
+                        success = postGameDataInternal(endpoint, data);
                     } catch (const std::exception& e) {
                         logger::error("[postGameData] Error: {}", e.what());
+                    }
+                    if (completion) {
+                        completion(success);
                     }
                 },
                 actorName,
@@ -1619,6 +1719,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             );
         } catch (const std::exception& e) {
             logger::error("[HTTPManager] Failed to queue postGameData task: {}", e.what());
+            if (completion) {
+                completion(false);
+            }
         }
     }
 
@@ -1644,7 +1747,16 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void streamPlayer(std::string msg, const PlayerConversationRoutingContext& context) {
-        streamInternal(std::move(msg), 0, &context);
+        auto requestContext = context;
+        if (requestContext.executionMode.empty()) {
+            requestContext.executionMode = requestContext.symbolRoutingMode.empty()
+                ? PrismaUIBridge::GetCurrentChatboxMode() : requestContext.symbolRoutingMode;
+        }
+        if (requestContext.executionMode == "DIRECTOR") {
+            requestContext.playerMood.clear();
+            requestContext.customPlayerMood.clear();
+        }
+        streamInternal(std::move(msg), 0, &requestContext);
     }
 
     static void streamInternal(
@@ -1676,6 +1788,14 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             legacyAudibleActorCount = spatialSnapshot.audibleActors.size();
         } else {
             playerRoute = PlayerConversationRouter::Resolve(msg, *routingContext);
+            if (playerRoute.rejected) {
+                logger::info("[LISTENER-RESOLVE] Player request rejected before dispatch: target='{}' reason={}",
+                             playerRoute.rejectedTargetName, playerRoute.reason);
+                std::string rejectedMsg = std::format("[CHIM] {} is asleep. Use Shout mode to reach them.",
+                                                      playerRoute.rejectedTargetName);
+                RE::DebugNotification(rejectedMsg.c_str());
+                return;
+            }
         }
         float minDistance = (std::numeric_limits<float>::max)();
         bool directedChat = false;
@@ -2045,10 +2165,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             agentPointer->setRestored(false);
         }
 
-        if (listenerPtr && agentPointer && listener != NARRATOR_NAME) {
-            RefreshAIAgentInventory(listenerPtr, agentPointer->getActorName(), false, false);
-        }
-
         std::string outboundMsg = msg;
         json speechLogPayload;
         bool shouldLogSpeech = false;
@@ -2189,7 +2305,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 speechLogPayload["spatial_can_communicate"] = listenerCanCommunicate;
                 speechLogPayload["spatial_volume"] = hasSpatialContext ? listenerSpatial.volume : 0.0f;
                 speechLogPayload["spatial_reason"] = hasSpatialContext ? listenerSpatial.reason : "no_listener_context";
-                shouldLogSpeech = true;
+                shouldLogSpeech = !routingContext || routingContext->executionMode != "DIRECTOR";
 
                 if (isSpatialSnapshotEligibleRequest) {
                     json audienceSnapshot;
@@ -2206,8 +2322,16 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     if (unifiedPlayerRouting) {
                         audienceSnapshot["routing_reason"] = playerRoute.reason;
                         audienceSnapshot["speech_mode"] = playerRoute.modeName;
+                        audienceSnapshot["execution_mode"] = routingContext->executionMode;
                         if (!routingContext->symbolRoutingMode.empty()) {
                             audienceSnapshot["chat_shortcut_routed"] = true;
+                        }
+                        if (!routingContext->playerMood.empty()) {
+                            audienceSnapshot["player_mood"] = routingContext->playerMood;
+                            if (routingContext->playerMood == "custom" &&
+                                !routingContext->customPlayerMood.empty()) {
+                                audienceSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
+                            }
                         }
                         audienceSnapshot["listener_radius_units"] = playerRoute.listenerRadiusUnits;
                         audienceSnapshot["audience_radius_units"] = playerRoute.audienceRadiusUnits;
@@ -2215,10 +2339,21 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     const std::string snapshotDump = audienceSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
-                } else if (unifiedPlayerRouting && !routingContext->symbolRoutingMode.empty()) {
+                } else if (unifiedPlayerRouting &&
+                           (!routingContext->executionMode.empty() || !routingContext->symbolRoutingMode.empty() || !routingContext->playerMood.empty())) {
                     json requestModeSnapshot;
                     requestModeSnapshot["source"] = "plugin_player_routing_v2";
-                    requestModeSnapshot["chat_shortcut_routed"] = true;
+                    requestModeSnapshot["execution_mode"] = routingContext->executionMode;
+                    if (!routingContext->symbolRoutingMode.empty()) {
+                        requestModeSnapshot["chat_shortcut_routed"] = true;
+                    }
+                    if (!routingContext->playerMood.empty()) {
+                        requestModeSnapshot["player_mood"] = routingContext->playerMood;
+                        if (routingContext->playerMood == "custom" &&
+                            !routingContext->customPlayerMood.empty()) {
+                            requestModeSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
+                        }
+                    }
                     const std::string snapshotDump = requestModeSnapshot.dump();
                     outboundMsg.append("|");
                     outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
@@ -2230,27 +2365,37 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             shouldLogSpeech = false;
         }
 
-        if (GodMode && isPlayerInputRequest) {
-            // Godmode
-            const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-            ThreadPool::getInstance().enqueue(
-                rechatDepth == 0 ? "HTTPStreamGodMode" : "HTTPStreamRechat",
-                [outboundMsg, listener, rechatDepth, dialogueStopGeneration]() {
-                    std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
-                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, true, dialogueStopGeneration);
-                },
-                listener, std::chrono::seconds(90));
-        } else {
-            // Fire the event
-            const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-            ThreadPool::getInstance().enqueue(
-                rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-                [outboundMsg, listener, rechatDepth, dialogueStopGeneration]() {
-                    std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
-                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration);
-                },
-                listener, std::chrono::seconds(90));
+        const bool forceGodMode = GodMode && isPlayerInputRequest;
+        const bool directorRequest = isPlayerInputRequest && (forceGodMode ||
+            (routingContext ? routingContext->executionMode == "DIRECTOR"
+                            : PrismaUIBridge::GetCurrentChatboxMode() == "DIRECTOR"));
+        const auto directorGeneration = directorRequest ? DirectorScene::BeginRequest() : DirectorScene::Generation();
+        const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+        auto queueStreamRequest =
+            [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration, directorGeneration](bool inventoryDelivered) {
+                if (!inventoryDelivered) {
+                    logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
+                }
+                const std::string taskName = rechatDepth == 0
+                    ? (forceGodMode ? "HTTPStreamGodMode" : "HTTPStream")
+                    : "HTTPStreamRechat";
+                ThreadPool::getInstance().enqueue(
+                    taskName,
+                    [outboundMsg, listener, rechatDepth, forceGodMode, dialogueStopGeneration, directorGeneration]() {
+                        std::string finalMsg(base64_encode(outboundMsg.c_str(), std::strlen(outboundMsg.c_str())));
+                        sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, forceGodMode,
+                                      dialogueStopGeneration, directorGeneration);
+                    },
+                    listener, std::chrono::seconds(90));
+            };
 
+        if (listenerPtr && agentPointer && listener != NARRATOR_NAME) {
+            RefreshAIAgentInventory(listenerPtr, agentPointer->getActorName(), false, false, queueStreamRequest);
+        } else {
+            queueStreamRequest(true);
+        }
+
+        if (!forceGodMode) {
             if (shouldLogSpeech) {
                 try {
                     HTTPManager::log(
@@ -2271,18 +2416,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void stream(std::string msg, RE::Actor* actor, int rechatDepth) {
+        streamForActor(std::move(msg), actor,
+            PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, rechatDepth);
+    }
+
+    bool streamForActor(std::string msg, RE::Actor* actor,
+                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth) {
         // Determine speaker
         logger::info("[HTTPStream] Streaming for actor: {} (rechat depth: {})", 
             actor ? actor->GetDisplayFullName() : "null", 
             rechatDepth);
 
-        if (!actor) {
-            logger::warn("[HTTPStream] Skipping stream with null actor");
-            return;
+        if (!actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) {
+            logger::warn("[HTTPStream] Skipping stream with unavailable actor");
+            return false;
         }
 
         const bool enforceAutomaticEligibility =
-            !PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(msg);
+            PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(msg, eligibility, true);
         const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
         
@@ -2296,11 +2447,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        const std::string blockReason = AutomaticResponseBlockReason(msg, agent, actor);
+        const std::string blockReason = AutomaticResponseBlockReason(msg, agent, actor, eligibility, actorFormID);
         if (!blockReason.empty()) {
             logger::info("[AUTO_ELIGIBILITY] Suppressing automatic event for {} (reason={})",
                          actor->GetDisplayFullName(), blockReason);
-            return;
+            return false;
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
@@ -2310,10 +2461,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             actor->GetDisplayFullName(), 
             actor->IsPlayerTeammate(),
             listener);
-
-        if (actor && agent && listener != NARRATOR_NAME) {
-            RefreshAIAgentInventory(actor, agent->getActorName(), false, false);
-        }
 
         // Rechat is launched while the current line may still be playing; do not interrupt it.
         if (rechatDepth > 0) {
@@ -2330,13 +2477,35 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         logger::info("Stream Called for {}", listener);
 
         const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-        ThreadPool::getInstance().enqueue(
-            rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-            [msg, listener, rechatDepth, dialogueStopGeneration]() {
-                std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration);
-            },
-            listener, std::chrono::seconds(90));
+        const auto actorHandle = actor->GetHandle();
+        auto queueStreamRequest = [msg, listener, rechatDepth, dialogueStopGeneration, eligibility,
+                                   actorFormID, actorHandle, agent](bool inventoryDelivered) {
+            if (!inventoryDelivered) {
+                logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
+            }
+            ThreadPool::getInstance().enqueue(
+                rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
+                [msg, listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle, agent]() {
+                    // Recheck the target after inventory refresh and queue delay without retaining a raw pointer.
+                    auto target = actorHandle.get();
+                    const auto blockReason = AutomaticResponseBlockReason(msg, agent, target.get(), eligibility, actorFormID);
+                    if (!blockReason.empty()) {
+                        logger::info("[HTTPStream] Dropping queued request for {} (reason={})", listener, blockReason);
+                        return;
+                    }
+                    std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
+                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration,
+                                  0, eligibility, actorFormID);
+                },
+                listener, std::chrono::seconds(90));
+        };
+
+        if (actor && agent && listener != NARRATOR_NAME) {
+            RefreshAIAgentInventory(actor, agent->getActorName(), false, false, queueStreamRequest);
+        } else {
+            queueStreamRequest(true);
+        }
+        return true;
     }
 
 }

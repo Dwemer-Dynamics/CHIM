@@ -64,6 +64,34 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .context-bucket { border: 1px solid #3d3d3d; border-radius: 7px; padding: 10px; background: #202020; }
 .context-bucket h3 { margin: 0 0 7px; color: #f3bd7e; font-size: .86rem; text-transform: capitalize; }
 
+/* Global Settings presets: preset- prefixed and scoped to #globals-page. */
+#globals-page .preset-bar { display: grid; grid-template-columns: auto minmax(180px, 260px) minmax(0, 1fr); gap: 7px 10px; align-items: center; margin-bottom: 11px; padding: 8px 10px; border: 1px solid #404040; border-radius: 9px; background: var(--panel-soft); }
+#globals-page .preset-bar[hidden] { display: none; }
+#globals-page .preset-bar-label { color: #e8e3db; font-size: .8rem; font-weight: 600; }
+#globals-page .preset-select-host { min-width: 0; }
+#globals-page .preset-actions { display: flex; gap: 7px; justify-content: flex-end; }
+#globals-page .preset-status { grid-column: 1 / -1; min-width: 0; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+#globals-page .preset-status.error { color: #ff9ca4; }
+#globals-page .preset-actions .button:disabled { opacity: .5; cursor: default; }
+.preset-name-field { margin-top: 13px; margin-bottom: 0; }
+.preset-name-error { margin-top: 8px; color: #ff9ca4; font-size: .72rem; }
+
+/* Profile presets: profile-preset- prefixed and scoped to #profiles-page. */
+#profiles-page .profile-preset-row { display: grid; grid-template-columns: auto minmax(160px, 250px) minmax(0, 1fr); gap: 5px 10px; align-items: center; padding: 7px 11px; border: 1px solid #404040; border-radius: 8px; background: var(--panel-soft); }
+#profiles-page .profile-preset-row[hidden] { display: none; }
+#profiles-page .profile-preset-label { color: #e8e3db; font-size: .8rem; font-weight: 600; }
+#profiles-page .profile-preset-select { min-width: 0; min-height: 34px; padding: 6px 9px; }
+#profiles-page .profile-preset-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#profiles-page .profile-preset-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+#profiles-page .profile-preset-custom-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#profiles-page .profile-preset-custom-actions[hidden] { display: none; }
+#profiles-page .profile-preset-actions .button { min-height: 30px; padding: 5px 9px; font-size: .78rem; }
+#profiles-page .profile-preset-file { display: none; }
+#profiles-page .profile-preset-select:disabled, #profiles-page .profile-preset-actions .button:disabled { opacity: .5; cursor: default; }
+#profiles-page .profile-preset-actions .button[aria-busy="true"] { cursor: progress; }
+#profiles-page .profile-preset-status { grid-column: 1 / -1; min-width: 0; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+#profiles-page .profile-preset-status.error { color: #ff9ca4; }
+
 /* Uses the same tile-menu interaction and visual language as CHIM Chat. */
 .settings-native-select { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; clip-path: inset(50%) !important; white-space: nowrap !important; border: 0 !important; }
 .settings-tile-selector { position: relative; width: 100%; pointer-events: auto; }
@@ -120,6 +148,9 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .advanced-metadata summary { cursor: pointer; color: #f3bd7e; font-weight: 700; }
 .advanced-metadata textarea { margin-top: 9px; font-family: Consolas, monospace; }
 @container (max-width: 760px) {
+    #profiles-page .profile-preset-row { grid-template-columns: minmax(0, 1fr); }
+    #profiles-page .profile-preset-actions, #profiles-page .profile-preset-custom-actions { justify-content: stretch; }
+    #profiles-page .profile-preset-actions .button { flex: 1 1 auto; }
     .profile-core-grid { grid-template-columns: minmax(0,1fr) 110px; }
     .profile-default-card { grid-column: 1 / -1; min-height: auto; }
     .connector-selection-grid, .profile-settings-columns { grid-template-columns: 1fr; }
@@ -130,6 +161,9 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
     .override-field { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
+    #globals-page .preset-bar { grid-template-columns: 1fr; }
+    #globals-page .preset-actions { flex-wrap: wrap; justify-content: stretch; }
+    #globals-page .preset-actions .button { flex: 1 1 auto; }
     .top-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .sub-tabs:not(.mcm-sub-tabs) { grid-template-columns: 1fr; }
     .mcm-agent-columns, .mcm-slider-controls { grid-template-columns: 1fr; }
@@ -150,6 +184,8 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 #mcm-page.active { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 9px; }
 .mcm-sub-tabs { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); margin-bottom: 0; }
 .mcm-sub-tab { font-size: .82rem; }
+.mcm-hearing-preset-section { grid-column: 1 / -1; }
+.mcm-hearing-preset-section .settings-tile-selector { max-width: 520px; }
 .mcm-status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; }
 .mcm-status-actions { display: flex; flex: 0 0 auto; gap: 7px; }
 .mcm-status { min-width: 0; color: var(--muted); font-size: .75rem; }
@@ -185,6 +221,9 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .mcm-range { padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
 .mcm-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .mcm-number { text-align: right; }
+.mcm-enum-controls { min-width: 0; }
+/* The tile list opens over the same space the hover help uses, so the help yields while it is open. */
+.mcm-row.has-help.mcm-row-enum.mcm-enum-open > .mcm-help { opacity: 0; }
 .mcm-staged-pill { flex: 0 0 auto; border: 1px solid #4b9b68; border-radius: 999px; padding: 1px 6px; color: #a9e7bf; background: #234631; font-size: .58rem; font-weight: 800; letter-spacing: .03em; }
 .mcm-row-error { margin: 5px 0 0; color: #ff9ca4; font-size: .68rem; }
 .mcm-keymap-controls { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto; gap: 7px; align-items: center; }

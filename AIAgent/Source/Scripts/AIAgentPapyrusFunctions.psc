@@ -25,12 +25,29 @@ int 		_currentChatboxKey
 int 		_currentChatboxFocusKey
 int 		_currentSettingsMenuKey
 int 		_currentMasterMenuKey
+int 		_currentSoulgazeKey
 bool property _currentGodmodeStatus  auto
 bool		currentTTSStatus= false
 bool		_diaryKeyPressed= false ; Track if diary key is currently pressed
 bool		_chatboxFocusHotkeySuppressed = false
 bool		_playerMenuTTSPending = false
 bool		_vrikVoiceRecordingActive = false
+bool		_soulgazeKeyPressed = false
+bool		_soulgazeHoldTriggered = false
+bool		_soulgazeSingleTapPending = false
+bool		_soulgazeSecondTapCandidate = false
+float		_soulgazePressedAt = 0.0
+float		_soulgazeFirstTapReleasedAt = 0.0
+float		_soulgazeHoldThreshold = 0.7
+float		_soulgazeDoubleTapWindow = 0.35
+
+int _textGestureKey = -1
+bool _textGestureCanWait = false
+bool _textGestureWaitSent = false
+float _textGesturePressedAt = 0.0
+float _textGestureReleaseLostAt = -1.0
+float _textHoldThreshold = 0.7
+Cell _chatGestureCell
 
 ; VRIK gesture actions mirror the Main page CHIM hotkeys.
 String		_vrikActionTextChat = "CHIM_VRIK_TextChat"
@@ -90,6 +107,7 @@ Event OnInit()
 EndEvent
 
 Event OnPlayerLoadGame()
+	ResetChatHotkeys()
 	thirdPartyInit()
 	; Re-arm polling after load to ensure Prisma pending actions are always processed.
 	RegisterForSingleUpdate(0.1)
@@ -203,8 +221,11 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		Debug.Notification("[CHIM] Updating dynamic profile for The Narrator")
 		AIAgentFunctions.logMessage("The Narrator", "updateprofile_narrator")
 	elseif (actionId == "rp_write_diary" && targetActor)
-		Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
-		AIAgentFunctions.requestMessageForActor("Please, update your diary", "diary", targetActor.GetDisplayName())
+		; Show the start notification only after the native request is accepted.
+		int diaryStatus = AIAgentFunctions.requestMessageForActor("Please, update your diary", "diary", targetActor.GetDisplayName())
+		if (diaryStatus > 0)
+			Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
+		endif
 	elseif (actionId == "rp_update_npc" && targetActor)
 		Debug.Trace("[CHIM] Updating dynamic profile for " + targetActor.GetDisplayName())
 		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async")
@@ -243,14 +264,16 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		; Soulgaze actions (check if starts with "sg_")
 		int mode = AIAgentFunctions.get_conf_i("_sgmode")
 		if (actionId == "sg_soulgaze")
-			AIAgentSoulGazeEffect.Soulgaze(mode)
+			TriggerSoulgazeDescribe()
 		elseif (actionId == "sg_photo_zoom")
-			AIAgentSoulGazeEffect.SendProfilePicture(mode, true)
+			TriggerSoulgazePortrait()
 		elseif (actionId == "sg_photo")
 			AIAgentSoulGazeEffect.SendProfilePicture(mode, false)
 		elseif (actionId == "sg_upload")
 			; Use JustUpload like the original wheel menu
 			AIAgentSoulGazeEffect.JustUpload(mode)
+		elseif (actionId == "sg_context")
+			TriggerSoulgazeContext()
 		endif
 	endif
 	
@@ -285,6 +308,11 @@ bool Function ShouldBlockPrismaMenuHotkey()
 EndFunction
 
 Event OnKeyUp(int keyCode, float holdTime)
+	; Finish our own presses before focused-menu suppression can swallow their release.
+	if (keyCode == _textGestureKey)
+		FinishTextHotkey(holdTime)
+		Return
+	endif
 	If ShouldSuppressChatboxFocusedHotkey(keyCode)
 		Return
 	EndIf
@@ -300,6 +328,24 @@ Event OnKeyUp(int keyCode, float holdTime)
 			_vrikVoiceRecordingActive = false
 			;WebSocketSTT.StopRecordVoice(_currentKeyVoice);
 			Debug.Notification("[CHIM] Recording end");
+		endif
+	endif
+
+	If (keyCode == _currentSoulgazeKey && _soulgazeKeyPressed)
+		_soulgazeKeyPressed = false
+		if (_soulgazeHoldTriggered)
+			_soulgazeHoldTriggered = false
+			_soulgazeSecondTapCandidate = false
+			Return
+		endif
+
+		if (_soulgazeSecondTapCandidate)
+			_soulgazeSecondTapCandidate = false
+			_soulgazeSingleTapPending = false
+			TriggerSoulgazePortrait()
+		else
+			_soulgazeSingleTapPending = true
+			_soulgazeFirstTapReleasedAt = Utility.GetCurrentRealTime()
 		endif
 	endif
 	
@@ -340,36 +386,25 @@ Event OnKeyDown(int keyCode)
   EndIf
    
   If(keyCode == _currentKey)
-	; Text menu entry
-	If !SafeProcess()
-      Return
-    EndIf
-	Actor selectedActor = Game.GetCurrentCrosshairRef() as Actor
-	AIAgentAIMind.resetCam()
-    UIExtensions.OpenMenu("UITextEntryMenu")
-    string messageText = UIExtensions.GetMenuResultString("UITextEntryMenu")
-	
-	If messageText != ""
-		string inputType = ""
-		if (Input.IsKeyPressed(29))	; Left Ctrl
-			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
-			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
-			inputType = "inputtext_i"
-			SendLegacyTextMessage(messageText,inputType,selectedActor)
-			
-		elseif (Input.IsKeyPressed(42))	; Left Shift
-			
-			AIAgentAIMind.sendCustomLocation(messageText)
-			
-		else
-			;AIAgentFunctions.sendMessage(messageText,inputType)
-			SendLegacyTextMessage(messageText,inputType,selectedActor)
-		endif;
-		
-		
-		
-    EndIf
+	BeginTextHotkey(keyCode)
+    Return
   EndIf
+
+	If (keyCode == _currentSoulgazeKey)
+		If !SafeProcess()
+			Return
+		EndIf
+
+		float now = Utility.GetCurrentRealTime()
+		if (_soulgazeSingleTapPending && (now - _soulgazeFirstTapReleasedAt) > _soulgazeDoubleTapWindow)
+			_soulgazeSingleTapPending = false
+			TriggerSoulgazeContext()
+		endif
+		_soulgazeKeyPressed = true
+		_soulgazeHoldTriggered = false
+		_soulgazeSecondTapCandidate = _soulgazeSingleTapPending && (now - _soulgazeFirstTapReleasedAt) <= _soulgazeDoubleTapWindow
+		_soulgazePressedAt = now
+	EndIf
    If(keyCode == _currentKeyVoice)
    
 	if (UI.IsMenuOpen("Book Menu"))
@@ -383,7 +418,7 @@ Event OnKeyDown(int keyCode)
 			AIAgentFunctions.recordSoundEx(_currentKeyVoice)
 		endif
 		_vrikVoiceRecordingActive = true
-         
+
 		;WebSocketSTT.StartRecordVoice(_currentKeyVoice);
 		Debug.Notification("[CHIM] recording....");
 	endif
@@ -519,6 +554,8 @@ Event OnKeyDown(int keyCode)
 	if (_chatboxFocusHotkeySuppressed)
 		_chatboxFocusHotkeySuppressed = false
 	else
+		; Open Prisma text chat on the initial press. Holding the key keeps the
+		; chatbox open instead of waiting for a release-time gesture.
 		ToggleChatboxFocusAction(keyCode)
 	endif
   ElseIf(keyCode == _currentChatboxKey)
@@ -538,18 +575,123 @@ Event OnKeyDown(int keyCode)
 EndEvent
 
 Event OnUpdate()
+	UpdateChatHotkeys()
 	; Check for pending settings menu actions
 	String pendingAction = AIAgentFunctions.getSettingsMenuPendingAction()
 	
 	if (pendingAction != "")
 		ProcessPendingSettingsAction(pendingAction)
 	endif
+
+	if (_soulgazeKeyPressed && !_soulgazeHoldTriggered && Input.IsKeyPressed(_currentSoulgazeKey))
+		if ((Utility.GetCurrentRealTime() - _soulgazePressedAt) >= _soulgazeHoldThreshold)
+			_soulgazeHoldTriggered = true
+			_soulgazeSingleTapPending = false
+			_soulgazeSecondTapCandidate = false
+			TriggerSoulgazeDescribe()
+		endif
+	endif
+
+	if (_soulgazeSingleTapPending && !_soulgazeKeyPressed)
+		if ((Utility.GetCurrentRealTime() - _soulgazeFirstTapReleasedAt) > _soulgazeDoubleTapWindow)
+			_soulgazeSingleTapPending = false
+			TriggerSoulgazeContext()
+		endif
+	endif
 	
 	; Continue polling
 	RegisterForSingleUpdate(0.1)
 Endevent
 
-Function TriggerTextChatAction()
+; Forget pending input on load, rebind, focus loss or a blocking menu.
+Function ResetChatHotkeys()
+	_textGestureKey = -1
+	_textGestureWaitSent = false
+	_textGestureReleaseLostAt = -1.0
+	_chatboxFocusHotkeySuppressed = false
+	_chatGestureCell = None
+EndFunction
+
+Function BeginTextHotkey(int keyCode)
+	if (keyCode < 0 || _textGestureKey >= 0 || !AIAgentFunctions.isGameFocused())
+		Return
+	endif
+	if (!SafeProcess())
+		Return
+	endif
+	if (_chatGestureCell && _chatGestureCell != Game.GetPlayer().GetParentCell())
+		ResetChatHotkeys()
+	endif
+	_textGestureKey = keyCode
+	_textGestureCanWait = SafeProcess()
+	_textGestureWaitSent = false
+	_textGesturePressedAt = Utility.GetCurrentRealTime()
+	_textGestureReleaseLostAt = -1.0
+	_chatGestureCell = Game.GetPlayer().GetParentCell()
+	RegisterForSingleUpdate(0.1)
+EndFunction
+
+Function FinishTextHotkey(float holdTime)
+	bool waitSent = _textGestureWaitSent
+	bool canWait = _textGestureCanWait
+	_textGestureKey = -1
+	if (waitSent || !AIAgentFunctions.isGameFocused() || _chatGestureCell != Game.GetPlayer().GetParentCell() || AIAgentFunctions.isChatboxPanelFocused() == 1)
+		Return
+	endif
+	if (holdTime >= _textHoldThreshold)
+		if (canWait)
+			WaitForCrosshairNpc()
+		endif
+	else
+		TriggerTextChatAction(true)
+	endif
+EndFunction
+
+; Textbox holds use a live actor reference, never name/nearest fallback.
+Function WaitForCrosshairNpc()
+	if (!SafeProcess() || !AIAgentFunctions.isGameFocused())
+		Return
+	endif
+	Actor target = Game.GetCurrentCrosshairRef() as Actor
+	if (!target || target == Game.GetPlayer() || target.IsDead() || target.IsDisabled() || !target.Is3DLoaded())
+		Debug.Notification("[CHIM] Look at a living NPC to make them wait here.")
+		Return
+	endif
+	AIAgentAIMind.StartWait(target)
+	Debug.Notification("[CHIM] " + target.GetDisplayName() + " will wait here")
+EndFunction
+
+; Use the existing update cadence only while a chat gesture is pending.
+Function UpdateChatHotkeys()
+	if (_textGestureKey < 0)
+		Return
+	endif
+	if (!AIAgentFunctions.isGameFocused() || _chatGestureCell != Game.GetPlayer().GetParentCell())
+		ResetChatHotkeys()
+		Return
+	endif
+	if (!SafeProcess())
+		ResetChatHotkeys()
+		Return
+	endif
+	float now = Utility.GetCurrentRealTime()
+	if (_textGestureKey >= 0)
+		if (Input.IsKeyPressed(_textGestureKey))
+			_textGestureReleaseLostAt = -1.0
+			if (_textGestureCanWait && !_textGestureWaitSent && now - _textGesturePressedAt >= _textHoldThreshold)
+				_textGestureWaitSent = true
+				WaitForCrosshairNpc()
+			endif
+		elseif (_textGestureReleaseLostAt < 0.0)
+			; Give OnKeyUp its turn: clearing here immediately would lose quick taps.
+			_textGestureReleaseLostAt = now
+		elseif (now - _textGestureReleaseLostAt >= 1.0)
+			_textGestureKey = -1
+		endif
+	endif
+EndFunction
+
+Function TriggerTextChatAction(bool allowLocationModifier = false)
 	If !SafeProcess()
 		Return
 	EndIf
@@ -565,6 +707,9 @@ Function TriggerTextChatAction()
 			Debug.Trace("[CHIM] Ctrl modifier selected persistent Close conversation mode")
 			AIAgentFunctions.logMessage("chim_mode@CLOSE","setconf")
 			inputType = "inputtext_i"
+		elseif (allowLocationModifier && Input.IsKeyPressed(42)) ; Left Shift, legacy keyboard only
+			AIAgentAIMind.sendCustomLocation(messageText)
+			Return
 		endif
 		SendLegacyTextMessage(messageText,inputType,selectedActor)
 	EndIf
@@ -635,6 +780,45 @@ Function TriggerHaltAction()
 	endif
 EndFunction
 
+Function TriggerSoulgazeContext()
+	Debug.Trace("[CHIM] Soulgaze tap requested a visual context capture")
+	AIAgentSoulGazeEffect.CaptureContext(AIAgentFunctions.get_conf_i("_sgmode"))
+EndFunction
+
+Function TriggerSoulgazePortrait()
+	Actor targetActor = Game.GetCurrentCrosshairRef() as Actor
+	bool isActivatedTarget = false
+	if (targetActor)
+		Actor[] nearbyAgents = AIAgentFunctions.findAllNearbyAgents()
+		int index = 0
+		while index < nearbyAgents.Length && !isActivatedTarget
+			isActivatedTarget = nearbyAgents[index] == targetActor
+			index += 1
+		endwhile
+	endif
+
+	if (!isActivatedTarget)
+		Debug.Trace("[CHIM] Soulgaze double tap rejected because the crosshair target is not an activated AI NPC")
+		Debug.Notification("[CHIM] Target an AI NPC before double-tapping Soulgaze.")
+		Return
+	endif
+
+	Debug.Trace("[CHIM] Soulgaze double tap requested a portrait for " + targetActor.GetDisplayName())
+	AIAgentSoulGazeEffect.CapturePortrait(AIAgentFunctions.get_conf_i("_sgmode"), targetActor)
+EndFunction
+
+Function TriggerSoulgazeDescribe()
+	Actor targetActor = AIAgentFunctions.getClosestAgent()
+	if (!targetActor)
+		Debug.Trace("[CHIM] Soulgaze hold rejected because no activated NPC is nearby")
+		Debug.Notification("[CHIM] No activated NPC is nearby.")
+		Return
+	endif
+
+	Debug.Trace("[CHIM] Soulgaze hold requested a scene description from " + targetActor.GetDisplayName())
+	AIAgentSoulGazeEffect.DescribeScene(AIAgentFunctions.get_conf_i("_sgmode"), targetActor)
+EndFunction
+
 Function ToggleChatboxFocusAction(int keyCode = -1)
 	if (UI.IsMenuOpen("Book Menu"))
 		AIAgentFunctions.sendMessage("Please, summarize this book i've just found.","chatnf_book")
@@ -676,6 +860,9 @@ Function ToggleMasterMenuAction()
 EndFunction
 
 Function removeBinding(int keycode) 
+	if (keycode == _currentKey || keycode == _currentChatboxFocusKey || keycode == _currentKeyVoice)
+		ResetChatHotkeys()
+	endif
 	UnregisterForKey(keycode)
 EndFunction
 
@@ -790,6 +977,11 @@ EndFunction
 Function doBinding19(int keycode) 
 	
 	_currentMasterMenuKey=keycode
+	RegisterForKey(keycode)
+EndFunction
+
+Function doBinding20(int keycode)
+	_currentSoulgazeKey = keycode
 	RegisterForKey(keycode)
 EndFunction
 
@@ -1134,8 +1326,11 @@ Function OpenRoleplayWheel()
 		If (targetName != "")
 			Actor targetActor = crosshairRef as Actor
 			If (targetActor)
-				Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
-				AIAgentFunctions.requestMessageForActor("Please, update your diary","diary", targetActor.GetDisplayName())
+				; Show the start notification only after the native request is accepted.
+				int diaryStatus = AIAgentFunctions.requestMessageForActor("Please, update your diary","diary", targetActor.GetDisplayName())
+				If (diaryStatus > 0)
+					Debug.Notification("[CHIM] " + targetActor.GetDisplayName() + " is writing diary entry")
+				EndIf
 			Else
 				Debug.Notification("[CHIM] You must look at a target to generate a Diary Entry.")
 			EndIf
@@ -1594,7 +1789,7 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 					Debug.Trace("[CHIM] SendLocation Using reference cell from caller: "+DecToHex(referenceCell.GetFormID())+","+referenceCell.GetName())
 				endif
 				
-				if (locationCenterMarkerRef.getParentCell())
+				if (locationCenterMarkerRef && locationCenterMarkerRef.getParentCell())
 					localCell = locationCenterMarkerRef.getParentCell()
 					Debug.Trace("[CHIM] SendLocation Using reference cell from locationCenterMarkerRef: "+DecToHex(localCell.GetFormID())+","+localCell.GetName())
 				endif
@@ -1659,14 +1854,17 @@ Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 				
 				
 				
-				Worldspace cws= locationCenterMarkerRef.GetWorldSpace()
-				if (!cws)
+				Worldspace cws= None 
+				if (!cws && locationCenterMarkerRef)
+					cws = locationCenterMarkerRef.GetWorldSpace()
+				endif
+				if (!cws && insideEntranceMarkerRef)
 					cws= insideEntranceMarkerRef.GetWorldSpace()
 				endif
-				if (!cws)
+				if (!cws && outsideEntranceMarkerRef)
 					cws= outsideEntranceMarkerRef.GetWorldSpace()
 				endif
-				if (!cws)
+				if (!cws && mapMarkerRefType)
 					cws = mapMarkerRefType.GetWorldSpace()
 				endif
 				string worldspaceName=""

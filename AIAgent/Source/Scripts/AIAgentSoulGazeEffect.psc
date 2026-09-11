@@ -39,7 +39,6 @@ function Soulgaze(int mode) global
 		Consoleutil.ExecuteCommand("tm");
 		AIAgentFunctions.shotAndUpload(hints,1)
 		Utility.wait(1);
-		Game.ShakeCamera();
 		Consoleutil.ExecuteCommand("tm");
 	endif 
 endFunction
@@ -143,7 +142,45 @@ function JustUpload(int mode) global
 		Consoleutil.ExecuteCommand("tm");
 		AIAgentFunctions.shotAndUpload(hints,5)
 		Utility.wait(1);
-		Game.ShakeCamera();
 		Consoleutil.ExecuteCommand("tm");
 	endif 
+endFunction
+
+; Run the gesture-driven capture without opening the deprecated Soulgaze wheel.
+int function StartGestureCapture(int mode, int captureType, Actor target = None, bool zoom = false) global
+	Consoleutil.ExecuteCommand("tm")
+	if (zoom)
+		Consoleutil.ExecuteCommand("fov 60")
+		Consoleutil.ExecuteCommand("tfc")
+	endif
+
+	Utility.Wait(1.0)
+	int result = AIAgentFunctions.startSoulgazeCapture("", captureType, mode, target)
+	Utility.Wait(1.0)
+
+	if (zoom)
+		Consoleutil.ExecuteCommand("tfc")
+	endif
+	Consoleutil.ExecuteCommand("tm")
+
+	if (result == -1)
+		Debug.Trace("[CHIM] Soulgaze capture rejected because another capture is active")
+		Debug.Notification("[CHIM] Soulgaze is already processing a capture.")
+	elseif (result == 0)
+		Debug.Trace("[CHIM] Soulgaze capture could not be started")
+		Debug.Notification("[CHIM] Soulgaze capture failed. Check AIAgent.log.")
+	endif
+	return result
+endFunction
+
+int function CaptureContext(int mode) global
+	return StartGestureCapture(mode, 0)
+endFunction
+
+int function CapturePortrait(int mode, Actor target) global
+	return StartGestureCapture(mode, 1, target, false)
+endFunction
+
+int function DescribeScene(int mode, Actor target) global
+	return StartGestureCapture(mode, 2, target)
 endFunction

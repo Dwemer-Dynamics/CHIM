@@ -241,7 +241,6 @@ function MoveToTargetEnd(Actor npc) global
 						string logMessage
 						logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 						Debug.TraceUser("ChimHTTPSender", logMessage)
-						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
 						
 						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
@@ -837,7 +836,7 @@ function TravelToTargetEnd(Actor npc) global
 					logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 					Debug.TraceUser("ChimHTTPSender", logMessage)
 					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
-					
+					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"infoaction",npc.GetDisplayName())
 					Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 				endif
 			endif
@@ -1098,6 +1097,207 @@ function AttackTarget(Actor npc, ObjectReference akTarget,bool lethal=true) glob
 	EndIf
 	
 
+endFunction
+
+; Route player brawls through Skyrim's quest and NPC brawls through CHIM sparring.
+function BrawlTarget(Actor npc, Actor opponent) global
+	if (!npc || !opponent || npc == opponent || npc.IsDead() || opponent.IsDead())
+		if (npc)
+			AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		endif
+		return
+	endif
+
+	Actor player = Game.GetPlayer()
+	if (opponent != player)
+		NpcBrawlTarget(npc, opponent)
+		return
+	endif
+
+	Quest dialogueFavorGeneric = Game.GetForm(0x0005A6DC) as Quest
+	FavorDialogueScript favorDialogue = dialogueFavorGeneric as FavorDialogueScript
+	Quest vanillaBrawlQuest = Game.GetForm(0x00047AE6) as Quest
+	if (!favorDialogue || !vanillaBrawlQuest || vanillaBrawlQuest.IsRunning())
+		Debug.Trace("[CHIM] BrawlTarget could not start DGIntimidateQuest")
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest is unavailable or already running", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	Debug.Trace("[CHIM] Starting vanilla DGIntimidateQuest for "+npc.GetDisplayName())
+	favorDialogue.Brawl(npc)
+
+	float startWaitBegan = Utility.GetCurrentRealTime()
+	while (!vanillaBrawlQuest.IsRunning() && (Utility.GetCurrentRealTime() - startWaitBegan) < 10.0)
+		Utility.Wait(0.2)
+	endwhile
+
+	if (!vanillaBrawlQuest.IsRunning())
+		Debug.Trace("[CHIM] DGIntimidateQuest did not start for "+npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest did not start", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@"+npc.GetDisplayName()+" starts a vanilla Skyrim brawl with "+player.GetDisplayName(), "funcret", npc.GetDisplayName())
+
+	string outcomeCode = ""
+	string outcomeText = ""
+	float outcomeWaitBegan = Utility.GetCurrentRealTime()
+	while (outcomeCode == "" && (Utility.GetCurrentRealTime() - outcomeWaitBegan) < 600.0)
+		; Vanilla records opponent bleedout at 15, cheating at 150, and player bleedout at 180.
+		; GetStageDone preserves the result after stage 200 performs quest cleanup.
+		if (vanillaBrawlQuest.GetStageDone(150))
+			outcomeCode = "disqualified"
+			outcomeText = "The brawl escalated because Skyrim registered weapon or magic use"
+		elseif (vanillaBrawlQuest.GetStageDone(180))
+			outcomeCode = "npc_won"
+			outcomeText = npc.GetDisplayName()+" won the brawl against "+player.GetDisplayName()
+		elseif (vanillaBrawlQuest.GetStageDone(15))
+			outcomeCode = "player_won"
+			outcomeText = player.GetDisplayName()+" won the brawl against "+npc.GetDisplayName()
+		elseif (!vanillaBrawlQuest.IsRunning())
+			outcomeCode = "aborted"
+			outcomeText = "The vanilla brawl ended without a recorded winner"
+		else
+			Utility.Wait(1.0)
+		endif
+	endwhile
+
+	if (outcomeCode == "")
+		outcomeCode = "timeout"
+		outcomeText = "The brawl outcome was not resolved within ten minutes"
+	endif
+
+	Debug.Trace("[CHIM] Brawl outcome "+outcomeCode+": "+outcomeText)
+	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+endFunction
+
+; Unequip one recorded hand without removing its item from inventory.
+function ClearNpcBrawlHand(Actor brawler, Form equippedForm, int hand) global
+	if (!brawler || !equippedForm)
+		return
+	endif
+
+	Spell equippedSpell = equippedForm as Spell
+	if (equippedSpell)
+		brawler.UnequipSpell(equippedSpell, hand)
+	elseif (hand == 0)
+		brawler.UnequipItemEx(equippedForm, 2)
+	else
+		brawler.UnequipItemEx(equippedForm, 1)
+	endif
+endFunction
+
+; Restore one recorded hand to the same SKSE equipment slot after a spar.
+function RestoreNpcBrawlHand(Actor brawler, Form equippedForm, int hand) global
+	if (!brawler || !equippedForm)
+		return
+	endif
+
+	Spell equippedSpell = equippedForm as Spell
+	if (equippedSpell)
+		brawler.EquipSpell(equippedSpell, hand)
+	elseif (hand == 0)
+		brawler.EquipItemEx(equippedForm, 2, false, false)
+	else
+		brawler.EquipItemEx(equippedForm, 1, false, false)
+	endif
+endFunction
+
+; Run a bounded, reversible unarmed spar for two non-player actors.
+function NpcBrawlTarget(Actor npc, Actor opponent) global
+	ActorBase npcBase = AIAgentNpcUtil.getProperActorBase(npc)
+	ActorBase opponentBase = AIAgentNpcUtil.getProperActorBase(opponent)
+	if (!npcBase || !opponentBase || npc.IsInCombat() || opponent.IsInCombat())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@Error. NPC brawlers must be valid and out of combat", "funcret", npc.GetDisplayName())
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		return
+	endif
+
+	int npcRelationship = npc.GetRelationshipRank(opponent)
+	int opponentRelationship = opponent.GetRelationshipRank(npc)
+	float npcConfidence = npc.GetActorValue("Confidence")
+	float opponentConfidence = opponent.GetActorValue("Confidence")
+	bool npcProtected = npcBase.IsProtected()
+	bool opponentProtected = opponentBase.IsProtected()
+	bool npcNoBleedoutRecovery = npc.GetNoBleedoutRecovery()
+	bool opponentNoBleedoutRecovery = opponent.GetNoBleedoutRecovery()
+	Form npcLeft = npc.GetEquippedObject(0)
+	Form npcRight = npc.GetEquippedObject(1)
+	Form opponentLeft = opponent.GetEquippedObject(0)
+	Form opponentRight = opponent.GetEquippedObject(1)
+	Weapon unarmed = Game.GetForm(0x000001F4) as Weapon
+
+	ClearNpcBrawlHand(npc, npcLeft, 0)
+	ClearNpcBrawlHand(npc, npcRight, 1)
+	ClearNpcBrawlHand(opponent, opponentLeft, 0)
+	ClearNpcBrawlHand(opponent, opponentRight, 1)
+	npc.EquipItem(unarmed, false, true)
+	opponent.EquipItem(unarmed, false, true)
+
+	npcBase.SetProtected(true)
+	opponentBase.SetProtected(true)
+	npc.SetNoBleedoutRecovery(true)
+	opponent.SetNoBleedoutRecovery(true)
+	npc.SetActorValue("Confidence", 4)
+	opponent.SetActorValue("Confidence", 4)
+	npc.SetRelationshipRank(opponent, -3)
+	opponent.SetRelationshipRank(npc, -3)
+	npc.StartCombat(opponent)
+	opponent.StartCombat(npc)
+
+	AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@"+npc.GetDisplayName()+" starts an unarmed spar with "+opponent.GetDisplayName(), "funcret", npc.GetDisplayName())
+
+	string outcomeText = ""
+	float outcomeWaitBegan = Utility.GetCurrentRealTime()
+	Utility.Wait(0.5)
+	while (outcomeText == "" && (Utility.GetCurrentRealTime() - outcomeWaitBegan) < 600.0)
+		if (npc.IsBleedingOut())
+			outcomeText = opponent.GetDisplayName()+" won the brawl against "+npc.GetDisplayName()
+		elseif (opponent.IsBleedingOut())
+			outcomeText = npc.GetDisplayName()+" won the brawl against "+opponent.GetDisplayName()
+		elseif (npc.IsDead() || opponent.IsDead())
+			outcomeText = "The NPC brawl was interrupted because a participant died"
+		elseif (!npc.IsInCombat() && !opponent.IsInCombat())
+			outcomeText = "The NPC brawl ended without a recorded winner"
+		else
+			Utility.Wait(0.5)
+		endif
+	endwhile
+
+	if (outcomeText == "")
+		outcomeText = "The NPC brawl outcome was not resolved within ten minutes"
+	endif
+
+	npc.StopCombat()
+	opponent.StopCombat()
+	npc.SetRelationshipRank(opponent, npcRelationship)
+	opponent.SetRelationshipRank(npc, opponentRelationship)
+	npc.SetActorValue("Confidence", npcConfidence)
+	opponent.SetActorValue("Confidence", opponentConfidence)
+	npc.SetNoBleedoutRecovery(false)
+	opponent.SetNoBleedoutRecovery(false)
+	npc.RestoreActorValue("Health", 20)
+	opponent.RestoreActorValue("Health", 20)
+	Utility.Wait(1.0)
+	npc.SetNoBleedoutRecovery(npcNoBleedoutRecovery)
+	opponent.SetNoBleedoutRecovery(opponentNoBleedoutRecovery)
+	npcBase.SetProtected(npcProtected)
+	opponentBase.SetProtected(opponentProtected)
+	npc.UnequipItem(unarmed, false, true)
+	opponent.UnequipItem(unarmed, false, true)
+	RestoreNpcBrawlHand(npc, npcLeft, 0)
+	RestoreNpcBrawlHand(npc, npcRight, 1)
+	RestoreNpcBrawlHand(opponent, opponentLeft, 0)
+	RestoreNpcBrawlHand(opponent, opponentRight, 1)
+	npc.EvaluatePackage()
+	opponent.EvaluatePackage()
+
+	Debug.Trace("[CHIM] NPC brawl outcome: "+outcomeText)
+	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
 endFunction
 
 function RecoverFromCombat(Actor npc) global;Triggers on defeated actor
@@ -3369,6 +3569,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Debug.TraceUser("ChimHTTPSender", logMessage)
 		
 		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
+		AIAgentFunctions.logMessage(npc.GetDisplayName()+" picked up "+itemName,"infoaction")
 	else
 		; Too far - store details and initiate movement
 		;StorageUtil.SetStringValue(npc, "PendingPickupItem", itemName)
@@ -3403,7 +3604,7 @@ Function PickupItemFromWorld(Actor npc, ObjectReference itemRef, string itemName
 		Debug.TraceUser("ChimHTTPSender", logMessage)
 		
 		Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
-		
+		AIAgentFunctions.logMessage(npc.GetDisplayName()+" picked up "+itemName,"infoaction")
 	endif
 EndFunction
 
@@ -3775,8 +3976,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 		Debug.Trace("[CHIM] BackgroundCmd, actor: "+aktarget.GetDisplayName())
 		String[] cmd = StringUtil.Split(command, "/")
 		Debug.Trace("[CHIM] BackgroundCmd, parm0: "+cmd[0])
-		if cmd.length>1
-			Debug.Trace("[CHIM] BackgroundCmd, parm1: "+cmd[1])
+		
+		if cmd.length>2
+			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+"> parm2: <"+cmd[2]+">")
+		elseif cmd.length>1
+			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+">")
 		endif
 		
 		if (cmd[0] == "TravelTo") 
@@ -3910,7 +4114,7 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			
 			else
 				; Just Sandbox
-				Sandbox(akTarget,"")
+				Sandbox(akTarget,"sleep")
 				Debug.Trace("[CHIM] StayAtPlace. NO linked reference found for: "+DecToHex(akTarget.getFormId()))
 			endif
 		
@@ -3944,8 +4148,15 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			string name
 			
 			Location loc= akTarget.GetCurrentLocation()
-			Location currParentLvl1=PO3_SKSEFunctions.GetParentLocation(loc)
-			Location currParentLvl2=PO3_SKSEFunctions.GetParentLocation(currParentLvl1)
+			Location currParentLvl1=None
+			if (loc)
+				currParentLvl1=PO3_SKSEFunctions.GetParentLocation(loc)
+			endif
+			Location currParentLvl2=None
+			if (currParentLvl1)
+				currParentLvl2=PO3_SKSEFunctions.GetParentLocation(currParentLvl1)
+			endif
+			
 			string lvl1s = ""
 			string lvl2s = ""
 			if currParentLvl1
@@ -3960,8 +4171,12 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			Worldspace cws= akTarget.GetWorldSpace()
 			string worldspaceName=""
 			
+			if (loc)
+				name=loc.GetName()
+			endif 
+			
 			if (cws)
-				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetFormId())
+				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+name+"/"+lvl1s+"/"+lvl2s+" worldspace "+cws.GetFormId())
 				worldspaceName = cws.GetName()
 				if (worldspaceName == "Skyrim" ||worldspaceName == "")
 					if !akTarget.IsInInterior() 
@@ -3969,14 +4184,17 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					endif
 				endif
 			else
-				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+loc.GetName()+"/"+lvl1s+"/"+lvl2s+" worldspace null")
+				Debug.Trace("[CHIM] "+akTarget.GetDisplayName()+"/"+name+"/"+lvl1s+"/"+lvl2s+" worldspace null")
 			endif;
 			
 			if (useRawCoords)
-				x=akTarget.GetPositionX();
-				y=akTarget.GetPositionY();
-				z=akTarget.GetPositionZ();
-				name=loc.GetName();
+				x=akTarget.GetPositionX()
+				y=akTarget.GetPositionY()
+				z=akTarget.GetPositionZ()
+				name=""
+				if (loc)
+					name=loc.GetName()
+				endif
 				Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+",Not interior, akTarget.GetPosition, Track: "+x+","+y+","+z);
 			else
 				ObjectReference destMarker=AIAgentFunctions.getWorldLocationMarkerFor(loc);
@@ -4019,7 +4237,11 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			if (runningPackage)
 				runningPackageId=DecToHex(runningPackage.GetFormID())
 			endif
-			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+DecToHex(loc.GetFormID())+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ+"/"+runningPackageId,"util_location_npc")
+			string formIdTxt="";
+			if (loc)
+				formIdTxt=DecToHex(loc.GetFormID())
+			endif
+			int retFnc=AIAgentFunctions.logMessage(akTarget.GetDisplayName()+"/"+x+"/"+y+"/"+z+"/"+name+"/"+formIdTxt+"/"+worldspaceName+"/"+IsInInterior+"/"+realCoordsUsed+"/"+realCoordsX+"/"+realCoordsY+"/"+realCoordsZ+"/"+runningPackageId,"util_location_npc")
 			Actor randomActor=PO3_SKSEFunctions.GetClosestActorFromRef(aktarget,true);
 			if (randomActor)
 				Debug.Trace("[CHIM] BackgroundCmd, Target: "+akTarget.GetDisplayName()+","+randomActor.GetDisplayName()+" randomActor actor around "+x+","+y+","+z);
@@ -4473,13 +4695,22 @@ int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) g
 		npc.SetFactionRank(sandboxFaction,1)
 
 		PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
-		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,256);
-		PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
-				
+		ObjectReference[] anchors = PO3_SKSEFunctions.FindAllReferencesOfFormType(npc,34,1024);
+		if (anchors.length>0)
+			PO3_SKSEFunctions.SetLinkedRef(npc,anchors[0])
+			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
+		endif
+		if (anchors.length == 0)
+			PO3_SKSEFunctions.SetLinkedRef(npc,npc as ObjectReference)
+			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near self")
+		endif
+		if (taskid=="sleep")		
+			SandboxWorkPackage = Game.GetFormFromFile(0x4adf0,"AIAgent.esp") as Package		; Package sandboxSleep	
+		endif
 		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100)
 		npc.EvaluatePackage();
-		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName()+ " sandboxing near "+DecToHex(anchors[0].GetFormId()))
-				
+		
+		Debug.Trace("[CHIM] Sandbox START finishes for "+npc.GetDisplayName())		
 	else 
 		Package SandboxWorkPackage = Game.GetFormFromFile(0x40be6,"AIAgent.esp") as Package		; Package sandboxWorkPackage 
 		Faction sandboxFaction=Game.GetFormFromFile(0x21246, "AIAgent.esp") as Faction 		; Faction sandboxFaction
@@ -4492,6 +4723,9 @@ int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) g
 			Debug.Trace("[CHIM] "+npc.GetDisplayName()+" should sandbox near "+DecToHex(nearHere.GetFormID()))
 			PO3_SKSEFunctions.SetLinkedRef(npc,nearHere)
 		endif;
+		if (taskid=="sleep")		
+			SandboxWorkPackage = Game.GetFormFromFile(0x4adf0,"AIAgent.esp") as Package		; Package sandboxSleep	
+		endif
 		
 		ActorUtil.AddPackageOverride(npc, SandboxWorkPackage, 100,0)
 		Debug.Trace("[CHIM] "+npc.GetDisplayName()+" is at "+npc.GetCurrentLocation().GetName())
