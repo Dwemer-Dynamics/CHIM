@@ -27,7 +27,12 @@ int function setNewActionMode(int mode)  Global Native
 int function logMessage(String a_msg,String type) Global Native			; Send message for logging purposes. Doesn't expect response
 int function logMessageForActor(String a_msg,String type,String npc) Global Native			; Send message for logging purposes. Doesn't expect response
 int function requestMessage(String a_msg,String type) Global Native		; Send message (no user input). expects an IA response
-int function requestMessageForActor(String a_msg,String type,String npc) Global Native		; Send message (no user input). expects an IA response
+; Explicitly address a managed actor, bypassing automatic conversation eligibility.
+; Both targeted request functions return 1 when queued, 0 when ineligible, -1 when the target is unavailable.
+; Delivery and any response are asynchronous. An unavailable named target never redirects to another NPC.
+int function requestMessageForActor(String a_msg,String type,String npc) Global Native
+; Enforce automatic eligibility (including sleep, unconsciousness, combat and scene settings) for any event type.
+int function requestMessageForEligibleActor(String a_msg,String type,String npc) Global Native
 int function setAnimationBusy(int busy,String npc) Global Native
 int function setLocked(int locked,String npc) Global Native; 1 locks agent for talking, 0 releases.
 int function isActorTalking(String npc) Global Native

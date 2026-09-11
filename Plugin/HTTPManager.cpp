@@ -83,16 +83,25 @@ static bool IsPlayerStreamActor(const std::string& actorName)
 }
 
 static std::string AutomaticResponseBlockReason(
-    std::string_view message, const std::shared_ptr<AIAgent>& agent, RE::Actor* actor)
+    std::string_view message, const std::shared_ptr<AIAgent>& agent, RE::Actor* actor,
+    PlayerConversationRoutingPolicy::RequestEligibility eligibility =
+        PlayerConversationRoutingPolicy::RequestEligibility::EventDefault,
+    RE::FormID requestedActor = 0)
 {
-    if (PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(message) ||
-        !agent || agent->isNarrator() || !actor) {
+    if (agent && agent->isNarrator()) {
+        return {};
+    }
+    if (!actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) {
+        return "actor_unavailable";
+    }
+    if (!PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(
+            message, eligibility, actor->GetFormID() == requestedActor)) {
         return {};
     }
 
     PlayerConversationRoutingPolicy::AutomaticEligibilityOptions options{};
-    options.ignoreSleeping = PlayerConversationRoutingPolicy::IsDiaryRequest(message);
-    options.ignoreRestrained = PlayerConversationRoutingPolicy::IsRechatRequest(message);
+    options.ignoreSleeping = eligibility != PlayerConversationRoutingPolicy::RequestEligibility::RequireEligible &&
+        PlayerConversationRoutingPolicy::IsDiaryRequest(message);
     return PlayerConversationRouter::GetAutomaticBlockReason(
         agent, actor, RE::PlayerCharacter::GetSingleton(), options);
 }
@@ -687,7 +696,10 @@ namespace HTTPManager {
 
 int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rechatDepth = 0,
                   bool godmode = false, std::uint64_t dialogueStopGenerationSnapshot = 0,
-                  std::uint64_t directorGeneration = 0) {
+                  std::uint64_t directorGeneration = 0,
+                  PlayerConversationRoutingPolicy::RequestEligibility eligibility =
+                      PlayerConversationRoutingPolicy::RequestEligibility::EventDefault,
+                  RE::FormID requestedActor = 0) {
         constexpr size_t MAX_RESPONSE_SIZE = 1024 * 1024 * 20;  // 20MB limit
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int MAX_RECHAT_DEPTH = 10;  // Maximum allowed rechat depth
@@ -990,11 +1002,16 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         auto responseAgent = responseAgentManager.getAgentByName(responseActorName);
                         RE::Actor* responseActor = responseAgent ? responseAgent->getActor() : nullptr;
                         const bool unknownAutomaticActor =
-                            !PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(decodedMsg) &&
+                            PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(
+                                decodedMsg, eligibility, responseActor && responseActor->GetFormID() == requestedActor) &&
                             !IsPlayerStreamActor(responseActorName) && !responseAgent;
-                        const std::string responseBlockReason = unknownAutomaticActor
-                            ? "not_managed"
-                            : AutomaticResponseBlockReason(decodedMsg, responseAgent, responseActor);
+                        std::string responseBlockReason;
+                        if (unknownAutomaticActor) {
+                            responseBlockReason = "not_managed";
+                        } else if (!IsPlayerStreamActor(responseActorName)) {
+                            responseBlockReason = AutomaticResponseBlockReason(
+                                decodedMsg, responseAgent, responseActor, eligibility, requestedActor);
+                        }
                         if (!responseBlockReason.empty()) {
                             logger::info(
                                 "[AUTO_ELIGIBILITY] Dropping automatic streamed response for {} "
@@ -2375,18 +2392,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void stream(std::string msg, RE::Actor* actor, int rechatDepth) {
+        streamForActor(std::move(msg), actor,
+            PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, rechatDepth);
+    }
+
+    bool streamForActor(std::string msg, RE::Actor* actor,
+                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth) {
         // Determine speaker
         logger::info("[HTTPStream] Streaming for actor: {} (rechat depth: {})", 
             actor ? actor->GetDisplayFullName() : "null", 
             rechatDepth);
 
-        if (!actor) {
-            logger::warn("[HTTPStream] Skipping stream with null actor");
-            return;
+        if (!actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) {
+            logger::warn("[HTTPStream] Skipping stream with unavailable actor");
+            return false;
         }
 
         const bool enforceAutomaticEligibility =
-            !PlayerConversationRoutingPolicy::IsPlayerInitiatedRequest(msg);
+            PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(msg, eligibility, true);
         const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
         
@@ -2400,11 +2423,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        const std::string blockReason = AutomaticResponseBlockReason(msg, agent, actor);
+        const std::string blockReason = AutomaticResponseBlockReason(msg, agent, actor, eligibility, actorFormID);
         if (!blockReason.empty()) {
             logger::info("[AUTO_ELIGIBILITY] Suppressing automatic event for {} (reason={})",
                          actor->GetDisplayFullName(), blockReason);
-            return;
+            return false;
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
@@ -2430,15 +2453,25 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         logger::info("Stream Called for {}", listener);
 
         const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
-        auto queueStreamRequest = [msg, listener, rechatDepth, dialogueStopGeneration](bool inventoryDelivered) {
+        const auto actorHandle = actor->GetHandle();
+        auto queueStreamRequest = [msg, listener, rechatDepth, dialogueStopGeneration, eligibility,
+                                   actorFormID, actorHandle, agent](bool inventoryDelivered) {
             if (!inventoryDelivered) {
                 logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
             }
             ThreadPool::getInstance().enqueue(
                 rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-                [msg, listener, rechatDepth, dialogueStopGeneration]() {
+                [msg, listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle, agent]() {
+                    // Recheck the target after inventory refresh and queue delay without retaining a raw pointer.
+                    auto target = actorHandle.get();
+                    const auto blockReason = AutomaticResponseBlockReason(msg, agent, target.get(), eligibility, actorFormID);
+                    if (!blockReason.empty()) {
+                        logger::info("[HTTPStream] Dropping queued request for {} (reason={})", listener, blockReason);
+                        return;
+                    }
                     std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration);
+                    sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration,
+                                  0, eligibility, actorFormID);
                 },
                 listener, std::chrono::seconds(90));
         };
@@ -2448,6 +2481,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         } else {
             queueStreamRequest(true);
         }
+        return true;
     }
 
 }

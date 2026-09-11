@@ -108,13 +108,14 @@ int			_slider_max_distance_outside
 float		_max_distance_outside		= 2400.0
 
 int			_slider_spatial_hearing_inside
-float		_spatial_hearing_inside		= 500.0
+float		_spatial_hearing_inside		= 1000.0
 
 int			_slider_spatial_hearing_outside
-float		_spatial_hearing_outside	= 1000.0
+float		_spatial_hearing_outside	= 1800.0
 
+int _menu_hearing_preset = -1
 int			_slider_auto_hearing_radius_m
-float		_auto_hearing_radius_m	= 8.0
+float		_auto_hearing_radius_m	= 10.0
 
 int			_slider_bored_period
 float		_bored_period		= 60.0
@@ -489,13 +490,7 @@ event OnConfigInit()
 	MigrateAudioMode()
 	ModName="CHIM"
 	RegisterPrismaMCMEvent()
-	Pages = new string[6]
-	Pages[0] = "Hotkeys"
-	Pages[1] = "Auto Activate"
-	Pages[2] = "Behavior"
-	Pages[3] = "Sound"
-	Pages[4] = "AI Agents"
-	Pages[5] = "Tools"
+
 	
 	Debug.Trace("[AIAGENT] OnConfigInit");
 	
@@ -606,7 +601,7 @@ event OnConfigInit()
 	if (spatialHearingInsideValue > 0)
 		_spatial_hearing_inside = spatialHearingInsideValue as float
 	else
-		_spatial_hearing_inside = 500.0
+		_spatial_hearing_inside = 1000.0
 	endIf
 	controlScript.setConf("_spatial_hearing_inside", _spatial_hearing_inside)
 
@@ -614,7 +609,7 @@ event OnConfigInit()
 	if (spatialHearingOutsideValue > 0)
 		_spatial_hearing_outside = spatialHearingOutsideValue as float
 	else
-		_spatial_hearing_outside = 1000.0
+		_spatial_hearing_outside = 1800.0
 	endIf
 	controlScript.setConf("_spatial_hearing_outside", _spatial_hearing_outside)
 
@@ -625,7 +620,7 @@ event OnConfigInit()
 	if (autoHearingRadiusValue >= 1 && autoHearingRadiusValue <= 20)
 		_auto_hearing_radius_m = autoHearingRadiusValue as float
 	else
-		_auto_hearing_radius_m = 8.0
+		_auto_hearing_radius_m = 10.0
 	endIf
 	controlScript.setConf("_auto_hearing_radius_m", _auto_hearing_radius_m)
 
@@ -683,15 +678,16 @@ endEvent
 
 int function GetVersion()
 
-	return 76
+	return 77
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
-	if (a_version == 76 && a_version > CurrentVersion)
-		; Version 76: Present the original five audio combinations without resetting settings.
+	if (a_version == 77 && a_version > CurrentVersion)
+		; Refresh hearing navigation and option IDs, retaining saved sliders and hotkeys.
+		; Keep the version 76 audio migration for saves upgrading directly to 77.
 		ApplyAudioMode(true)
 		RegisterPrismaMCMEvent()
 		_prismaMcmRevision += 1
@@ -897,7 +893,59 @@ int function getActionMode()
 	return 0
 EndFunction
 
+; Derive the preset from saved values instead of storing a second setting.
+int Function GetHearingPreset()
+	if _auto_hearing_radius_m == 4.0 && _spatial_hearing_inside == 600.0 && _spatial_hearing_outside == 1000.0
+		return 0
+	elseif _auto_hearing_radius_m == 10.0 && _spatial_hearing_inside == 1000.0 && _spatial_hearing_outside == 1800.0
+		return 1
+	elseif _auto_hearing_radius_m == 15.0 && _spatial_hearing_inside == 1600.0 && _spatial_hearing_outside == 2400.0
+		return 2
+	endif
+	return 3
+EndFunction
+
+String[] Function HearingPresetNames()
+	String[] names = new String[4]
+	names[0] = "Realistic"
+	names[1] = "Recommended"
+	names[2] = "Extended"
+	names[3] = "Custom"
+	return names
+EndFunction
+
+; Apply only the three hearing values. Custom leaves the current values alone.
+Function ApplyHearingPreset(int preset)
+	if preset == 0
+		_auto_hearing_radius_m = 4.0
+		_spatial_hearing_inside = 600.0
+		_spatial_hearing_outside = 1000.0
+	elseif preset == 1
+		_auto_hearing_radius_m = 10.0
+		_spatial_hearing_inside = 1000.0
+		_spatial_hearing_outside = 1800.0
+	elseif preset == 2
+		_auto_hearing_radius_m = 15.0
+		_spatial_hearing_inside = 1600.0
+		_spatial_hearing_outside = 2400.0
+	else
+		return
+	endif
+	controlScript.setConf("_auto_hearing_radius_m", _auto_hearing_radius_m)
+	controlScript.setConf("_spatial_hearing_inside", _spatial_hearing_inside)
+	controlScript.setConf("_spatial_hearing_outside", _spatial_hearing_outside)
+EndFunction
+
 Function RegisterPrismaMCMEvent()
+	; Rebuild navigation on load without reinitializing saved settings.
+	Pages = new string[7]
+	Pages[0] = "Hotkeys"
+	Pages[1] = "Auto Activate"
+	Pages[2] = "Hearing & Awareness"
+	Pages[3] = "Behavior"
+	Pages[4] = "Sound"
+	Pages[5] = "AI Agents"
+	Pages[6] = "Tools"
 	UnregisterForModEvent("CHIM_PrismaMCMRequest")
 	RegisterForModEvent("CHIM_PrismaMCMRequest", "OnPrismaMCMRequest")
 EndFunction
@@ -948,11 +996,12 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "soulgaze_wheel", "Soulgaze Wheel", "Deprecated Soulgaze wheel.", "keymap", _myKey6 as String, "0|0|0||0|1")
 
 	PublishPrismaMCMEntry("Auto Activate", "Auto Activate", "enable_auto_activate", "Enable Auto Activate", "Automatically activate eligible NPCs around the player.", "toggle", PrismaMCMBool(_toggleAddAllNPCState), "0|1|1||0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Distances", "max_distance_inside", "Interior Auto Activate Distance", "Auto Activate NPCs within this distance indoors.", "slider", _max_distance_inside as String, "10|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Distances", "max_distance_outside", "Exterior Auto Activate Distance", "Auto Activate NPCs within this distance outdoors.", "slider", _max_distance_outside as String, "10|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_inside", "Interior Spatial Hearing Distance", "Set indoor conversation hearing distance.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_outside", "Exterior Spatial Hearing Distance", "Set outdoor conversation hearing distance.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Hearing", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Preset", "hearing_preset", "Hearing Preset", "Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.", "menu", GetHearingPreset() as String, "0|3|1||0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "auto_hearing_radius_m", "Auto Hearing Radius", "Nearby NPCs hear you without door or path checks, within the hearing distance. In meters; 1 meter is 70 Skyrim units. Whispering and sneaking reduce it. Close mode does not use this allowance.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_inside", "Interior Hearing Distance", "Indoor range for listeners and the audience, in Skyrim units. Closed doors can block hearing outside the Auto Hearing Radius. Speech mode and sneaking adjust the range.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_outside", "Exterior Hearing Distance", "Outdoor range for listeners and the audience, in Skyrim units. Distance fading can reduce audibility. Speech mode and sneaking adjust the range.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Automatic Activation", "max_distance_inside", "Interior Auto Activate Distance", "Auto Activate NPCs within this distance indoors.", "slider", _max_distance_inside as String, "10|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Automatic Activation", "max_distance_outside", "Exterior Auto Activate Distance", "Auto Activate NPCs within this distance outdoors.", "slider", _max_distance_outside as String, "10|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_creature_npcs", "Add Creature NPCs", "Allow Auto Activate for a set group of creatures such as dragons, giants, Falmer, undead and animal followers. Hostile ones still need Add Hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_creature_npcs_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
@@ -998,8 +1047,7 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
 EndFunction
 
-; Prisma label only. The native MCM uses the "$chim_soulgaze_hotkey" translation key so
-; SkyUI resolves the casing in Scaleform instead of relying on the Papyrus string table.
+; Shared proper-name label for MCM and Prisma, independent of translation-file overrides.
 ; Build the label at runtime so the assembler cannot merge it with the "soulgaze" ID.
 ; A local variable prevents the optimizer from folding the concatenation into a literal.
 String Function SoulGazeDisplayName()
@@ -1019,6 +1067,8 @@ bool Function IsPrismaMCMValueValid(String keyName, float value)
 		return value >= 10.0 && value <= 5000.0
 	elseif keyName == "spatial_hearing_inside" || keyName == "spatial_hearing_outside"
 		return value >= 50.0 && value <= 5000.0
+	elseif keyName == "hearing_preset"
+		return value >= 0.0 && value <= 3.0 && value == ((value as Int) as Float)
 	elseif keyName == "auto_hearing_radius_m"
 		return value >= 1.0 && value <= 20.0
 	elseif keyName == "bored_period"
@@ -1158,7 +1208,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	endif
 
 	bool enabled = value > 0.5
-	if keyName == "enable_auto_activate"
+	if keyName == "hearing_preset"
+		ApplyHearingPreset(value as Int)
+	elseif keyName == "enable_auto_activate"
 		_toggleAddAllNPCState = enabled
 		controlScript.setConf("_toggleAddAllNPC", value)
 	elseif keyName == "max_distance_inside"
@@ -1400,6 +1452,7 @@ Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, F
 EndEvent
 
 event OnPageReset(string a_page)
+	_menu_hearing_preset = -1
 
 	SetCursorFillMode(LEFT_TO_Right)
 	
@@ -1412,7 +1465,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_soulgaze = AddKeyMapOption("$chim_soulgaze_hotkey", _soulgaze_key)
+		_keymap_soulgaze = AddKeyMapOption(SoulGazeDisplayName(), _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
@@ -1440,11 +1493,7 @@ event OnPageReset(string a_page)
 		_toggleAddAllNPC		= AddToggleOption("Enable Auto Activate", _toggleAddAllNPCState)
 		AddEmptyOption()
 		
-		_slider_max_distance_inside	= AddSliderOption("Interior Auto Activate Distance",_max_distance_inside,"{0}" )
-		_slider_max_distance_outside	= AddSliderOption("Exterior Auto Activate Distance",_max_distance_outside,"{0}" )
-		_slider_spatial_hearing_inside	= AddSliderOption("Interior Spatial Hearing Distance",_spatial_hearing_inside,"{0}" )
-		_slider_spatial_hearing_outside	= AddSliderOption("Exterior Spatial Hearing Distance",_spatial_hearing_outside,"{0}" )
-		_slider_auto_hearing_radius_m	= AddSliderOption("Auto Hearing Radius",_auto_hearing_radius_m,"{0}" )
+
 		
 		AddEmptyOption()
 		
@@ -1456,6 +1505,23 @@ event OnPageReset(string a_page)
 		
 	endif
 
+	if (a_page == "Hearing & Awareness")
+		AddHeaderOption("Hearing Preset")
+		AddEmptyOption()
+		String[] presetNames = HearingPresetNames()
+		_menu_hearing_preset = AddMenuOption("Hearing Preset", presetNames[GetHearingPreset()])
+		AddEmptyOption()
+		AddHeaderOption("Hearing Range")
+		AddEmptyOption()
+		_slider_auto_hearing_radius_m = AddSliderOption("Auto Hearing Radius", _auto_hearing_radius_m, "{0} m")
+		AddEmptyOption()
+		_slider_spatial_hearing_inside = AddSliderOption("Interior Hearing Distance", _spatial_hearing_inside, "{0} units")
+		_slider_spatial_hearing_outside = AddSliderOption("Exterior Hearing Distance", _spatial_hearing_outside, "{0} units")
+		AddHeaderOption("Automatic Activation")
+		AddEmptyOption()
+		_slider_max_distance_inside = AddSliderOption("Interior Auto Activate Distance", _max_distance_inside, "{0} units")
+		_slider_max_distance_outside = AddSliderOption("Exterior Auto Activate Distance", _max_distance_outside, "{0} units")
+	endif
 	if (a_page=="Behavior")
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
 		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
@@ -1619,6 +1685,11 @@ endEvent
 
 event OnOptionMenuOpen(int a_option)
 	{Called when the user selects a menu option}
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
+		SetMenuDialogOptions(HearingPresetNames())
+		SetMenuDialogStartIndex(GetHearingPreset())
+		SetMenuDialogDefaultIndex(1)
+	endif
 
 	if (a_option == _menu_audio_mode)
 		; Old saves reach this with no option strings and, on the very first open, no resolved
@@ -1632,6 +1703,12 @@ event OnOptionMenuOpen(int a_option)
 endEvent
 
 event OnOptionMenuAccept(int a_option, int a_index)
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness" && a_index >= 0 && a_index <= 3
+		ApplyHearingPreset(a_index)
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		ForcePageReset()
+	endif
 	if (a_option == _menu_audio_mode)
 		if (a_index < 0 || a_index > 4)
 			return
@@ -1735,21 +1812,21 @@ event OnOptionSliderOpen(int a_option)
 
 	if (a_option == _slider_spatial_hearing_inside)
 		SetSliderDialogStartValue(_spatial_hearing_inside)
-		SetSliderDialogDefaultValue(471)
+		SetSliderDialogDefaultValue(1000)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
 
 	if (a_option == _slider_spatial_hearing_outside)
 		SetSliderDialogStartValue(_spatial_hearing_outside)
-		SetSliderDialogDefaultValue(1018)
+		SetSliderDialogDefaultValue(1800)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
 
 	if (a_option == _slider_auto_hearing_radius_m)
 		SetSliderDialogStartValue(_auto_hearing_radius_m)
-		SetSliderDialogDefaultValue(8)
+		SetSliderDialogDefaultValue(10)
 		SetSliderDialogRange(1, 20)
 		SetSliderDialogInterval(1)
 	endIf
@@ -1944,6 +2021,10 @@ event OnOptionSliderAccept(int a_option, float a_value)
 	endIf
 	
 	
+	if CurrentPage == "Hearing & Awareness"
+		String[] presetNames = HearingPresetNames()
+		SetMenuOptionValue(_menu_hearing_preset, presetNames[GetHearingPreset()])
+	endif
 	_prismaMcmRevision += 1
 endEvent
 	
@@ -2105,6 +2186,13 @@ event OnGameReload()
 endEvent
 
 event OnOptionDefault(int a_option)
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
+		ApplyHearingPreset(1)
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		ForcePageReset()
+		return
+	endif
 	if (a_option == _keymapOID_K)
 		controlScript.removeBinding(_myKey)
 		_myKey = _myKeyDefault
@@ -2877,7 +2965,11 @@ event OnOptionSelect(int a_option)
 endEvent
 
 event OnOptionHighlight(int a_option)
-	{Called when the user highlights an option}
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
+		SetInfoText("Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.")
+		return
+	endif
+	; Called when the user highlights an option
 	
 	if (a_option == _keymapOID_K)
 		SetInfoText("Deprecated text chat input. Tap to type a message. Hold to make the NPC in your crosshair wait here. Use Text Chat for Prisma UI.")
@@ -2985,15 +3077,15 @@ event OnOptionHighlight(int a_option)
 	endIf
 
 	if (a_option == _slider_spatial_hearing_inside)
-		SetInfoText("Sets indoor conversation hearing distance for spatial awareness checks.")
+		SetInfoText("Indoor range for listeners and the audience, in Skyrim units. Closed doors can block hearing outside the Auto Hearing Radius. Speech mode and sneaking adjust the range.")
 	endIf
 
 	if (a_option == _slider_spatial_hearing_outside)
-		SetInfoText("Sets outdoor conversation hearing distance for spatial awareness checks.")
+		SetInfoText("Outdoor range for listeners and the audience, in Skyrim units. Distance fading can reduce audibility. Speech mode and sneaking adjust the range.")
 	endIf
 
 	if (a_option == _slider_auto_hearing_radius_m)
-		SetInfoText("Direct auto hearing radius in meters. Uses straight-line distance and does not require LOS or navmesh.")
+		SetInfoText("Nearby NPCs hear you without door or path checks, within the hearing distance. In meters; 1 meter is 70 Skyrim units. Whispering and sneaking reduce it. Close mode does not use this allowance.")
 	endIf
 	
 	if (a_option == _toggleAddAllNPC)

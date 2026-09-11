@@ -1,5 +1,6 @@
 #include "PlayerConversationRoutingPolicy.h"
 #include "SpatialGeometryPolicy.h"
+#include "SpatialDoorStatePolicy.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -51,6 +52,27 @@ namespace
 
 int main()
 {
+    SpatialDoorStatePolicy::ObservedDoors doors;
+    doors.SetCell(1);
+    Check(!doors.Get(1, 10).has_value(), "Unobserved door was treated as closed");
+    doors.Record(10, true);
+    Check(doors.Get(1, 10) == true, "Open event was not retained independently of 3D");
+    doors.SetCell(1);
+    Check(doors.Get(1, 10) == true, "Same-cell streaming discarded the open event");
+    doors.Record(10, false);
+    Check(doors.Get(1, 10) == false, "Close event did not replace the open state");
+    Check(!doors.Get(2, 10).has_value(), "Door state leaked into another cell");
+    doors.Forget(10);
+    Check(!doors.Get(1, 10).has_value(), "Reset door retained its previous state");
+    doors.Record(10, true);
+    doors.SetCell(2);
+    doors.SetCell(1);
+    Check(!doors.Get(1, 10).has_value(), "Returning to a cell reused old door state");
+    doors.Record(10, false);
+    doors.Reset();
+    doors.SetCell(1);
+    Check(!doors.Get(1, 10).has_value(), "Save reload reused old door state");
+
     using namespace PlayerConversationRoutingPolicy;
 
     Check(IsPlayerInitiatedRequest("inputtext|1|date|Player: hello"),
@@ -86,7 +108,7 @@ int main()
     Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled combat dialogue was ignored");
     eligibility = {};
     eligibility.restrained = true;
-    Check(GetAutomaticBlockReason(eligibility) == "restrained", "Restraint was not enforced");
+    Check(GetAutomaticBlockReason(eligibility).empty(), "Restraint incorrectly blocked speech");
     eligibility = {};
     eligibility.unconscious = true;
     Check(GetAutomaticBlockReason(eligibility) == "unconscious", "Unconscious state was not enforced");
@@ -103,17 +125,37 @@ int main()
     eligibility = {};
     eligibility.restrained = true;
     options = {};
-    options.ignoreRestrained = true;
     Check(GetAutomaticBlockReason(eligibility, options).empty(),
-          "Restrained rechat eligibility was not restored");
+          "Restrained actor was excluded from automatic conversation");
     eligibility.unconscious = true;
     Check(GetAutomaticBlockReason(eligibility, options) == "unconscious",
-          "Ignoring restraint also bypassed unconscious state");
+          "Allowing restrained speech also bypassed unconscious state");
     eligibility = {};
     eligibility.inScene = true;
     Check(GetAutomaticBlockReason(eligibility) == "scene", "Scene Safety was not enforced");
     eligibility.sceneDialogueEnabled = true;
     Check(GetAutomaticBlockReason(eligibility).empty(), "Enabled scene dialogue was ignored");
+
+    Check(!ShouldCheckAutomaticEligibility("mod_event|1|date|hello", RequestEligibility::ExplicitTarget, true),
+          "Explicit script request did not bypass automatic eligibility for its target");
+    Check(ShouldCheckAutomaticEligibility("inputtext|1|date|hello", RequestEligibility::RequireEligible, true),
+          "Eligible-only API was bypassed by a player-input event type");
+    Check(ShouldCheckAutomaticEligibility("diary|1|date|hello", RequestEligibility::RequireEligible, true),
+          "Eligible-only diary did not enforce automatic eligibility");
+    Check(ShouldCheckAutomaticEligibility("inputtext|1|date|hello", RequestEligibility::ExplicitTarget, false),
+          "Explicit script exemption leaked to another response actor");
+    Check(ShouldCheckAutomaticEligibility("rechat|1|date|hello", RequestEligibility::EventDefault, true),
+          "Rechat inherited an explicit request exemption");
+
+    using SpatialGeometryPolicy::HearingVolume;
+    Check(HearingVolume(2500.0f, 5000.0f, true, 1.0f, 0.1f, true) >= 0.15f,
+          "Indirect indoor speech halfway through the configured range became too quiet");
+    Check(HearingVolume(5000.0f, 5000.0f, true, 1.0f, 0.1f, true) >= 0.15f,
+          "Indoor attenuation silently shortened the maximum hearing slider range");
+    Check(HearingVolume(5001.0f, 5000.0f, true, 1.0f, 0.1f, false) == 0.0f,
+          "Indoor allowance admitted speech beyond the hearing range");
+    Check(HearingVolume(5000.0f, 5000.0f, false, 0.7f, 0.1f, false) < 0.15f,
+          "Indoor attenuation changes removed outdoor distance fading");
 
     using SpatialGeometryPolicy::IsPointWithinSegmentCorridor;
     using SpatialGeometryPolicy::Point3;
@@ -340,7 +382,7 @@ int main()
     Check(sneakingAudience == std::vector<std::size_t>({0, 1}),
           "Sneaking Close audience did not respect the reduced radius");
 
-    // Sleeping direct targets: every mode except Shout rejects instead of rerouting.
+    // Optional sleep restrictions remain supported, but ordinary direct address allows a sleeper.
     std::vector<Candidate> sleepingCandidates{
         MakeCandidate(0xA0, "Sleeping Erik", 100.0f, true, false, true, 1.0f, true, true),
         MakeCandidate(0xA1, "Awake Sven", 300.0f)
@@ -359,7 +401,7 @@ int main()
     result = Select(sleepingCrosshairRequest, sleepingCandidates);
     Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
               result.reason == "true_crosshair",
-          "Shout mode did not reach the sleeping crosshair target");
+          "Ordinary direct address did not reach the sleeping crosshair target");
 
     Request sleepingExplicitRequest{};
     sleepingExplicitRequest.utterance = "Normal speech";
@@ -375,7 +417,7 @@ int main()
     result = Select(sleepingExplicitRequest, sleepingCandidates);
     Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0 &&
               result.reason == "explicit_ui_target",
-          "Shout mode did not reach the sleeping explicit RefID target");
+          "Ordinary direct address did not reach the sleeping explicit RefID target");
 
     Request sleepingNamedRequest{};
     sleepingNamedRequest.utterance = "Hey Sleeping Erik";
@@ -385,6 +427,11 @@ int main()
     result = Select(sleepingNamedRequest, sleepingCandidates);
     Check(result.kind == SelectionKind::Rejected && result.candidateIndex == 0,
           "Sleeping named target was rerouted instead of rejected");
+
+    sleepingNamedRequest.blockSleepingDirectTarget = false;
+    result = Select(sleepingNamedRequest, sleepingCandidates);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 0,
+          "Ordinary named address skipped the sleeping actor");
 
     // Automatic routing keeps excluding sleepers rather than rejecting the request.
     std::vector<Candidate> sleepingAutomatic{
