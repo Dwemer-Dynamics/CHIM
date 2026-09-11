@@ -28,8 +28,8 @@ inline bool Accept(std::string value) {
     int rank = 0;
     if (status == "failed") { rank = 1; notice.error = true; notice.text = "Couldn't create a new Playthrough Save. No data has been rolled back."; }
     else if (status == "created") { rank = 2; notice.text = "New Playthrough Save created."; }
-    else if (status == "rollback_failed") { rank = 3; notice.error = true; notice.text = "Playthrough Save created, but rollback couldn't finish. Mod processing paused."; }
-    else if (status == "resumed") { rank = 4; notice.text = "New Playthrough Save created. Mod processing resumed."; }
+    else if (status == "rollback_failed") { rank = 3; notice.error = true; notice.text = "Playthrough Save created, but rollback couldn't finish. Mod processing continues."; }
+    else if (status == "resumed") { rank = 4; notice.text = "New Playthrough Save created."; }
     else return false;
     auto& state = Get();
     std::lock_guard<std::mutex> lock(state.mutex);
