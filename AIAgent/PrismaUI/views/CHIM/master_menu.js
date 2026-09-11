@@ -5,7 +5,7 @@ let hudLayoutExpanded = false;
 let toolsExpanded = false;
 let contextWindowVisible = false;
 
-const SUPPORT_REPORT_HELP = 'Create one DwemerDistro support report including AIAgent.log for Discord bug reports';
+const SUPPORT_REPORT_HELP = 'Generate logs for debugging';
 const SUPPORT_REPORT_LABEL = 'Generate Logs';
 const SUPPORT_REPORT_IDLE_ARIA = SUPPORT_REPORT_LABEL + ': ' + SUPPORT_REPORT_HELP;
 
@@ -21,33 +21,33 @@ const SUPPORT_REPORT_STATES = {
     },
     confirming: {
         label: 'Confirming...',
-        aria: 'Confirming support report request',
+        aria: 'Waiting for confirmation',
         busy: true,
-        prefix: 'Support report: ',
-        fallback: 'confirm the request in game to continue',
+        prefix: 'Logs: ',
+        fallback: 'confirm to continue',
         color: '#f2c317'
     },
     generating: {
         label: 'Generating...',
-        aria: 'Generating DwemerDistro support report',
+        aria: 'Generating logs',
         busy: true,
-        prefix: 'Support report: ',
-        fallback: 'collecting logs, this can take a moment',
+        prefix: 'Logs: ',
+        fallback: 'generating logs...',
         color: '#f2c317'
     },
     success: {
         label: SUPPORT_REPORT_LABEL,
         aria: SUPPORT_REPORT_IDLE_ARIA,
         busy: false,
-        prefix: 'Support report ready: ',
-        fallback: 'report created',
+        prefix: 'Logs ready: ',
+        fallback: 'saved to your Desktop',
         color: '#8fe3a8'
     },
     partial: {
         label: SUPPORT_REPORT_LABEL,
         aria: SUPPORT_REPORT_IDLE_ARIA,
         busy: false,
-        prefix: 'Support report incomplete: ',
+        prefix: 'Logs incomplete: ',
         fallback: 'some logs could not be collected',
         color: '#f2c317'
     },
@@ -55,8 +55,8 @@ const SUPPORT_REPORT_STATES = {
         label: SUPPORT_REPORT_LABEL,
         aria: SUPPORT_REPORT_IDLE_ARIA,
         busy: false,
-        prefix: 'Support report failed: ',
-        fallback: 'the report could not be created',
+        prefix: 'Logs failed: ',
+        fallback: 'couldn\'t generate logs',
         color: '#ff9b8f'
     }
 };
@@ -156,7 +156,7 @@ window.requestSupportReport = function() {
     }
 
     if (!window.chimMasterMenuCommand) {
-        window.setSupportReportState('error', 'CHIM is not connected to the game yet. Try again in a moment.');
+        window.setSupportReportState('error', 'CHIM is not ready. Try again.');
         return;
     }
 

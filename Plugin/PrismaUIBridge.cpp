@@ -8303,28 +8303,28 @@ R"CHIM(
         if (result.status == Status::Success) {
             PublishSupportReportResult(
                 "success",
-                "Saved to Desktop\\DwemerDistro-Diagnostics. Attach the newest file to your Discord bug report.",
-                "[CHIM] Support report created on your Desktop.");
+                "Saved to Desktop\\DwemerDistro-Diagnostics.",
+                "[CHIM] Logs saved to your Desktop.");
         } else if (result.status == Status::AlreadyRunning) {
             PublishSupportReportResult(
                 "partial",
-                "Another support report is already being generated.",
-                "[CHIM] A support report is already being generated.");
+                "Logs are already being generated.",
+                "[CHIM] Logs are already being generated.");
         } else if (result.status == Status::LauncherMissing) {
             PublishSupportReportResult(
                 "error",
-                "DwemerDistro is not installed at C:\\DwemerDistro.",
-                "[CHIM] DwemerDistro was not found. Reinstall or update DwemerDistro.");
+                "Install or update DwemerDistro to generate logs.",
+                "[CHIM] Install or update DwemerDistro to generate logs.");
         } else if (result.status == Status::StartFailed) {
             PublishSupportReportResult(
                 "error",
-                "DwemerDistro could not start. Check AIAgent.log for the Windows error code.",
-                "[CHIM] Support report could not start. Check AIAgent.log.");
+                "Couldn't start log generation. Check AIAgent.log.",
+                "[CHIM] Couldn't start log generation. Check AIAgent.log.");
         } else {
             PublishSupportReportResult(
                 "error",
-                "DwemerDistro could not finish the report. Check its launcher startup log.",
-                "[CHIM] Support report failed. Check the DwemerDistro launcher log.");
+                "Couldn't generate logs. Check the DwemerDistro launcher log.",
+                "[CHIM] Couldn't generate logs. Check the DwemerDistro launcher log.");
         }
     }
 
@@ -8353,27 +8353,27 @@ R"CHIM(
         }
 
         if (cmd == "generate_logs") {
-            SetSupportReportState("confirming", "Confirm the report contents to continue.");
+            SetSupportReportState("confirming", "Confirm to generate logs.");
             const bool shown = ShowConfirmation(
-                "Generate Support Report",
-                "This creates one text report containing DwemerDistro debugging information, recent service and LLM logs, and your AIAgent.log and Papyrus.0.log when available. Review it before attaching it to a Discord bug report.",
+                "Generate Logs",
+                "Generate logs for debugging. Includes AIAgent.log, Papyrus.0.log and server/AI logs. Saved to your Desktop. Nothing is uploaded.",
                 "Cancel",
                 "Generate",
                 [](bool accepted) {
                     if (!accepted) {
-                        SetSupportReportState("idle", "Support report canceled.");
+                        SetSupportReportState("idle", "Log generation canceled.");
                         if (g_prismaUI && g_masterMenuVisible.load() && g_prismaUI->IsValid(g_masterMenuView)) {
                             g_prismaUI->Focus(g_masterMenuView, true, false);
                         }
                         return;
                     }
 
-                    SetSupportReportState("generating", "Collecting logs. This can take a moment.");
+                    SetSupportReportState("generating", "Generating logs...");
                     HideMasterMenu();
                     SupportReportLauncher::GenerateAsync(HandleSupportReportResult);
                 });
             if (!shown) {
-                SetSupportReportState("error", "The confirmation dialog could not be opened.");
+                SetSupportReportState("error", "Couldn't open the confirmation. Try again.");
             }
             return;
         }
