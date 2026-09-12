@@ -4,7 +4,6 @@
     const byId = (id) => document.getElementById(id);
     const form = byId('npc-form');
     const featureDefinitions = [
-        ['dynamic_profile', 'Dynamic Profile'],
         ['middle_term_enabled', 'Middle Term Memory'],
         ['individual_memory_enabled', 'Individual Memory'],
         ['auto_diary_enabled', 'Auto Diary'],

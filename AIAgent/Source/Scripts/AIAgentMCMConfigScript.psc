@@ -1014,7 +1014,6 @@ Function PublishPrismaMCMState()
 	int chimState = AIAgentFunctions.getChimInteractionState()
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "chim_enabled", "CHIM", "Turn AI dialogue and actions on or off. Game events are still recorded when off. Speech already playing can finish.", "toggle", PrismaMCMBool(chimState == 1), "0|1|1||" + PrismaMCMReadonly(chimState != 2) + "|0")
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
-	PublishPrismaMCMEntry("Behavior", "Timers", "dynamic_profile_period", "Dynamic Profile Timer", "Period for automatic dynamic profile updates.", "slider", _dynamic_profile_period as String, "5|120|1|minutes|0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "animations", "Enable Animations", "Allow AI NPCs to perform animations.", "toggle", PrismaMCMBool(_animationstate), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "player_tts_traditional_dialogue", "Player TTS for Traditional Dialogue", "Play configured Player TTS for traditional dialogue choices.", "toggle", PrismaMCMBool(_playerTtsTraditionalDialogueState), "0|1|1||0|0")
@@ -1080,8 +1079,6 @@ bool Function IsPrismaMCMValueValid(String keyName, float value)
 		return value >= 1.0 && value <= 20.0
 	elseif keyName == "bored_period"
 		return value >= 15.0 && value <= 600.0
-	elseif keyName == "dynamic_profile_period"
-		return value >= 5.0 && value <= 120.0
 	elseif keyName == "timeout"
 		return value >= 15.0 && value <= 300.0
 	elseif keyName == "combat_barks_period"
@@ -1249,9 +1246,6 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "bored_period"
 		_bored_period = value
 		controlScript.setConf("_bored_period", value)
-	elseif keyName == "dynamic_profile_period"
-		_dynamic_profile_period = value
-		controlScript.setConf("_dynamic_profile_period", value)
 	elseif keyName == "enable_ai_actions"
 		_toggleState2 = enabled
 		controlScript.setNewActionMode(enabled as Int)
@@ -1571,7 +1565,6 @@ event OnPageReset(string a_page)
 		_toggleChimInteraction = AddToggleOption("CHIM", chimState == 1, chimFlags)
 		AddEmptyOption()
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
-		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
 		;AddEmptyOption()
 		AddHeaderOption("General Behavior")
@@ -1885,12 +1878,6 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogInterval(1)
 	endIf
 	
-	if (a_option == _slider_dynamic_profile_period)
-		SetSliderDialogStartValue(_dynamic_profile_period)
-		SetSliderDialogDefaultValue(20)
-		SetSliderDialogRange(5, 120)
-		SetSliderDialogInterval(1)
-	endIf
 	
 	if (a_option == _slider_openmic_sensitivity)
 		SetSliderDialogStartValue(_openmic_sensitivity)
@@ -2023,11 +2010,6 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		SetSliderOptionValue(a_option, a_value, "{1}")
 	endIf
 	
-	if (a_option == _slider_dynamic_profile_period)
-		_dynamic_profile_period = a_value
-		controlScript.setConf("_dynamic_profile_period",_dynamic_profile_period)
-		SetSliderOptionValue(a_option, a_value, "{1}")
-	endIf
 	
 	if (a_option == _slider_openmic_sensitivity)
 		_openmic_sensitivity = a_value
@@ -2134,7 +2116,6 @@ event OnGameReload()
 
 	
 	a=controlScript.setConf("_bored_period",_bored_period)
-	a=controlScript.setConf("_dynamic_profile_period",_dynamic_profile_period)
 	
 	if (_toggleAddAllNPCState)
 		a=controlScript.setConf("_toggleAddAllNPC",1)
@@ -3164,9 +3145,6 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("How many seconds (with some exceptions) a Bored event can potenitally be triggered.")
 	endIf
 	
-	if (a_option == _slider_dynamic_profile_period)
-		SetInfoText("Timer for automatic dynamic profile updates. Updates NPC personalities based on recent events.")
-	endIf
 	
 	if (a_option == _toggle_npc_go_near)
 		SetInfoText("When enabled NPC's will subtly move around the player to make listening to conversations easier.")

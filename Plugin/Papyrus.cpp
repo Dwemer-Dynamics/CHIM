@@ -340,7 +340,6 @@ extern int BeginSoulgazeCapture(int captureType, RE::Actor* actor);
 extern std::string globalHints;
 extern bool NewActionMode;
 extern int GlobalBoredEventTimeOut;
-extern int GlobalDynamicProfileTimeOut;
 extern int GlobalEndConversationCooldown;
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 extern RE::TESFaction* AIAgentRoleMasterFaction;
@@ -2154,8 +2153,7 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         logger::info("Setting bored period {}", f_Value);
 
     } else if (code == "_dynamic_profile_period") {
-        GlobalDynamicProfileTimeOut = f_Value * 60; // Convert minutes to seconds
-        logger::info("Setting dynamic profile period to {} minutes ({} seconds)", f_Value, GlobalDynamicProfileTimeOut);
+        // Legacy saved MCM values must not override server profile settings.
 
     } else if (code == "_end_conversation_cooldown") {
         GlobalEndConversationCooldown = f_Value;
@@ -3102,7 +3100,7 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         result = GlobalBoredEventTimeOut;
 
     } else if (code == "_dynamic_profile_period") {
-        result = GlobalDynamicProfileTimeOut / 60; // Convert seconds back to minutes
+        result = 0; // Automatic profiles are configured on the web server.
 
     } else if (code == "_rechat_policy_asap") {
         result = 0;

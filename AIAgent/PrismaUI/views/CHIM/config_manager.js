@@ -247,7 +247,8 @@
         const metadataRoot = byId('profile-metadata-sections'); metadataRoot.replaceChildren();
         (detail.metadata_sections || []).forEach((group) => {
             const section = document.createElement('section'); section.className = 'settings-section'; const title = document.createElement('h2'); title.textContent = group.name; section.appendChild(title);
-            group.fields.forEach((field) => {
+            // Dynamic profile policy is managed in web Profiles, including when connected to an older server.
+            group.fields.filter((field) => !field.name.startsWith('DYNAMIC_PROFILE_') && field.name !== 'CONTEXT_HISTORY_DYNAMIC_PROFILE').forEach((field) => {
                 if (field.type === 'multiselect') {
                     const block = document.createElement('div'); block.className = 'field'; const label = document.createElement('span'); label.textContent = field.label; block.appendChild(label);
                     (field.options || []).forEach((option) => block.appendChild(fieldControl({name:`${field.name}:${option}`,label:option,type:'boolean'}, (field.value || []).includes(option), 'metadata_multi:'))); section.appendChild(block);
@@ -262,7 +263,8 @@
         (detail.override_sections || []).forEach((group) => {
             const section = document.createElement('section'); section.className = 'settings-section';
             const title = document.createElement('h2'); title.textContent = group.name; section.appendChild(title);
-            group.fields.forEach((field) => {
+            // Dynamic profile policy is managed in web Profiles, including when connected to an older server.
+            group.fields.filter((field) => !field.name.startsWith('DYNAMIC_PROFILE_') && field.name !== 'CONTEXT_HISTORY_DYNAMIC_PROFILE').forEach((field) => {
                 const row = document.createElement('div'); row.className = `override-field${field.enabled ? '' : ' disabled'}`;
                 const enable = document.createElement('label'); enable.className = 'override-enable';
                 const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.name = `override_enabled:${field.name}`; checkbox.checked = asBool(field.enabled);
