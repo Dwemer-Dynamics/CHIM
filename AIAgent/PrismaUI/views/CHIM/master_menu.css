@@ -630,7 +630,11 @@ body {
 /* Keep the master interaction control visible beside the menu title. */
 .chim-toggle { grid-column: 1; grid-row: 1; justify-self: start; }
 .modal-header > .close-btn { grid-row: 1; }
-.chim-toggle[aria-checked="true"] { border-color: #f27c11; color: #f27c11; }
+.chim-toggle[aria-checked="true"] { border-color: #63d98b; background: #173c26; color: #91efb0; }
+.chim-toggle[aria-checked="false"] { border-color: #f47777; background: #491f24; color: #ffaaaa; }
+.chim-toggle[aria-checked="true"]:hover { background: #205334; }
+.chim-toggle[aria-checked="false"]:hover { background: #602931; }
 .chim-toggle:focus-visible { outline: 2px solid #f27c11; outline-offset: 3px; }
 .chim-interaction-notice { margin: 0 0 12px; color: #ddd; font-size: 13px; }
+.chim-interaction-notice.is-off { color: #ff8585; font-weight: 700; }
 #chim-chat-button:disabled { opacity: .5; cursor: not-allowed; }

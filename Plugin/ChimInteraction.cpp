@@ -27,14 +27,15 @@ namespace {
         SpeakManager::getInstance().discardPendingInteraction();
     }
 
-    void Sync(bool toggle) {
+    void Sync(bool toggle, std::optional<bool> requested = {}) {
         if (syncing.load()) return;
         std::lock_guard lock(syncMutex);
         if (syncing || (!toggle && known && !failed)
             || (!toggle && std::chrono::steady_clock::now() < nextAttempt)) return;
+        const bool desired = requested.value_or(!enabled.load());
+        if (toggle && known && !failed && desired == enabled.load()) return;
         syncing = true;
         failed = false;
-        const bool desired = !enabled.load();
         if (toggle) {
             pendingState = desired;
             enabled = false;
@@ -73,6 +74,7 @@ bool Failed() { return failed.load(); }
 std::uint64_t Generation() { return generation.load(); }
 void Synchronize() { Sync(false); }
 void Toggle() { Sync(true); }
+void SetEnabled(bool value) { Sync(true, value); }
 
 bool IsTrigger(std::string_view message) {
     const auto type = message.substr(0, message.find('|'));

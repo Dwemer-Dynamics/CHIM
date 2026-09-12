@@ -8213,6 +8213,11 @@ R"CHIM(
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks) return;
         tasks->AddTask([]() {
+            // MCM must receive changes even when Prisma is unavailable or closed.
+            if (auto* events = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent event{RE::BSFixedString("CHIM_InteractionChanged"), RE::BSFixedString(""), 0.0f, nullptr};
+                events->SendEvent(&event);
+            }
             if (!g_prismaUI || !g_masterMenuDomReady || !g_prismaUI->IsValid(g_masterMenuView)) return;
             const nlohmann::json state{{"enabled", ChimInteraction::Enabled()},
                 {"syncing", ChimInteraction::Syncing()}, {"failed", ChimInteraction::Failed()}};

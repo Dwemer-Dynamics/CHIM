@@ -10,6 +10,7 @@ window.updateChimState = function (state) {
     document.getElementById('chim-chat-button').disabled = !chimEnabled;
     const notice = document.getElementById('chim-interaction-notice');
     notice.hidden = chimEnabled && !state.syncing && !state.failed;
+    notice.classList.toggle('is-off', !chimEnabled);
     notice.textContent = state.failed
         ? "Couldn't connect. CHIM is off locally. Retrying when connected."
         : state.syncing ? 'Updating CHIM…'

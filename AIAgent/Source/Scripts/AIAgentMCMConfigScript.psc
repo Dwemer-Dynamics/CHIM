@@ -296,6 +296,8 @@ int			_overlaystatus_cycle_keyDefault	= -1
 int			_historydiaries_cycle_keyDefault = -1
 
 int _prismaMcmRevision = 0
+int _toggleChimInteraction = -1
+bool _prismaChimInteractionPending = false
 
 int _slider_curve_legacy_distance 
 float _curve_legacy_distance = 1.0
@@ -950,6 +952,7 @@ Function RegisterPrismaMCMEvent()
 	Pages[6] = "Tools"
 	UnregisterForModEvent("CHIM_PrismaMCMRequest")
 	RegisterForModEvent("CHIM_PrismaMCMRequest", "OnPrismaMCMRequest")
+	RegisterForModEvent("CHIM_InteractionChanged", "OnChimInteractionChanged")
 EndFunction
 
 String Function PrismaMCMBool(bool value)
@@ -995,7 +998,7 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "roleplay_wheel", "Roleplay Wheel", "Deprecated roleplay wheel.", "keymap", _myKey4 as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "settings_wheel", "Settings Wheel", "Deprecated settings wheel.", "keymap", _myKey3 as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "mode_wheel", "Mode Wheel", "Deprecated chat-mode wheel.", "keymap", _godmode_key as String, "0|0|0||0|1")
-	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "soulgaze_wheel", "Soulgaze Wheel", "Deprecated Soulgaze wheel.", "keymap", _myKey6 as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "soulgaze_wheel", "SoulGaze Wheel", "Deprecated Soulgaze wheel.", "keymap", _myKey6 as String, "0|0|0||0|1")
 
 	PublishPrismaMCMEntry("Auto Activate", "Auto Activate", "enable_auto_activate", "Enable Auto Activate", "Automatically activate eligible NPCs around the player.", "toggle", PrismaMCMBool(_toggleAddAllNPCState), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Preset", "hearing_preset", "Hearing Preset", "Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.", "menu", GetHearingPreset() as String, "0|3|1||0|0")
@@ -1008,6 +1011,8 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_creature_npcs", "Add Creature NPCs", "Allow Auto Activate for a set group of creatures such as dragons, giants, Falmer, undead and animal followers. Hostile ones still need Add Hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_creature_npcs_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
 
+	int chimState = AIAgentFunctions.getChimInteractionState()
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "chim_enabled", "CHIM", "Turn AI dialogue and actions on or off. Game events are still recorded when off. Speech already playing can finish.", "toggle", PrismaMCMBool(chimState == 1), "0|1|1||" + PrismaMCMReadonly(chimState != 2) + "|0")
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
 	PublishPrismaMCMEntry("Behavior", "Timers", "dynamic_profile_period", "Dynamic Profile Timer", "Period for automatic dynamic profile updates.", "slider", _dynamic_profile_period as String, "5|120|1|minutes|0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
@@ -1384,8 +1389,39 @@ Function PublishPrismaMCMAgents()
 	AIAgentFunctions.commitChimMcmAgents()
 EndFunction
 
+; Refresh both menus from native state after asynchronous server acknowledgement.
+Event OnChimInteractionChanged(String eventName, String payload, Float numericValue, Form sender)
+	int chimState = AIAgentFunctions.getChimInteractionState()
+	if CurrentPage == "Behavior" && _toggleChimInteraction != -1 && UI.IsMenuOpen("Journal Menu")
+		SetToggleOptionValue(_toggleChimInteraction, chimState == 1)
+		if chimState == 2
+			SetOptionFlags(_toggleChimInteraction, OPTION_FLAG_DISABLED)
+		else
+			SetOptionFlags(_toggleChimInteraction, OPTION_FLAG_NONE)
+		endif
+	endif
+	if _prismaChimInteractionPending && chimState != 2
+		_prismaChimInteractionPending = false
+		if chimState == 3
+			AIAgentFunctions.publishChimMcmCommandResult("set|chim_enabled", false, "Couldn't connect. CHIM is off locally.")
+		else
+			AIAgentFunctions.publishChimMcmCommandResult("set|chim_enabled", true, "CHIM updated.")
+		endif
+	endif
+	_prismaMcmRevision += 1
+	PublishPrismaMCMState()
+EndEvent
+
 Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, Form sender)
-	if payload == "snapshot"
+	if payload == "set|chim_enabled"
+		if (numericValue == 0.0 || numericValue == 1.0) && AIAgentFunctions.setChimInteractionEnabled(numericValue > 0.5)
+			_prismaChimInteractionPending = true
+			OnChimInteractionChanged("", "", 0.0, None)
+		else
+			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "CHIM is updating. Try again shortly.")
+		endif
+		return
+	elseif payload == "snapshot"
 		PublishPrismaMCMState()
 		return
 	elseif payload == "agents_refresh"
@@ -1454,6 +1490,8 @@ Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, F
 EndEvent
 
 event OnPageReset(string a_page)
+	RegisterForModEvent("CHIM_InteractionChanged", "OnChimInteractionChanged")
+	_toggleChimInteraction = -1
 	_menu_hearing_preset = -1
 
 	SetCursorFillMode(LEFT_TO_Right)
@@ -1487,7 +1525,7 @@ event OnPageReset(string a_page)
 		_keymapOID_K4 = AddKeyMapOption("Roleplay Wheel", _myKey4)
 		_keymapOID_K3 = AddKeyMapOption("Settings Wheel", _myKey3)
 		_keymap_godmode = AddKeyMapOption("Mode Wheel", _godmode_key)
-		_keymapOID_K6 = AddKeyMapOption("Soulgaze Wheel", _myKey6)
+		_keymapOID_K6 = AddKeyMapOption("SoulGaze Wheel", _myKey6)
 	endif
 	
 
@@ -1525,6 +1563,13 @@ event OnPageReset(string a_page)
 		_slider_max_distance_outside = AddSliderOption("Exterior Auto Activate Distance", _max_distance_outside, "{0} units")
 	endif
 	if (a_page=="Behavior")
+		int chimState = AIAgentFunctions.getChimInteractionState()
+		int chimFlags = OPTION_FLAG_NONE
+		if chimState == 2
+			chimFlags = OPTION_FLAG_DISABLED
+		endif
+		_toggleChimInteraction = AddToggleOption("CHIM", chimState == 1, chimFlags)
+		AddEmptyOption()
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
 		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
@@ -2188,6 +2233,11 @@ event OnGameReload()
 endEvent
 
 event OnOptionDefault(int a_option)
+	if a_option == _toggleChimInteraction && CurrentPage == "Behavior"
+		AIAgentFunctions.setChimInteractionEnabled(true)
+		OnChimInteractionChanged("", "", 0.0, None)
+		return
+	endif
 	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
 		ApplyHearingPreset(1)
 		_prismaMcmRevision += 1
@@ -2608,6 +2658,11 @@ endEvent
 
 event OnOptionSelect(int a_option)
 	{Called when the user selects a non-dialog option}
+	if a_option == _toggleChimInteraction && CurrentPage == "Behavior"
+		AIAgentFunctions.setChimInteractionEnabled(AIAgentFunctions.getChimInteractionState() != 1)
+		OnChimInteractionChanged("", "", 0.0, None)
+		return
+	endif
 	
 	if (a_option == _toggle1OID_B)
 		_toggleState1 = !_toggleState1
@@ -2967,6 +3022,17 @@ event OnOptionSelect(int a_option)
 endEvent
 
 event OnOptionHighlight(int a_option)
+	if a_option == _toggleChimInteraction && CurrentPage == "Behavior"
+		int chimState = AIAgentFunctions.getChimInteractionState()
+		if chimState == 2
+			SetInfoText("Updating CHIM...")
+		elseif chimState == 3
+			SetInfoText("Couldn't connect. CHIM is off locally. Retrying when connected.")
+		else
+			SetInfoText("Turn AI dialogue and actions on or off. Game events are still recorded when off. Speech already playing can finish.")
+		endif
+		return
+	endif
 	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
 		SetInfoText("Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.")
 		return

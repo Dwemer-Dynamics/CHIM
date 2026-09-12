@@ -10,6 +10,7 @@ namespace ChimInteraction {
     std::uint64_t Generation();
     void Synchronize();
     void Toggle();
+    void SetEnabled(bool value);
     bool IsTrigger(std::string_view message);
     bool IsGameOutput(std::string_view channel);
 }

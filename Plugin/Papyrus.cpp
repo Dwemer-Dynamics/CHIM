@@ -4963,6 +4963,20 @@ int Papyrus::clearSettingsMenuPendingAction(RE::BSScript::Internal::VirtualMachi
     return 1;
 }
 
+// Share the acknowledged interaction state with MCM; no saved Papyrus copy.
+int Papyrus::getChimInteractionState(RE::StaticFunctionTag*) {
+    ChimInteraction::Synchronize();
+    if (ChimInteraction::Syncing()) return 2;
+    if (ChimInteraction::Failed()) return 3;
+    return ChimInteraction::Enabled() ? 1 : 0;
+}
+
+bool Papyrus::setChimInteractionEnabled(RE::StaticFunctionTag*, bool enabled) {
+    if (ChimInteraction::Syncing()) return false;
+    ChimInteraction::SetEnabled(enabled);
+    return true;
+}
+
 int Papyrus::toggleMasterMenu(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("toggleMasterMenu");
     
@@ -5620,6 +5634,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("getSettingsMenuPendingAction", "AIAgentFunctions", getSettingsMenuPendingAction, false);
     a_vm->RegisterFunction("clearSettingsMenuPendingAction", "AIAgentFunctions", clearSettingsMenuPendingAction, false);
     
+    a_vm->RegisterFunction("getChimInteractionState", "AIAgentFunctions", getChimInteractionState, false);
+    a_vm->RegisterFunction("setChimInteractionEnabled", "AIAgentFunctions", setChimInteractionEnabled, false);
     a_vm->RegisterFunction("toggleMasterMenu", "AIAgentFunctions", toggleMasterMenu, false);
     a_vm->RegisterFunction("startPlayerMenuDialogueTTS", "AIAgentFunctions", startPlayerMenuDialogueTTS, false);
 
