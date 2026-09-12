@@ -33,6 +33,7 @@ struct ScriptLine {
     std::string directorSceneId;
     std::string ttsCacheKey;
     std::uint64_t directorGeneration = 0;
+    std::uint64_t interactionGeneration = 0;
     int directorLine = 0;
     bool directorHasActions = false;
     bool rechatGenerated = false;
@@ -309,6 +310,7 @@ public:
     void abortPendingUtterances(const std::string& reason, bool includeCurrentPlayback = true);
     void deleteQueue(bool isActionCommand = false);
     void deleteQueuedPlayerLines();
+    void discardPendingInteraction();
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);
     void clearPlayerPlaybackCompletedCallback();
     void recoverFromProcessingFailure(const std::string& actorName);

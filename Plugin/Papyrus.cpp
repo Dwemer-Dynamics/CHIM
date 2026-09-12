@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "Papyrus.h"
 
 #include <algorithm>
@@ -1470,6 +1471,7 @@ int sendMessageReal(
     std::string msg,
     std::string type,
     const PlayerConversationRoutingContext& routingContext) {
+    if (!ChimInteraction::Enabled()) return 0;
     logger::info("Call from papyrus: sendMessage");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     PrismaUIBridge::BumpDialogueStopGeneration();

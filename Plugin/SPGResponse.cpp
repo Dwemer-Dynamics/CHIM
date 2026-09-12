@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "SPGResponse.h"
 
 #include <list>
@@ -83,9 +84,17 @@ void SPGResponse::eraseOldItems(const std::string& key) {
     }
 }
 
+void SPGResponse::clearGameOutput() {
+    std::lock_guard lock(m_mutex);
+    for (auto& [key, queue] : m_responses) {
+        if (ChimInteraction::IsGameOutput(key)) queue.clear();
+    }
+}
+
 void SPGResponse::enqueue(const std::string& key, const ResponseItem& item) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (ChimInteraction::IsGameOutput(key) && !ChimInteraction::Enabled()) return;
     m_responses[key].push_back(item);
     logger::info("Pushed {},{},{},{}", key, m_responses[key].size(),item.text,item.actor);
 }

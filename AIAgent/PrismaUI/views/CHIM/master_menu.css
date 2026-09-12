@@ -626,3 +626,11 @@ body {
     clip-path: inset(50%);
     white-space: nowrap;
 }
+
+/* Keep the master interaction control visible beside the menu title. */
+.chim-toggle { grid-column: 1; grid-row: 1; justify-self: start; }
+.modal-header > .close-btn { grid-row: 1; }
+.chim-toggle[aria-checked="true"] { border-color: #f27c11; color: #f27c11; }
+.chim-toggle:focus-visible { outline: 2px solid #f27c11; outline-offset: 3px; }
+.chim-interaction-notice { margin: 0 0 12px; color: #ddd; font-size: 13px; }
+#chim-chat-button:disabled { opacity: .5; cursor: not-allowed; }

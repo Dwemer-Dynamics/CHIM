@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "Commands.h"
 #include "DirectorScene.h"
 
@@ -1088,6 +1089,7 @@ RE::TESForm* findLocation(std::string parameter) {
 }
 
 void parseRoleCommand(std::string rawCommand) {
+    if (!ChimInteraction::Enabled()) return;
     static std::string delimiter = "@";
     size_t pos = rawCommand.find(delimiter);
     if (pos == std::string::npos) {
@@ -1766,7 +1768,8 @@ void parseRoleCommand(std::string rawCommand) {
             const std::string message = splitResult[0];
             const std::string messageType = splitResult[1];
             // Browser STT commands arrive on the manager worker, while routing reads live Skyrim objects.
-            SKSE::GetTaskInterface()->AddTask([message, messageType]() {
+            SKSE::GetTaskInterface()->AddTask([message, messageType, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
                 PlayerConversationRoutingContext routingContext{};
                 routingContext.source = PlayerConversationInputSource::Voice;
                 PrismaUIBridge::ApplySavedPlayerMood(routingContext);
@@ -2127,7 +2130,8 @@ void parseRoleCommand(std::string rawCommand) {
             
             if (trainerActor) {
                 // Queue the menu opening on the main thread
-                SKSE::GetTaskInterface()->AddTask([trainerActor]() {
+                SKSE::GetTaskInterface()->AddTask([trainerActor, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
                     if (!trainerActor) {
                         logger::error("[ShowTrainingMenu] Trainer actor is null in task");
                         return;
@@ -2154,6 +2158,7 @@ void parseRoleCommand(std::string rawCommand) {
 }
 
 void parseCommand(std::string rawCommand, std::string actorname) {
+    if (!ChimInteraction::Enabled()) return;
     bool userApproved = false;
     if (rawCommand.rfind(kApprovedActionPrefix, 0) == 0) {
         userApproved = true;
@@ -3110,7 +3115,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         auto args = RE::MakeFunctionArguments(std::move(sgmodelocal));
 
-        SKSE::GetTaskInterface()->AddTask([args]() {
+        SKSE::GetTaskInterface()->AddTask([args, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
             // actor->NotifyAnimationGraph(anim);
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentSoulGazeEffect",
@@ -5965,7 +5971,8 @@ bool commandAnimation(std::string anim, RE::Actor* actor) {
     auto args = RE::MakeFunctionArguments(std::move(newActor), std::move(anim));
 
 
-    SKSE::GetTaskInterface()->AddTask([args]() {
+    SKSE::GetTaskInterface()->AddTask([args, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
         //actor->NotifyAnimationGraph(anim);
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentNpcUtil", "NpcPlayIdle",

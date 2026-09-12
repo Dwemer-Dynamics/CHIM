@@ -1,4 +1,5 @@
 #pragma once
+#include "ChimInteraction.h"
 #include <string>
 
 #include "RE/Skyrim.h"
@@ -8,6 +9,7 @@ using json = nlohmann::json;
 
 // Send a JSON string to Papyrus with a single cmdID
 void SendAICommand(int cmdID, std::string jsonStr) {
+    if (!ChimInteraction::Enabled()) return;
     auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
     if (!vm) return;
 

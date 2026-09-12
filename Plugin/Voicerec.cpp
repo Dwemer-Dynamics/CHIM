@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include <iostream>
 #include <vector>
 #include <Windows.h>
@@ -230,6 +231,7 @@ bool containsWord(const std::string& msg, const std::string& word) {
 
 // Processes a completed transcript on Skyrim's game thread before starting the asynchronous LLM request.
 static void ProcessSTTResponseOnGameThread(std::string buffer) {
+    if (!ChimInteraction::Enabled()) return;
     ExtendPlayerSpeechMaintenanceSuppress(std::chrono::seconds(10));
 
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -349,6 +351,8 @@ static void ProcessSTTResponseOnGameThread(std::string buffer) {
 }
 
 std::string makeSTT(std::string wavData) {
+    if (!ChimInteraction::Enabled()) return "";
+    const auto interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration();
     if (wavData.empty()) {
         logger::error("makeSTT received empty wav data");
         return "";
@@ -371,13 +375,17 @@ std::string makeSTT(std::string wavData) {
     }
 
     logger::info("Response received from STT service (size: {} bytes)", buffer.size());
-    SKSE::GetTaskInterface()->AddTask([buffer]() { ProcessSTTResponseOnGameThread(buffer); });
+    SKSE::GetTaskInterface()->AddTask([buffer, interactionEpoch]() {
+        if (interactionEpoch == PrismaUIBridge::GetDialogueStopGeneration()) ProcessSTTResponseOnGameThread(buffer);
+    });
 
     return buffer;
 }
 
 
 int VoiceRecordThread(int bindedKey) {
+    if (!ChimInteraction::Enabled()) return 0;
+    const auto interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration();
     // Fill the WAVEFORMATEX struct to indicate the format of our recorded audio
     WAVEFORMATEX wfx = CreateRecordingWaveFormat();
 
@@ -457,7 +465,8 @@ int VoiceRecordThread(int bindedKey) {
         }
 
         // Check if headers are done
-        if (!VoiceRecordControl::getInstance().getRecording())
+        if (!VoiceRecordControl::getInstance().getRecording() || !ChimInteraction::Enabled()
+            || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration())
             break;
 
         for (auto& h : headers)
@@ -578,6 +587,7 @@ int VoiceRecordThread(int bindedKey) {
             return 0;
         }
 
+        if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return 0;
         std::string data = outputFile.str();
 
         /*
@@ -604,6 +614,7 @@ int VoiceRecordThread(int bindedKey) {
 }
 
 int VoiceRecord(int bindedKey) {
+    if (!ChimInteraction::Enabled()) return 0;
     ThreadPool::getInstance().enqueue("VoiceRecord", [bindedKey]() {
         struct RecordingStateGuard {
             ~RecordingStateGuard()
