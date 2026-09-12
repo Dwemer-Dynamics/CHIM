@@ -7824,6 +7824,11 @@ R"CHIM(
             return;
         }
 
+        if (!ChimInteraction::Enabled()) {
+            RE::DebugNotification("CHIM is off.");
+            return;
+        }
+
         const auto submission = ChatboxModePolicy::ParseSubmission(message, g_chatboxCurrentMode);
         if (submission.message.empty()) {
             RE::DebugNotification("[CHIM] Enter a message after the chat mode symbol.");

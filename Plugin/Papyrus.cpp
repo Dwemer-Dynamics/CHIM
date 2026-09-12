@@ -1471,7 +1471,10 @@ int sendMessageReal(
     std::string msg,
     std::string type,
     const PlayerConversationRoutingContext& routingContext) {
-    if (!ChimInteraction::Enabled()) return 0;
+    if (!ChimInteraction::Enabled()) {
+        RE::DebugNotification("CHIM is off.");
+        return 0;
+    }
     logger::info("Call from papyrus: sendMessage");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     PrismaUIBridge::BumpDialogueStopGeneration();
@@ -2709,6 +2712,10 @@ int Papyrus::getHerikaFormId(RE::BSScript::Internal::VirtualMachine* a_vm, RE::V
 
 int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                            RE::StaticFunctionTag*, int bindedKey) {
+    if (!ChimInteraction::Enabled()) {
+        RE::DebugNotification("CHIM is off.");
+        return 0;
+    }
     
     SpeakManager::getInstance().setLastUsedTime();  // To avoid trigger bored event from now
     SpeakManager::getInstance().deleteQueue();
