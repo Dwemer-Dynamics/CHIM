@@ -1,5 +1,9 @@
 Scriptname AIAgentFunctions
 
+; Interaction state: 0 Off, 1 On, 2 Updating, 3 Connection failed (Off locally).
+int function getChimInteractionState() Global Native
+bool function setChimInteractionEnabled(bool enabled) Global Native
+
 ;Main Functions
 int function sendMessage(String a_msg,String a_type) Global Native		; Send message as user input and expects an IA response
 int function sendMessageToActor(String a_msg,String a_type,Actor targetActor) Global Native	; Send targeted user input

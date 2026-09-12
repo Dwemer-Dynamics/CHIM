@@ -13,11 +13,14 @@
                 <img class="master-menu-icon" src="images/chim-icon.png" alt="">
                 <span id="master-menu-title">CHIM</span>
             </div>
+            <button type="button" id="chim-toggle" class="menu-settings-btn chim-toggle"
+                    role="switch" aria-checked="true" aria-label="CHIM" onclick="toggleChim()">CHIM: On</button>
             <button class="close-btn" onclick="closeMenu()">×</button>
         </div>
 
         <!-- Content Area -->
         <div class="modal-content">
+            <p id="chim-interaction-notice" class="chim-interaction-notice" role="status" hidden></p>
             <!-- Menu Select -->
             <div class="settings-group">
                 <div class="group-title-row">
@@ -37,7 +40,7 @@
                 </div>
                 <div class="prisma-panels-layout">
                     <div class="primary-actions-row">
-                        <button class="setting-btn primary-panel-btn" onclick="selectPanel('textchat')"
+                        <button class="setting-btn primary-panel-btn" id="chim-chat-button" onclick="selectPanel('textchat')"
                                 onmouseenter="showDescription('Open CHIM Chat so you can type a line and send it immediately')"
                                 onmouseleave="clearDescription()">CHIM Chat</button>
                         <button class="setting-btn primary-panel-btn" onclick="selectPanel('chatbox')"

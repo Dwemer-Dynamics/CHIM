@@ -1,3 +1,26 @@
+let chimEnabled = true;
+
+// Native state is authoritative, including reconnect failures and pending changes.
+window.updateChimState = function (state) {
+    chimEnabled = state.enabled === true;
+    const toggle = document.getElementById('chim-toggle');
+    toggle.textContent = 'CHIM: ' + (chimEnabled ? 'On' : 'Off');
+    toggle.setAttribute('aria-checked', String(chimEnabled));
+    toggle.disabled = state.syncing === true;
+    document.getElementById('chim-chat-button').disabled = !chimEnabled;
+    const notice = document.getElementById('chim-interaction-notice');
+    notice.hidden = chimEnabled && !state.syncing && !state.failed;
+    notice.classList.toggle('is-off', !chimEnabled);
+    notice.textContent = state.failed
+        ? "Couldn't connect. CHIM is off locally. Retrying when connected."
+        : state.syncing ? 'Updating CHIM…'
+        : 'AI dialogue and actions are off. Game events are still recorded.';
+};
+
+function toggleChim() {
+    if (window.chimMasterMenuCommand) window.chimMasterMenuCommand('chim_toggle');
+}
+
 // CHIM Master Menu JavaScript
 
 let hotkeyCloseArmedAt = 0;
@@ -309,6 +332,7 @@ function handleKeyDown(event) {
 
 // Handle panel selection
 function selectPanel(panelId) {
+    if (panelId === 'textchat' && !chimEnabled) return;
     console.log('[CHIM Master Menu] Selected panel:', panelId);
     
     // Send command to C++ bridge

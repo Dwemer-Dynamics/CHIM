@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "HTTPManager.h"
 #include "PlaythroughNotices.h"
 #include "DirectorScene.h"
@@ -464,7 +465,9 @@ namespace HTTPManager {
         return agentname;
     }
 
-    std::string sendMsg(const char* msg, bool close_asap, std::string listener) {
+    std::string sendMsg(const char* msg, bool close_asap, std::string listener, bool allowInteraction = true) {
+        const auto interactionGeneration = ChimInteraction::Generation();
+        const auto interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration();
         constexpr size_t MAX_RESPONSE_SIZE = 1024 * 1024 * 5;  // 5MB limit
         constexpr size_t BUFFER_SIZE = 1024;
         constexpr int TIMEOUT_SECONDS = 30;
@@ -575,6 +578,8 @@ namespace HTTPManager {
                             Conf::getInstance().getPath(), msg, md5(listener,true), Conf::getInstance().getServer());
         }
 
+        httpRealRequest.insert(httpRealRequest.find("\r\n") + 2, std::format("X-CHIM-Generation: {}\r\n", interactionGeneration));
+        if (!allowInteraction) httpRealRequest.insert(httpRealRequest.find("\r\n") + 2, "X-CHIM-Passive: 1\r\n");
         if (!msg) {
             logger::error("[sendMsg] Message pointer is null");
             closesocket(rawSocket);
@@ -707,6 +712,18 @@ namespace HTTPManager {
             responseBody.erase(pos, std::string("X-CUSTOM-CLOSE").length());
         }
 
+        if (interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) {
+            std::istringstream lines(responseBody);
+            std::string filtered, line;
+            while (std::getline(lines, line)) {
+                const auto first = line.find('|');
+                const auto last = first == std::string::npos ? first : line.find('|', first + 1);
+                if (first != std::string::npos && last != std::string::npos
+                    && ChimInteraction::IsGameOutput(std::string_view(line).substr(first + 1, last - first - 1))) continue;
+                filtered += line + "\n";
+            }
+            return filtered;
+        }
         return responseBody;
     }
 
@@ -716,9 +733,11 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                   PlayerConversationRoutingPolicy::RequestEligibility eligibility =
                       PlayerConversationRoutingPolicy::RequestEligibility::EventDefault,
                   RE::FormID requestedActor = 0) {
+        if (!ChimInteraction::Enabled() || dialogueStopGenerationSnapshot != PrismaUIBridge::GetDialogueStopGeneration()) return 0;
         constexpr size_t MAX_RESPONSE_SIZE = 1024 * 1024 * 20;  // 20MB limit
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int MAX_RECHAT_DEPTH = 10;  // Maximum allowed rechat depth
+        const auto interactionGeneration = ChimInteraction::Generation();
         const int TIMEOUT_SECONDS = GlobalConfiguredTimeout;
 
         logger::info("[sendMsgStream] Starting sendMsgStream for speaker: {}, rechatDepth: {}, godmode: {}, dialogueStopGenerationSnapshot: {}",
@@ -864,6 +883,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             std::format("GET /{0}?DATA={1}&profile={2}&director_generation={4} HTTP/1.1\r\nHost: {3}\r\nConnection: close\r\n\r\n", destination,
                         msg, md5(speaker,true), Conf::getInstance().getServer(), directorGeneration);
 
+        httpRealRequest.insert(httpRealRequest.find("\r\n") + 2, std::format("X-CHIM-Generation: {}\r\n", interactionGeneration));
         iResult = send(rawSocket, httpRealRequest.c_str(), httpRealRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("Failed to send HTTP request: {}", WSAGetLastError());
@@ -1159,13 +1179,18 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void log(std::string msg) {
+        ChimInteraction::Synchronize();
+        if (ChimInteraction::IsTrigger(msg) && !ChimInteraction::Enabled()) return;
+        const auto interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration();
         try {
             ThreadPool::getInstance().enqueue(
                 "HTTPLog",
-                [msg]() {
+                [msg, interactionEpoch, allowInteraction = ChimInteraction::Enabled()]() {
+                    if (ChimInteraction::IsTrigger(msg) && (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration())) return;
                     try {
                         std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                        std::string line = sendMsg(finalMsg.c_str(), false, "");
+                        std::string line = sendMsg(finalMsg.c_str(), false, "",
+                            allowInteraction && ChimInteraction::Enabled() && interactionEpoch == PrismaUIBridge::GetDialogueStopGeneration());
                         SPGResponse& spgResponse = SPGResponse::getInstance();
                         spgResponse.decodeAndEnqueue(line.c_str());
                     } catch (const std::exception& e) {
@@ -1180,13 +1205,18 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void log(std::string msg, std::string forcedActor) {
+        ChimInteraction::Synchronize();
+        if (ChimInteraction::IsTrigger(msg) && !ChimInteraction::Enabled()) return;
+        const auto interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration();
         try {
             ThreadPool::getInstance().enqueue(
                 "HTTPLogWithForcedActor",
-                [msg, forcedActor]() {
+                [msg, forcedActor, interactionEpoch, allowInteraction = ChimInteraction::Enabled()]() {
+                    if (ChimInteraction::IsTrigger(msg) && (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration())) return;
                     try {
                         std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                        std::string line = sendMsg(finalMsg.c_str(), false, forcedActor);
+                        std::string line = sendMsg(finalMsg.c_str(), false, forcedActor,
+                            allowInteraction && ChimInteraction::Enabled() && interactionEpoch == PrismaUIBridge::GetDialogueStopGeneration());
                         SPGResponse& spgResponse = SPGResponse::getInstance();
                         spgResponse.decodeAndEnqueue(line.c_str());
                     } catch (const std::exception& e) {
@@ -1205,6 +1235,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     std::string requestPlayerMenuTtsPlayResponse(std::string msg, std::string forcedActor) {
+        if (!ChimInteraction::Enabled()) return "";
         try {
             std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
             return sendMsg(finalMsg.c_str(), false, forcedActor);
@@ -1257,6 +1288,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     void log(std::string msg, RE::Actor* actor) {
+        ChimInteraction::Synchronize();
+        if (ChimInteraction::IsTrigger(msg) && !ChimInteraction::Enabled()) return;
+        const auto interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration();
         if (!actor) {
             logger::error("[HTTPManager] Actor is null for msg: {}", msg);
             return;
@@ -1279,10 +1313,12 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         try {
             ThreadPool::getInstance().enqueue(
                 "HTTPLogWithActor",
-                [msg, listener]() {
+                [msg, listener, interactionEpoch, allowInteraction = ChimInteraction::Enabled()]() {
+                    if (ChimInteraction::IsTrigger(msg) && (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration())) return;
                     try {
                         std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                        std::string line = sendMsg(finalMsg.c_str(), false, listener);
+                        std::string line = sendMsg(finalMsg.c_str(), false, listener,
+                            allowInteraction && ChimInteraction::Enabled() && interactionEpoch == PrismaUIBridge::GetDialogueStopGeneration());
                         SPGResponse& spgResponse = SPGResponse::getInstance();
                         spgResponse.decodeAndEnqueue(line.c_str());
                     } catch (const std::exception& e) {
@@ -1763,6 +1799,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         std::string msg,
         int rechatDepth,
         const PlayerConversationRoutingContext* routingContext) {
+        if (!ChimInteraction::Enabled()) {
+            if (!ChimInteraction::IsTrigger(msg)) log(std::move(msg));
+            return;
+        }
         // Determine speaker
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
@@ -2422,6 +2462,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
     bool streamForActor(std::string msg, RE::Actor* actor,
                         PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth) {
+        if (!ChimInteraction::Enabled()) {
+            if (!ChimInteraction::IsTrigger(msg)) log(std::move(msg));
+            return false;
+        }
         // Determine speaker
         logger::info("[HTTPStream] Streaming for actor: {} (rechat depth: {})", 
             actor ? actor->GetDisplayFullName() : "null", 

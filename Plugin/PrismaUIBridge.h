@@ -346,6 +346,7 @@ namespace PrismaUIBridge {
     // Monotonic token used to invalidate late dialogue responses after a hard stop
     std::uint64_t GetDialogueStopGeneration();
     void BumpDialogueStopGeneration();
+    void UpdateChimInteractionState();
 
     // Shared by the chatbox and voice hotkey; does not require a Prisma view.
     void StopAllDialogueNow(const char* sourceTag);

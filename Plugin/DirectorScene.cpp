@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "Globals.h"
 #include "DirectorScene.h"
 #include "Commands.h"
@@ -52,6 +53,7 @@ bool IsDispatchingAction() { return dispatchingAction; }
 
 // Use the normal command handlers in authored order before starting another turn.
 void ProcessActions() {
+    if (!ChimInteraction::Enabled()) { Cancel(); return; }
     for (;;) {
         std::pair<std::uint64_t, nlohmann::json> next;
         {
@@ -128,12 +130,12 @@ void Queue(const std::string& encoded) {
 
 // Both initial dispatch and explicit approval consume stored actions through the server adapter.
 static void DispatchActions(const ScriptLine& line, int approvedIndex = -1) {
-    if (line.directorGeneration != Generation()) return;
+    if (!ChimInteraction::Enabled() || line.directorGeneration != Generation()) return;
     try {
         nlohmann::json request{{"scene_id", line.directorSceneId}, {"after_line", line.directorLine}, {"gamets", GetGameTimeStamp()}};
         if (approvedIndex >= 0) request["approved_action"] = approvedIndex;
         auto result = HTTPManager::postGameDataJson("director_scene_action.php", request, 15000);
-        if (line.directorGeneration != Generation()) return;
+        if (!ChimInteraction::Enabled() || line.directorGeneration != Generation()) return;
         if (result.is_object() && result.contains("commands") && result["commands"].is_array()) {
             for (const auto& command : result["commands"]) {
                 const auto channel = command.value("channel", "");

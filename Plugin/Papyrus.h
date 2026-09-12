@@ -344,6 +344,8 @@ namespace Papyrus {
     std::string getSettingsMenuPendingAction(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
     int clearSettingsMenuPendingAction(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
     
+    int getChimInteractionState(RE::StaticFunctionTag*);
+    bool setChimInteractionEnabled(RE::StaticFunctionTag*, bool enabled);
     int toggleMasterMenu(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int startPlayerMenuDialogueTTS(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,

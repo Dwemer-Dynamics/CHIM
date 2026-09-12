@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "PrismaUIBridge.h"
 #include "ChatboxModePolicy.h"
 #include "Conf.h"
@@ -2469,12 +2470,14 @@ R"CHIM(
     }
 
     static void PlayDiaryAudio(const std::string& entryId) {
+        if (!ChimInteraction::Enabled()) { UpdateDiaryAudioUI("idle", "CHIM is off."); return; }
+        const auto interactionEpoch = GetDialogueStopGeneration();
         const std::uint64_t generation = g_diaryAudioGeneration.fetch_add(1) + 1;
         UpdateDiaryAudioUI("loading", "Generating audio with the NPC voice...");
 
         ThreadPool::getInstance().enqueue(
             "PrismaUIDiaryAudio",
-            [entryId, generation]() {
+            [entryId, generation, interactionEpoch]() {
                 DWORD statusCode = 0;
                 std::vector<BYTE> audio = FetchDiaryAudio(entryId, statusCode);
                 if (generation != g_diaryAudioGeneration.load()) {
@@ -2520,6 +2523,9 @@ R"CHIM(
 
                     const X3DAUDIO_VECTOR centered{0.0f, 0.0f, 0.0f};
                     g_diaryAudioPlayer->Update(centered, centered, 0.0f);
+                    if (!ChimInteraction::Enabled() || interactionEpoch != GetDialogueStopGeneration()) {
+                        UpdateDiaryAudioUI("idle", "CHIM is off."); return;
+                    }
                     if (!g_diaryAudioPlayer->Play()) {
                         logger::error("[PrismaUIBridge] Diary audio playback failed for entry {}", entryId);
                         UpdateDiaryAudioUI("error", "CHIM could not start diary audio playback.");
@@ -7818,6 +7824,11 @@ R"CHIM(
             return;
         }
 
+        if (!ChimInteraction::Enabled()) {
+            RE::DebugNotification("CHIM is off.");
+            return;
+        }
+
         const auto submission = ChatboxModePolicy::ParseSubmission(message, g_chatboxCurrentMode);
         if (submission.message.empty()) {
             RE::DebugNotification("[CHIM] Enter a message after the chat mode symbol.");
@@ -8203,6 +8214,23 @@ R"CHIM(
         g_pendingSettingsAction = "";
     }
 
+    void UpdateChimInteractionState() {
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) return;
+        tasks->AddTask([]() {
+            // MCM must receive changes even when Prisma is unavailable or closed.
+            if (auto* events = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent event{RE::BSFixedString("CHIM_InteractionChanged"), RE::BSFixedString(""), 0.0f, nullptr};
+                events->SendEvent(&event);
+            }
+            if (!g_prismaUI || !g_masterMenuDomReady || !g_prismaUI->IsValid(g_masterMenuView)) return;
+            const nlohmann::json state{{"enabled", ChimInteraction::Enabled()},
+                {"syncing", ChimInteraction::Syncing()}, {"failed", ChimInteraction::Failed()}};
+            const auto js = "window.updateChimState && window.updateChimState(" + state.dump() + ")";
+            g_prismaUI->Invoke(g_masterMenuView, js.c_str(), nullptr);
+        });
+    }
+
     // ===== CHIM Master Menu Functions =====
 
     void CreateMasterMenu() {
@@ -8331,6 +8359,8 @@ R"CHIM(
     static void OnMasterMenuDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Master menu DOM ready");
         g_masterMenuDomReady.store(true);
+        UpdateChimInteractionState();
+        ChimInteraction::Synchronize();
         UpdateMasterMenuVersion(view);
         UpdateSupportReportState(view);
     }
@@ -8340,6 +8370,8 @@ R"CHIM(
 
         std::string cmd(argument);
         logger::debug("[PrismaUIBridge] Received master menu command: {}", cmd);
+
+        if (cmd == "chim_toggle") { ChimInteraction::Toggle(); return; }
 
         // Handle close command
         if (cmd == "close" || cmd == "dom_ready") {
@@ -8492,6 +8524,8 @@ R"CHIM(
     }
 
     void ShowMasterMenu() {
+        ChimInteraction::Synchronize();
+        UpdateChimInteractionState();
         if (!g_prismaUI) {
             if (!g_masterMenuCreated.load()) {
                 CreateMasterMenu();
