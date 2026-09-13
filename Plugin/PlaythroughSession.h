@@ -10,7 +10,7 @@ namespace PlaythroughSession {
     std::string Header(std::uint64_t generation);
     void BeginLoad();
     void ResetCharacter();
-    std::string Character();
+    std::string Character(bool createIfMissing = true);
     bool NewCharacter();
     void RestoreCharacter(const std::string& value, bool newCharacter = false);
     void Connect(std::function<void()> resume, bool newGame = false);

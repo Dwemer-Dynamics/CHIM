@@ -3,6 +3,7 @@
 #include "Misc.h"
 #include "PrismaUIBridge.h"
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -49,9 +50,9 @@ void BeginLoad() {
     character.clear();
     newCharacter = false;
 }
-std::string Character() {
+std::string Character(bool createIfMissing) {
     std::lock_guard lock(stateMutex);
-    if (character.empty()) character = NewId();
+    if (character.empty() && createIfMissing) character = NewId();
     return character;
 }
 bool NewCharacter() { std::lock_guard lock(stateMutex); return newCharacter; }
@@ -75,9 +76,26 @@ void Connect(std::function<void()> resume, bool newGame) {
         {"gamets",GetGameTimeStamp()}};
     std::thread([epoch, request, resume = std::move(resume)]() {
         const Scope scope(epoch);
-        auto result = HTTPManager::requestPlaythroughSession(request);
-        if (!result.value("ok",false) && result.value("status",std::string{}) == "transport_error" && epoch == Generation())
+        nlohmann::json result;
+        const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        bool transportRetried = false;
+        for (;;) {
+            if (epoch != Generation()) return;
             result = HTTPManager::requestPlaythroughSession(request);
+            if (result.value("ok",false)) break;
+            const auto status = result.value("status",std::string{});
+            if (status == "transport_error" && !transportRetried) {
+                transportRetried = true;
+                continue;
+            }
+            if (status != "busy" || std::chrono::steady_clock::now() >= busyDeadline) break;
+            // Retry only pre-switch contention, retaining this load's identity and cancellation scope.
+            for (int tick = 0; tick < 10; ++tick) {
+                if (epoch != Generation()) return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (std::chrono::steady_clock::now() >= busyDeadline) break;
+        }
         if (epoch != Generation()) return;
         const bool accepted = result.value("ok",false);
         if (accepted) {

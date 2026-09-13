@@ -1719,6 +1719,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             const auto body = postGameDataResponseInternal("playthrough_session.php", data, 120000, &status);
             if (status == 404) return {{"ok",true},{"status","unsupported"}};
             auto result = json::parse(body, nullptr, false);
+            if (status == 503 && result.is_object() && result.contains("ok") && result["ok"].is_boolean()
+                && !result["ok"].get<bool>() && result.contains("status") && result["status"] == "busy"
+                && result.contains("message") && result["message"].is_string()) return result;
             if (status == 200 && result.is_object() && result.contains("ok") && result["ok"].is_boolean()
                 && result.contains("status") && result["status"].is_string()
                 && (!result.contains("message") || result["message"].is_string())) {

@@ -311,6 +311,12 @@ bool inSexDescSent = false;
 int inSexLastStage = 0;
 
 bool pluginInited = false;
+
+// Shared by all initialization paths; loading another save does not reset the notification.
+static void NotifyConnectedOnce() {
+    static std::atomic<bool> shown{false};
+    if (!shown.exchange(true)) RE::DebugNotification("[CHIM] Connected");
+}
 bool pendingLoadedPluginManifestSync = false;
 bool importDataDetectionDone = false;  // Track if we've already done import data detection this session
 
@@ -4294,8 +4300,9 @@ namespace ProcessorSerialization {
     }
 
     void OnGameSaved(SKSE::SerializationInterface* serde) {
-        const auto identity = PlaythroughSession::Character();
-        if (serde->OpenRecord(PlaythroughRecord, 2)) {
+        // A legacy save stays unbound until the handshake returns its canonical identity.
+        const auto identity = PlaythroughSession::Character(false);
+        if (!identity.empty() && serde->OpenRecord(PlaythroughRecord, 2)) {
             serde->WriteRecordData(identity.data(), 32);
             const std::uint8_t isNew = PlaythroughSession::NewCharacter() ? 1 : 0;
             serde->WriteRecordData(&isNew, 1);
@@ -5982,10 +5989,7 @@ OnSaveGame{
 
         aiam.setPlayerName(player->GetName());
 
-        auto server = Conf::getInstance().getServer();
-        auto port = Conf::getInstance().getPort();
-        auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-        RE::DebugNotification(initMsg.c_str());
+        NotifyConnectedOnce();
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -7899,10 +7903,7 @@ OnLoadedGame {
 
         aiam.setPlayerName(player->GetName());
 
-        auto server = Conf::getInstance().getServer();
-        auto port = Conf::getInstance().getPort();
-        auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-        RE::DebugNotification(initMsg.c_str());
+        NotifyConnectedOnce();
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -8207,10 +8208,7 @@ OnNewGame {
 
 
     */
-    auto server = Conf::getInstance().getServer();
-    auto port = Conf::getInstance().getPort();
-    auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-    RE::DebugNotification(initMsg.c_str());
+    NotifyConnectedOnce();
 
     pendingLoadedPluginManifestSync = true;
     if (PostLoadedPluginManifest()) {
