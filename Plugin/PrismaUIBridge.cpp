@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "PrismaUIBridge.h"
 #include "ChatboxModePolicy.h"
 #include "Conf.h"
@@ -12,6 +13,7 @@
 #include "SpatialSnapshotManager.h"
 #include "PlayerConversationRouter.h"
 #include "SpatialAwareness.h"
+#include "SupportReportLauncher.h"
 #include "json.hpp"
 
 #include <winsock2.h>
@@ -273,6 +275,9 @@ namespace PrismaUIBridge {
     static std::atomic<bool> g_masterMenuDomReady{false};
     static std::atomic<bool> g_masterMenuVisible{false};  // Track visibility state
     static std::mutex g_masterMenuMutex;
+    static std::mutex g_supportReportMutex;
+    static std::string g_supportReportState = "idle";
+    static std::string g_supportReportMessage;
 
     // Quest Manager state
     static PrismaView g_questManagerView = 0;
@@ -2465,12 +2470,14 @@ R"CHIM(
     }
 
     static void PlayDiaryAudio(const std::string& entryId) {
+        if (!ChimInteraction::Enabled()) { UpdateDiaryAudioUI("idle", "CHIM is off."); return; }
+        const auto interactionEpoch = GetDialogueStopGeneration();
         const std::uint64_t generation = g_diaryAudioGeneration.fetch_add(1) + 1;
         UpdateDiaryAudioUI("loading", "Generating audio with the NPC voice...");
 
         ThreadPool::getInstance().enqueue(
             "PrismaUIDiaryAudio",
-            [entryId, generation]() {
+            [entryId, generation, interactionEpoch]() {
                 DWORD statusCode = 0;
                 std::vector<BYTE> audio = FetchDiaryAudio(entryId, statusCode);
                 if (generation != g_diaryAudioGeneration.load()) {
@@ -2516,6 +2523,9 @@ R"CHIM(
 
                     const X3DAUDIO_VECTOR centered{0.0f, 0.0f, 0.0f};
                     g_diaryAudioPlayer->Update(centered, centered, 0.0f);
+                    if (!ChimInteraction::Enabled() || interactionEpoch != GetDialogueStopGeneration()) {
+                        UpdateDiaryAudioUI("idle", "CHIM is off."); return;
+                    }
                     if (!g_diaryAudioPlayer->Play()) {
                         logger::error("[PrismaUIBridge] Diary audio playback failed for entry {}", entryId);
                         UpdateDiaryAudioUI("error", "CHIM could not start diary audio playback.");
@@ -7814,6 +7824,11 @@ R"CHIM(
             return;
         }
 
+        if (!ChimInteraction::Enabled()) {
+            RE::DebugNotification("CHIM is off.");
+            return;
+        }
+
         const auto submission = ChatboxModePolicy::ParseSubmission(message, g_chatboxCurrentMode);
         if (submission.message.empty()) {
             RE::DebugNotification("[CHIM] Enter a message after the chat mode symbol.");
@@ -7840,6 +7855,7 @@ R"CHIM(
         PlayerConversationRoutingContext routingContext{};
         routingContext.source = PlayerConversationInputSource::PrismaText;
         routingContext.mode = PlayerConversationRouter::ParseSpeechMode(submission.mode);
+        routingContext.executionMode = submission.mode;
         routingContext.playerMood = playerMood;
         routingContext.customPlayerMood = customPlayerMood;
         if (submission.symbolOverride) {
@@ -8198,6 +8214,23 @@ R"CHIM(
         g_pendingSettingsAction = "";
     }
 
+    void UpdateChimInteractionState() {
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) return;
+        tasks->AddTask([]() {
+            // MCM must receive changes even when Prisma is unavailable or closed.
+            if (auto* events = SKSE::GetModCallbackEventSource()) {
+                SKSE::ModCallbackEvent event{RE::BSFixedString("CHIM_InteractionChanged"), RE::BSFixedString(""), 0.0f, nullptr};
+                events->SendEvent(&event);
+            }
+            if (!g_prismaUI || !g_masterMenuDomReady || !g_prismaUI->IsValid(g_masterMenuView)) return;
+            const nlohmann::json state{{"enabled", ChimInteraction::Enabled()},
+                {"syncing", ChimInteraction::Syncing()}, {"failed", ChimInteraction::Failed()}};
+            const auto js = "window.updateChimState && window.updateChimState(" + state.dump() + ")";
+            g_prismaUI->Invoke(g_masterMenuView, js.c_str(), nullptr);
+        });
+    }
+
     // ===== CHIM Master Menu Functions =====
 
     void CreateMasterMenu() {
@@ -8247,10 +8280,89 @@ R"CHIM(
         g_prismaUI->Invoke(view, jsCall.c_str(), nullptr);
     }
 
+    static void UpdateSupportReportState(PrismaView view) {
+        if (!g_prismaUI || !g_prismaUI->IsValid(view)) {
+            return;
+        }
+
+        std::string state;
+        std::string message;
+        {
+            std::lock_guard<std::mutex> lock(g_supportReportMutex);
+            state = g_supportReportState;
+            message = g_supportReportMessage;
+        }
+
+        const std::string jsCall = "window.setSupportReportState && window.setSupportReportState('" +
+                                   EscapeForJS(state) + "','" + EscapeForJS(message) + "')";
+        g_prismaUI->Invoke(view, jsCall.c_str(), nullptr);
+    }
+
+    static void SetSupportReportState(const std::string& state, const std::string& message) {
+        {
+            std::lock_guard<std::mutex> lock(g_supportReportMutex);
+            g_supportReportState = state;
+            g_supportReportMessage = message;
+        }
+
+        if (g_masterMenuDomReady.load()) {
+            UpdateSupportReportState(g_masterMenuView);
+        }
+    }
+
+    static void PublishSupportReportResult(const std::string& state, const std::string& message,
+                                           const std::string& notification) {
+        auto publish = [state, message, notification]() {
+            SetSupportReportState(state, message);
+            if (!notification.empty()) {
+                RE::DebugNotification(notification.c_str());
+            }
+        };
+
+        if (auto* taskInterface = SKSE::GetTaskInterface()) {
+            taskInterface->AddTask(std::move(publish));
+        } else {
+            logger::warn("[Support Report] Game task interface unavailable; UI result could not be published");
+        }
+    }
+
+    static void HandleSupportReportResult(SupportReportLauncher::Result result) {
+        using Status = SupportReportLauncher::Status;
+        if (result.status == Status::Success) {
+            PublishSupportReportResult(
+                "success",
+                "Saved to Desktop\\DwemerDistro-Diagnostics.",
+                "[CHIM] Logs saved to your Desktop.");
+        } else if (result.status == Status::AlreadyRunning) {
+            PublishSupportReportResult(
+                "partial",
+                "Logs are already being generated.",
+                "[CHIM] Logs are already being generated.");
+        } else if (result.status == Status::LauncherMissing) {
+            PublishSupportReportResult(
+                "error",
+                "Install or update DwemerDistro to generate logs.",
+                "[CHIM] Install or update DwemerDistro to generate logs.");
+        } else if (result.status == Status::StartFailed) {
+            PublishSupportReportResult(
+                "error",
+                "Couldn't start log generation. Check AIAgent.log.",
+                "[CHIM] Couldn't start log generation. Check AIAgent.log.");
+        } else {
+            PublishSupportReportResult(
+                "error",
+                "Couldn't generate logs. Check the DwemerDistro launcher log.",
+                "[CHIM] Couldn't generate logs. Check the DwemerDistro launcher log.");
+        }
+    }
+
     static void OnMasterMenuDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Master menu DOM ready");
         g_masterMenuDomReady.store(true);
+        UpdateChimInteractionState();
+        ChimInteraction::Synchronize();
         UpdateMasterMenuVersion(view);
+        UpdateSupportReportState(view);
     }
 
     static void OnMasterMenuCommand(const char* argument) {
@@ -8259,12 +8371,41 @@ R"CHIM(
         std::string cmd(argument);
         logger::debug("[PrismaUIBridge] Received master menu command: {}", cmd);
 
+        if (cmd == "chim_toggle") { ChimInteraction::Toggle(); return; }
+
         // Handle close command
         if (cmd == "close" || cmd == "dom_ready") {
             if (cmd == "close") {
                 HideMasterMenu();
             } else {
                 UpdateMasterMenuVersion(g_masterMenuView);
+                UpdateSupportReportState(g_masterMenuView);
+            }
+            return;
+        }
+
+        if (cmd == "generate_logs") {
+            SetSupportReportState("confirming", "Confirm to generate logs.");
+            const bool shown = ShowConfirmation(
+                "Generate Logs",
+                "Generate logs for debugging. Includes AIAgent.log, Papyrus.0.log and server/AI logs. Saved to your Desktop. Nothing is uploaded.",
+                "Cancel",
+                "Generate",
+                [](bool accepted) {
+                    if (!accepted) {
+                        SetSupportReportState("idle", "Log generation canceled.");
+                        if (g_prismaUI && g_masterMenuVisible.load() && g_prismaUI->IsValid(g_masterMenuView)) {
+                            g_prismaUI->Focus(g_masterMenuView, true, false);
+                        }
+                        return;
+                    }
+
+                    SetSupportReportState("generating", "Generating logs...");
+                    HideMasterMenu();
+                    SupportReportLauncher::GenerateAsync(HandleSupportReportResult);
+                });
+            if (!shown) {
+                SetSupportReportState("error", "Couldn't open the confirmation. Try again.");
             }
             return;
         }
@@ -8383,6 +8524,8 @@ R"CHIM(
     }
 
     void ShowMasterMenu() {
+        ChimInteraction::Synchronize();
+        UpdateChimInteractionState();
         if (!g_prismaUI) {
             if (!g_masterMenuCreated.load()) {
                 CreateMasterMenu();
@@ -8455,6 +8598,7 @@ R"CHIM(
                 "window.setContextWindowVisible && window.setContextWindowVisible({})",
                 contextWindowVisible ? "true" : "false");
             g_prismaUI->Invoke(g_masterMenuView, jsCall.c_str(), nullptr);
+            UpdateSupportReportState(g_masterMenuView);
         }
     }
 

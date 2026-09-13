@@ -1,4 +1,5 @@
 #include <SKSE/Events.h>
+#include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
 
 #include <algorithm>
@@ -54,8 +55,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.3.3"
-#define PLUGIN_RELEASE_DATE "2026-09-05"
+#define PLUGIN_VERSION "3.4.0"
+#define PLUGIN_RELEASE_DATE "2026-09-12"
 
 const char* GetPluginVersion()
 {
@@ -150,7 +151,6 @@ static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = s
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastInfoSent = std::chrono::high_resolution_clock::now();
-static std::chrono::high_resolution_clock::time_point controlLastDynamicProfileTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastWalkToTargetCheckTS = std::chrono::high_resolution_clock::now();
 static std::unordered_map<uint32_t, std::chrono::high_resolution_clock::time_point> lastReanimateEventByTarget;
 static bool playerPartyCombatActive = false;
@@ -300,10 +300,8 @@ bool forceCombatEnd = false;
 
 
 int GlobalBoredEventTimeOut=60;
-int GlobalDynamicProfileTimeOut=1200; // 20 minutes default
 int GlobalCombatBarksPeriod=30;
 int GlobalEndConversationCooldown=60; // Default 60 seconds
-static bool dynamicProfileLoggingInitialized = false;
 static std::chrono::high_resolution_clock::time_point lastGameLoadTime = std::chrono::high_resolution_clock::now();
 static const int GAME_LOAD_COOLDOWN_SECONDS = 60; // Cooldown between game loads to prevent timer abuse
 
@@ -2393,6 +2391,7 @@ private:
                     }
 
                     SpeakManager::getInstance().refreshPendingPlayerSubtitle();
+                    DirectorScene::ProcessActions();
 
                     ScriptLine l = SpeakManager::getInstance().getFirstItem();
 
@@ -2509,7 +2508,7 @@ private:
 
                     const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                     avoidBored = playerSpeechSuppressActive || player->IsInCombat() || player->IsAttacking() || player->IsSneaking()
-                        || CheckScene(player->GetCurrentScene()) || playerInDialog;
+                        || CheckScene(player->GetCurrentScene()) || playerInDialog || DirectorScene::Active();
 
                     if (boredElapsedSeconds >= std::chrono::seconds(GlobalBoredEventTimeOut) && !avoidBored) {
                         controlLastBoredTriggerTS = currentTime;
@@ -2560,32 +2559,10 @@ private:
                         }
                     }
 
-                    // DYNAMIC PROFILE TIMER LOGIC
-                    auto dynamicProfileElapsedSeconds =
-                        std::chrono::duration_cast<std::chrono::seconds>(now - controlLastDynamicProfileTS);
-
-                    // One-time initialization log
-                    if (!dynamicProfileLoggingInitialized) {
-                        dynamicProfileLoggingInitialized = true;
-                        logger::info("[DYNAMIC_TIMER] System active - {}s timeout ({}min)", 
-                                   GlobalDynamicProfileTimeOut, GlobalDynamicProfileTimeOut / 60);
-                    }
-
-                    // Log timer status every 5 minutes for debugging
-                    static auto lastTimerLog = std::chrono::high_resolution_clock::now();
-                    auto timeSinceLastLog = std::chrono::duration_cast<std::chrono::minutes>(now - lastTimerLog);
-                    if (timeSinceLastLog >= std::chrono::minutes(5)) {
-                        lastTimerLog = now;
-                        auto remaining = GlobalDynamicProfileTimeOut - dynamicProfileElapsedSeconds.count();
-                        logger::info("[DYNAMIC_TIMER] Status: {}s elapsed, {}s remaining", 
-                                   dynamicProfileElapsedSeconds.count(), remaining);
-                    }
-
-                    if (dynamicProfileElapsedSeconds >= std::chrono::seconds(GlobalDynamicProfileTimeOut)) {
-                        // Reset timer immediately to prevent multiple triggers
-                        controlLastDynamicProfileTS = currentTime;
-                        logger::info("[DYNAMIC_TIMER] Timer triggered after {}s", dynamicProfileElapsedSeconds.count());
-
+                    // Keep gameplay telemetry independent of server profile scheduling.
+                    static auto lastTelemetryCheck = currentTime;
+                    if (currentTime - lastTelemetryCheck >= std::chrono::seconds(15)) {
+                        lastTelemetryCheck = currentTime;
                         AIAgentManager& aiam = AIAgentManager::getInstance();
                         auto player = RE::PlayerCharacter::GetSingleton();
                         std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
@@ -2603,10 +2580,6 @@ private:
                             }
                         }
                         
-                        // Always include The Narrator in dynamic profile updates if configured
-                        // The server will check if narrator has dynamic_profile enabled
-                        nearbyNPCs.push_back(NARRATOR_NAME);
-
                         // Periodic skills update (every 5 minutes for nearby NPCs)
                         static auto lastSkillsRefreshTime = currentTime;
                         auto skillsElapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTime - lastSkillsRefreshTime);
@@ -2700,29 +2673,6 @@ private:
                             lastStatsRefreshTime = currentTime;
                         }
 
-                        if (!nearbyNPCs.empty()) {
-                            // Create comma-separated list of NPC names
-                            std::string npcList;
-                            for (size_t i = 0; i < nearbyNPCs.size(); ++i) {
-                                if (i > 0) npcList += ",";
-                                npcList += nearbyNPCs[i];
-                            }
-                            
-                            logger::info("[DYNAMIC_TIMER] Updating {} NPCs: {}", nearbyNPCs.size(), npcList);
-                            
-                            // Send fire-and-forget async batch request to server
-                            ThreadPool::getInstance().enqueue("DynamicProfileBatch", [npcList]() {
-                                try {
-                                    HTTPManager::log(std::format("updateprofiles_batch_async|{}|{}|{}", 
-                                                                getCurrentTimeMillis(), GetGameTimeStamp(), npcList));
-                                    logger::debug("[DYNAMIC_TIMER] Batch request sent successfully");
-                                } catch (const std::exception& e) {
-                                    logger::error("[DYNAMIC_TIMER] Failed to send batch request: {}", e.what());
-                                }
-                            });
-                        } else {
-                            logger::info("[DYNAMIC_TIMER] Skipped - no nearby AI agents found");
-                        }
                     }
 
                     // COMBAT BARKS TIMER LOGIC
@@ -3748,6 +3698,9 @@ namespace ProcessorMenu {
 
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
                                               RE::BSTEventSource<RE::MenuOpenCloseEvent>* source) override {
+            if (event && !event->opening) {
+                if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([]() { HTTPManager::ShowPlaythroughNotices(); });
+            }
            
             if (event->menuName == RE::JournalMenu::MENU_NAME) {
                 if (event->opening) {
@@ -7847,6 +7800,9 @@ void RefreshPlayerSpells(bool forceUpdate) {
 
 OnLoadedGame {
     logger::info("OnLoadedGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
     // Runs twice?
     auto player = RE::PlayerCharacter::GetSingleton();
     
@@ -7879,15 +7835,6 @@ OnLoadedGame {
         controlLastBoredTriggerTS = now;
         logger::info("[BORED_TIMER] Reset - game loaded");
         
-        // Only add delay to dynamic profile timer, don't reset completely
-        auto timeSinceLastLoad = std::chrono::duration_cast<std::chrono::seconds>(now - lastGameLoadTime);
-        if (timeSinceLastLoad >= std::chrono::seconds(GAME_LOAD_COOLDOWN_SECONDS)) {
-            controlLastDynamicProfileTS = controlLastDynamicProfileTS + std::chrono::seconds(30);
-            logger::info("[DYNAMIC_TIMER] Added 30s delay after game load");
-            lastGameLoadTime = now;
-        } else {
-            logger::info("[DYNAMIC_TIMER] Skipped delay - cooldown active ({}s since last load)", timeSinceLastLoad.count());
-        }
 
         isGameReady = true;
 
@@ -8013,15 +7960,6 @@ OnLoadedGame {
         controlLastBoredTriggerTS = now;
         logger::info("[BORED_TIMER] Reset - game reloaded");
         
-        // Only add delay to dynamic profile timer, don't reset completely
-        auto timeSinceLastLoad = std::chrono::duration_cast<std::chrono::seconds>(now - lastGameLoadTime);
-        if (timeSinceLastLoad >= std::chrono::seconds(GAME_LOAD_COOLDOWN_SECONDS)) {
-            controlLastDynamicProfileTS = controlLastDynamicProfileTS + std::chrono::seconds(30);
-            logger::info("[DYNAMIC_TIMER] Added 30s delay after game reload");
-            lastGameLoadTime = now;
-        } else {
-            logger::info("[DYNAMIC_TIMER] Skipped delay - cooldown active ({}s since last load)", timeSinceLastLoad.count());
-        }
         isGameReady = true;
         //ProcedureSendActiveQuests();
         SpeakManager::getInstance().deleteQueue();
@@ -8134,6 +8072,9 @@ OnLoadedGame {
 
 OnLoadingGame { 
     logger::info("OnLoadingGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
     
 
     if (pluginInited) {
@@ -8142,7 +8083,6 @@ OnLoadingGame {
         ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
         logger::info("[BORED_TIMER] Reset - game loading");
-        logger::info("[DYNAMIC_TIMER] Timer preserved during loading");
         
         SPGResponse::getInstance().clearAllQueues();
 
@@ -8168,6 +8108,9 @@ OnLoadingGame {
 OnNewGame {
 
     logger::info("OnNewGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
 
     /*
     ManagerMainQueue& serverPooler = ManagerMainQueue::getInstance();
@@ -8195,9 +8138,7 @@ OnNewGame {
 
     auto now = std::chrono::high_resolution_clock::now();
     controlLastBoredTriggerTS = now;
-    controlLastDynamicProfileTS = now;
     logger::info("[BORED_TIMER] Initialized for new game");
-    logger::info("[DYNAMIC_TIMER] Initialized for new game");
 
     isGameReady = true;
     auto player = RE::PlayerCharacter::GetSingleton();
@@ -8327,6 +8268,9 @@ OnDataLoaded {
 EventHandlers {
 
     On<RE::TESCellFullyLoadedEvent>([](const RE::TESCellFullyLoadedEvent* event) {
+        auto* doorStatePlayer = RE::PlayerCharacter::GetSingleton();
+        auto* doorStateCell = doorStatePlayer ? doorStatePlayer->GetParentCell() : nullptr;
+        SpatialAwareness::SetDoorStateCell(doorStateCell ? doorStateCell->GetFormID() : 0);
         // Location Change trigger
         if (GetGameTimeStamp() == 13333334) return;
 
@@ -8952,21 +8896,33 @@ EventHandlers {
         }
     });
     
-    //Is this working?
-    /*
     On<RE::TESOpenCloseEvent>([](const RE::TESOpenCloseEvent* event) {
-        logger::info("TESOpenCloseEvent");
-        try {
-            auto ref = event->activeRef;
-            logger::info("[OPENCLOSE] {:X}, opened: ", ref->GetFormID(), event->opened);
-        } catch (...) {
-            std::exception_ptr p = std::current_exception();
-            logger::info("Error TESOpenCloseEvent");
+        auto* door = event ? event->ref.get() : nullptr;
+        auto* base = door ? door->GetBaseObject() : nullptr;
+        if (!pluginInited || !base || base->GetFormType() != RE::FormType::Door) {
+            return;
         }
-        
-
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* cell = door->GetParentCell();
+        if (!player || !cell || !cell->IsInteriorCell() || cell != player->GetParentCell()) {
+            return;
+        }
+        SpatialAwareness::RecordDoorState(door, event->opened);
+        // Every transition must invalidate, even when activation has already
+        // queued a delayed refresh. That refresh can precede the final state.
+        SpatialAwareness::InvalidateCache();
+        SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        logger::debug("[SpatialSnapshot] Door state changed door={:08X} opened={}",
+                      door->GetFormID(), event->opened);
     });
-    */
+    On<RE::TESResetEvent>([](const RE::TESResetEvent* event) {
+        auto* ref = event ? event->object.get() : nullptr;
+        auto* base = ref ? ref->GetBaseObject() : nullptr;
+        if (base && base->GetFormType() == RE::FormType::Door) {
+            SpatialAwareness::ForgetDoorState(ref->GetFormID());
+            InvalidateSpatialCachesForDoor(ref, "reset_event");
+        }
+    });
     On<RE::TESDeathEvent>([](const RE::TESDeathEvent* event) {
         try {
             if (!event->actorDying) return;

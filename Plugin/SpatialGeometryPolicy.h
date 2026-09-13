@@ -1,9 +1,23 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace SpatialGeometryPolicy
 {
+    // Interior audibility follows the configured range with one mild indirect-speech penalty.
+    // An open doorway or a long walking route does not add another acoustic barrier.
+    inline float HearingVolume(float distance, float range, bool interior, float environment,
+                               float minimumDistanceFactor, bool indirect)
+    {
+        if (!std::isfinite(distance) || !std::isfinite(range) || range <= 0.0f || distance > range) {
+            return 0.0f;
+        }
+        const float floor = interior ? std::max(minimumDistanceFactor, 0.2f) : minimumDistanceFactor;
+        const float distanceFactor = std::clamp(1.0f - distance / range, floor, 1.0f);
+        return std::clamp(distanceFactor * environment * (indirect ? 0.85f : 1.0f), 0.0f, 1.0f);
+    }
+
     struct Point3
     {
         float x = 0.0f;

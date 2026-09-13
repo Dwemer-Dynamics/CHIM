@@ -24,10 +24,10 @@ namespace ChatboxModePolicy
 
     inline constexpr std::array<SymbolModeRule, 9> kSymbolModeRules{{
         { "((", "INJECTION_LOG", "))" },
-        { "||", "CLOSE", "" },
+        { "%%", "CLOSE", "" },
         { "!!", "SHOUT", "" },
         { "**", "AUTOCHAT", "" },
-        { "|", "WHISPER", "" },
+        { "%", "WHISPER", "" },
         { "@", "NARRATOR", "" },
         { ">", "DIRECTOR", "" },
         { "#", "CHEATMODE", "" },

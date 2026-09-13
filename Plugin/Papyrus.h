@@ -133,6 +133,9 @@ namespace Papyrus {
     int requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc);
 
+    int requestMessageForEligibleActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                       RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc);
+
     int setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                          int busy, std::string actor);
 
@@ -341,6 +344,8 @@ namespace Papyrus {
     std::string getSettingsMenuPendingAction(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
     int clearSettingsMenuPendingAction(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
     
+    int getChimInteractionState(RE::StaticFunctionTag*);
+    bool setChimInteractionEnabled(RE::StaticFunctionTag*, bool enabled);
     int toggleMasterMenu(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int startPlayerMenuDialogueTTS(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,

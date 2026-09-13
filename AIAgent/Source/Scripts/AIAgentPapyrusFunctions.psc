@@ -213,7 +213,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		endwhile
 		if (npcList != "")
 			Debug.Notification("[CHIM] Updating dynamic profiles for nearby NPCs")
-			AIAgentFunctions.logMessage(npcList, "updateprofiles_batch_async")
+			AIAgentFunctions.logMessage(npcList, "updateprofiles_batch_async_manual")
 		else
 			Debug.Notification("[CHIM] No nearby AI NPCs found")
 		endif
@@ -228,7 +228,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		endif
 	elseif (actionId == "rp_update_npc" && targetActor)
 		Debug.Trace("[CHIM] Updating dynamic profile for " + targetActor.GetDisplayName())
-		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async")
+		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async_manual")
 	elseif (actionId == "rp_wait" && targetActor)
 		AIAgentAIMind.StartWait(targetActor)
 	elseif (actionId == "rp_follow" && targetActor)
@@ -1344,7 +1344,7 @@ Function OpenRoleplayWheel()
 	ElseIf ( currentMode ==  "UPDATE_NPC")
 		If (leader)
 			Debug.Trace("[CHIM] Updating dynamic profile for "+leader.GetDisplayName())
-			AIAgentFunctions.logMessage(leader.GetDisplayName(),"updateprofiles_batch_async")
+			AIAgentFunctions.logMessage(leader.GetDisplayName(),"updateprofiles_batch_async_manual")
 		Else
 			Debug.Notification("[CHIM] You must look at a target to use this")
 		EndIf
