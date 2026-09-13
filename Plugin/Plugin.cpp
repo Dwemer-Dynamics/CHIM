@@ -1,3 +1,4 @@
+#include "PlaythroughSession.h"
 #include <SKSE/Events.h>
 #include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
@@ -4091,11 +4092,13 @@ namespace ProcessorDialogueMenu {
 namespace ProcessorSerialization {
 
     
+    inline const auto PlaythroughRecord = _byteswap_ulong('AIPT');
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
 
 
     void OnGameLoaded(SKSE::SerializationInterface* serde) {
+        PlaythroughSession::ResetCharacter();
         
         std::uint32_t type;
         std::uint32_t size;
@@ -4106,6 +4109,17 @@ namespace ProcessorSerialization {
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
         while (serde->GetNextRecordInfo(type, version, size)) {
+            if (type == PlaythroughRecord) {
+                if ((version == 1 && size == 32) || (version == 2 && size == 33)) {
+                    std::string identity(32, '0');
+                    if (serde->ReadRecordData(identity.data(), 32) == 32) {
+                        std::uint8_t isNew = 0;
+                        if (version == 1 || (serde->ReadRecordData(&isNew, 1) == 1 && isNew <= 1))
+                            PlaythroughSession::RestoreCharacter(identity, isNew != 0);
+                    }
+                }
+                continue;
+            }
             if (type == AgentCountRecord) {
                 // First read how many items follow in this record, so we know how many times to iterate.
                 std::size_t agentCountsSize;
@@ -4280,6 +4294,12 @@ namespace ProcessorSerialization {
     }
 
     void OnGameSaved(SKSE::SerializationInterface* serde) {
+        const auto identity = PlaythroughSession::Character();
+        if (serde->OpenRecord(PlaythroughRecord, 2)) {
+            serde->WriteRecordData(identity.data(), 32);
+            const std::uint8_t isNew = PlaythroughSession::NewCharacter() ? 1 : 0;
+            serde->WriteRecordData(&isNew, 1);
+        }
         if (!serde->OpenRecord(AgentCountRecord, 0)) {
             logger::error("Unable to open record AgentCountRecord to write cosave data.");
             return;
@@ -4330,6 +4350,7 @@ namespace ProcessorSerialization {
     }
 
     void OnRevert(SKSE::SerializationInterface*) {
+        PlaythroughSession::ResetCharacter();
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
@@ -5896,6 +5917,7 @@ OnFormsLoaded {
 }
 
 OnSaveGame{
+    if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
     logger::info("OnSaveGame");
     if (!pluginInited) {
         logger::info("Game saved first time ");
@@ -7799,6 +7821,7 @@ void RefreshPlayerSpells(bool forceUpdate) {
 }
 
 OnLoadedGame {
+    PlaythroughSession::Connect([]() {
     logger::info("OnLoadedGame");
     SpatialAwareness::ResetDoorStates();
     SpatialAwareness::InvalidateCache();
@@ -8052,9 +8075,11 @@ OnLoadedGame {
     }
 
     
-    std::thread([]() {
+    std::thread([epoch = PlaythroughSession::Context()]() {
+        const PlaythroughSession::Scope scope(epoch);
         // Give time to init code to finish
         std::this_thread::sleep_for(std::chrono::seconds(15));
+        if (!PlaythroughSession::Allowed(epoch)) return;
         AIAgentManager& aiamRefresh = AIAgentManager::getInstance();
         // Iterate over renamed NPCs and log their FormID and name
         auto renamedNpcs = aiamRefresh.getRenamedNpcs();
@@ -8068,9 +8093,12 @@ OnLoadedGame {
     auto now = std::chrono::high_resolution_clock::now();
     controlLastBoredTriggerTS = now + std::chrono::seconds(30);
     logger::info("[BORED_TIMER] Initialized with 30s delay");
+
+    });
 }
 
-OnLoadingGame { 
+OnLoadingGame {
+    PlaythroughSession::BeginLoad();
     logger::info("OnLoadingGame");
     SpatialAwareness::ResetDoorStates();
     SpatialAwareness::InvalidateCache();
@@ -8106,6 +8134,9 @@ OnLoadingGame {
 }
 
 OnNewGame {
+    PlaythroughSession::BeginLoad();
+    PlaythroughSession::Character();
+    PlaythroughSession::Connect([]() {
 
     logger::info("OnNewGame");
     SpatialAwareness::ResetDoorStates();
@@ -8197,6 +8228,8 @@ OnNewGame {
     //HTTPManager::log(std::format("newgame|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), playerinfo));
     logger::debug("OnNewGame End");
     //pluginInited = true;
+
+    }, true);
 }
 
 OnDataLoaded {
