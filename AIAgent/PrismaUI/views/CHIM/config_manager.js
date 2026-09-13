@@ -11,7 +11,11 @@
     let selectSequence = 0;
 
     function command(value) { if (window.chimConfigManagerCommand) window.chimConfigManagerCommand(value); }
-    function syncInputCapture() { command(document.activeElement && document.activeElement.matches('input, textarea, select') ? 'input_capture|on' : 'input_capture|off'); }
+    function syncInputCapture() {
+        const focused = document.activeElement;
+        const editing = focused && (focused.matches('input, textarea, select') || focused.closest('.mcm-hearing-preset-section .settings-tile-selector'));
+        command(editing ? 'input_capture|on' : 'input_capture|off');
+    }
     function asBool(value) {
         if (typeof value === 'boolean') return value;
         return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -243,7 +247,8 @@
         const metadataRoot = byId('profile-metadata-sections'); metadataRoot.replaceChildren();
         (detail.metadata_sections || []).forEach((group) => {
             const section = document.createElement('section'); section.className = 'settings-section'; const title = document.createElement('h2'); title.textContent = group.name; section.appendChild(title);
-            group.fields.forEach((field) => {
+            // Dynamic profile policy is managed in web Profiles, including when connected to an older server.
+            group.fields.filter((field) => !field.name.startsWith('DYNAMIC_PROFILE_') && field.name !== 'CONTEXT_HISTORY_DYNAMIC_PROFILE').forEach((field) => {
                 if (field.type === 'multiselect') {
                     const block = document.createElement('div'); block.className = 'field'; const label = document.createElement('span'); label.textContent = field.label; block.appendChild(label);
                     (field.options || []).forEach((option) => block.appendChild(fieldControl({name:`${field.name}:${option}`,label:option,type:'boolean'}, (field.value || []).includes(option), 'metadata_multi:'))); section.appendChild(block);
@@ -258,7 +263,8 @@
         (detail.override_sections || []).forEach((group) => {
             const section = document.createElement('section'); section.className = 'settings-section';
             const title = document.createElement('h2'); title.textContent = group.name; section.appendChild(title);
-            group.fields.forEach((field) => {
+            // Dynamic profile policy is managed in web Profiles, including when connected to an older server.
+            group.fields.filter((field) => !field.name.startsWith('DYNAMIC_PROFILE_') && field.name !== 'CONTEXT_HISTORY_DYNAMIC_PROFILE').forEach((field) => {
                 const row = document.createElement('div'); row.className = `override-field${field.enabled ? '' : ' disabled'}`;
                 const enable = document.createElement('label'); enable.className = 'override-enable';
                 const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.name = `override_enabled:${field.name}`; checkbox.checked = asBool(field.enabled);
@@ -316,10 +322,11 @@
         await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({operation:'delete',id:selectedProfileId}) }));
         selectedProfileId = 0; await loadProfiles();
     }
-    /* ----- CHIM MCM (mirrors the six SkyUI MCM pages, rendered from native state) ----- */
+    /* ----- CHIM MCM (mirrors the SkyUI MCM pages, rendered from native state) ----- */
     const MCM_PAGES = [
         { id: 'hotkeys', label: 'Hotkeys' },
         { id: 'auto_activate', label: 'Auto Activate' },
+        { id: 'hearing_awareness', label: 'Hearing & Awareness' },
         { id: 'behavior', label: 'Behavior' },
         { id: 'sound', label: 'Sound' },
         { id: 'ai_agents', label: 'AI Agents' },
@@ -394,8 +401,8 @@
        from extra metadata fields. A key with no entry falls back to a read-only row. */
     const MCM_ENUM_OPTIONS = {
         audio_mode: [
-            { value: 2, label: '3D Advanced' },
-            { value: 1, label: '3D Legacy' },
+            { value: 2, label: '3D Realistic' },
+            { value: 1, label: '3D Normal' },
             { value: 0, label: '2D Flat' },
             { value: 3, label: 'Mono' },
             { value: 4, label: 'Mono + Advanced Effects' }
@@ -595,6 +602,58 @@
         mcmSaveErrors.delete(key);
         mcmSyncRowState(row, entry);
         refreshMcmSaveBar();
+        const preset = byId('mcm-hearing-preset');
+        if (preset && HEARING_KEYS.includes(key)) {
+            preset.value = String(hearingPresetIndex());
+            syncTileSelect(preset);
+        }
+    }
+
+    // Keep these three-value presets aligned with ApplyHearingPreset in the MCM script.
+    const HEARING_KEYS = ['auto_hearing_radius_m', 'spatial_hearing_inside', 'spatial_hearing_outside'];
+    const HEARING_PRESETS = [
+        { label: 'Realistic', values: [4, 600, 1000] },
+        { label: 'Recommended', values: [10, 1000, 1800] },
+        { label: 'Extended', values: [15, 1600, 2400] }
+    ];
+    function hearingPresetIndex() {
+        const entries = HEARING_KEYS.map((key) => mcmEntryList().find((entry) => entry.key === key));
+        const index = HEARING_PRESETS.findIndex((preset) => entries.every((entry, i) => entry && Number(mcmValue(entry)) === preset.values[i]));
+        return index < 0 ? 3 : index;
+    }
+
+    // Stage the existing sliders together so Save/Discard and partial failures keep their normal behavior.
+    function mcmHearingPresetRow(entry, readonly) {
+        const row = document.createElement('div');
+        row.className = 'mcm-row';
+        const heading = mcmRowHead(entry);
+        const select = document.createElement('select');
+        select.id = 'mcm-hearing-preset';
+        select.setAttribute('aria-labelledby', heading.labelId);
+        HEARING_PRESETS.forEach((preset, index) => select.add(new Option(preset.label, String(index))));
+        const custom = new Option('Custom', '3');
+        custom.disabled = true;
+        select.add(custom);
+        select.value = String(hearingPresetIndex());
+        select.disabled = readonly || mcmSaving || HEARING_KEYS.some((key) => !mcmEntryList().some((item) => item.key === key && !item.readonly));
+        row.append(heading.head, select);
+        const helpId = mcmHelp(row, entry);
+        mcmDescribe(select, [helpId]);
+        const selector = enhanceSelect(select);
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        trigger.setAttribute('aria-labelledby', heading.labelId);
+        mcmDescribe(trigger, [helpId]);
+        select.addEventListener('change', () => {
+            const preset = HEARING_PRESETS[Number(select.value)];
+            if (!preset || select.disabled) return;
+            HEARING_KEYS.forEach((key, index) => {
+                const item = mcmEntryList().find((candidate) => candidate.key === key);
+                stageMcmValue(item, preset.values[index], null);
+            });
+            renderMcmPanel(activeMcmPage);
+            byId('mcm-hearing-preset')?.closest('.settings-tile-selector')?.querySelector('.settings-tile-trigger')?.focus();
+        });
+        return row;
     }
 
     /* ----- Staged edits: dirty state, ordered save, explicit discard ----- */
@@ -906,7 +965,7 @@
         const trigger = selector.querySelector('.settings-tile-trigger');
         const value = selector.querySelector('.settings-tile-value');
         value.id = `mcm-enum-value-${++mcmSequence}`;
-        /* Reads as "Audio Mode, 3D Advanced" instead of just the bare option name. */
+        /* Reads as "Audio Mode, 3D Realistic" instead of just the bare option name. */
         trigger.setAttribute('aria-labelledby', `${heading.labelId} ${value.id}`);
         mcmDescribe(trigger, [helpId, state.pillId, state.errorId]);
         /* The option list and the hover help both drop below the row, so one hides the other. */
@@ -1002,6 +1061,7 @@
         const modes = MCM_AUDIO_CONTROL_MODES[String(entry.key || '')];
         const audioMode = modes && mcmEntryList().find((candidate) => candidate.key === 'audio_mode');
         if (audioMode) readonly = !modes.includes(Number(mcmValue(audioMode)));
+        if (entry.key === 'hearing_preset') return mcmHearingPresetRow(entry, readonly);
         if (type === 'toggle') return mcmToggleRow(entry, readonly);
         if (type === 'slider') return mcmSliderRow(entry, readonly);
         if (type === 'enum') return mcmEnumRow(entry, readonly);
@@ -1030,6 +1090,7 @@
         sections.forEach((items, name) => {
             const card = document.createElement('section');
             card.className = 'settings-section mcm-section';
+            if (items.some((item) => item.key === 'hearing_preset')) card.classList.add('mcm-hearing-preset-section');
             const title = document.createElement('h2');
             title.textContent = name;
             card.appendChild(title);

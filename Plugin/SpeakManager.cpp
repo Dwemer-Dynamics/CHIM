@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "SpeakManager.h"
 #include "DirectorScene.h"
 
@@ -1331,7 +1332,10 @@ bool isSilentAt(const std::vector<SilenceSegment>& silences, double elapsedSecon
 
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
                     float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
-                    const std::string& cacheKey = "") {
+                    const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0) {
+    if (!ChimInteraction::Enabled()) return 2;
+    const auto interactionGeneration = queuedGeneration;
+    if (interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) return 2;
     // [DAP-PHASE] markers: on freeze, last logged phase names the hung call.
     auto _dap_t0 = std::chrono::high_resolution_clock::now();
     auto _dap_phase = [&](const char* name) {
@@ -1638,6 +1642,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     _dap_phase("before_LoadWAV");
 
+    if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) return 2;
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         if (enable3DAudioPlayback) {
             _dap_phase("after_LoadWAV_ok");
@@ -2310,6 +2315,14 @@ void  SpeakManager::setLastUsedTime() {
     // logger::debug("[SpeakManager] Releasing mutex for setLastUsedTime");
 }
 
+// Leave active playback alone and discard only waiting dialogue and follow-up attempts.
+void SpeakManager::discardPendingInteraction() {
+    abortPendingUtterances("chim_off", false);
+    cancelRechatChain();
+    std::lock_guard lock(mtx);
+    scriptQueue = {};
+}
+
 void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
     // logger::debug("[SpeakManager] Attempting to acquire mutex for insertInQueue");
     std::lock_guard<std::mutex> lock(mtx);
@@ -2333,6 +2346,8 @@ void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
             lastRechatter.clear();
         }
     }
+    if (!ChimInteraction::Enabled()) return;
+    trimmedLine.interactionGeneration = PrismaUIBridge::GetDialogueStopGeneration();
     scriptQueue.push(trimmedLine);
     logger::info("[SpeakManager] Queue size after insertion: {}", scriptQueue.size());
     // logger::debug("[SpeakManager] Releasing mutex for insertInQueue");
@@ -2893,6 +2908,7 @@ void SpeakManager::completeRechatAttempt(const std::string& speaker, bool succes
 
 int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int rechatDepth, std::string debugLauncherLine,
                          std::string explicitRechatTarget) {
+    if (!ChimInteraction::Enabled()) return 0;
 
     // Rechat code moved here. To keep better time consistency we issue the rechat event once speaker
     // starts to say its lasts sentence.
@@ -3049,6 +3065,7 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 }
 
 void SpeakManager::process(AIAgent *agent) {
+    if (!ChimInteraction::Enabled()) { setProcessing(false); return; }
 
     auto tid = std::this_thread::get_id();
     logger::debug("[SPEAKERMANAGER {}] Starting process for agent: {}",
@@ -3168,7 +3185,7 @@ void SpeakManager::process(AIAgent *agent) {
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
             if (scriptLine.actor != agent->getActorName()) {  // Character change
-                // If the mismatched item is a "Player" line, dequeue it — no NPC agent
+                // If the mismatched item is a "Player" line, dequeue it â€” no NPC agent
                 // will ever match "Player", so it blocks the queue head forever.
                 if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
                     logger::warn("[SPEAKERMANAGER {}] Dequeuing stuck Player line: '{}'", tid, scriptLine.subtitle);
@@ -3441,14 +3458,11 @@ void SpeakManager::process(AIAgent *agent) {
             }
 
             res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
-                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey);
+                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration);
 
             const bool playbackAborted = (res == 2);
-            if (playbackAborted) {
-                dropMatchingHeadItem(scriptLine);
-            } else {
-                dequeueFirstItem();
-            }
+            // Off may have cleared this line and On may already have queued a new one.
+            dropMatchingHeadItem(scriptLine);
 
             if (res == 5) {  // Audio played, but returned this value to not trigger rechat
                 ;
@@ -3846,7 +3860,7 @@ void SpeakManager::process(AIAgent *agent) {
 
         // Narrator cleanup MUST run before checking for more queue items.
         // If the queue has items from other actors, the recursive process() call
-        // hits the actor mismatch at line 1789 and returns early — never reaching
+        // hits the actor mismatch at line 1789 and returns early â€” never reaching
         // this cleanup code. That leaves the Player permanently named "The Narrator"
         // and corrupts the actor state, freezing the game.
         if (agent->isNarrator() && hasTalked) {
@@ -3887,6 +3901,7 @@ void SpeakManager::process(AIAgent *agent) {
 
 
 void SpeakManager::processPlayer() {
+    if (!ChimInteraction::Enabled()) { setProcessing(false); return; }
     bool hasTalked = false;
     int res = 0;
     std::function<void(const ScriptLine&, int)> playerPlaybackCompletedCallbackCopy;
@@ -3901,7 +3916,10 @@ void SpeakManager::processPlayer() {
         setProcessing(true);
         isAborted();// Reset flag
         logger::info("SpeakManager is processing now for Player");
-        ScriptLine scriptLine = scriptQueue.front();
+        ScriptLine scriptLine = getFirstItem();
+        if (!ChimInteraction::Enabled() || scriptLine.interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
+            dropMatchingHeadItem(scriptLine); setProcessing(false); return;
+        }
 
         const std::string trimmedSubtitle = SM::trim(scriptLine.subtitle);
         const std::string playbackPhonetic = SM::trim(scriptLine.phonetic);
@@ -3919,11 +3937,11 @@ void SpeakManager::processPlayer() {
             if (isTextOnlyPlayerLine) {
                 res = HoldTextOnlyPlayerSubtitle(*this, scriptLine);
             } else {
-                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f);
+                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration);
             }
         }
 
-        dequeueFirstItem();
+        dropMatchingHeadItem(scriptLine);
         setProcessing(false);
         if (isTextOnlyPlayerLine) {
             // Text-only STT captions are a short echo of what the player said.

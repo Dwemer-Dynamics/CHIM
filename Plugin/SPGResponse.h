@@ -28,6 +28,7 @@ public:
     void clearQueue(const std::string& key);
     void moveFirstToLast(const std::string& key);
     void clearAllQueues();
+    void clearGameOutput();
 
     void markUnFinished(bool t);
     bool isUnfinished();

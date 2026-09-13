@@ -13,22 +13,34 @@
                 <img class="master-menu-icon" src="images/chim-icon.png" alt="">
                 <span id="master-menu-title">CHIM</span>
             </div>
+            <button type="button" id="chim-toggle" class="menu-settings-btn chim-toggle"
+                    role="switch" aria-checked="true" aria-label="CHIM" onclick="toggleChim()">CHIM: On</button>
             <button class="close-btn" onclick="closeMenu()">×</button>
         </div>
 
         <!-- Content Area -->
         <div class="modal-content">
+            <p id="chim-interaction-notice" class="chim-interaction-notice" role="status" hidden></p>
             <!-- Menu Select -->
             <div class="settings-group">
                 <div class="group-title-row">
                     <h2 class="group-title">Menu Select</h2>
-                    <button class="menu-settings-btn" onclick="selectPanel('settings')"
-                            onmouseenter="showDescription('Manage Global Settings, Profiles, and CHIM NPCs')"
-                            onmouseleave="clearDescription()"><span aria-hidden="true">&#9881;</span> Settings</button>
+                    <div class="menu-utility-actions">
+                        <button type="button" class="menu-settings-btn" id="generate-logs-btn"
+                                title="Generate logs for debugging"
+                                aria-label="Generate Logs: Generate logs for debugging"
+                                onclick="requestSupportReport()"
+                                onmouseenter="describeSupportReport()"
+                                onmouseleave="clearDescription()"><span aria-hidden="true">&#x1F4C3;</span> <span id="generate-logs-label">Generate Logs</span></button>
+                        <button type="button" class="menu-settings-btn" onclick="selectPanel('settings')"
+                                title="Manage Global Settings, Profiles, and CHIM NPCs"
+                                onmouseenter="showDescription('Manage Global Settings, Profiles, and CHIM NPCs')"
+                                onmouseleave="clearDescription()"><span aria-hidden="true">&#9881;</span> Settings</button>
+                    </div>
                 </div>
                 <div class="prisma-panels-layout">
                     <div class="primary-actions-row">
-                        <button class="setting-btn primary-panel-btn" onclick="selectPanel('textchat')"
+                        <button class="setting-btn primary-panel-btn" id="chim-chat-button" onclick="selectPanel('textchat')"
                                 onmouseenter="showDescription('Open CHIM Chat so you can type a line and send it immediately')"
                                 onmouseleave="clearDescription()">CHIM Chat</button>
                         <button class="setting-btn primary-panel-btn" onclick="selectPanel('chatbox')"
@@ -195,6 +207,7 @@
 
         <div class="menu-footer">
             <div class="hint-text" id="hover-description">Select a panel to toggle</div>
+            <span class="visually-hidden" id="support-report-status" role="status" aria-live="polite"></span>
         </div>
     </div>
     
