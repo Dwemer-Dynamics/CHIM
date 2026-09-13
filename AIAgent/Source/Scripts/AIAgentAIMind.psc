@@ -787,7 +787,7 @@ function TravelToTargetEnd(Actor npc) global
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
 						;Package doNothing = Game.GetForm(0x654e2) as Package ; 
 						;ActorUtil.AddPackageOverride(npc, doNothing,10)
-						Sandbox(npc,"")
+						int i = Sandbox(npc,"")
 					else
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc is follower, restore")
 					endif
@@ -4204,12 +4204,21 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.parent.GetPosition , Track: "+DecToHex(currParentLvl1.GetFormId())+ ": "+x+","+y+","+z);
 				endif;
 				if (destMarker)
-					
-					x=destMarker.GetPositionX();
-					y=destMarker.GetPositionY();
-					z=destMarker.GetPositionZ();
-					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.GetPosition, Track: "+loc.GetName()+ ": "+x+","+y+","+z);
-					name=loc.GetName()
+					if (destMarker.isInInterior())
+						destMarker=AIAgentFunctions.getLocationCenterMarker(currParentLvl1,0)
+					endif
+					if (destMarker)
+						x=destMarker.GetPositionX();
+						y=destMarker.GetPositionY();
+						z=destMarker.GetPositionZ();
+						Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.GetPosition, Track: "+loc.GetName()+ ": "+x+","+y+","+z);
+						name=loc.GetName()
+					else
+						x = 0
+						y = 0
+						z = 0
+						Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" could not find realc oords, Track: "+loc.GetName()+ ": "+x+","+y+","+z);
+					endif
 				else
 					x=akTarget.GetPositionX();
 					y=akTarget.GetPositionY();

@@ -1598,6 +1598,10 @@ EndFunction
 
 Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 
+	if (true)
+		AIAgentFunctions.sendLocationFast(curr,tags,referenceCell);
+		return
+	endif
 	if curr
 		; ---------------------------------------------------------------------------------------------
 		ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
