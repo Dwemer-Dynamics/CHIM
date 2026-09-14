@@ -1,3 +1,4 @@
+#include "PlaythroughSession.h"
 #include "ChimInteraction.h"
 #include "PrismaUIBridge.h"
 #include "ChatboxModePolicy.h"
@@ -2225,6 +2226,8 @@ R"CHIM(
     }
 
     static std::string FetchOverlayFromServer() {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -2303,6 +2306,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -2907,6 +2911,8 @@ R"CHIM(
         const std::string& url,
         const std::string& requestBody,
         int timeoutSeconds) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
 
         WSADATA wsaData;
@@ -2950,6 +2956,7 @@ R"CHIM(
         // Build HTTP request
         std::string request = method + " " + url + " HTTP/1.1\r\n";
         request += "Host: " + host + ":" + portStr + "\r\n";
+        request += PlaythroughSession::Header(loadEpoch);
         request += "Accept: application/json\r\n";
         if (method == "POST") {
             request += "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
@@ -5012,6 +5019,8 @@ R"CHIM(
     }
 
     static std::string FetchAIViewFromServer(const std::string& npcName, const std::string& refid) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5102,6 +5111,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -5477,6 +5487,8 @@ R"CHIM(
     }
 
     static std::string FetchDebuggerFromServer() {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5556,6 +5568,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -5595,6 +5608,8 @@ R"CHIM(
     }
 
     static std::string FetchLogFromServer(const std::string& logType, int numLines) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 16384;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5666,6 +5681,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         if (send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0) == SOCKET_ERROR) {
             closesocket(rawSocket);
             WSACleanup();
@@ -5797,6 +5813,8 @@ R"CHIM(
 
     // HTTP fetch helper - similar to HTTPManager but simpler for GET requests
     static std::string FetchEventlogFromServer(int limit, int sinceRowId) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5888,6 +5906,7 @@ R"CHIM(
         httpRequest += "\r\n";
 
         // Send request
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
