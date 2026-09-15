@@ -2710,10 +2710,6 @@ int Papyrus::getHerikaFormId(RE::BSScript::Internal::VirtualMachine* a_vm, RE::V
 
 int Papyrus::recordSoundEx(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                            RE::StaticFunctionTag*, int bindedKey) {
-    if (!ChimInteraction::Enabled()) {
-        RE::DebugNotification("CHIM is off.");
-        return 0;
-    }
     
     SpeakManager::getInstance().setLastUsedTime();  // To avoid trigger bored event from now
     SpeakManager::getInstance().deleteQueue();
