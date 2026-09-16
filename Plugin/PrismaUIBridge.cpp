@@ -338,7 +338,8 @@ namespace PrismaUIBridge {
         const std::string& method,
         const std::string& url,
         const std::string& requestBody,
-        int timeoutSeconds);
+        int timeoutSeconds,
+        bool preserveErrorBody = false);
     static std::string FetchJsonFromServer(const std::string& url);
     static void PlayDiaryAudio(const std::string& entryId);
     static void StopDiaryAudio();
@@ -2910,7 +2911,8 @@ R"CHIM(
         const std::string& method,
         const std::string& url,
         const std::string& requestBody,
-        int timeoutSeconds) {
+        int timeoutSeconds,
+        bool preserveErrorBody) {
         const auto loadEpoch = PlaythroughSession::Context();
         if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
@@ -3030,7 +3032,8 @@ R"CHIM(
         }
         if (statusCode < 200 || statusCode >= 300) {
             logger::error("[PrismaUIBridge] JSON request failed with HTTP {}", statusCode);
-            return "";
+            // Background Life returns useful JSON errors for failed creation.
+            if (!preserveErrorBody) return "";
         }
 
         std::string lowercaseHeaders = headers;
@@ -3387,7 +3390,7 @@ R"CHIM(
             "PrismaUIBackgroundLifePost",
             [requestId, url = endpointEntry->second, body]() {
                 try {
-                    const std::string response = RequestJsonFromServer("POST", url, body, 60);
+                    const std::string response = RequestJsonFromServer("POST", url, body, 75, true);
                     if (response.empty()) {
                         throw std::runtime_error("No data received from server");
                     }
