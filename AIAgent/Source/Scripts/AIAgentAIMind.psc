@@ -2275,7 +2275,8 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 		finalActor.Enable(true)
 		AIAgentFunctions.setDrivenByAIA(finalActor,false)
 		
-		AIAgentFunctions.logMessage("spawned@"+finalActor.GetDisplayName()+"@"+finalActor.GetFormId(),"status_msg")
+		; Correlate with the requested name, not a name distributor's display label.
+		AIAgentFunctions.logMessage("spawned@"+npcName+"@"+finalActor.GetFormId(),"status_msg")
 
 		string locationStr="";
 		if (finalActor.GetCurrentLocation())
