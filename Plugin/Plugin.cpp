@@ -10760,14 +10760,17 @@ EventHandlers {
 
      });
      
-    /*
+    
     On<RE::TESFastTravelEndEvent>([](const RE::TESFastTravelEndEvent* event) {
-            HTTPManager::log(std::format("infoaction|{}|{}|The party travels for a {} hours to {} ", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     RE::PlayerCharacter::GetSingleton()->GetName(), event->fastTravelEndHours,GetPlayerLocation()));
             
-        });
+        LocationList::GetInstance().Clear();
+        std::string currentLocation = GetPlayerLocation();
+        LocationList::GetInstance().AddLocation(currentLocation,nullptr);
 
-    */
+            
+    });
+
+    
     On<RE::TESGrabReleaseEvent>([](const RE::TESGrabReleaseEvent* event) {
         VRItemAwareness::HandleFlatGrabReleaseEvent(event);
         if (!event) {
