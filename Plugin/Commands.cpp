@@ -940,7 +940,7 @@ RE::TESForm* findLocation(std::string parameter) {
 
     if (!world) {
         logger::info("[FINDLOCATION] No world info when searching for {}", parameter);
-        return nullptr;
+        //return nullptr;
     }
 
     RE::TESWorldSpace* candidate(nullptr);
