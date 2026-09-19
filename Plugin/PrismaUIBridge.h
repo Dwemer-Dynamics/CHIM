@@ -361,8 +361,8 @@ namespace PrismaUIBridge {
                             const std::string& timestamp);
 
     // Send a message typed in the chatbox
-    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
-                            const std::string& customPlayerMood);
+    bool SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood, uint32_t hypnosisTargetFormId = 0);
 
     // ===== CHIM Settings Menu Functions =====
 

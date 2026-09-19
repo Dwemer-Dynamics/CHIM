@@ -1,3 +1,4 @@
+#include "PlaythroughSession.h"
 #include "ChimInteraction.h"
 #include "SPGResponse.h"
 
@@ -29,6 +30,7 @@ SPGResponse& SPGResponse::getInstance() {
 }
 
 void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated) {
+    if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
     std::stringstream ss(data);
     std::string line;
     while (std::getline(ss, line)) {

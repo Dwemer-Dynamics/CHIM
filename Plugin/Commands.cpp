@@ -940,7 +940,7 @@ RE::TESForm* findLocation(std::string parameter) {
 
     if (!world) {
         logger::info("[FINDLOCATION] No world info when searching for {}", parameter);
-        return nullptr;
+        //return nullptr;
     }
 
     RE::TESWorldSpace* candidate(nullptr);
@@ -2542,11 +2542,36 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         }
 
         if (!target || !targetAsActor) {
-            logger::info("[MoveTo] target {} not found", targetName);
-            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                         "command@" + command + "@" + targetName + "@Error: target not found"),
-                             npc);
-            return;
+
+            // No target Found. Lets check if its a location.
+            auto locationForm = findLocation(parameter);
+            if (locationForm) {
+                // RE::BGSLocation* location = locationForm->As<RE::BGSLocation>();
+                std::string locatioName(trim(parameter));
+                logger::info("Location target: {}", locatioName);
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(targetActor),
+                                                        std::move(locationForm->AsReference()), std::move(parameter));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "TravelToLocation", args, callback);
+
+                HTTPManager::stream(
+                    std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                "command@" + command + "@" + locatioName + "@#HERIKA_NPC1# starts traveling to " +
+                                    locatioName + " , current location " + GetPlayerLocation()),
+                    targetActor);
+
+                agentPtr.get()->setCurrentCommand("TravelTo");
+                return;
+                    // agentPtr.get()->setCommandBusy(true);
+                
+            } else {
+                logger::info("[MoveTo] target {} not found", targetName);
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@" + command + "@" + targetName + "@Error: target not found"),
+                                 npc);
+                return;
+            }
         }
 
         std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
