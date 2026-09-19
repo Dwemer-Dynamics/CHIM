@@ -466,6 +466,10 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.utterance = context.routingMessage.empty()
         ? PlayerConversationRoutingPolicy::ExtractUtterance(wireMessage)
         : PlayerConversationRoutingPolicy::Normalize(context.routingMessage);
+    // Hypnosis text describes a profile change, not a spoken address to another actor.
+    if (context.executionMode == "HYPNOSIS") {
+        policyRequest.utterance.clear();
+    }
     policyRequest.explicitTargetFormId = context.explicitTargetFormId;
     policyRequest.explicitTargetName = context.explicitTargetName;
     policyRequest.directAddressRadius = directAddressRadius;
@@ -475,7 +479,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         context.everyoneMode &&
         context.mode != PlayerConversationSpeechMode::Whisper &&
         context.mode != PlayerConversationSpeechMode::Close;
-    policyRequest.narratorGesture = IsNarratorGesture(player);
+    policyRequest.narratorGesture = context.executionMode != "HYPNOSIS" && IsNarratorGesture(player);
     // Direct address can reach a sleeper; automatic selection still uses autoEligible.
     policyRequest.blockSleepingDirectTarget = false;
 
