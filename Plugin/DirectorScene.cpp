@@ -35,8 +35,7 @@ namespace {
         if (!pendingCommands.empty() || dispatchInProgress) return;
         for (auto scene = scenes.begin(); scene != scenes.end();) {
             if (!scene->second.pending.empty()) { ++scene; continue; }
-            logger::info("[DIRECTOR] Scene stop: {} ({})", scene->first,
-                scene->second.failed ? "failed" : "completed");
+            SKSE::GetTaskInterface()->AddTask([] { RE::DebugNotification("[CHIM] Director scene stopped."); });
             scene = scenes.erase(scene);
         }
     }
@@ -66,7 +65,9 @@ void RequestFailed(std::uint64_t token) {
 }
 void Cancel() {
     std::lock_guard lock(sceneMutex);
-    for (const auto& [id, progress] : scenes) logger::info("[DIRECTOR] Scene stop: {} (cancelled)", id);
+    for (std::size_t i = 0; i < scenes.size(); ++i) {
+        SKSE::GetTaskInterface()->AddTask([] { RE::DebugNotification("[CHIM] Director scene stopped."); });
+    }
     scenes.clear();
     ++generation;
     remaining = 0;
@@ -150,7 +151,7 @@ void Queue(const std::string& encoded) {
         if (accepted.size() > 128) accepted.erase(accepted.begin());
         remaining += static_cast<int>(speech.size());
         for (const auto& line : speech) scenes[id].pending.insert(line.utteranceId);
-        logger::info("[DIRECTOR] Scene start: {}", id);
+        SKSE::GetTaskInterface()->AddTask([] { RE::DebugNotification("[CHIM] Director scene started."); });
         for (const auto& line : speech) SpeakManager::getInstance().insertInQueue(line);
     } catch (const std::exception& error) {
         logger::warn("[DIRECTOR] Rejected scene: {}", error.what());
