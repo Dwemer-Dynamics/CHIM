@@ -4445,14 +4445,22 @@ int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObject
                 destMarkerWorld = parentMarker;
                 logger::debug("sendLocationFast: Using parent location marker for world coordinates for location {},{:08X}",
                               a_loc->GetName(), a_loc->GetFormID());
+            } else {
+                logger::warn("sendLocationFast: No valid world marker found for parent location {},{:08X} of location {},{:08X}",
+                    currParent->GetName(), currParent->GetFormID(), a_loc->GetName(), a_loc->GetFormID());
             }
         } else {
             logger::warn("sendLocationFast: No valid world marker found for location {},{:08X}", a_loc->GetName(),
                          a_loc->GetFormID());
         }
     }
+    
     float x = destMarkerWorld ? destMarkerWorld->GetPositionX() : 0.0f;
     float y = destMarkerWorld ? destMarkerWorld->GetPositionY() : 0.0f;
+
+    logger::debug("sendLocationFast: Using world marker {} for location FormID {:08X},{},{}",
+                  destMarkerWorld ? destMarkerWorld->GetName() : "None",
+                  destMarkerWorld ? destMarkerWorld->GetFormID() : 0, x, y);
 
     std::string locName = a_loc->GetName();
 

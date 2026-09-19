@@ -1,4 +1,5 @@
 #pragma once
+#include "PlaythroughSession.h"
 
 #include <SKSE/Events.h>
 
@@ -483,7 +484,10 @@ public:
                 lock.lock();
             }
             
-            tasks.emplace(std::forward<F>(f), taskName, taskKey, effectiveTimeout, taskId);
+            tasks.emplace([callback = std::forward<F>(f), epoch = PlaythroughSession::Context()]() mutable {
+                const PlaythroughSession::Scope scope(epoch);
+                callback();
+            }, taskName, taskKey, effectiveTimeout, taskId);
             totalTasksQueued++;
             taskTypeMetrics[taskName].queued++;
         }

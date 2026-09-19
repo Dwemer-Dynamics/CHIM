@@ -1,3 +1,6 @@
+3.4.1 - 2026-09-19
+* Release version and date update.
+
 3.4.0 - 2026-09-12
 * Release version and date update.
 

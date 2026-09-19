@@ -1,3 +1,4 @@
+#include "PlaythroughSession.h"
 #include "ChimInteraction.h"
 #include "PrismaUIBridge.h"
 #include "ChatboxModePolicy.h"
@@ -337,7 +338,8 @@ namespace PrismaUIBridge {
         const std::string& method,
         const std::string& url,
         const std::string& requestBody,
-        int timeoutSeconds);
+        int timeoutSeconds,
+        bool preserveErrorBody = false);
     static std::string FetchJsonFromServer(const std::string& url);
     static void PlayDiaryAudio(const std::string& entryId);
     static void StopDiaryAudio();
@@ -1820,7 +1822,7 @@ R"CHIM(
 
         static const std::vector<std::string> validModes{
             "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
-            "DIRECTOR", "CHEATMODE", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
+            "DIRECTOR", "CHEATMODE", "HYPNOSIS", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
         };
         if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
             logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
@@ -1874,6 +1876,7 @@ R"CHIM(
         else if (actionId == "mode_narrator") modeStr = "NARRATOR";
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
         else if (actionId == "mode_cheat") modeStr = "CHEATMODE";
+        else if (actionId == "mode_hypnosis") modeStr = "HYPNOSIS";
         else if (actionId == "mode_autochat") modeStr = "AUTOCHAT";
         else if (actionId == "mode_inject_log") modeStr = "INJECTION_LOG";
         else if (actionId == "mode_inject_chat") modeStr = "INJECTION_CHAT";
@@ -2225,6 +2228,8 @@ R"CHIM(
     }
 
     static std::string FetchOverlayFromServer() {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -2303,6 +2308,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -2906,7 +2912,10 @@ R"CHIM(
         const std::string& method,
         const std::string& url,
         const std::string& requestBody,
-        int timeoutSeconds) {
+        int timeoutSeconds,
+        bool preserveErrorBody) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;  // Larger buffer for diary content
 
         WSADATA wsaData;
@@ -2950,6 +2959,7 @@ R"CHIM(
         // Build HTTP request
         std::string request = method + " " + url + " HTTP/1.1\r\n";
         request += "Host: " + host + ":" + portStr + "\r\n";
+        request += PlaythroughSession::Header(loadEpoch);
         request += "Accept: application/json\r\n";
         if (method == "POST") {
             request += "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
@@ -3023,7 +3033,8 @@ R"CHIM(
         }
         if (statusCode < 200 || statusCode >= 300) {
             logger::error("[PrismaUIBridge] JSON request failed with HTTP {}", statusCode);
-            return "";
+            // Background Life returns useful JSON errors for failed creation.
+            if (!preserveErrorBody) return "";
         }
 
         std::string lowercaseHeaders = headers;
@@ -3380,7 +3391,7 @@ R"CHIM(
             "PrismaUIBackgroundLifePost",
             [requestId, url = endpointEntry->second, body]() {
                 try {
-                    const std::string response = RequestJsonFromServer("POST", url, body, 60);
+                    const std::string response = RequestJsonFromServer("POST", url, body, 75, true);
                     if (response.empty()) {
                         throw std::runtime_error("No data received from server");
                     }
@@ -5012,6 +5023,8 @@ R"CHIM(
     }
 
     static std::string FetchAIViewFromServer(const std::string& npcName, const std::string& refid) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5102,6 +5115,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -5477,6 +5491,8 @@ R"CHIM(
     }
 
     static std::string FetchDebuggerFromServer() {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 8192;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5556,6 +5572,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -5595,6 +5612,8 @@ R"CHIM(
     }
 
     static std::string FetchLogFromServer(const std::string& logType, int numLines) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 16384;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5666,6 +5685,7 @@ R"CHIM(
         httpRequest += "Accept: application/json\r\n";
         httpRequest += "\r\n";
 
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         if (send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0) == SOCKET_ERROR) {
             closesocket(rawSocket);
             WSACleanup();
@@ -5797,6 +5817,8 @@ R"CHIM(
 
     // HTTP fetch helper - similar to HTTPManager but simpler for GET requests
     static std::string FetchEventlogFromServer(int limit, int sinceRowId) {
+        const auto loadEpoch = PlaythroughSession::Context();
+        if (!PlaythroughSession::Allowed(loadEpoch)) return {};
         constexpr size_t BUFFER_SIZE = 4096;
         constexpr int TIMEOUT_SECONDS = 10;
 
@@ -5888,6 +5910,7 @@ R"CHIM(
         httpRequest += "\r\n";
 
         // Send request
+        httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         iResult = send(rawSocket, httpRequest.c_str(), (int)httpRequest.size(), 0);
         if (iResult == SOCKET_ERROR) {
             logger::error("[PrismaUIBridge] Failed to send request: {}", WSAGetLastError());
@@ -7226,6 +7249,22 @@ R"CHIM(
                 g_savedPlayerMood = std::move(playerMood);
                 g_savedCustomPlayerMood = std::move(customPlayerMood);
             }
+        } else if (cmd.starts_with("send_hypnosis|")) {
+            const json payload = json::parse(cmd.substr(14), nullptr, false);
+            if (!payload.is_object() || !payload.contains("message") || !payload["message"].is_string()) {
+                return;
+            }
+            const std::string message = payload["message"].get<std::string>();
+            bool accepted = false;
+            if (payload.contains("target_form_id") && payload["target_form_id"].is_number_unsigned() &&
+                payload["target_form_id"].get<uint64_t>() <= UINT32_MAX &&
+                g_chatboxCurrentMode == "HYPNOSIS" &&
+                !ChatboxModePolicy::ParseSubmission(message, "HYPNOSIS").symbolOverride) {
+                accepted = SendChatboxMessage(message, "", "", payload["target_form_id"].get<uint32_t>());
+            }
+            const json result{{"message", message}, {"accepted", accepted}};
+            const std::string callback = "window.onHypnosisSubmission && window.onHypnosisSubmission(" + result.dump() + ")";
+            g_prismaUI->Invoke(g_chatboxView, callback.c_str(), nullptr);
         } else if (cmd.starts_with("send_custom_mood|")) {
             const json payload = json::parse(cmd.substr(17), nullptr, false);
             if (payload.is_discarded() || !payload.is_object() ||
@@ -7818,21 +7857,35 @@ R"CHIM(
         }
     }
 
-    void SendChatboxMessage(const std::string& message, const std::string& playerMood,
-                            const std::string& customPlayerMood) {
-        if (message.empty()) {
-            return;
+    bool SendChatboxMessage(const std::string& message, const std::string& playerMood,
+                            const std::string& customPlayerMood, uint32_t hypnosisTargetFormId) {
+        if (ChatboxModePolicy::Trim(message).empty()) {
+            return false;
         }
 
         if (!ChimInteraction::Enabled()) {
             RE::DebugNotification("CHIM is off.");
-            return;
+            return false;
         }
 
         const auto submission = ChatboxModePolicy::ParseSubmission(message, g_chatboxCurrentMode);
         if (submission.message.empty()) {
             RE::DebugNotification("[CHIM] Enter a message after the chat mode symbol.");
-            return;
+            return false;
+        }
+
+        std::string hypnosisTargetName;
+        if (submission.mode == "HYPNOSIS") {
+            const auto targets = CollectChatboxNearbyAgents();
+            const auto target = std::find_if(targets.begin(), targets.end(), [&](const auto& candidate) {
+                return hypnosisTargetFormId != 0 && candidate.formId == hypnosisTargetFormId &&
+                    candidate.targetable && !candidate.isNarrator && candidate.actor && !candidate.actor->IsDead();
+            });
+            if (IsChatboxEveryoneTargetOverrideActive() || target == targets.end()) {
+                RE::DebugNotification("[CHIM] Choose one available NPC for Hypnosis.");
+                return false;
+            }
+            hypnosisTargetName = target->name;
         }
 
         logger::info("[PrismaUIBridge] Sending chatbox message with {} routing{}: {}",
@@ -7848,7 +7901,9 @@ R"CHIM(
         // Push to chatbox UI with actual player name
         // This will show the single message with the correct player name. Mood is routing metadata
         // only, so the optimistic row stays exactly what the player submitted.
-        PushChatboxMessage(playerName, message, "", "player");
+        if (submission.mode != "HYPNOSIS") {
+            PushChatboxMessage(playerName, message, "", "player");
+        }
         
         // Send to server - this will interrupt conversations and generate AI response (same as MCM text hotkey)
         // sendMessageReal handles: queue deletion, stream cancellation, and NPC interruption
@@ -7869,7 +7924,16 @@ R"CHIM(
         routingContext.narratorMode = submission.mode == "NARRATOR";
         GetChatboxTargetOverride(routingContext.explicitTargetFormId, routingContext.explicitTargetName);
 
-        sendMessageReal(message, "", routingContext);
+        if (submission.mode == "HYPNOSIS") {
+            routingContext.explicitTargetFormId = hypnosisTargetFormId;
+            routingContext.explicitTargetName = hypnosisTargetName;
+            routingContext.playerMood.clear();
+            routingContext.customPlayerMood.clear();
+        }
+
+        if (sendMessageReal(message, "", routingContext) < 0) {
+            return false;
+        }
 
         const std::string_view nextMode = ChatboxModePolicy::ModeAfterSubmission(submittedMode);
         if (nextMode != submittedMode &&
@@ -7877,6 +7941,7 @@ R"CHIM(
             logger::info("[PrismaUIBridge] Reset one-shot {} mode to STANDARD after submission",
                          submittedMode);
         }
+        return true;
     }
 
     void StopAllDialogueNow(const char* sourceTag) {

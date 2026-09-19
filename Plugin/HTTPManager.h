@@ -13,6 +13,7 @@ extern std::string lastEventType;
 
 namespace HTTPManager {
     void ShowPlaythroughNotices();
+    nlohmann::json requestPlaythroughSession(const nlohmann::json& data);
 
     std::string base64_encode(const char* bytes_to_encode, size_t in_len);
     std::string base64_decode(const std::string& encodedString);

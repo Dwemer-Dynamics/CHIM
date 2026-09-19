@@ -1,3 +1,4 @@
+#include "PlaythroughSession.h"
 #include <SKSE/Events.h>
 #include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
@@ -55,8 +56,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.4.0"
-#define PLUGIN_RELEASE_DATE "2026-09-12"
+#define PLUGIN_VERSION "3.4.1"
+#define PLUGIN_RELEASE_DATE "2026-09-19"
 
 const char* GetPluginVersion()
 {
@@ -310,6 +311,12 @@ bool inSexDescSent = false;
 int inSexLastStage = 0;
 
 bool pluginInited = false;
+
+// Shared by all initialization paths; loading another save does not reset the notification.
+static void NotifyConnectedOnce() {
+    static std::atomic<bool> shown{false};
+    if (!shown.exchange(true)) RE::DebugNotification("[CHIM] Connected");
+}
 bool pendingLoadedPluginManifestSync = false;
 bool importDataDetectionDone = false;  // Track if we've already done import data detection this session
 
@@ -4091,11 +4098,13 @@ namespace ProcessorDialogueMenu {
 namespace ProcessorSerialization {
 
     
+    inline const auto PlaythroughRecord = _byteswap_ulong('AIPT');
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
 
 
     void OnGameLoaded(SKSE::SerializationInterface* serde) {
+        PlaythroughSession::ResetCharacter();
         
         std::uint32_t type;
         std::uint32_t size;
@@ -4106,6 +4115,17 @@ namespace ProcessorSerialization {
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
         while (serde->GetNextRecordInfo(type, version, size)) {
+            if (type == PlaythroughRecord) {
+                if ((version == 1 && size == 32) || (version == 2 && size == 33)) {
+                    std::string identity(32, '0');
+                    if (serde->ReadRecordData(identity.data(), 32) == 32) {
+                        std::uint8_t isNew = 0;
+                        if (version == 1 || (serde->ReadRecordData(&isNew, 1) == 1 && isNew <= 1))
+                            PlaythroughSession::RestoreCharacter(identity, isNew != 0);
+                    }
+                }
+                continue;
+            }
             if (type == AgentCountRecord) {
                 // First read how many items follow in this record, so we know how many times to iterate.
                 std::size_t agentCountsSize;
@@ -4280,6 +4300,13 @@ namespace ProcessorSerialization {
     }
 
     void OnGameSaved(SKSE::SerializationInterface* serde) {
+        // A legacy save stays unbound until the handshake returns its canonical identity.
+        const auto identity = PlaythroughSession::Character(false);
+        if (!identity.empty() && serde->OpenRecord(PlaythroughRecord, 2)) {
+            serde->WriteRecordData(identity.data(), 32);
+            const std::uint8_t isNew = PlaythroughSession::NewCharacter() ? 1 : 0;
+            serde->WriteRecordData(&isNew, 1);
+        }
         if (!serde->OpenRecord(AgentCountRecord, 0)) {
             logger::error("Unable to open record AgentCountRecord to write cosave data.");
             return;
@@ -4330,6 +4357,7 @@ namespace ProcessorSerialization {
     }
 
     void OnRevert(SKSE::SerializationInterface*) {
+        PlaythroughSession::ResetCharacter();
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
@@ -5896,6 +5924,7 @@ OnFormsLoaded {
 }
 
 OnSaveGame{
+    if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
     logger::info("OnSaveGame");
     if (!pluginInited) {
         logger::info("Game saved first time ");
@@ -5960,10 +5989,7 @@ OnSaveGame{
 
         aiam.setPlayerName(player->GetName());
 
-        auto server = Conf::getInstance().getServer();
-        auto port = Conf::getInstance().getPort();
-        auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-        RE::DebugNotification(initMsg.c_str());
+        NotifyConnectedOnce();
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -7799,6 +7825,7 @@ void RefreshPlayerSpells(bool forceUpdate) {
 }
 
 OnLoadedGame {
+    PlaythroughSession::Connect([]() {
     logger::info("OnLoadedGame");
     SpatialAwareness::ResetDoorStates();
     SpatialAwareness::InvalidateCache();
@@ -7876,10 +7903,7 @@ OnLoadedGame {
 
         aiam.setPlayerName(player->GetName());
 
-        auto server = Conf::getInstance().getServer();
-        auto port = Conf::getInstance().getPort();
-        auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-        RE::DebugNotification(initMsg.c_str());
+        NotifyConnectedOnce();
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -8052,9 +8076,11 @@ OnLoadedGame {
     }
 
     
-    std::thread([]() {
+    std::thread([epoch = PlaythroughSession::Context()]() {
+        const PlaythroughSession::Scope scope(epoch);
         // Give time to init code to finish
         std::this_thread::sleep_for(std::chrono::seconds(15));
+        if (!PlaythroughSession::Allowed(epoch)) return;
         AIAgentManager& aiamRefresh = AIAgentManager::getInstance();
         // Iterate over renamed NPCs and log their FormID and name
         auto renamedNpcs = aiamRefresh.getRenamedNpcs();
@@ -8068,9 +8094,12 @@ OnLoadedGame {
     auto now = std::chrono::high_resolution_clock::now();
     controlLastBoredTriggerTS = now + std::chrono::seconds(30);
     logger::info("[BORED_TIMER] Initialized with 30s delay");
+
+    });
 }
 
-OnLoadingGame { 
+OnLoadingGame {
+    PlaythroughSession::BeginLoad();
     logger::info("OnLoadingGame");
     SpatialAwareness::ResetDoorStates();
     SpatialAwareness::InvalidateCache();
@@ -8106,6 +8135,9 @@ OnLoadingGame {
 }
 
 OnNewGame {
+    PlaythroughSession::BeginLoad();
+    PlaythroughSession::Character();
+    PlaythroughSession::Connect([]() {
 
     logger::info("OnNewGame");
     SpatialAwareness::ResetDoorStates();
@@ -8176,10 +8208,7 @@ OnNewGame {
 
 
     */
-    auto server = Conf::getInstance().getServer();
-    auto port = Conf::getInstance().getPort();
-    auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-    RE::DebugNotification(initMsg.c_str());
+    NotifyConnectedOnce();
 
     pendingLoadedPluginManifestSync = true;
     if (PostLoadedPluginManifest()) {
@@ -8197,6 +8226,8 @@ OnNewGame {
     //HTTPManager::log(std::format("newgame|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), playerinfo));
     logger::debug("OnNewGame End");
     //pluginInited = true;
+
+    }, true);
 }
 
 OnDataLoaded {
@@ -10729,14 +10760,17 @@ EventHandlers {
 
      });
      
-    /*
+    
     On<RE::TESFastTravelEndEvent>([](const RE::TESFastTravelEndEvent* event) {
-            HTTPManager::log(std::format("infoaction|{}|{}|The party travels for a {} hours to {} ", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     RE::PlayerCharacter::GetSingleton()->GetName(), event->fastTravelEndHours,GetPlayerLocation()));
             
-        });
+        LocationList::GetInstance().Clear();
+        std::string currentLocation = GetPlayerLocation();
+        LocationList::GetInstance().AddLocation(currentLocation,nullptr);
 
-    */
+            
+    });
+
+    
     On<RE::TESGrabReleaseEvent>([](const RE::TESGrabReleaseEvent* event) {
         VRItemAwareness::HandleFlatGrabReleaseEvent(event);
         if (!event) {
