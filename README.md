@@ -1,5 +1,9 @@
 # CHIM
 
+## For AI assistants and coding agents
+
+Start with [AGENTS.md](AGENTS.md), then the [agent guide](AIAgent/docs/CHIM/agent-guide.md), [building guide](AIAgent/docs/CHIM/building.md), or [custom plugins guide](AIAgent/docs/CHIM/custom-plugins.md). These guides ship in the mod as `docs/CHIM/`; the server has its own [instructions](https://github.com/Dwemer-Dynamics/HerikaServer/blob/unstable/AGENTS.md).
+
 CHIM is the unified monorepo-facing home for the Skyrim client mod assets and the native SKSE plugin that power the CHIM and Herika stack.
 
 This repo replaces the split source-of-truth model that previously lived across:
@@ -17,6 +21,8 @@ This repo replaces the split source-of-truth model that previously lived across:
   - Contains the native C++ plugin sources, CMake presets, build output, and the code that produces `AIAgent.dll`.
 
 ## Build and Deploy
+
+For a standalone clone, use the [building guide](AIAgent/docs/CHIM/building.md). The wrapper commands below belong to the maintainer's parent monorepo and are not shipped in this repository.
 
 From the monorepo root:
 
