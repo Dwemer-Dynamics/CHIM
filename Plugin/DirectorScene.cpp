@@ -12,6 +12,7 @@
 #include <mutex>
 #include <set>
 #include <deque>
+#include <map>
 
 namespace DirectorScene {
 namespace {
@@ -19,10 +20,26 @@ namespace {
     std::atomic<int> remaining{0};
     std::mutex sceneMutex;
     std::set<std::string> accepted;
+    struct SceneProgress {
+        std::set<std::string> pending;
+        bool failed = false;
+    };
+    std::map<std::string, SceneProgress> scenes;
     std::chrono::steady_clock::time_point pendingUntil{};
     std::deque<std::pair<std::uint64_t, nlohmann::json>> pendingCommands;
     thread_local bool dispatchingAction = false;
     std::atomic<bool> dispatchInProgress{false};
+
+    // The scene ends after its speech and immediate action dispatch, without waiting for game actions.
+    void FinishScenes() {
+        if (!pendingCommands.empty() || dispatchInProgress) return;
+        for (auto scene = scenes.begin(); scene != scenes.end();) {
+            if (!scene->second.pending.empty()) { ++scene; continue; }
+            logger::info("[DIRECTOR] Scene stop: {} ({})", scene->first,
+                scene->second.failed ? "failed" : "completed");
+            scene = scenes.erase(scene);
+        }
+    }
 
     void ReportAborted(const nlohmann::json& lines) {
         nlohmann::json ids = nlohmann::json::array();
@@ -47,7 +64,15 @@ void RequestFailed(std::uint64_t token) {
     std::lock_guard lock(sceneMutex);
     if (token == generation.load()) pendingUntil = {};
 }
-void Cancel() { std::lock_guard lock(sceneMutex); ++generation; remaining = 0; pendingUntil = {}; pendingCommands.clear(); }
+void Cancel() {
+    std::lock_guard lock(sceneMutex);
+    for (const auto& [id, progress] : scenes) logger::info("[DIRECTOR] Scene stop: {} (cancelled)", id);
+    scenes.clear();
+    ++generation;
+    remaining = 0;
+    pendingUntil = {};
+    pendingCommands.clear();
+}
 bool ReadyToSpeak() { std::lock_guard lock(sceneMutex); return pendingCommands.empty() && !dispatchInProgress; }
 bool IsDispatchingAction() { return dispatchingAction; }
 
@@ -58,7 +83,7 @@ void ProcessActions() {
         std::pair<std::uint64_t, nlohmann::json> next;
         {
             std::lock_guard lock(sceneMutex);
-            if (pendingCommands.empty()) return;
+            if (pendingCommands.empty()) { FinishScenes(); return; }
             next = std::move(pendingCommands.front());
             pendingCommands.pop_front();
             dispatchInProgress = true;
@@ -84,16 +109,19 @@ void Queue(const std::string& encoded) {
     auto scene = nlohmann::json::parse(HTTPManager::base64_decode(encoded), nullptr, false);
     if (!scene.is_object()) return;
     try {
-        if (scene.value("schema", "") != "chim.director_scene.v1") return;
+        const auto schema = scene.value("schema", "");
+        const bool chunked = schema == "chim.director_scene.v2";
+        if (!chunked && schema != "chim.director_scene.v1") return;
         const auto id = scene.at("id").get<std::string>();
         const auto token = scene.at("generation").get<std::uint64_t>();
         const auto& lines = scene.at("lines");
-        if (!lines.is_array() || lines.empty() || lines.size() > 5 || id.size() != 32) return;
+        if (!lines.is_array() || lines.empty() || lines.size() > (chunked ? 128u : 5u) || id.size() != 32) return;
         std::lock_guard lock(sceneMutex);
         if (accepted.contains(id)) return;
         if (token != Generation()) { ReportAborted(lines); return; }
         pendingUntil = {};
         std::vector<ScriptLine> speech;
+        std::set<std::string> utterances;
         for (std::size_t i = 0; i < lines.size(); ++i) {
             const auto& line = lines[i];
             const auto speaker = line.at("speaker").get<std::string>();
@@ -111,7 +139,8 @@ void Queue(const std::string& encoded) {
             queued.directorHasActions = std::any_of(scene.at("actions").begin(), scene.at("actions").end(),
                 [i](const auto& action) { return action.at("after_line") == i + 1; });
             queued.ttsCacheKey = line.at("tts_cache_key");
-            if (queued.subtitle.empty() || queued.subtitle.size() > 2400 || queued.ttsCacheKey.size() != 32
+            if (queued.utteranceId.empty() || !utterances.insert(queued.utteranceId).second
+                || queued.subtitle.empty() || queued.subtitle.size() > 2400 || queued.ttsCacheKey.size() != 32
                 || queued.ttsCacheKey.find_first_not_of("0123456789abcdef") != std::string::npos) {
                 ReportAborted(lines); return;
             }
@@ -120,8 +149,9 @@ void Queue(const std::string& encoded) {
         accepted.insert(id);
         if (accepted.size() > 128) accepted.erase(accepted.begin());
         remaining += static_cast<int>(speech.size());
+        for (const auto& line : speech) scenes[id].pending.insert(line.utteranceId);
+        logger::info("[DIRECTOR] Scene start: {}", id);
         for (const auto& line : speech) SpeakManager::getInstance().insertInQueue(line);
-        logger::info("[DIRECTOR] Queued scene {} with {} turns", id, speech.size());
     } catch (const std::exception& error) {
         logger::warn("[DIRECTOR] Rejected scene: {}", error.what());
         if (scene.contains("lines") && scene["lines"].is_array()) ReportAborted(scene["lines"]);
@@ -181,9 +211,22 @@ bool ApproveAction(const std::string& command) {
 // Wait only for server command preparation, never for the resulting game action to finish.
 void CompleteLine(const ScriptLine& line, bool spoken) {
     if (line.directorSceneId.empty() || line.directorGeneration != Generation()) return;
-    if (spoken && line.directorHasActions) DispatchActions(line);
+    bool failed = !spoken;
+    {
+        std::lock_guard lock(sceneMutex);
+        const auto scene = scenes.find(line.directorSceneId);
+        if (scene == scenes.end()) return;
+        scene->second.failed |= failed;
+        failed = scene->second.failed;
+    }
+    if (spoken && !failed && line.directorHasActions) DispatchActions(line);
     else if (!spoken) ReportAborted(nlohmann::json::array({{{"utterance_id", line.utteranceId}}}));
     std::lock_guard lock(sceneMutex);
-    if (line.directorGeneration == generation.load() && remaining > 0) --remaining;
+    if (line.directorGeneration != generation.load()) return;
+    const auto scene = scenes.find(line.directorSceneId);
+    if (scene == scenes.end() || !scene->second.pending.erase(line.utteranceId)) return;
+    if (remaining > 0) --remaining;
+    scene->second.failed |= !spoken;
+    FinishScenes();
 }
 }
