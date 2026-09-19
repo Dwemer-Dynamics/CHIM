@@ -2,6 +2,7 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
   <moduleName>CHIM - AI Agent</moduleName>
   <requiredInstallFiles>
+    <folder source="docs\CHIM" destination="docs\CHIM" priority="0" />
     <file source="AIAgent.esp" destination="AIAgent.esp" priority="0" />
     <folder source="AIAgent" destination="AIAgent" priority="0" />
     <folder source="Interface\Translations" destination="Interface\Translations" priority="0" />
