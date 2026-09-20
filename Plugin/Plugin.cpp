@@ -10761,16 +10761,14 @@ EventHandlers {
      });
      
     
-    On<RE::TESFastTravelEndEvent>([](const RE::TESFastTravelEndEvent* event) {
-            
-        LocationList::GetInstance().Clear();
-        std::string currentLocation = GetPlayerLocation();
-        LocationList::GetInstance().AddLocation(currentLocation,nullptr);
-
-            
-    });
-
-    
+    // Skyrim VR has no TESFastTravelEndEvent source to register with.
+    if (!REL::Module::IsVR()) {
+        On<RE::TESFastTravelEndEvent>([](const RE::TESFastTravelEndEvent* event) {
+            LocationList::GetInstance().Clear();
+            std::string currentLocation = GetPlayerLocation();
+            LocationList::GetInstance().AddLocation(currentLocation,nullptr);
+        });
+    }
     On<RE::TESGrabReleaseEvent>([](const RE::TESGrabReleaseEvent* event) {
         VRItemAwareness::HandleFlatGrabReleaseEvent(event);
         if (!event) {
