@@ -98,7 +98,8 @@ void ProcessActions() {
             if (channel == "rolecommand") parseRoleCommand(text);
             else parseCommand(text, next.second.at("actor"));
         } catch (const std::exception& error) {
-            logger::warn("[DIRECTOR] Action could not start: {}", error.what());
+            
+            logger::error("[DIRECTOR] Action could not start (exception): {}", error.what());
         }
         dispatchingAction = false;
         dispatchInProgress = false;
@@ -108,18 +109,26 @@ void ProcessActions() {
 // Validate the whole payload before adding any speech to the ordinary playback queue.
 void Queue(const std::string& encoded) {
     auto scene = nlohmann::json::parse(HTTPManager::base64_decode(encoded), nullptr, false);
-    if (!scene.is_object()) return;
+    if (!scene.is_object()) { logger::error("[DIRECTOR] Queue: parsed payload is not a JSON object"); return; }
     try {
         const auto schema = scene.value("schema", "");
         const bool chunked = schema == "chim.director_scene.v2";
-        if (!chunked && schema != "chim.director_scene.v1") return;
+        if (!chunked && schema != "chim.director_scene.v1") { logger::error("[DIRECTOR] Queue: unsupported schema '{}'", schema); return; }
         const auto id = scene.at("id").get<std::string>();
         const auto token = scene.at("generation").get<std::uint64_t>();
         const auto& lines = scene.at("lines");
-        if (!lines.is_array() || lines.empty() || lines.size() > (chunked ? 128u : 5u) || id.size() != 32) return;
+        if (!lines.is_array() || lines.empty() || lines.size() > (chunked ? 128u : 5u) || id.size() != 32) {
+            logger::error("[DIRECTOR] Queue: invalid 'lines' or 'id' (lines.is_array: {}, count: {}, id.length: {})",
+                lines.is_array(), lines.size(), id.size());
+            return; 
+        }
         std::lock_guard lock(sceneMutex);
-        if (accepted.contains(id)) return;
-        if (token != Generation()) { ReportAborted(lines); return; }
+        if (accepted.contains(id)) { logger::warn("[DIRECTOR] Queue: duplicate scene id '{}', already accepted", id); return; }
+        if (token != Generation()) { 
+            logger::warn("[DIRECTOR] Queue: generation mismatch (scene.gen: {}, current.gen: {})", token, Generation());
+            ReportAborted(lines); 
+            return; 
+        }
         pendingUntil = {};
         std::vector<ScriptLine> speech;
         std::set<std::string> utterances;
@@ -127,9 +136,15 @@ void Queue(const std::string& encoded) {
             const auto& line = lines[i];
             const auto speaker = line.at("speaker").get<std::string>();
             auto agent = AIAgentManager::getInstance().getAgentByName(speaker);
-            if (!agent || !agent->getActor() || agent->isNarrator()) { ReportAborted(lines); return; }
+            if (!agent || !agent->getActor() || agent->isNarrator()) { 
+                logger::error("[DIRECTOR] Queue: invalid speaker '{}' (missing agent or narrator)", speaker);
+                ReportAborted(lines); 
+                continue;
+            }
             const auto ref = line.value("actor_refid", "");
             if (!ref.empty() && agent->getActor()->GetFormID() != std::stoul(ref, nullptr, 16)) {
+                logger::error("[DIRECTOR] Queue: actor_refid mismatch for speaker '{}' (expected {}, actual {:X})",
+                    speaker, ref, agent->getActor()->GetFormID());
                 ReportAborted(lines); return;
             }
             ScriptLine queued(line.at("text"), "", line.at("listener"), "", speaker, "", 1.0f, -1,
@@ -143,6 +158,8 @@ void Queue(const std::string& encoded) {
             if (queued.utteranceId.empty() || !utterances.insert(queued.utteranceId).second
                 || queued.subtitle.empty() || queued.subtitle.size() > 2400 || queued.ttsCacheKey.size() != 32
                 || queued.ttsCacheKey.find_first_not_of("0123456789abcdef") != std::string::npos) {
+                logger::error("[DIRECTOR] Queue: invalid utterance/tts metadata at line {} (utteranceId empty: {}, duplicate: {}, subtitle.len: {}, ttsKey.len: {})",
+                    i + 1, queued.utteranceId.empty(), !utterances.insert(queued.utteranceId).second, queued.subtitle.size(), queued.ttsCacheKey.size());
                 ReportAborted(lines); return;
             }
             speech.push_back(std::move(queued));
@@ -154,7 +171,8 @@ void Queue(const std::string& encoded) {
         SKSE::GetTaskInterface()->AddTask([] { RE::DebugNotification("[CHIM] Director scene started."); });
         for (const auto& line : speech) SpeakManager::getInstance().insertInQueue(line);
     } catch (const std::exception& error) {
-        logger::warn("[DIRECTOR] Rejected scene: {}", error.what());
+        
+        logger::error("[DIRECTOR] Rejected scene (exception): {}", error.what());
         if (scene.contains("lines") && scene["lines"].is_array()) ReportAborted(scene["lines"]);
     }
 }
@@ -184,17 +202,24 @@ static void DispatchActions(const ScriptLine& line, int approvedIndex = -1) {
                     const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::high_resolution_clock::now().time_since_epoch()).count();
                     SPGResponse::getInstance().enqueue("confirmcommand", {text + "@__DIRECTOR_SCENE__" + encoded, now, actor});
+                } else {
+                    
+                    logger::error("[DIRECTOR] DispatchActions: unexpected command channel '{}' for scene {} line {}", channel, line.directorSceneId, line.directorLine);
                 }
             }
+        } else {
+            
+            logger::error("[DIRECTOR] DispatchActions: expected 'commands' array in response for scene {} after_line {}", line.directorSceneId, line.directorLine);
         }
     } catch (const std::exception& error) {
-        logger::warn("[DIRECTOR] Could not dispatch turn {}: {}", line.directorLine, error.what());
+        
+        logger::error("[DIRECTOR] Could not dispatch turn (exception) {}: {}", line.directorLine, error.what());
     }
 }
 
 bool ApproveAction(const std::string& command) {
     const auto marker = command.find("@__DIRECTOR_SCENE__");
-    if (marker == std::string::npos) return false;
+    if (marker == std::string::npos) { logger::error("[DIRECTOR] ApproveAction: missing director scene marker in command"); return false; }
     try {
         const auto request = nlohmann::json::parse(HTTPManager::base64_decode(command.substr(marker + 19)));
         ScriptLine line("", "", "", "", "", "");
@@ -204,19 +229,24 @@ bool ApproveAction(const std::string& command) {
         const int index = request.at("approved_action");
         ThreadPool::getInstance().enqueue("DirectorAction", [line, index]() { DispatchActions(line, index); });
     } catch (const std::exception& error) {
-        logger::warn("[DIRECTOR] Invalid action approval: {}", error.what());
+        
+        logger::error("[DIRECTOR] Invalid action approval (exception): {}", error.what());
     }
     return true;
 }
 
 // Wait only for server command preparation, never for the resulting game action to finish.
 void CompleteLine(const ScriptLine& line, bool spoken) {
-    if (line.directorSceneId.empty() || line.directorGeneration != Generation()) return;
+    if (line.directorSceneId.empty() || line.directorGeneration != Generation()) { 
+        logger::error("[DIRECTOR] CompleteLine: invalid input or generation mismatch (scene_id empty: {}, line.gen: {}, current.gen: {})",
+            line.directorSceneId.empty(), line.directorGeneration, Generation());
+        return; 
+    }
     bool failed = !spoken;
     {
         std::lock_guard lock(sceneMutex);
         const auto scene = scenes.find(line.directorSceneId);
-        if (scene == scenes.end()) return;
+        if (scene == scenes.end()) { logger::error("[DIRECTOR] CompleteLine: scene '{}' not found", line.directorSceneId); return; }
         scene->second.failed |= failed;
         failed = scene->second.failed;
     }
@@ -225,7 +255,10 @@ void CompleteLine(const ScriptLine& line, bool spoken) {
     std::lock_guard lock(sceneMutex);
     if (line.directorGeneration != generation.load()) return;
     const auto scene = scenes.find(line.directorSceneId);
-    if (scene == scenes.end() || !scene->second.pending.erase(line.utteranceId)) return;
+    if (scene == scenes.end() || !scene->second.pending.erase(line.utteranceId)) {
+        logger::error("[DIRECTOR] CompleteLine: could not remove utterance '{}' from scene '{}'", line.utteranceId, line.directorSceneId);
+        return;
+    }
     if (remaining > 0) --remaining;
     scene->second.failed |= !spoken;
     FinishScenes();
