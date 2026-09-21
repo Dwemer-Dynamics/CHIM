@@ -26,6 +26,7 @@
 #include "Globals.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "SpeakManager.h"
 #include "SpatialAwareness.h"
@@ -3900,16 +3901,17 @@ RE::FormID Papyrus::getForm(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VM
                 return static_cast<RE::FormID>(j.at(key).get<uint32_t>());
             } else if (j.at(key).is_string()) {
                 std::string val = j.at(key).get<std::string>();
-                try {
-                    uint32_t intval = 0;
-                    intval = std::stoul(val, nullptr, 0);
-                    RE::TESForm* form = RE::TESForm::LookupByID(intval);
-                    if (form)
-                        return static_cast<RE::FormID>(std::stoul(val, nullptr, 0));
-                    else
-                        logger::warn("[getForm] No form found for FormID '{}'", val);
-                } catch (...) {
+                const auto formId = ItemIdentifierUtils::ParseFormId(val);
+                if (!formId.has_value()) {
+                    logger::warn("[getForm] Invalid FormID '{}'", val);
+                    return 0;
                 }
+
+                RE::TESForm* form = RE::TESForm::LookupByID(*formId);
+                if (form)
+                    return static_cast<RE::FormID>(*formId);
+                else
+                    logger::warn("[getForm] No form found for FormID '{}'", val);
             }
         }
     } catch (const std::exception& e) {
