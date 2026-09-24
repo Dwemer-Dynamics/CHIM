@@ -505,17 +505,10 @@ namespace HTTPManager {
             return "";
         }
 
-        struct addrinfo hints;
         struct addrinfo* result = NULL;
         struct addrinfo* ptr = NULL;
 
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-
-        int adHres = getaddrinfo(Conf::getInstance().getServer().c_str(), Conf::getInstance().getPort().c_str(), &hints,
-                                 &result);
+        int adHres = ResolveTcpAddress(Conf::getInstance().getServer(), Conf::getInstance().getPort(), &result);
 
         if (adHres != 0) {
             logger::error("getaddrinfo failed error:{} server:'{}' port:'{}'", adHres,
@@ -800,17 +793,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             return 3;
         }
 
-        struct addrinfo hints;
         struct addrinfo* result = NULL;
         struct addrinfo* ptr = NULL;
 
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-
-        int adHres = getaddrinfo(Conf::getInstance().getServer().c_str(), Conf::getInstance().getPort().c_str(), &hints,
-                                 &result);
+        int adHres = ResolveTcpAddress(Conf::getInstance().getServer(), Conf::getInstance().getPort(), &result);
 
         if (adHres != 0) {
             logger::error("getaddrinfo failed: {}", adHres);
@@ -1376,13 +1362,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 return "";
             }
 
-            struct addrinfo hints {};
-            hints.ai_family = AF_UNSPEC;
-            hints.ai_socktype = SOCK_STREAM;
-            hints.ai_protocol = IPPROTO_TCP;
-
             struct addrinfo* result = nullptr;
-            int addrRes = getaddrinfo(server.c_str(), port.c_str(), &hints, &result);
+            int addrRes = ResolveTcpAddress(server, port, &result);
             if (addrRes != 0 || !result) {
                 logger::error("[VersionCheck] getaddrinfo failed for {}:{} ({})", server, port, addrRes);
                 WSACleanup();
