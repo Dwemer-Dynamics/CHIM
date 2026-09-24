@@ -32,6 +32,31 @@ namespace ItemIdentifierUtils
         return value.substr(first, last - first + 1);
     }
 
+    inline std::optional<std::uint32_t> ParseFormId(std::string value)
+    {
+        value = Trim(std::move(value));
+        if (value.size() >= 2 && value.front() == '`' && value.back() == '`') {
+            value = Trim(value.substr(1, value.size() - 2));
+        }
+
+        const auto colon = value.find(':');
+        auto idText = Trim(value.substr(0, colon));
+        if (idText.starts_with("0x") || idText.starts_with("0X")) {
+            idText = idText.substr(2);
+        }
+
+        if (idText.empty() || idText.size() > 8 ||
+            !std::all_of(idText.begin(), idText.end(), [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+            return std::nullopt;
+        }
+
+        try {
+            return static_cast<std::uint32_t>(std::stoul(idText, nullptr, 16));
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     inline InventoryItemIdentifier ParseInventoryItemIdentifier(std::string value)
     {
         value = Trim(std::move(value));
@@ -45,23 +70,13 @@ namespace ItemIdentifierUtils
             return result;
         }
 
-        auto idText = Trim(value.substr(0, colon));
-        if (idText.starts_with("0x") || idText.starts_with("0X")) {
-            idText = idText.substr(2);
-        }
-
-        if (idText.empty() || idText.size() > 8 ||
-            !std::all_of(idText.begin(), idText.end(), [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+        const auto baseId = ParseFormId(value);
+        if (!baseId.has_value()) {
             return result;
         }
 
-        try {
-            result.baseId = static_cast<std::uint32_t>(std::stoul(idText, nullptr, 16));
-            result.name = Trim(value.substr(colon + 1));
-        } catch (...) {
-            result.baseId.reset();
-            result.name = value;
-        }
+        result.baseId = baseId;
+        result.name = Trim(value.substr(colon + 1));
 
         return result;
     }
