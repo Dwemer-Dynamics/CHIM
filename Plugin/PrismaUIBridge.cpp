@@ -2251,18 +2251,12 @@ R"CHIM(
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
 
-        struct addrinfo hints;
         struct addrinfo* result = nullptr;
-
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
 
         std::string server = Conf::getInstance().getServer();
         std::string port = Conf::getInstance().getPort();
 
-        int adHres = getaddrinfo(server.c_str(), port.c_str(), &hints, &result);
+        int adHres = ResolveTcpAddress(server, port, &result);
         if (adHres != 0) {
             logger::error("[PrismaUIBridge] getaddrinfo failed: {}", adHres);
             closesocket(rawSocket);
@@ -5046,18 +5040,12 @@ R"CHIM(
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
 
-        struct addrinfo hints;
         struct addrinfo* result = nullptr;
-
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
 
         std::string server = Conf::getInstance().getServer();
         std::string port = Conf::getInstance().getPort();
 
-        int adHres = getaddrinfo(server.c_str(), port.c_str(), &hints, &result);
+        int adHres = ResolveTcpAddress(server, port, &result);
         if (adHres != 0) {
             logger::error("[PrismaUIBridge] getaddrinfo failed: {}", adHres);
             closesocket(rawSocket);
@@ -5514,18 +5502,12 @@ R"CHIM(
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
 
-        struct addrinfo hints;
         struct addrinfo* result = nullptr;
-
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
 
         std::string server = Conf::getInstance().getServer();
         std::string port = Conf::getInstance().getPort();
 
-        int adHres = getaddrinfo(server.c_str(), port.c_str(), &hints, &result);
+        int adHres = ResolveTcpAddress(server, port, &result);
         if (adHres != 0) {
             logger::error("[PrismaUIBridge] getaddrinfo failed: {}", adHres);
             closesocket(rawSocket);
@@ -5633,18 +5615,12 @@ R"CHIM(
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
 
-        struct addrinfo hints;
         struct addrinfo* result = nullptr;
-
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
 
         std::string server = Conf::getInstance().getServer();
         std::string port = Conf::getInstance().getPort();
 
-        if (getaddrinfo(server.c_str(), port.c_str(), &hints, &result) != 0) {
+        if (ResolveTcpAddress(server, port, &result) != 0) {
             closesocket(rawSocket);
             WSACleanup();
             return "";
@@ -5841,18 +5817,12 @@ R"CHIM(
         setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
         setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
 
-        struct addrinfo hints;
         struct addrinfo* result = nullptr;
-
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
 
         std::string server = Conf::getInstance().getServer();
         std::string port = Conf::getInstance().getPort();
 
-        int adHres = getaddrinfo(server.c_str(), port.c_str(), &hints, &result);
+        int adHres = ResolveTcpAddress(server, port, &result);
         if (adHres != 0) {
             logger::error("[PrismaUIBridge] getaddrinfo failed: {}", adHres);
             closesocket(rawSocket);

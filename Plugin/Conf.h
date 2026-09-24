@@ -13,11 +13,16 @@
 #include <algorithm>
 #include <cctype>
 
+struct addrinfo;
+
 // Function prototypes
 bool readIniFile(const std::string& filename, std::string& server, std::string& path, std::string& port, std::string& polint);
 bool discoverServerFromProxy(std::string& server, std::string& port);
 std::string Sanitize(const std::string& str);
 std::vector<std::string> splitString(const std::string& input, char delimiter);
+
+// Resolve numeric server addresses locally before consulting configured name services.
+int ResolveTcpAddress(const std::string& hostname, const std::string& port, addrinfo** result);
 
 class Conf {
 public:
