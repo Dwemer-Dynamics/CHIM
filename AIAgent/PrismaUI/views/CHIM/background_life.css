@@ -348,7 +348,7 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
 .npc-card-activity-title { color: #f4f4f5; font-size: .64rem; font-weight: 700; }
 .npc-card-activity-summary { margin-top: 2px; overflow: hidden; color: #aaaab1; font-size: .6rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .npc-card-row-label { grid-column: 1 / -1; margin: 1px 0 -2px; color: var(--muted); font-size: .58rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.npc-card-requests { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+.npc-card-requests { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
 .npc-card-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
 .card-action { min-width: 0; min-height: 27px; padding: 4px 5px; font-size: .64rem; }
 .card-request { border-color: var(--accent-line); background: #3c2a1d; color: #fff; }
@@ -445,6 +445,24 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
 .detail-entry h4 { color: #fff; font-size: .75rem; }
 .detail-entry p { margin-top: 5px; color: #c9c9cd; font-size: .71rem; line-height: 1.4; white-space: pre-wrap; }
 .detail-entry time { color: var(--muted); font-size: .63rem; }
+
+/* Player <-> NPC courier letters */
+.card-write-letter { border-color: rgba(85,184,121,.5); background: rgba(56,133,83,.28); }
+.letter-modal-panel { width: min(640px, 92vw); }
+.letter-reply-context { padding: 8px 10px; border-left: 3px solid var(--accent); background: var(--accent-soft); max-height: 150px; overflow-y: auto; }
+.letter-reply-context span { color: #efb47d; font-size: .66rem; font-weight: 700; }
+.letter-reply-context p { margin-top: 4px; color: #ddd; font-size: .7rem; line-height: 1.4; white-space: pre-wrap; }
+.letter-form-meta { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: .66rem; }
+.letter-thread-toolbar { display: flex; justify-content: flex-end; padding-bottom: 8px; border-bottom: 1px solid #3a3a40; }
+.letter-entry.from-player { padding-left: 10px; border-left: 3px solid rgba(85,184,121,.55); }
+.letter-entry.from-npc { padding-left: 10px; border-left: 3px solid var(--accent-line); }
+.letter-entry-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.letter-status { padding: 1px 6px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: .6rem; }
+.letter-status.status-delivered, .letter-status.status-read, .letter-status.status-answered { border-color: rgba(85,184,121,.5); color: #9ee3b5; }
+.letter-status.status-in_transit, .letter-status.status-awaiting_courier { border-color: var(--accent-line); color: #efb47d; }
+.letter-status.status-failed { border-color: rgba(217,92,104,.5); color: #efa0a7; }
+.letter-reply-button { margin-top: 6px; padding: 3px 10px; font-size: .64rem; }
+.letter-legacy-heading { margin-top: 12px; color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
 
 .loading { cursor: progress; }
 
