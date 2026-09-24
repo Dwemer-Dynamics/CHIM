@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AIAgent VERSION 3.4.1)
+project(AIAgent VERSION 3.4.2)
 
 set(BUILD_TESTS OFF CACHE BOOL "Disable CommonLibSSE tests" FORCE)
 set(SKSE_SUPPORT_XBYAK ON CACHE BOOL "Enable CommonLibSSE Xbyak support" FORCE)
