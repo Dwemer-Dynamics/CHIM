@@ -61,8 +61,8 @@
                                         <div class="chatbox-mode-shortcuts-title">One-shot mode shortcuts</div>
                                         <div class="chatbox-mode-shortcuts-copy">Start a message with a symbol. Your saved mode will not change.</div>
                                         <div class="chatbox-mode-shortcuts-grid">
-                                            <code>|</code><span>Whisper</span>
-                                            <code>||</code><span>Close</span>
+                                            <code>%</code><span>Whisper</span>
+                                            <code>%%</code><span>Close</span>
                                             <code>!!</code><span>Shout</span>
                                             <code>@</code><span>Narrator</span>
                                             <code>&gt;</code><span>Director</span>
@@ -87,6 +87,7 @@
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_narrator">Narrator</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_director">Director</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_cheat">Cheat Mode</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_hypnosis" title="Give one NPC a profile instruction, then return to Standard">Hypnosis</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_autochat">Auto Chat</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_inject_log">Event Inject</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_inject_chat">Inject &amp; Chat</button>
@@ -153,10 +154,6 @@
                             <div class="profile-menu-section profile-default-list">
                                 <button id="chatbox-profile-random-toggle" class="profile-default-toggle off" type="button" aria-pressed="false" disabled>
                                     <span class="profile-default-label">&#x1F3B2; Random LLM</span>
-                                    <span class="profile-default-state">OFF</span>
-                                </button>
-                                <button class="profile-default-toggle off" type="button" data-profile-setting="dynamic_profile" aria-pressed="false" disabled>
-                                    <span class="profile-default-label">&#x267B;&#xFE0F; Dynamic Profile</span>
                                     <span class="profile-default-state">OFF</span>
                                 </button>
                                 <button class="profile-default-toggle off" type="button" data-profile-setting="middle_term_memory" aria-pressed="false" disabled>

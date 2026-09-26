@@ -1,3 +1,4 @@
+#include "ChimInteraction.h"
 #include "Papyrus.h"
 
 #include <algorithm>
@@ -91,7 +92,7 @@ namespace
         auto* tm = RE::MenuTopicManager::GetSingleton();
         if (tm) {
             if (auto* responseNode = tm->selectedResponseNode) {
-                if (auto* selectedDialogue = responseNode->front()) {
+                if (auto* selectedDialogue = responseNode->item) {
                     std::string selectedLine = selectedDialogue->topicText.c_str();
                     selectedLine = SanitizePlayerMenuDialogueLine(std::move(selectedLine));
                     if (!selectedLine.empty()) {
@@ -339,7 +340,6 @@ extern int BeginSoulgazeCapture(int captureType, RE::Actor* actor);
 extern std::string globalHints;
 extern bool NewActionMode;
 extern int GlobalBoredEventTimeOut;
-extern int GlobalDynamicProfileTimeOut;
 extern int GlobalEndConversationCooldown;
 extern std::chrono::high_resolution_clock::time_point controlLastBoredTriggerTS;
 extern RE::TESFaction* AIAgentRoleMasterFaction;
@@ -1470,6 +1470,10 @@ int sendMessageReal(
     std::string msg,
     std::string type,
     const PlayerConversationRoutingContext& routingContext) {
+    if (!ChimInteraction::Enabled()) {
+        RE::DebugNotification("CHIM is off.");
+        return 0;
+    }
     logger::info("Call from papyrus: sendMessage");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     PrismaUIBridge::BumpDialogueStopGeneration();
@@ -1609,7 +1613,7 @@ int sendMessageReal(
         
         // Crosshair and fallback logic (only if not already sent to narrator)
         if (!sent) {
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
             if (cameraObject) {
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
@@ -1889,9 +1893,9 @@ bool promoteCrosshairTargetToAI() {
     if (!cell) return false;
 
     auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
-    if (!crosshairPickData || !crosshairPickData->target) return false;
+    if (!crosshairPickData) return false;
 
-    auto targetRef = crosshairPickData->target.get();
+    auto targetRef = crosshairPickData->GetActiveTarget().get();
     if (!targetRef || targetRef->GetFormType() != RE::FormType::ActorCharacter) return false;
 
     auto* actor = targetRef->As<RE::Actor>();
@@ -2113,12 +2117,18 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         logger::info("Setting _max_distance_outside to {} ", f_Value);
 
     } else if (code == "_spatial_hearing_inside") {
-        if (f_Value > 0) SpatialAwareness::SetInteriorMaxDistance(f_Value);
+        if (f_Value > 0) {
+            SpatialAwareness::SetInteriorMaxDistance(f_Value);
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        }
 
         logger::info("Setting _spatial_hearing_inside to {} ", f_Value);
 
     } else if (code == "_spatial_hearing_outside") {
-        if (f_Value > 0) SpatialAwareness::SetExteriorMaxDistance(f_Value);
+        if (f_Value > 0) {
+            SpatialAwareness::SetExteriorMaxDistance(f_Value);
+            SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        }
 
         logger::info("Setting _spatial_hearing_outside to {} ", f_Value);
 
@@ -2143,8 +2153,7 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         logger::info("Setting bored period {}", f_Value);
 
     } else if (code == "_dynamic_profile_period") {
-        GlobalDynamicProfileTimeOut = f_Value * 60; // Convert minutes to seconds
-        logger::info("Setting dynamic profile period to {} minutes ({} seconds)", f_Value, GlobalDynamicProfileTimeOut);
+        // Legacy saved MCM values must not override server profile settings.
 
     } else if (code == "_end_conversation_cooldown") {
         GlobalEndConversationCooldown = f_Value;
@@ -2356,48 +2365,58 @@ int Papyrus::requestMessage(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VM
     return 0;
 }
 
-int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
-                                    RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc) {
-    ScopedPapyrusLock lock("requestMessageForActor");
+// Both script APIs share delivery and status handling; only automatic eligibility differs.
+static int RequestMessageForActor(std::string msg, std::string type, std::string npc,
+                                 PlayerConversationRoutingPolicy::RequestEligibility eligibility) {
+    Papyrus::ScopedPapyrusLock lock("requestMessageForActor");
     controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
     SpeakManager::getInstance().getLastUsedTime();  // To avoid trigger bored event from now
     AIAgentManager& aiam = AIAgentManager::getInstance();
     
     // Special handling for diary requests with empty npc name (looking at sky/ground)
     // Route through sendMessageReal which includes camera pitch detection for Narrator
-    if (type == "diary" && (npc.empty() || trim(npc).empty())) {
+    if (eligibility == PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget &&
+        type == "diary" && trim(npc).empty()) {
         logger::info("[requestMessageForActor] Diary request with no target, routing through sendMessageReal");
         const int untargetedResult = sendMessageReal(msg, type);
         return untargetedResult == 0 ? 1 : untargetedResult;
     }
     
-    auto actorPtr = aiam.getAgentByName(npc);
+    auto actorPtr = aiam.getAgentByName(trim(npc));
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* actor = actorPtr ? actorPtr->getActor() : nullptr;
+    if (!player || !actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled()) {
+        logger::warn("[requestMessageForActor] Target '{}' is unavailable; request was not queued", npc);
+        return -1;
+    }
 
     const bool isAutonomousDirective = type == "instruction" || type == "suggestion";
     const auto requestText = isAutonomousDirective
         ? msg
-        : std::format("{}:{}", RE::PlayerCharacter::GetSingleton()->GetName(), msg);
+        : std::format("{}:{}", player->GetName(), msg);
 
-    if (actorPtr) {
-        auto player = RE::PlayerCharacter::GetSingleton();
-        RE::TESObjectCELL* cell = player->GetParentCell();
-        auto result =
-            InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
+    auto result =
+        InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", DISTANCE_ACTIVATING_NPC_OUT);
 
-        HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     "(beings in range:" + result + ")"));
+    HTTPManager::log(std::format("infonpc|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                 "(beings in range:" + result + ")"));
 
-        HTTPManager::stream(
-            std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
-                        GetPlayerLocation(), requestText),
-            actorPtr->getActor());
-    } else {
-        // Fallback
-        HTTPManager::stream(std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(),
-                                        GetGameTimeStamp(), GetPlayerLocation(), requestText));
-    }
+    const bool accepted = HTTPManager::streamForActor(
+        std::format("{}|{}|{}|(Context location: {}){}", type, getCurrentTimeMillis(), GetGameTimeStamp(),
+                    GetPlayerLocation(), requestText), actor, eligibility);
+    return accepted ? 1 : 0;
+}
 
-    return 1;
+int Papyrus::requestMessageForActor(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                                    RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc) {
+    return RequestMessageForActor(std::move(msg), std::move(type), std::move(npc),
+        PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget);
+}
+
+int Papyrus::requestMessageForEligibleActor(RE::BSScript::Internal::VirtualMachine*, RE::VMStackID,
+                                            RE::StaticFunctionTag*, std::string msg, std::string type, std::string npc) {
+    return RequestMessageForActor(std::move(msg), std::move(type), std::move(npc),
+        PlayerConversationRoutingPolicy::RequestEligibility::RequireEligible);
 }
 
 int Papyrus::setAnimationBusy(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
@@ -2891,12 +2910,13 @@ int Papyrus::setDrivenByAI(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMS
                            RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("setDrivenByAI");
 
-    auto targetObject = RE::CrosshairPickData::GetSingleton()->targetActor;
+    auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
+    auto targetObject = crosshairPickData ? crosshairPickData->GetActiveTarget() : RE::ObjectRefHandle{};
 
     if (!targetObject && REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
         logger::info("Checking NPC via grabbed ref");
         auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
-        targetObject = targetObjectRef.get();
+        targetObject = targetObjectRef ? targetObjectRef->GetHandle() : RE::ObjectRefHandle{};
         if (targetObject) logger::info("Checked NPC via grabbed ref {}", targetObject.get()->GetDisplayFullName());
     } else if (!targetObject) {
         logger::debug("Skipping grabbed ref target fallback in VR");
@@ -3076,7 +3096,7 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         result = GlobalBoredEventTimeOut;
 
     } else if (code == "_dynamic_profile_period") {
-        result = GlobalDynamicProfileTimeOut / 60; // Convert seconds back to minutes
+        result = 0; // Automatic profiles are configured on the web server.
 
     } else if (code == "_rechat_policy_asap") {
         result = 0;
@@ -3316,8 +3336,8 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
 
     if (cell) {
         cell->ForEachReference([&ref, &player, &position, &minDistance, restriction,
-                                &maxdistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+                                &maxdistance](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
             if ((restriction == false) ||
                 (baseForm->formType == RE::FormType::Armor || baseForm->formType == RE::FormType::Book ||
                  baseForm->formType == RE::FormType::Misc || baseForm->formType == RE::FormType::Weapon ||
@@ -3331,21 +3351,21 @@ RE::TESObjectREFR* Papyrus::findLocationsToSafeSpawn(RE::BSScript::Internal::Vir
                  baseForm->formType == RE::FormType::NPC
                  
                     )) {
-                std::string name(object.GetName());
+                std::string name(object->GetName());
                 if (name.empty() && restriction) return RE::BSContainer::ForEachResult::kContinue;
 
-                name.assign(object.GetName());
+                name.assign(object->GetName());
                 if (name == "Generic Note") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Amulet") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Ring") return RE::BSContainer::ForEachResult::kContinue;
                 if (name == "Generic Necklace") return RE::BSContainer::ForEachResult::kContinue;
 
-                if (object.IsDeleted() || object.IsDisabled() || !object.Is3DLoaded())
+                if (object->IsDeleted() || object->IsDisabled() || !object->Is3DLoaded())
                     return RE::BSContainer::ForEachResult::kContinue;
 
-                float localDistance = position.GetDistance(object.GetPosition());
+                float localDistance = position.GetDistance(object->GetPosition());
                 if ((localDistance > minDistance) && (localDistance < maxdistance)) {
-                    ref = &object;
+                    ref = object;
                     minDistance = localDistance;
                 }
             }
@@ -3620,9 +3640,9 @@ RE::TESObjectREFR* Papyrus::getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, 
     auto cell = player->GetParentCell();
     RE::TESObjectREFR* buffer = nullptr;
     if (cell) {
-        cell->ForEachReference([&buffer](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
-            auto ref2 = &object;
+        cell->ForEachReference([&buffer](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
+            auto ref2 = object;
             if (baseForm->formType == RE::FormType::Door) {
                 auto door = baseForm->As<RE::TESObjectDOOR>();
                 if (door) {
@@ -4425,14 +4445,22 @@ int sendLocationFastImpl(RE::BGSLocation* a_loc, std::string tags, RE::TESObject
                 destMarkerWorld = parentMarker;
                 logger::debug("sendLocationFast: Using parent location marker for world coordinates for location {},{:08X}",
                               a_loc->GetName(), a_loc->GetFormID());
+            } else {
+                logger::warn("sendLocationFast: No valid world marker found for parent location {},{:08X} of location {},{:08X}",
+                    currParent->GetName(), currParent->GetFormID(), a_loc->GetName(), a_loc->GetFormID());
             }
         } else {
             logger::warn("sendLocationFast: No valid world marker found for location {},{:08X}", a_loc->GetName(),
                          a_loc->GetFormID());
         }
     }
+    
     float x = destMarkerWorld ? destMarkerWorld->GetPositionX() : 0.0f;
     float y = destMarkerWorld ? destMarkerWorld->GetPositionY() : 0.0f;
+
+    logger::debug("sendLocationFast: Using world marker {} for location FormID {:08X},{},{}",
+                  destMarkerWorld ? destMarkerWorld->GetName() : "None",
+                  destMarkerWorld ? destMarkerWorld->GetFormID() : 0, x, y);
 
     std::string locName = a_loc->GetName();
 
@@ -4942,6 +4970,20 @@ int Papyrus::clearSettingsMenuPendingAction(RE::BSScript::Internal::VirtualMachi
     
     PrismaUIBridge::ClearPendingSettingsAction();
     return 1;
+}
+
+// Share the acknowledged interaction state with MCM; no saved Papyrus copy.
+int Papyrus::getChimInteractionState(RE::StaticFunctionTag*) {
+    ChimInteraction::Synchronize();
+    if (ChimInteraction::Syncing()) return 2;
+    if (ChimInteraction::Failed()) return 3;
+    return ChimInteraction::Enabled() ? 1 : 0;
+}
+
+bool Papyrus::setChimInteractionEnabled(RE::StaticFunctionTag*, bool enabled) {
+    if (ChimInteraction::Syncing()) return false;
+    ChimInteraction::SetEnabled(enabled);
+    return true;
 }
 
 int Papyrus::toggleMasterMenu(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
@@ -5507,6 +5549,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
         "publishChimMcmCommandResult", "AIAgentFunctions", publishChimMcmCommandResult, false);
     a_vm->RegisterFunction("requestMessage", "AIAgentFunctions", requestMessage, false);
     a_vm->RegisterFunction("requestMessageForActor", "AIAgentFunctions", requestMessageForActor, false);
+    a_vm->RegisterFunction("requestMessageForEligibleActor", "AIAgentFunctions", requestMessageForEligibleActor, false);
     a_vm->RegisterFunction("logMessageForActor", "AIAgentFunctions", logMessageForActor, false);
     a_vm->RegisterFunction("hardResetExpression", "AIAgentFunctions", hardResetExpression, false);
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
@@ -5600,6 +5643,8 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("getSettingsMenuPendingAction", "AIAgentFunctions", getSettingsMenuPendingAction, false);
     a_vm->RegisterFunction("clearSettingsMenuPendingAction", "AIAgentFunctions", clearSettingsMenuPendingAction, false);
     
+    a_vm->RegisterFunction("getChimInteractionState", "AIAgentFunctions", getChimInteractionState, false);
+    a_vm->RegisterFunction("setChimInteractionEnabled", "AIAgentFunctions", setChimInteractionEnabled, false);
     a_vm->RegisterFunction("toggleMasterMenu", "AIAgentFunctions", toggleMasterMenu, false);
     a_vm->RegisterFunction("startPlayerMenuDialogueTTS", "AIAgentFunctions", startPlayerMenuDialogueTTS, false);
 

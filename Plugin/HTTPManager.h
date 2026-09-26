@@ -12,7 +12,10 @@
 extern std::string lastEventType;
 
 namespace HTTPManager {
+    void ShowPlaythroughNotices();
+    nlohmann::json requestPlaythroughSession(const nlohmann::json& data);
 
+    std::string base64_encode(const char* bytes_to_encode, size_t in_len);
     std::string base64_decode(const std::string& encodedString);
 
     void log(std::string msg);
@@ -28,6 +31,9 @@ namespace HTTPManager {
     std::string requestPlayerMenuTtsPlayResponse(std::string msg, std::string forcedActor);
     void stream(std::string msg, RE::Actor *actor);
     void stream(std::string msg, RE::Actor *actor, int rechatDepth);
+    // Returns whether a targeted request was accepted for asynchronous delivery.
+    bool streamForActor(std::string msg, RE::Actor* actor,
+                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth = 0);
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data);
     // Completion runs after the queued request receives a success or failure result.

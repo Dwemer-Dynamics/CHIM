@@ -1,4 +1,6 @@
+#include "ChimInteraction.h"
 #include "Commands.h"
+#include "DirectorScene.h"
 
 #include "Globals.h"
 #include "DynamicDiaryBook.h"
@@ -101,13 +103,14 @@ void processActionConfirmationQueue() {
         : pending.text.substr(delimiterPosition + 1);
     const std::string title = "Allow " + (action.empty() ? std::string("action") : action) + "?";
     const std::string message = pending.actor + " wants to perform " +
-        (action.empty() ? std::string("this action") : action) + "." + describeActionParameter(parameter);
+        (action.empty() ? std::string("this action") : action) + "." +
+        (parameter.rfind("__DIRECTOR_SCENE__", 0) == 0 ? "" : describeActionParameter(parameter));
 
     g_actionConfirmationActive.store(true);
     const bool shown = PrismaUIBridge::ShowConfirmation(
         title, message, "Cancel", "Allow",
         [pending](bool accepted) mutable {
-            if (accepted) {
+            if (accepted && !DirectorScene::ApproveAction(pending.text)) {
                 SPGResponse::getInstance().enqueue(
                     "command",
                     makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
@@ -937,7 +940,7 @@ RE::TESForm* findLocation(std::string parameter) {
 
     if (!world) {
         logger::info("[FINDLOCATION] No world info when searching for {}", parameter);
-        return nullptr;
+        //return nullptr;
     }
 
     RE::TESWorldSpace* candidate(nullptr);
@@ -1086,6 +1089,7 @@ RE::TESForm* findLocation(std::string parameter) {
 }
 
 void parseRoleCommand(std::string rawCommand) {
+    if (!ChimInteraction::Enabled()) return;
     static std::string delimiter = "@";
     size_t pos = rawCommand.find(delimiter);
     if (pos == std::string::npos) {
@@ -1096,7 +1100,12 @@ void parseRoleCommand(std::string rawCommand) {
     std::string command = rawCommand.substr(0, pos);
     std::string parameter = rawCommand.substr(pos + delimiter.length());
 
-    if (command.contains("spawnCharacter")) {
+    if (command == "DirectorScene") {
+        DirectorScene::Queue(parameter);
+    } else if (command == "DirectorSceneFailed") {
+        try { DirectorScene::RequestFailed(std::stoull(parameter)); }
+        catch (const std::exception&) { logger::warn("[DIRECTOR] Invalid failure response"); }
+    } else if (command.contains("spawnCharacter")) {
         std::vector<std::string> splitResult = splitString(parameter);
 
         if (splitResult.size() != 7) {
@@ -1759,7 +1768,8 @@ void parseRoleCommand(std::string rawCommand) {
             const std::string message = splitResult[0];
             const std::string messageType = splitResult[1];
             // Browser STT commands arrive on the manager worker, while routing reads live Skyrim objects.
-            SKSE::GetTaskInterface()->AddTask([message, messageType]() {
+            SKSE::GetTaskInterface()->AddTask([message, messageType, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
                 PlayerConversationRoutingContext routingContext{};
                 routingContext.source = PlayerConversationInputSource::Voice;
                 PrismaUIBridge::ApplySavedPlayerMood(routingContext);
@@ -2120,7 +2130,8 @@ void parseRoleCommand(std::string rawCommand) {
             
             if (trainerActor) {
                 // Queue the menu opening on the main thread
-                SKSE::GetTaskInterface()->AddTask([trainerActor]() {
+                SKSE::GetTaskInterface()->AddTask([trainerActor, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
                     if (!trainerActor) {
                         logger::error("[ShowTrainingMenu] Trainer actor is null in task");
                         return;
@@ -2147,6 +2158,7 @@ void parseRoleCommand(std::string rawCommand) {
 }
 
 void parseCommand(std::string rawCommand, std::string actorname) {
+    if (!ChimInteraction::Enabled()) return;
     bool userApproved = false;
     if (rawCommand.rfind(kApprovedActionPrefix, 0) == 0) {
         userApproved = true;
@@ -2530,11 +2542,36 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         }
 
         if (!target || !targetAsActor) {
-            logger::info("[MoveTo] target {} not found", targetName);
-            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                         "command@" + command + "@" + targetName + "@Error: target not found"),
-                             npc);
-            return;
+
+            // No target Found. Lets check if its a location.
+            auto locationForm = findLocation(parameter);
+            if (locationForm) {
+                // RE::BGSLocation* location = locationForm->As<RE::BGSLocation>();
+                std::string locatioName(trim(parameter));
+                logger::info("Location target: {}", locatioName);
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(targetActor),
+                                                        std::move(locationForm->AsReference()), std::move(parameter));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "TravelToLocation", args, callback);
+
+                HTTPManager::stream(
+                    std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                "command@" + command + "@" + locatioName + "@#HERIKA_NPC1# starts traveling to " +
+                                    locatioName + " , current location " + GetPlayerLocation()),
+                    targetActor);
+
+                agentPtr.get()->setCurrentCommand("TravelTo");
+                return;
+                    // agentPtr.get()->setCommandBusy(true);
+                
+            } else {
+                logger::info("[MoveTo] target {} not found", targetName);
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@" + command + "@" + targetName + "@Error: target not found"),
+                                 npc);
+                return;
+            }
         }
 
         std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
@@ -3103,7 +3140,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         auto args = RE::MakeFunctionArguments(std::move(sgmodelocal));
 
-        SKSE::GetTaskInterface()->AddTask([args]() {
+        SKSE::GetTaskInterface()->AddTask([args, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
             // actor->NotifyAnimationGraph(anim);
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentSoulGazeEffect",
@@ -3896,6 +3934,17 @@ void parseCommand(std::string rawCommand, std::string actorname) {
                     currentRejectionReason = "it is not a food, drink, or potion";
                 }
 
+                if (candidateAlchemy) {
+                    if (candidateAlchemy->IsMagicItem()) {
+                        if (candidateAlchemy->As<RE::MagicItem>()) {
+                            auto magicItem = candidateAlchemy->As<RE::MagicItem>();
+                            if (magicItem->GetSpellType() == RE::MagicSystem::SpellType::kAlchemy) {
+                                currentRejectionReason = "";
+                            }
+                        }
+                    }
+                }
+
                 const std::string normalizedCurrentItem = normalizeConsumeItemName(currentItemName);
                 const bool exactDisplayMatch = equalsCaseInsensitive(currentItemName, requestedItem);
                 const bool exactNormalizedMatch =
@@ -4276,18 +4325,18 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             
             if (auto cell = npc->GetParentCell()) {
                 // Use ForEachReference to find the item by its FormID
-                cell->ForEachReference([&itemRef, &itemName, &player, targetFormID](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-                    if (object.IsDisabled() || object.IsDeleted()) {
+                cell->ForEachReference([&itemRef, &itemName, &player, targetFormID](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+                    if (object->IsDisabled() || object->IsDeleted()) {
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                     
                     // Check if this is the exact item we're looking for by FormID
-                    if (object.GetFormID() == targetFormID) {
-                        float dist = player->GetPosition().GetDistance(object.GetPosition());
+                    if (object->GetFormID() == targetFormID) {
+                        float dist = player->GetPosition().GetDistance(object->GetPosition());
                         
                         // Verify it's within 512 units from player
                         if (dist < 512.0f) {
-                            itemRef = &object;
+                            itemRef = object;
                             return RE::BSContainer::ForEachResult::kStop; // Found it, stop searching
                         }
                     }
@@ -4631,9 +4680,13 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
         spatialSettings.maxAirDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
         spatialSettings.exteriorMaxDistance *= distanceMultiplier;
+        spatialSettings.autoHearingDistance *= distanceMultiplier;
         spatialSettings.immediateDistance = spatialSettings.autoHearingDistance;
     }
 
+    // Hearing sliders must not be silently capped by the separate vision scan limit.
+    spatialSettings.maxAirDistance = std::max({spatialSettings.maxAirDistance,
+        spatialSettings.interiorMaxDistance, spatialSettings.exteriorMaxDistance});
     return spatialSettings;
 }
 
@@ -5095,14 +5148,14 @@ std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache) {
     std::string buffer;
 
     if (cell) {
-        cell->ForEachReference([&buffer](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+        cell->ForEachReference([&buffer](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
 
             // logger::info("Loaded {},{},{}",object.GetName(),baseForm->GetName(),baseForm->GetFormEditorID());
             if (baseForm->formType == RE::FormType::NPC) {
-                const char* currentNPC = object.GetName();
+                const char* currentNPC = object->GetName();
                 // logger::info("{}", currentNPC);
-                RE::Actor* actorNpc = object.As<RE::Actor>();
+                RE::Actor* actorNpc = object->As<RE::Actor>();
                 if (actorNpc) {
                     std::string actorLabel(actorNpc->GetName());
                     if (actorNpc->IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
@@ -5116,7 +5169,7 @@ std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache) {
                     }
                     // logger::info("Actor {} ", actorLabel);
                 } else {
-                    std::string actorLabel(object.GetName());
+                    std::string actorLabel(object->GetName());
 
                     bool hasLos = false;
                     RE::PlayerCharacter::GetSingleton()->HasLineOfSight(actorNpc->AsReference(), hasLos);
@@ -5211,14 +5264,14 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
     // Get what the player is currently looking at via crosshair
     RE::TESObjectREFR* crosshairTarget = nullptr;
     auto crosshairPickData = RE::CrosshairPickData::GetSingleton();
-    if (crosshairPickData && crosshairPickData->target) {
-        crosshairTarget = crosshairPickData->target.get().get();
+    if (crosshairPickData) {
+        crosshairTarget = crosshairPickData->GetActiveTarget().get().get();
     }
     
     // Scan cell references for items
-    cell->ForEachReference([&results, &player, &crosshairTarget, visionRange](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
+    cell->ForEachReference([&results, &player, &crosshairTarget, visionRange](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
         
-        RE::TESForm* baseForm = object.GetBaseObject();
+        RE::TESForm* baseForm = object->GetBaseObject();
         if (!baseForm) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
@@ -5244,29 +5297,29 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
         }
         
         // Also exclude any Actor references (including dead NPCs)
-        if (object.As<RE::Actor>()) {
+        if (object->As<RE::Actor>()) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Check if item is disabled or already taken
-        if (object.IsDisabled() || object.IsDeleted()) {
+        if (object->IsDisabled() || object->IsDeleted()) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Check if it's a container reference (even if base form isn't a container type)
-        auto refContainer = object.As<RE::TESObjectCONT>();
+        auto refContainer = object->As<RE::TESObjectCONT>();
         if (refContainer) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Check distance
-        float distance = player->GetPosition().GetDistance(object.GetPosition());
+        float distance = player->GetPosition().GetDistance(object->GetPosition());
         if (distance >= visionRange) {
             return RE::BSContainer::ForEachResult::kContinue;
         }
         
         // Get item name and FormIDs (both RefID and BaseID)
-        std::string itemName = object.GetDisplayFullName();
+        std::string itemName = object->GetDisplayFullName();
         if (itemName.empty()) {
             itemName = baseForm->GetName();
         }
@@ -5276,13 +5329,13 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
         }
         
         // Check if taking this item would be stealing
-        bool isStealing = WouldBeStealing(&object, player);
+        bool isStealing = WouldBeStealing(object, player);
         
         // Check if player is looking at this item
-        bool isLookingAt = (crosshairTarget && crosshairTarget->GetFormID() == object.GetFormID());
+        bool isLookingAt = (crosshairTarget && crosshairTarget->GetFormID() == object->GetFormID());
         
         // Format as "RefID:BaseID:ItemName" with optional markers
-        uint32_t refFormID = object.GetFormID();
+        uint32_t refFormID = object->GetFormID();
         uint32_t baseFormID = baseForm->GetFormID();
         std::string itemEntry = std::format("0x{:X}:0x{:X}:{}", refFormID, baseFormID, itemName);
         
@@ -5338,11 +5391,11 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
     float lastDistance = 10000;
     if (cell) {
         cell->ForEachReference([&target, &targetName, &sourceActor, allowDead,
-                                &lastDistance](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
+                                &lastDistance](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
             float distance = 10000;
             // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(), object.GetFormID());
 
-            RE::TESForm* baseForm = object.GetBaseObject();
+            RE::TESForm* baseForm = object->GetBaseObject();
 
             if (!baseForm) {
                 return RE::BSContainer::ForEachResult::kContinue;
@@ -5351,10 +5404,10 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
             // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(),
             // baseForm->GetFormID());
             if (baseForm->formType == RE::FormType::NPC) {
-                const char* currentNPC = object.GetName();
+                const char* currentNPC = object->GetName();
                 // logger::info("[findActorInCell], found NPC {}", currentNPC);
 
-                RE::Actor* actorNpc = object.As<RE::Actor>();
+                RE::Actor* actorNpc = object->As<RE::Actor>();
                 if (actorNpc) {
                     if (actorNpc->IsDead() && !allowDead) return RE::BSContainer::ForEachResult::kContinue;
                     if (actorNpc->IsDisabled()) {
@@ -5373,7 +5426,7 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
                             distance = sourceActor->GetPosition().GetDistance(actorNpc->GetPosition());
                             if (distance < lastDistance) {
                                 lastDistance = distance;
-                                target = &object;
+                                target = object;
                             }
 
                             // return RE::BSContainer::ForEachResult::kStop;
@@ -5383,7 +5436,7 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
                 } else {
                     // Reference found, but no actor
 
-                    std::string actorLabel(object.GetDisplayFullName());
+                    std::string actorLabel(object->GetDisplayFullName());
                     logger::info("[findActorInCell], reference {}", actorLabel);
                     if (containsCaseInsensitive(actorLabel, targetName)) {
                         bool hasLos = true;
@@ -5391,7 +5444,7 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
                             sourceActor->HasLineOfSight(actorNpc->AsReference(), hasLos);
                         }
                         if (hasLos) {
-                            target = &object;
+                            target = object;
                             // return RE::BSContainer::ForEachResult::kStop;
                         }
                     }
@@ -5475,28 +5528,28 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
 
     if (cell) {
         cell->ForEachReference([&foundTarget, &herika, &currentDistance, furnitureMode,
-                                &formIDList](RE::TESObjectREFR& object) -> RE::BSContainer::ForEachResult {
-            RE::TESForm* baseForm = object.GetBaseObject();
+                                &formIDList](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object->GetBaseObject();
 
             if (baseForm->formType == RE::FormType::Furniture) {
-                const char* currentFurniture = object.GetName();
+                const char* currentFurniture = object->GetName();
                 //logger::info("[TAKEASEAT] Posible target {}", currentFurniture);
 
-                if (object.IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
-                if (object.IsMarkedForDeletion()) return RE::BSContainer::ForEachResult::kContinue;
-                if (object.IsDeleted()) return RE::BSContainer::ForEachResult::kContinue;
+                if (object->IsDisabled()) return RE::BSContainer::ForEachResult::kContinue;
+                if (object->IsMarkedForDeletion()) return RE::BSContainer::ForEachResult::kContinue;
+                if (object->IsDeleted()) return RE::BSContainer::ForEachResult::kContinue;
 
                 auto furnitureForm = baseForm->As<RE::TESFurniture>();
                 if (furnitureForm) {
                     if (furnitureForm->workBenchData.benchType != RE::TESFurniture::WorkBenchData::BenchType::kNone) {
                         logger::info("[TAKEASEAT] Posible sit target {} is a workbench 0x{:08x}", currentFurniture,
-                                     object.GetFormID());
+                                     object->GetFormID());
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
                 }
                 bool found = false;
 
-                auto it = std::find(formIDList.begin(), formIDList.end(), object.GetFormID());
+                auto it = std::find(formIDList.begin(), formIDList.end(), object->GetFormID());
 
                 if (it != formIDList.end()) {
                     //logger::info("[TAKEASEAT] Posible sit target {} is blocked 0x{:08x}", currentFurniture,object.GetFormID());
@@ -5505,13 +5558,13 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                     // logger::info("[TAKEASEAT] Posible sit target {} is free 0x{:08x}", currentFurniture,object.GetFormID());
                 }
 
-                if (object.IsActivationBlocked() && false) {
-                    logger::info("[TAKEASEAT] Possible sit target {} is IsActivationBlocked 0x{:08x}", currentFurniture,object.GetFormID());
+                if (object->IsActivationBlocked() && false) {
+                    logger::info("[TAKEASEAT] Possible sit target {} is IsActivationBlocked 0x{:08x}", currentFurniture,object->GetFormID());
                     return RE::BSContainer::ForEachResult::kContinue;
                 }
 
                 // https://github.com/VersuchDrei/OStimNG/blob/0440ae951089e0c27d2ae6b01cfcbdb640f91c6d/skse/src/Furniture/Furniture.cpp#L12
-                auto root = object.Get3D();
+                auto root = object->Get3D();
                 if (root) {
                     auto extra = root->GetExtraData("FRN");
                     if (extra) {
@@ -5540,7 +5593,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
 
                         if (allMarkersToSit) {
                             found = true;
-                            float localcurrentDistance = object.GetPosition().GetDistance(herika->GetPosition());
+                            float localcurrentDistance = object->GetPosition().GetDistance(herika->GetPosition());
                             if (localcurrentDistance < 1) {  // occupied
                                 found = false;
                                 logger::info(
@@ -5552,7 +5605,7 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                             }
                         } else if (someMarkersToSit) {
                             found = false;
-                            float localcurrentDistance = object.GetPosition().GetDistance(herika->GetPosition());
+                            float localcurrentDistance = object->GetPosition().GetDistance(herika->GetPosition());
                             if (localcurrentDistance < 1) {  // occupied
                                 found = false;
                                 logger::info(
@@ -5569,28 +5622,28 @@ RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int m
                         }
                     } else {
                         logger::info("[TAKEASEAT] Possible sit target {} has no extra data, 0x{:08x}", currentFurniture,
-                                     object.GetFormID());
+                                     object->GetFormID());
                     }
                 } else {
                     logger::info("[TAKEASEAT] Possible sit target {} has no 3d, 0x{:08x}", currentFurniture,
-                                 object.GetFormID());
+                                 object->GetFormID());
                 }
                 // if (containsCaseSensitive(std::string(currentFurniture), "Chair")) found = found & true;
                 // if (containsCaseSensitive(std::string(currentFurniture), "Bench")) found = found & true;
                 if (found) {
-                    float localcurrentDistance = object.GetPosition().GetDistance(herika->GetPosition());
+                    float localcurrentDistance = object->GetPosition().GetDistance(herika->GetPosition());
                     if (localcurrentDistance < currentDistance) {
-                        foundTarget = object.GetFormID();
+                        foundTarget = object->GetFormID();
                         currentDistance = localcurrentDistance;
-                        logger::info("Chosen target {}, distance {},  0x{:08x} ", object.GetName(), currentDistance,
-                                     object.GetFormID());
+                        logger::info("Chosen target {}, distance {},  0x{:08x} ", object->GetName(), currentDistance,
+                                     object->GetFormID());
                     }
                 }
             } else if (baseForm->formType == RE::FormType::IdleMarker) {
-                const char* currentIdleMarker = object.GetName();
+                const char* currentIdleMarker = object->GetName();
                 
                 logger::info("[TAKEASEAT] Possible sit target <{}> IdleMarker 0x{:08x}", currentIdleMarker,
-                             object.GetFormID());
+                             object->GetFormID());
                 
             }
 
@@ -5618,7 +5671,7 @@ RE::Actor* findClosestAgent() {
     std::string beings =
         InspectSurroundings(player->AsReference(), true, HERIKA_MAX_VISION_RANGE, ",", HERIKA_MAX_VISION_RANGE);
 
-    auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+    auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
 
     RE::TESObjectREFRPtr refUnderCrossHair;
     if (cameraObject) {
@@ -5734,7 +5787,7 @@ void StartAttack(std::string targetName, RE::Actor* actor) {
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "AttackTarget",
                                                                                    args, callback);
 
-        SpeakManager::getInstance().deleteQueue();  // 1.0.12
+        SpeakManager::getInstance().deleteQueue(true);  // Preserve authored turns while the attack starts.
         // I think some functions should interrupt speaking
 
         EndCommand("Attack", actor->GetDisplayFullName());  // Payrus will take care of ending
@@ -5827,7 +5880,7 @@ void StartBrawl(std::string targetName, RE::Actor* actor) {
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
         "AIAgentAIMind", "BrawlTarget", args, callback);
 
-    SpeakManager::getInstance().deleteQueue();
+    SpeakManager::getInstance().deleteQueue(true);
 }
 
 void Follow(std::string targetName) {}
@@ -5943,7 +5996,8 @@ bool commandAnimation(std::string anim, RE::Actor* actor) {
     auto args = RE::MakeFunctionArguments(std::move(newActor), std::move(anim));
 
 
-    SKSE::GetTaskInterface()->AddTask([args]() {
+    SKSE::GetTaskInterface()->AddTask([args, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
         //actor->NotifyAnimationGraph(anim);
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentNpcUtil", "NpcPlayIdle",

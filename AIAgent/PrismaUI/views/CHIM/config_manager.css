@@ -184,6 +184,8 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 #mcm-page.active { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 9px; }
 .mcm-sub-tabs { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); margin-bottom: 0; }
 .mcm-sub-tab { font-size: .82rem; }
+.mcm-hearing-preset-section { grid-column: 1 / -1; }
+.mcm-hearing-preset-section .settings-tile-selector { max-width: 520px; }
 .mcm-status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; }
 .mcm-status-actions { display: flex; flex: 0 0 auto; gap: 7px; }
 .mcm-status { min-width: 0; color: var(--muted); font-size: .75rem; }
@@ -219,6 +221,9 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 .mcm-range { padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
 .mcm-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .mcm-number { text-align: right; }
+.mcm-enum-controls { min-width: 0; }
+/* The tile list opens over the same space the hover help uses, so the help yields while it is open. */
+.mcm-row.has-help.mcm-row-enum.mcm-enum-open > .mcm-help { opacity: 0; }
 .mcm-staged-pill { flex: 0 0 auto; border: 1px solid #4b9b68; border-radius: 999px; padding: 1px 6px; color: #a9e7bf; background: #234631; font-size: .58rem; font-weight: 800; letter-spacing: .03em; }
 .mcm-row-error { margin: 5px 0 0; color: #ff9ca4; font-size: .68rem; }
 .mcm-keymap-controls { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto; gap: 7px; align-items: center; }

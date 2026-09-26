@@ -71,25 +71,6 @@ struct RE::TESTrapHitEvent  // not finished
     float f14;
 };
 
-struct RE::TESQuestInitEvent {
-    uint32_t formID;
-};
-
-struct RE::TESTopicInfoEvent {
-    Actor* speaker;      // 00 - NiTPointer<Actor>
-    void* unk04;         // 04 - BSTSmartPointer<REFREventCallbacks::IEventCallback>
-    FormID topicInfoID;  // 08
-    bool flag;           // 0C
-
-    inline bool IsStarting() { return !flag; }
-    inline bool IsStopping() { return flag; }
-};
-
-struct RE::TESBookReadEvent {
-    RE::NiPointer<RE::TESObjectREFR> book;
-};
-
-
 struct RE::TESPackageEvent {
     enum class EventType : uint32_t  // not sure
     {
@@ -125,45 +106,6 @@ struct TESLockChangedEventEx {
     RE::TESObjectREFR* lock;
     RE::TESObjectREFR* unlocker;
 };
-
-namespace RE
-{
-	namespace BSGraphics
-	{
-		enum class TextureFileFormat
-		{
-			kBMP = 0,
-			kJPG = 1,
-			kTGA = 2,
-			kPNG = 3,
-			kDDS = 4,
-		};
-	}
-}
-
-namespace RE {
-    struct ScreenshotHandler : public MenuEventHandler {
-    public:
-        inline static constexpr auto RTTI = RTTI_ScreenshotHandler;
-        inline static constexpr auto VTABLE = VTABLE_ScreenshotHandler;
-
-        ~ScreenshotHandler() override;  // 00
-
-        // override (MenuEventHandler)
-        bool CanProcess(InputEvent* a_event) override;      // 01
-        bool ProcessButton(ButtonEvent* a_event) override;  // 05
-
-        // members
-        bool screenshotQueued;       // 10
-        bool multiScreenshotQueued;  // 11
-        std::uint16_t pad12;         // 12
-        std::uint32_t pad14;         // 14
-    };
-    static_assert(sizeof(ScreenshotHandler) == 0x18);
-}
-
-
-
 
 // Forward declarations for voice CSV functions
 std::string FindVoiceInCSV(const std::string& voiceType);

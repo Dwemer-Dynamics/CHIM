@@ -103,10 +103,10 @@ namespace
     RE::FormID GetTrueCrosshairActorFormId()
     {
         auto* crosshair = RE::CrosshairPickData::GetSingleton();
-        if (!crosshair || !crosshair->target) {
+        if (!crosshair) {
             return 0;
         }
-        auto reference = crosshair->target.get();
+        auto reference = crosshair->GetActiveTarget().get();
         auto* actor = reference ? reference->As<RE::Actor>() : nullptr;
         return actor ? actor->GetFormID() : 0;
     }
@@ -367,25 +367,19 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     }
 
     const float baseListenerRadius =
-        baseSettings.autoHearingDistance > 0.0f
-            ? baseSettings.autoHearingDistance
-            : SpatialAwareness::kAutoHearingDistance;
-    const float baseDirectRadius =
         playerInterior ? baseSettings.interiorMaxDistance : baseSettings.exteriorMaxDistance;
     result.listenerRadiusUnits = context.mode == PlayerConversationSpeechMode::Close
         ? GetCloseRadiusUnits(player->IsSneaking())
         : baseListenerRadius * modifier;
     result.audienceRadiusUnits = result.listenerRadiusUnits;
-    const float directAddressRadius =
-        context.mode == PlayerConversationSpeechMode::Close
-            ? result.listenerRadiusUnits
-            : std::max(result.listenerRadiusUnits, baseDirectRadius * modifier);
+    const float directAddressRadius = result.listenerRadiusUnits;
 
     SpatialAwareness::Settings audienceSettings = baseSettings;
     audienceSettings.maxAirDistance = result.audienceRadiusUnits;
     audienceSettings.interiorMaxDistance = result.audienceRadiusUnits;
     audienceSettings.exteriorMaxDistance = result.audienceRadiusUnits;
-    audienceSettings.autoHearingDistance = 0.0f;
+    audienceSettings.autoHearingDistance = context.mode == PlayerConversationSpeechMode::Close
+        ? 0.0f : std::min(baseSettings.autoHearingDistance * modifier, result.audienceRadiusUnits);
     audienceSettings.immediateDistance = 0.0f;
     SpatialAwareness::InvalidateCache();
 
@@ -472,6 +466,10 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.utterance = context.routingMessage.empty()
         ? PlayerConversationRoutingPolicy::ExtractUtterance(wireMessage)
         : PlayerConversationRoutingPolicy::Normalize(context.routingMessage);
+    // Hypnosis text describes a profile change, not a spoken address to another actor.
+    if (context.executionMode == "HYPNOSIS") {
+        policyRequest.utterance.clear();
+    }
     policyRequest.explicitTargetFormId = context.explicitTargetFormId;
     policyRequest.explicitTargetName = context.explicitTargetName;
     policyRequest.directAddressRadius = directAddressRadius;
@@ -481,8 +479,9 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         context.everyoneMode &&
         context.mode != PlayerConversationSpeechMode::Whisper &&
         context.mode != PlayerConversationSpeechMode::Close;
-    policyRequest.narratorGesture = IsNarratorGesture(player);
-    policyRequest.blockSleepingDirectTarget = context.mode != PlayerConversationSpeechMode::Shout;
+    policyRequest.narratorGesture = context.executionMode != "HYPNOSIS" && IsNarratorGesture(player);
+    // Direct address can reach a sleeper; automatic selection still uses autoEligible.
+    policyRequest.blockSleepingDirectTarget = false;
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);
     result.reason = selection.reason;

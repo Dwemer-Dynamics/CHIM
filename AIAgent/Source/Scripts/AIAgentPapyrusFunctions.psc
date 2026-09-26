@@ -46,9 +46,6 @@ bool _textGestureCanWait = false
 bool _textGestureWaitSent = false
 float _textGesturePressedAt = 0.0
 float _textGestureReleaseLostAt = -1.0
-int _voiceGestureKey = -1
-bool _voiceGestureRecording = false
-bool _voiceGestureExternal = false
 float _textHoldThreshold = 0.7
 Cell _chatGestureCell
 
@@ -216,7 +213,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		endwhile
 		if (npcList != "")
 			Debug.Notification("[CHIM] Updating dynamic profiles for nearby NPCs")
-			AIAgentFunctions.logMessage(npcList, "updateprofiles_batch_async")
+			AIAgentFunctions.logMessage(npcList, "updateprofiles_batch_async_manual")
 		else
 			Debug.Notification("[CHIM] No nearby AI NPCs found")
 		endif
@@ -231,7 +228,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		endif
 	elseif (actionId == "rp_update_npc" && targetActor)
 		Debug.Trace("[CHIM] Updating dynamic profile for " + targetActor.GetDisplayName())
-		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async")
+		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async_manual")
 	elseif (actionId == "rp_wait" && targetActor)
 		AIAgentAIMind.StartWait(targetActor)
 	elseif (actionId == "rp_follow" && targetActor)
@@ -315,13 +312,24 @@ Event OnKeyUp(int keyCode, float holdTime)
 	if (keyCode == _textGestureKey)
 		FinishTextHotkey(holdTime)
 		Return
-	elseif (keyCode == _voiceGestureKey)
-		FinishVoiceHotkey(holdTime)
-		Return
 	endif
 	If ShouldSuppressChatboxFocusedHotkey(keyCode)
 		Return
 	EndIf
+
+	If(keyCode == _currentKeyVoice)
+		if (!UI.IsMenuOpen("Book Menu") && SafeProcess())
+			int externalSTTactive=StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT");
+			if (externalSTTactive>0)
+				AIAgentSTTExternal.stopRecording(_currentKeyVoice)
+			else
+				AIAgentFunctions.stopRecording(_currentKeyVoice)
+			endif
+			_vrikVoiceRecordingActive = false
+			;WebSocketSTT.StopRecordVoice(_currentKeyVoice);
+			Debug.Notification("[CHIM] Recording end");
+		endif
+	endif
 
 	If (keyCode == _currentSoulgazeKey && _soulgazeKeyPressed)
 		_soulgazeKeyPressed = false
@@ -402,10 +410,18 @@ Event OnKeyDown(int keyCode)
 	if (UI.IsMenuOpen("Book Menu"))
 		;Debug.Notification("[CHIM] lazy reader...");
 		AIAgentFunctions.sendMessage("Please, summarize this book i've just found.","chatnf_book")
-	else
-		BeginVoiceHotkey(keyCode)
+	elseif SafeProcess()
+		int externalSTTactive=StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT");
+		if (externalSTTactive>0)
+			AIAgentSTTExternal.recordSoundEx(_currentKeyVoice)
+		else
+			AIAgentFunctions.recordSoundEx(_currentKeyVoice)
+		endif
+		_vrikVoiceRecordingActive = true
+
+		;WebSocketSTT.StartRecordVoice(_currentKeyVoice);
+		Debug.Notification("[CHIM] recording....");
 	endif
-    Return
   EndIf
   If(keyCode == _currentFollowKey)
   
@@ -589,11 +605,9 @@ Endevent
 
 ; Forget pending input on load, rebind, focus loss or a blocking menu.
 Function ResetChatHotkeys()
-	StopChatHotkeyVoice()
 	_textGestureKey = -1
 	_textGestureWaitSent = false
 	_textGestureReleaseLostAt = -1.0
-	_voiceGestureKey = -1
 	_chatboxFocusHotkeySuppressed = false
 	_chatGestureCell = None
 EndFunction
@@ -633,49 +647,6 @@ Function FinishTextHotkey(float holdTime)
 	endif
 EndFunction
 
-; Start on the registered key-down event so controller input needs no hold timer.
-Function BeginVoiceHotkey(int keyCode)
-	if (keyCode < 0 || _voiceGestureKey >= 0 || _vrikVoiceRecordingActive || !SafeProcess() || !AIAgentFunctions.isGameFocused())
-		Return
-	endif
-	if (_chatGestureCell && _chatGestureCell != Game.GetPlayer().GetParentCell())
-		ResetChatHotkeys()
-	endif
-	_voiceGestureKey = keyCode
-	_chatGestureCell = Game.GetPlayer().GetParentCell()
-	_voiceGestureExternal = StorageUtil.GetIntValue(None, "AIAgentWebSockeSTT") > 0
-	_voiceGestureRecording = true
-	_vrikVoiceRecordingActive = true
-	if (_voiceGestureExternal)
-		AIAgentSTTExternal.recordSoundEx(_voiceGestureKey)
-	else
-		AIAgentFunctions.recordSoundEx(_voiceGestureKey)
-	endif
-	Debug.Notification("[CHIM] Recording...")
-	RegisterForSingleUpdate(0.1)
-EndFunction
-
-; Only a recording started by this gesture may be stopped here; VRIK stays independent.
-Function StopChatHotkeyVoice()
-	if (!_voiceGestureRecording)
-		Return
-	endif
-	_voiceGestureRecording = false
-	if (_voiceGestureExternal)
-		AIAgentSTTExternal.stopRecording(_voiceGestureKey)
-	else
-		AIAgentFunctions.stopRecording(_voiceGestureKey)
-	endif
-	_vrikVoiceRecordingActive = false
-	Debug.Notification("[CHIM] Recording end")
-EndFunction
-
-; Keep the event signature for saved calls; every release stops its own recording.
-Function FinishVoiceHotkey(float holdTime)
-	StopChatHotkeyVoice()
-	_voiceGestureKey = -1
-EndFunction
-
 ; Textbox holds use a live actor reference, never name/nearest fallback.
 Function WaitForCrosshairNpc()
 	if (!SafeProcess() || !AIAgentFunctions.isGameFocused())
@@ -692,7 +663,7 @@ EndFunction
 
 ; Use the existing update cadence only while a chat gesture is pending.
 Function UpdateChatHotkeys()
-	if (_textGestureKey < 0 && _voiceGestureKey < 0)
+	if (_textGestureKey < 0)
 		Return
 	endif
 	if (!AIAgentFunctions.isGameFocused() || _chatGestureCell != Game.GetPlayer().GetParentCell())
@@ -1373,7 +1344,7 @@ Function OpenRoleplayWheel()
 	ElseIf ( currentMode ==  "UPDATE_NPC")
 		If (leader)
 			Debug.Trace("[CHIM] Updating dynamic profile for "+leader.GetDisplayName())
-			AIAgentFunctions.logMessage(leader.GetDisplayName(),"updateprofiles_batch_async")
+			AIAgentFunctions.logMessage(leader.GetDisplayName(),"updateprofiles_batch_async_manual")
 		Else
 			Debug.Notification("[CHIM] You must look at a target to use this")
 		EndIf
@@ -1511,7 +1482,7 @@ Function OpenSettingsWheel()
 EndFunction
 
 Function OpenModeWheel()
-	String[] _modes = new String[7]
+	String[] _modes = new String[8]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
@@ -1519,8 +1490,9 @@ Function OpenModeWheel()
 	_modes[4] = "AUTOCHAT"
 	_modes[5] = "INJECTION_LOG"
 	_modes[6] = "INJECTION_CHAT"
+	_modes[7] = "HYPNOSIS"
 	
-	String[] _label = new String[7]
+	String[] _label = new String[8]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
@@ -1528,6 +1500,7 @@ Function OpenModeWheel()
 	_label[4] = "Auto Chat"
 	_label[5] = "Inject Event"
 	_label[6] = "Inject & Chat"
+	_label[7] = "Hypnosis"
 		
 	int j=0
 	UIExtensions.InitMenu("UIWheelMenu")
@@ -1627,6 +1600,10 @@ EndFunction
 
 Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 
+	if (true)
+		AIAgentFunctions.sendLocationFast(curr,tags,referenceCell);
+		return
+	endif
 	if curr
 		; ---------------------------------------------------------------------------------------------
 		ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
@@ -2013,7 +1990,7 @@ Function OpenModeToggleWheel(float holdTime)
 		Return
 	EndIf
 	
-	String[] _modes = new String[7]
+	String[] _modes = new String[8]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
@@ -2021,8 +1998,9 @@ Function OpenModeToggleWheel(float holdTime)
 	_modes[4] = "AUTOCHAT"
 	_modes[5] = "INJECTION_LOG"
 	_modes[6] = "INJECTION_CHAT"
+	_modes[7] = "HYPNOSIS"
 	
-	String[] _label = new String[7]
+	String[] _label = new String[8]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
@@ -2030,6 +2008,7 @@ Function OpenModeToggleWheel(float holdTime)
 	_label[4] = "Auto Chat"
 	_label[5] = "Inject Event"
 	_label[6] = "Inject & Chat"
+	_label[7] = "Hypnosis"
 	
 	If (holdTime < 0.5) 
 		; Quick press - Open wheel menu

@@ -102,6 +102,7 @@
     let currentTargetIsNarrator = false;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
+    let pendingHypnosisMessage = null;
     let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
     const targetRowsByKey = new Map();
@@ -120,6 +121,7 @@
         NARRATOR: { label: 'Narrator', class: 'narrator', action: 'mode_narrator' },
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
         CHEATMODE: { label: 'Cheat Mode', class: 'cheatmode', action: 'mode_cheat' },
+        HYPNOSIS: { label: 'Hypnosis', class: 'director', action: 'mode_hypnosis' },
         AUTOCHAT: { label: 'Auto Chat', class: 'autochat', action: 'mode_autochat' },
         INJECTION_LOG: { label: 'Event Inject', class: 'director', action: 'mode_inject_log' },
         INJECTION_CHAT: { label: 'Inject & Chat', class: 'director', action: 'mode_inject_chat' }
@@ -127,10 +129,10 @@
 
     const symbolModeRules = [
         { prefix: '((', mode: 'INJECTION_LOG', display: '(…)' },
-        { prefix: '||', mode: 'CLOSE' },
+        { prefix: '%%', mode: 'CLOSE' },
         { prefix: '!!', mode: 'SHOUT' },
         { prefix: '**', mode: 'AUTOCHAT' },
-        { prefix: '|', mode: 'WHISPER' },
+        { prefix: '%', mode: 'WHISPER' },
         { prefix: '@', mode: 'NARRATOR' },
         { prefix: '>', mode: 'DIRECTOR' },
         { prefix: '#', mode: 'CHEATMODE' },
@@ -156,6 +158,9 @@
         currentModeElement.title = symbolMode
             ? `One-shot ${config.label}; saved mode remains ${modeConfig[currentMode].label}.`
             : (config.label === 'Close' ? 'Close-range talk the nearby group can hear' : '');
+        if (!symbolMode && effectiveMode === 'HYPNOSIS') {
+            currentModeElement.title = 'Give one NPC a profile instruction, then return to Standard.';
+        }
     }
 
     const modelConfig = {
@@ -965,10 +970,28 @@
      */
     window.sendFocusMessage = function() {
         if (!focusInput) return;
+        if (pendingHypnosisMessage !== null) return;
         const message = focusInput.value;
         if (!message.trim()) return;
 
-        const customSelected = isCustomPlayerMoodSelected();
+        const symbolMode = detectSymbolMode(message);
+        if ((symbolMode ? symbolMode.mode : currentMode) === 'HYPNOSIS') {
+            if (!currentTargetFormId || !currentTargetName || currentTargetIsNarrator ||
+                currentTargetOverrideMode === 'everyone') {
+                showInGameDebugNotification('Choose one NPC for Hypnosis.');
+                pushChatboxSystemMessage('Choose one NPC for Hypnosis. Your instruction has been kept.');
+                return;
+            }
+            if (!window.chimChatboxCommand) return;
+            pendingHypnosisMessage = message;
+            window.chimChatboxCommand('send_hypnosis|' + JSON.stringify({
+                message: message,
+                target_form_id: currentTargetFormId
+            }));
+            return;
+        }
+        const director = (symbolMode ? symbolMode.mode : currentMode) === 'DIRECTOR';
+        const customSelected = !director && isCustomPlayerMoodSelected();
         const customMood = customSelected ? getCustomPlayerMoodText() : '';
         // Custom mood with nothing typed keeps the composer open instead of silently dropping the mood.
         if (customSelected && !customMood) {
@@ -978,10 +1001,25 @@
         }
 
         setCustomPlayerMoodInvalid(false);
-        sendMessageToBridge(message, customSelected ? '' : getSelectedPlayerMood(), customMood);
+        sendMessageToBridge(message, director || customSelected ? '' : getSelectedPlayerMood(), customMood);
         focusInput.value = '';
         renderModeIndicator();
         window.closeFocusChatbox(true);
+    };
+
+    // Keep the instruction until native target validation accepts this exact submission.
+    window.onHypnosisSubmission = function(result) {
+        if (!result || result.message !== pendingHypnosisMessage) return;
+        pendingHypnosisMessage = null;
+        if (!result.accepted) {
+            pushChatboxSystemMessage('Hypnosis was not sent. Check that CHIM is on and one NPC is selected. Your instruction has been kept.');
+            return;
+        }
+        if (focusInput && focusInput.value === result.message) {
+            focusInput.value = '';
+            renderModeIndicator();
+            window.closeFocusChatbox(true);
+        }
     };
 
     window.clearFocusMessage = function() {

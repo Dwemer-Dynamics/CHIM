@@ -149,10 +149,19 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 12px;
     padding-bottom: 8px;
     border-bottom: 2px solid rgba(242, 124, 17, 0.3);
+}
+
+.menu-utility-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
 }
 
 .menu-settings-btn {
@@ -178,6 +187,44 @@ body {
     background: rgba(242, 124, 17, 0.2);
     border-color: rgb(242, 124, 17);
     color: #fff;
+}
+
+/* Keyboard focus ring; the :focus-visible rule below hides it for mouse focus
+   on engines that support the pseudo-class, leaving mouse behaviour unchanged. */
+.menu-settings-btn:focus {
+    outline: 2px solid rgb(242, 124, 17);
+    outline-offset: 2px;
+}
+
+.menu-settings-btn:focus:not(:focus-visible) {
+    outline: none;
+}
+
+.menu-settings-btn:focus-visible {
+    outline: 2px solid rgb(242, 124, 17);
+    outline-offset: 2px;
+}
+
+.menu-settings-btn[aria-busy="true"] {
+    background: rgba(122, 59, 13, 0.6);
+    border-color: rgb(242, 124, 17);
+    color: #fff;
+    cursor: progress;
+}
+
+.menu-settings-btn:disabled {
+    color: #cfcfcf;
+    cursor: default;
+}
+
+.menu-settings-btn:disabled:hover {
+    background: rgba(40, 40, 44, 0.9);
+    border-color: rgba(242, 124, 17, 0.45);
+}
+
+.menu-settings-btn:disabled[aria-busy="true"]:hover {
+    background: rgba(122, 59, 13, 0.6);
+    border-color: rgb(242, 124, 17);
 }
 
 /* Options Grid - responsive columns */
@@ -505,6 +552,21 @@ body {
 }
 
 @media (max-width: 640px) {
+    .group-title-row {
+        gap: 10px;
+    }
+
+    .menu-utility-actions {
+        flex: 1 1 100%;
+        justify-content: flex-start;
+    }
+
+    .menu-utility-actions .menu-settings-btn {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: 100%;
+    }
+
     .menu-scale-control {
         align-items: stretch;
         flex-direction: column;
@@ -551,3 +613,28 @@ body {
     font-style: italic;
     transition: color 0.2s;
 }
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/* Keep the master interaction control visible beside the menu title. */
+.chim-toggle { grid-column: 1; grid-row: 1; justify-self: start; }
+.modal-header > .close-btn { grid-row: 1; }
+.chim-toggle[aria-checked="true"] { border-color: #63d98b; background: #173c26; color: #91efb0; }
+.chim-toggle[aria-checked="false"] { border-color: #f47777; background: #491f24; color: #ffaaaa; }
+.chim-toggle[aria-checked="true"]:hover { background: #205334; }
+.chim-toggle[aria-checked="false"]:hover { background: #602931; }
+.chim-toggle:focus-visible { outline: 2px solid #f27c11; outline-offset: 3px; }
+.chim-interaction-notice { margin: 0 0 12px; color: #ddd; font-size: 13px; }
+.chim-interaction-notice.is-off { color: #ff8585; font-weight: 700; }
+#chim-chat-button:disabled { opacity: .5; cursor: not-allowed; }

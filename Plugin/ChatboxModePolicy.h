@@ -24,10 +24,10 @@ namespace ChatboxModePolicy
 
     inline constexpr std::array<SymbolModeRule, 9> kSymbolModeRules{{
         { "((", "INJECTION_LOG", "))" },
-        { "||", "CLOSE", "" },
+        { "%%", "CLOSE", "" },
         { "!!", "SHOUT", "" },
         { "**", "AUTOCHAT", "" },
-        { "|", "WHISPER", "" },
+        { "%", "WHISPER", "" },
         { "@", "NARRATOR", "" },
         { ">", "DIRECTOR", "" },
         { "#", "CHEATMODE", "" },
@@ -71,7 +71,7 @@ namespace ChatboxModePolicy
 
     constexpr bool IsOneShot(std::string_view mode)
     {
-        return mode == "DIRECTOR";
+        return mode == "DIRECTOR" || mode == "HYPNOSIS";
     }
 
     constexpr std::string_view ModeAfterSubmission(std::string_view mode)
