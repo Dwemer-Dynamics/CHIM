@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -16,6 +18,19 @@ namespace ActorIdentityUtils
         }
         const auto localId = lightPlugin ? refId & 0xFFF : refId & 0xFFFFFF;
         return std::format("{}/{:08X}", pluginName, localId);
+    }
+
+    // Profile ownership follows the placed reference, not its name or current load-order slot.
+    inline std::string BuildProfileKey(std::string source, std::uint32_t refId)
+    {
+        const auto separator = source.find('/');
+        if (separator != std::string::npos) {
+            std::transform(source.begin(), source.begin() + separator, source.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            source[separator] = '|';
+            return "ref:" + source;
+        }
+        return refId ? std::format("runtime:{:08X}", refId) : std::string{};
     }
 
     inline std::string BuildPromptIdentifier(std::string_view displayName, std::uint32_t refId)

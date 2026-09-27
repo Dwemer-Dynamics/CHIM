@@ -531,14 +531,6 @@
         if (autoBadge) autoBadge.hidden = !(sharing.linked && sharing.automatic);
         if (autoOff) autoOff.hidden = !sharing.autoLinkDisabled;
         panel.hidden = !sharing.linked;
-        // Renaming one linked actor would invalidate its stored identity, so the server refuses it.
-        // Say so on the control instead of letting the save fail.
-        const nameField = form.elements.namedItem('npc_name');
-        if (nameField) {
-            nameField.readOnly = sharing.linked;
-            if (sharing.linked) nameField.title = 'Locked while this profile is shared. Unlink the profiles to rename this actor.';
-            else nameField.removeAttribute('title');
-        }
         if (!sharing.linked) return;
 
         const isOwner = sharing.ownerId === Number(card.id || 0);
@@ -553,7 +545,7 @@
         const automaticLine = sharing.automatic
             ? 'These references are known to be one character, so CHIM linked them automatically to the kept profile. '
             : '';
-        byId('sharing-explainer').textContent = `${automaticLine}${lands} The name is locked while the profile is shared.`;
+        byId('sharing-explainer').textContent = `${automaticLine}${lands}`;
 
         const list = byId('sharing-members');
         list.replaceChildren();
@@ -1280,7 +1272,7 @@
     <header class="editor-header">
         <div class="reference-heading">
             <h2 id="reference-title">Reference Groups</h2>
-            <p id="reference-intro" class="reference-intro">A group lists the exact placed references that are the same character, so they share one profile. Changes take effect the next time those actors register. Existing links remain until you unlink them in the web NPC Manager.</p>
+            <p id="reference-intro" class="reference-intro">A group lists the exact placed references that are the same character, so they share one profile. Changing or disabling a rule releases its automatic links. Matching actors share again when they next register. Manual links and original profile data are preserved.</p>
         </div>
         <button id="reference-close" class="icon-button" type="button" aria-label="Close reference groups">&times;</button>
     </header>

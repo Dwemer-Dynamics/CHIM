@@ -15,6 +15,8 @@
 #include "RE/S/SendHUDMessage.h"
 #include "SpatialAwareness.h"
 
+std::string BuildActorReferenceSource(RE::Actor* actor);
+
 #define HERIKA_MAX_VISION_RANGE 5000
 
 namespace logger = SKSE::log;
@@ -144,6 +146,12 @@ public:
     std::string getActorIdentifier() {
         std::lock_guard<std::mutex> lock(mutex_);
         return ActorIdentityUtils::BuildPromptIdentifier(name, formID);
+    }
+
+    // Captured when the actor is assigned; transport threads never inspect engine records for a key.
+    std::string getProfileKey() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return profileKey;
     }
 
     bool isPresent(const std::string& presentActors) {
@@ -280,6 +288,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         this->actor = actor;
         this->formID = actor->GetFormID();
+        profileKey = ActorIdentityUtils::BuildProfileKey(BuildActorReferenceSource(actor), formID);
         name = actor->GetDisplayFullName();
         name.erase(0, name.find_first_not_of(' '));
         name.erase(name.find_last_not_of(' ') + 1);
@@ -668,6 +677,7 @@ private:
     RE::BGSVoiceType* originalVoice;
     RE::TESObjectREFR* currentTarget;
     RE::FormID formID;
+    std::string profileKey;
     std::string currentCommand;
     std::string currentAnimation;
     std::string name;

@@ -101,6 +101,15 @@ static bool IsPlayerStreamActor(const std::string& actorName)
 
 static std::string ResolveActorProfileHash(const std::string& actorIdentifier)
 {
+    const auto target = ActorTargetIdentifierUtils::Parse(actorIdentifier);
+    if (target.hasRefId) {
+        auto agent = AIAgentManager::getInstance().getAgentByFormId(target.refId);
+        if (agent) {
+            const auto key = agent->getProfileKey();
+            if (!key.empty()) return md5(key, true);
+        }
+    }
+    // Narrator/player and older non-reference callers retain their existing selectors.
     return md5(actorIdentifier, true);
 }
 

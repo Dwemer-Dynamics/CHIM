@@ -49,5 +49,10 @@ int main()
     assert(ActorIdentityUtils::BuildReferenceSource("VR.esp", 0xFE012ABC) == "VR.esp/00012ABC");
     assert(ActorIdentityUtils::BuildReferenceSource("Skyrim.esm", 0xFF001234).empty());
 
+    assert(ActorIdentityUtils::BuildProfileKey("Follower.esp/00001234", 0x05001234) ==
+           ActorIdentityUtils::BuildProfileKey("FOLLOWER.ESP/00001234", 0x07001234));
+    assert(ActorIdentityUtils::BuildProfileKey("Follower.esp/00001234", 0x05001234) ==
+           "ref:follower.esp|00001234");
+    assert(ActorIdentityUtils::BuildProfileKey("", 0xFF001234) == "runtime:FF001234");
     return 0;
 }
