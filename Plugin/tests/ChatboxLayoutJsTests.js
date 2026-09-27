@@ -490,6 +490,37 @@ test('refuses to send a blank Custom mood and exposes the invalid state', () => 
     );
 });
 
+test('Director ignores saved moods without blocking or clearing the next normal submission', () => {
+    const send = script.match(/window\.sendFocusMessage = function\(\) \{[\s\S]*?\n    \};/)[0];
+    for (const mood of ['', 'happy', 'custom']) {
+        for (const custom of ['', 'cheerfully']) {
+            const context = {
+                window: { closeFocusChatbox() {} }, currentMode: 'DIRECTOR',
+                focusInput: { value: 'Let Lydia answer Serana' }, sent: [], invalid: false,
+                detectSymbolMode: (message) => message.startsWith('>') ? { mode: 'DIRECTOR' } : null,
+                isCustomPlayerMoodSelected: () => mood === 'custom',
+                getCustomPlayerMoodText: () => custom,
+                getSelectedPlayerMood: () => mood === 'custom' ? '' : mood,
+                setCustomPlayerMoodInvalid(value) { context.invalid = value; },
+                focusCustomPlayerMoodInput() {}, renderModeIndicator() {},
+                sendMessageToBridge(...args) { context.sent.push(args); }
+            };
+            require('node:vm').runInNewContext(send, context);
+            context.window.sendFocusMessage();
+            assert.deepEqual(context.sent.pop(), ['Let Lydia answer Serana', '', '']);
+            assert.equal(context.invalid, false);
+            context.currentMode = 'STANDARD';
+            context.focusInput.value = '> Let Lydia answer Serana';
+            context.window.sendFocusMessage();
+            assert.deepEqual(context.sent.pop(), ['> Let Lydia answer Serana', '', '']);
+            context.focusInput.value = 'Hello';
+            context.window.sendFocusMessage();
+            if (mood === 'custom' && !custom) assert.equal(context.invalid, true);
+            else assert.deepEqual(context.sent.pop(), ['Hello', mood === 'custom' ? '' : mood, mood === 'custom' ? custom : '']);
+        }
+    }
+});
+
 test('sends the custom mood as JSON so pipes in player text stay intact', () => {
     const buildCustomMoodCommand = loadChatboxFunction('buildCustomMoodCommand');
     const command = buildCustomMoodCommand('sarcastically | dryly', 'Are you sure | about that?');
@@ -510,7 +541,7 @@ test('sends the custom mood as JSON so pipes in player text stay intact', () => 
     // Predefined and no-mood transports are untouched, and custom never rides on send_mood|.
     assert.match(script, /mood \? 'send_mood\|' \+ mood \+ '\|' \+ message : 'send\|' \+ message/);
     assert.match(script, /function sendMessageToBridge\(message, playerMood, customMood\)[\s\S]*?if \(custom\) \{[\s\S]*?buildCustomMoodCommand\(custom, message\)/);
-    assert.match(script, /sendMessageToBridge\(message, customSelected \? '' : getSelectedPlayerMood\(\), customMood\)/);
+    assert.match(script, /sendMessageToBridge\(message, director \|\| customSelected \? '' : getSelectedPlayerMood\(\), customMood\)/);
 
     // The optimistic row shows the typed message only; custom mood text travels out of band.
     assert.doesNotMatch(script, /pushChatMessage\([^)]*customMood/);

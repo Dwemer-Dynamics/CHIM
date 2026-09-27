@@ -184,6 +184,8 @@ input[type="checkbox"] { width: 19px; height: 19px; padding: 0; accent-color: #3
 #mcm-page.active { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 9px; }
 .mcm-sub-tabs { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); margin-bottom: 0; }
 .mcm-sub-tab { font-size: .82rem; }
+.mcm-hearing-preset-section { grid-column: 1 / -1; }
+.mcm-hearing-preset-section .settings-tile-selector { max-width: 520px; }
 .mcm-status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; }
 .mcm-status-actions { display: flex; flex: 0 0 auto; gap: 7px; }
 .mcm-status { min-width: 0; color: var(--muted); font-size: .75rem; }

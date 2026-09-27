@@ -224,6 +224,7 @@ namespace SpatialAwareness
         {
             Result result{};
             std::chrono::steady_clock::time_point expiresAt{};
+            Settings settings{};
         };
 
         std::mutex g_evalCacheMutex;
@@ -854,7 +855,7 @@ namespace SpatialAwareness
             const auto cacheNow = std::chrono::steady_clock::now();
             std::lock_guard<std::mutex> lock(g_evalCacheMutex);
             const auto it = g_evalCache.find(cacheKey);
-            if (it != g_evalCache.end() && it->second.expiresAt > cacheNow) {
+            if (it != g_evalCache.end() && it->second.expiresAt > cacheNow && it->second.settings == settings) {
                 return it->second.result;
             }
         }
@@ -885,7 +886,7 @@ namespace SpatialAwareness
                         g_evalCache.erase(g_evalCache.begin());
                     }
                 }
-                g_evalCache[cacheKey] = EvalCacheEntry{result, expiresAt};
+                g_evalCache[cacheKey] = EvalCacheEntry{result, expiresAt, settings};
             }
             return result;
         };
@@ -945,6 +946,12 @@ namespace SpatialAwareness
             return finalize("tier1_too_far");
         }
 
+        const float audibleMaxDistance = speakerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
+        if (audibleMaxDistance > 0.0f && airDistance > audibleMaxDistance) {
+            result.reason = "too_far";
+            return finalize("tier1_hearing_range");
+        }
+
         auto* player = RE::PlayerCharacter::GetSingleton();
         const bool playerSpeaker = player && speaker->GetFormID() == player->GetFormID();
         const float autoHearingDistance =
@@ -955,16 +962,6 @@ namespace SpatialAwareness
             result.volume = 1.0f;
             result.reason = "immediate_proximity";
             return finalize("tier1_auto_hearing_radius");
-        }
-
-        // Speech audibility should be governed by the active interior/exterior
-        // hearing distance, not the broader maxAirDistance safety ceiling. If
-        // the pair is already outside the MCM hearing range, do not spend work
-        // on door scans, LOS, or navmesh pathing.
-        const float audibleMaxDistance = speakerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
-        if (audibleMaxDistance > 0.0f && airDistance > audibleMaxDistance) {
-            result.reason = "too_far";
-            return finalize("tier1_hearing_range");
         }
 
         int openDoorCount = 0;
@@ -993,7 +990,7 @@ namespace SpatialAwareness
                         return RE::BSContainer::ForEachResult::kContinue;
                     }
 
-                    const auto openState = RE::BGSOpenCloseForm::GetOpenState(reference);
+                    const auto openState = GetDoorState(reference);
                     if (IsClosedDoorState(openState)) {
                         ++closedDoorCount;
                         closedDoorCandidateFormId = reference->GetFormID();
@@ -1012,9 +1009,8 @@ namespace SpatialAwareness
         result.closedDoorCount = closedDoorCount;
         result.closedDoorCandidateFormId = closedDoorCandidateFormId;
 
-        // Keep the instant-pass fast path, but only when there is no detected door boundary.
-        // If an open door is between actors, continue through volume shaping for muffled-around-corner behavior.
-        if (airDistance <= settings.immediateDistance && openDoorCount == 0 && closedDoorCount == 0) {
+        // An open doorway does not remove the nearby allowance.
+        if (airDistance <= settings.immediateDistance && closedDoorCount == 0) {
             result.canCommunicate = true;
             result.volume = 1.0f;
             result.reason = "immediate_proximity";
@@ -1022,10 +1018,7 @@ namespace SpatialAwareness
         }
 
         const float maxDistance = speakerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
-        const float distanceFactor = std::clamp(1.0f - (airDistance / std::max(maxDistance, 1.0f)),
-                                                settings.minDistanceFactor, 1.0f);
         const float environmentModifier = speakerInterior ? settings.interiorBaseModifier : settings.exteriorBaseModifier;
-        const float openDoorModifier = std::pow(settings.openDoorPenaltyBase, static_cast<float>(openDoorCount));
 
         bool hasLineOfSight = false;
         const bool losQueryOk = speaker->HasLineOfSight(listener->AsReference(), hasLineOfSight);
@@ -1034,8 +1027,9 @@ namespace SpatialAwareness
         result.hasLineOfSight = losQueryOk && hasLineOfSight;
         if (result.hasLineOfSight) {
             result.closedDoorCount = 0;
-            result.reason = openDoorCount > 0 ? "open_door_muffled" : "line_of_sight_clear";
-            result.volume = std::clamp(distanceFactor * environmentModifier * openDoorModifier, 0.0f, 1.0f);
+            result.reason = "line_of_sight_clear";
+            result.volume = SpatialGeometryPolicy::HearingVolume(airDistance, maxDistance, speakerInterior,
+                environmentModifier, settings.minDistanceFactor, false);
             if (result.volume < settings.minimumAudibleVolume) {
                 result.reason = "too_quiet";
                 return finalize("tier4_los_too_quiet");
@@ -1071,31 +1065,12 @@ namespace SpatialAwareness
 
         if (airDistance > 0.001f) {
             result.pathRatio = navPath.pathDistance / airDistance;
-
-            if (result.pathRatio >= settings.pathRatioReject) {
-                result.reason = "path_ratio_blocked";
-                return finalize("tier5_ratio_blocked");
-            }
-
-            if (result.pathRatio >= settings.pathRatioDistanceReject &&
-                airDistance >= settings.pathRatioDistanceRejectMinAir) {
-                result.reason = "path_ratio_distance_blocked";
-                return finalize("tier5_ratio_distance_blocked");
-            }
         }
 
-        result.reason = openDoorCount > 0 ? "open_door_muffled" : "path_fallback_clear";
-
-        const float cornerModifier = openDoorCount > 0 ? settings.aroundCornerPenalty : 1.0f;
-        float pathModifier = 1.0f;
-        if (result.navmeshPathFound && result.pathRatio > settings.pathComplexityStartRatio) {
-            pathModifier = std::clamp(1.0f / std::max(result.pathRatio * settings.pathComplexityScale, 0.01f),
-                                      settings.pathComplexityMin, 1.0f);
-        }
-
-        const float finalVolume =
-            std::clamp(distanceFactor * environmentModifier * openDoorModifier * cornerModifier * pathModifier, 0.0f,
-                       1.0f);
+        // Navmesh proves a route exists; its walking length is not a sound-travel distance.
+        result.reason = "path_fallback_clear";
+        const float finalVolume = SpatialGeometryPolicy::HearingVolume(airDistance, maxDistance, speakerInterior,
+            environmentModifier, settings.minDistanceFactor, true);
         result.volume = finalVolume;
 
         if (finalVolume < settings.minimumAudibleVolume) {

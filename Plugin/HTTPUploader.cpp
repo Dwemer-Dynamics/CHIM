@@ -1,3 +1,4 @@
+#include "PlaythroughSession.h"
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
@@ -134,6 +135,8 @@ bool HTTPUploader::WriteToInternet(HINTERNET hInet, const void *Data, DWORD Data
 
 
 std::string HTTPUploader::UploadFile(std::string data) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -181,6 +184,8 @@ std::string HTTPUploader::UploadFile(std::string data) {
     }
 
     // Add headers
+    const auto sessionHeader = PlaythroughSession::Header(loadEpoch);
+    wideHeaders += L"\r\n" + std::wstring(sessionHeader.begin(), sessionHeader.end());
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::debug("WinHttpAddRequestHeaders failed");
         WinHttpCloseHandle(hRequest);
@@ -242,10 +247,12 @@ std::string HTTPUploader::UploadFile(std::string data) {
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }
 
 std::string HTTPUploader::UploadVoiceSample(std::string data, std::string codename, std::string originalName) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     
 
     return UploadVoiceSampleWithText(data, codename, originalName, "");
@@ -253,6 +260,8 @@ std::string HTTPUploader::UploadVoiceSample(std::string data, std::string codena
 
 std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::string codename, std::string originalName,
                                                     std::string referenceText) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     constexpr int kVoiceUploadTimeoutMs = 30000;
     constexpr const char* boundary = "----974767299852498929531610575";
     const std::string headers =
@@ -343,6 +352,8 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
 
     std::wstring wideHeaders(headers.begin(), headers.end());
 
+    const auto sessionHeader = PlaythroughSession::Header(loadEpoch);
+    wideHeaders += L"\r\n" + std::wstring(sessionHeader.begin(), sessionHeader.end());
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::info("Failed to add headers: {}", GetLastError());
         WinHttpCloseHandle(hRequest);
@@ -423,11 +434,13 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }
 
 std::string HTTPUploader::UploadBookContent(std::string data, std::string title, std::string readRequestId,
                                             std::string bookFormId) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -495,6 +508,8 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title,
 
     std::wstring wideHeaders = std::wstring(szHeaders, szHeaders + strlen(szHeaders));
 
+    const auto sessionHeader = PlaythroughSession::Header(loadEpoch);
+    wideHeaders += L"\r\n" + std::wstring(sessionHeader.begin(), sessionHeader.end());
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::info("Failed to add headers: {}", GetLastError());
         WinHttpCloseHandle(hRequest);
@@ -576,10 +591,12 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title,
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }
 
 std::string HTTPUploader::UploadCSVFile(std::string data, std::string filename, std::string fileType) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     // Validate input parameters
     if (data.empty()) {
         logger::error("CSV upload failed: Empty data provided");
@@ -673,6 +690,8 @@ std::string HTTPUploader::UploadCSVFile(std::string data, std::string filename, 
     // Add headers
     std::wstring wideHeaders = std::wstring(szHeaders, szHeaders + strlen(szHeaders));
 
+    const auto sessionHeader = PlaythroughSession::Header(loadEpoch);
+    wideHeaders += L"\r\n" + std::wstring(sessionHeader.begin(), sessionHeader.end());
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::error("Failed to add headers: {}", GetLastError());
         WinHttpCloseHandle(hRequest);
@@ -775,10 +794,12 @@ std::string HTTPUploader::UploadCSVFile(std::string data, std::string filename, 
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }
 
 std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string hints, int sendMode) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -832,6 +853,8 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
     }
 
     // Add headers
+    const auto sessionHeader = PlaythroughSession::Header(loadEpoch);
+    wideHeaders += L"\r\n" + std::wstring(sessionHeader.begin(), sessionHeader.end());
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::debug("WinHttpAddRequestHeaders failed");
         WinHttpCloseHandle(hRequest);
@@ -898,10 +921,12 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
     if (!imageRequestSucceeded) {
         return "";
     }
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }
 /*
 std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string hints) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -938,7 +963,7 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
     if (hreq.get() == NULL) {
         return "";
     }
-    std::string szHeadersS(szHeaders);
+    std::string szHeadersS = std::string(szHeaders) + "\r\n" + PlaythroughSession::Header(loadEpoch);
 
     if (!HttpAddRequestHeaders(hreq.get(), StringToWideString(szHeadersS), -1,
                                HTTP_ADDREQ_FLAG_REPLACE | HTTP_ADDREQ_FLAG_ADD)) {
@@ -992,11 +1017,13 @@ std::string HTTPUploader::UploadImagePng(const char *data, int size, std::string
     InternetCloseHandle(ic.get());
     InternetCloseHandle(io.get());
 
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }
 */
 
 std::string HTTPUploader::UploadImage(const char *data, int size, std::string hints, int sendMode) {
+    const auto loadEpoch = PlaythroughSession::Context();
+    if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
     const char *szContent =
         "------974767299852498929531610575\r\nContent-Disposition: form-data; name=\"file\"; "
@@ -1050,6 +1077,8 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
     }
 
     // Add headers
+    const auto sessionHeader = PlaythroughSession::Header(loadEpoch);
+    wideHeaders += L"\r\n" + std::wstring(sessionHeader.begin(), sessionHeader.end());
     if (!WinHttpAddRequestHeaders(hRequest, wideHeaders.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD)) {
         logger::debug("WinHttpAddRequestHeaders failed");
         WinHttpCloseHandle(hRequest);
@@ -1116,5 +1145,5 @@ std::string HTTPUploader::UploadImage(const char *data, int size, std::string hi
     if (!imageRequestSucceeded) {
         return "";
     }
-    return response;
+    return PlaythroughSession::Allowed(loadEpoch) ? response : std::string{};
 }

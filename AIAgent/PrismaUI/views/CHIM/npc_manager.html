@@ -149,7 +149,15 @@
                             <label class="form-field"><span>Race</span><input name="race"></label>
                             <label class="form-field"><span>Base ID</span><input name="base"></label>
                             <label class="form-field"><span>Reference ID</span><input name="refid"></label>
-                            <label class="form-field"><span>Voice Type</span><input name="voiceid"></label>
+                            <div class="voice-group">
+                                <label class="form-field"><span>Voice Type</span><input name="voiceid"></label>
+                                <div class="voice-filter-row">
+                                    <label class="form-field voice-filter-select"><span>Voice Filter</span><select name="tts_filter_preset" aria-describedby="voice-filter-description"></select></label>
+                                    <button id="voice-filter-preview" class="button secondary voice-filter-play" type="button" title="Preview voice filter" aria-label="Preview voice filter">&#9654;</button>
+                                </div>
+                                <p id="voice-filter-description" class="voice-filter-description"></p>
+                                <p id="voice-filter-status" class="voice-filter-status" role="status" aria-live="polite"></p>
+                            </div>
                             <label class="form-field"><span>Tags</span><input name="tags"></label>
                         </div>
                         <label class="form-field"><span>Oghma Knowledge Tags</span><textarea name="oghma_knowledge_tags" rows="3"></textarea></label>

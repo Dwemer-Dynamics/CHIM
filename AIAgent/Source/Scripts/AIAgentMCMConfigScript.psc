@@ -78,7 +78,7 @@ bool		_animationstate			= false
 int			_toggle1OID_Rereg
 
 ; Saved native setting retained for compatibility with the Audio Mode presets.
-bool		_enable3daudioplaybackstate		= true
+bool		_enable3daudioplaybackstate		= false
 
 int			_toggleCameraBasedAudio
 bool		_camera_based_audio_state		= false
@@ -108,13 +108,14 @@ int			_slider_max_distance_outside
 float		_max_distance_outside		= 2400.0
 
 int			_slider_spatial_hearing_inside
-float		_spatial_hearing_inside		= 500.0
+float		_spatial_hearing_inside		= 1000.0
 
 int			_slider_spatial_hearing_outside
-float		_spatial_hearing_outside	= 1000.0
+float		_spatial_hearing_outside	= 1800.0
 
+int _menu_hearing_preset = -1
 int			_slider_auto_hearing_radius_m
-float		_auto_hearing_radius_m	= 8.0
+float		_auto_hearing_radius_m	= 10.0
 
 int			_slider_bored_period
 float		_bored_period		= 60.0
@@ -270,7 +271,7 @@ float		_lip_resDefault					= 500.0
 float		_lip_intDefault					= 1.0
 float		_timeout_intDefault				= 30.0
 bool		_animationstateDefault			= false
-bool		_enable3daudioplaybackstateDefault	= true
+bool		_enable3daudioplaybackstateDefault	= false
 bool		_camera_based_audio_stateDefault	= false
 bool		_invertheadingstateDefault		= false
 bool		_pauseDialogueStateDefault		= false
@@ -295,6 +296,8 @@ int			_overlaystatus_cycle_keyDefault	= -1
 int			_historydiaries_cycle_keyDefault = -1
 
 int _prismaMcmRevision = 0
+int _toggleChimInteraction = -1
+bool _prismaChimInteractionPending = false
 
 int _slider_curve_legacy_distance 
 float _curve_legacy_distance = 1.0
@@ -309,7 +312,7 @@ bool		_toggle_force_mono_state		= false
 ; Keep the earlier draft's IDs for save migration: 0 Flat, 1 Legacy, 2 Advanced.
 int _menu_audio_mode
 int _audio_mode = -1
-int _audio_modeDefault = 2
+int _audio_modeDefault = 1
 string[] _audio_mode_options
 bool _audio_modes_v2 = false
 float _legacy_distance_saved = 1.0
@@ -319,8 +322,8 @@ string[] Function AudioModeOptions()
 	if (!_audio_mode_options || _audio_mode_options.Length != 5)
 		_audio_mode_options = new string[5]
 	endIf
-	_audio_mode_options[0] = "3D Advanced"
-	_audio_mode_options[1] = "3D Legacy"
+	_audio_mode_options[0] = "3D Realistic"
+	_audio_mode_options[1] = "3D Normal"
 	_audio_mode_options[2] = "2D Flat"
 	_audio_mode_options[3] = "Mono"
 	_audio_mode_options[4] = "Mono + Advanced Effects"
@@ -345,6 +348,8 @@ EndFunction
 
 ; Distinguish original saves from the unmerged three-mode draft, whose Flat mode was mono.
 Function MigrateAudioMode()
+	; Defaults are saved too; refresh the reset target without changing the selected mode.
+	_audio_modeDefault = 1
 	if (_audio_modes_v2)
 		return
 	endIf
@@ -489,13 +494,7 @@ event OnConfigInit()
 	MigrateAudioMode()
 	ModName="CHIM"
 	RegisterPrismaMCMEvent()
-	Pages = new string[6]
-	Pages[0] = "Hotkeys"
-	Pages[1] = "Auto Activate"
-	Pages[2] = "Behavior"
-	Pages[3] = "Sound"
-	Pages[4] = "AI Agents"
-	Pages[5] = "Tools"
+
 	
 	Debug.Trace("[AIAGENT] OnConfigInit");
 	
@@ -606,7 +605,7 @@ event OnConfigInit()
 	if (spatialHearingInsideValue > 0)
 		_spatial_hearing_inside = spatialHearingInsideValue as float
 	else
-		_spatial_hearing_inside = 500.0
+		_spatial_hearing_inside = 1000.0
 	endIf
 	controlScript.setConf("_spatial_hearing_inside", _spatial_hearing_inside)
 
@@ -614,7 +613,7 @@ event OnConfigInit()
 	if (spatialHearingOutsideValue > 0)
 		_spatial_hearing_outside = spatialHearingOutsideValue as float
 	else
-		_spatial_hearing_outside = 1000.0
+		_spatial_hearing_outside = 1800.0
 	endIf
 	controlScript.setConf("_spatial_hearing_outside", _spatial_hearing_outside)
 
@@ -625,7 +624,7 @@ event OnConfigInit()
 	if (autoHearingRadiusValue >= 1 && autoHearingRadiusValue <= 20)
 		_auto_hearing_radius_m = autoHearingRadiusValue as float
 	else
-		_auto_hearing_radius_m = 8.0
+		_auto_hearing_radius_m = 10.0
 	endIf
 	controlScript.setConf("_auto_hearing_radius_m", _auto_hearing_radius_m)
 
@@ -683,15 +682,16 @@ endEvent
 
 int function GetVersion()
 
-	return 76
+	return 77
 
 endFunction
 
 event OnVersionUpdate(int a_version)
 	; a_version is the new version, CurrentVersion is the old version
 
-	if (a_version == 76 && a_version > CurrentVersion)
-		; Version 76: Present the original five audio combinations without resetting settings.
+	if (a_version == 77 && a_version > CurrentVersion)
+		; Refresh hearing navigation and option IDs, retaining saved sliders and hotkeys.
+		; Keep the version 76 audio migration for saves upgrading directly to 77.
 		ApplyAudioMode(true)
 		RegisterPrismaMCMEvent()
 		_prismaMcmRevision += 1
@@ -897,9 +897,62 @@ int function getActionMode()
 	return 0
 EndFunction
 
+; Derive the preset from saved values instead of storing a second setting.
+int Function GetHearingPreset()
+	if _auto_hearing_radius_m == 4.0 && _spatial_hearing_inside == 600.0 && _spatial_hearing_outside == 1000.0
+		return 0
+	elseif _auto_hearing_radius_m == 10.0 && _spatial_hearing_inside == 1000.0 && _spatial_hearing_outside == 1800.0
+		return 1
+	elseif _auto_hearing_radius_m == 15.0 && _spatial_hearing_inside == 1600.0 && _spatial_hearing_outside == 2400.0
+		return 2
+	endif
+	return 3
+EndFunction
+
+String[] Function HearingPresetNames()
+	String[] names = new String[4]
+	names[0] = "Realistic"
+	names[1] = "Recommended"
+	names[2] = "Extended"
+	names[3] = "Custom"
+	return names
+EndFunction
+
+; Apply only the three hearing values. Custom leaves the current values alone.
+Function ApplyHearingPreset(int preset)
+	if preset == 0
+		_auto_hearing_radius_m = 4.0
+		_spatial_hearing_inside = 600.0
+		_spatial_hearing_outside = 1000.0
+	elseif preset == 1
+		_auto_hearing_radius_m = 10.0
+		_spatial_hearing_inside = 1000.0
+		_spatial_hearing_outside = 1800.0
+	elseif preset == 2
+		_auto_hearing_radius_m = 15.0
+		_spatial_hearing_inside = 1600.0
+		_spatial_hearing_outside = 2400.0
+	else
+		return
+	endif
+	controlScript.setConf("_auto_hearing_radius_m", _auto_hearing_radius_m)
+	controlScript.setConf("_spatial_hearing_inside", _spatial_hearing_inside)
+	controlScript.setConf("_spatial_hearing_outside", _spatial_hearing_outside)
+EndFunction
+
 Function RegisterPrismaMCMEvent()
+	; Rebuild navigation on load without reinitializing saved settings.
+	Pages = new string[7]
+	Pages[0] = "Hotkeys"
+	Pages[1] = "Auto Activate"
+	Pages[2] = "Hearing & Awareness"
+	Pages[3] = "Behavior"
+	Pages[4] = "Sound"
+	Pages[5] = "AI Agents"
+	Pages[6] = "Tools"
 	UnregisterForModEvent("CHIM_PrismaMCMRequest")
 	RegisterForModEvent("CHIM_PrismaMCMRequest", "OnPrismaMCMRequest")
+	RegisterForModEvent("CHIM_InteractionChanged", "OnChimInteractionChanged")
 EndFunction
 
 String Function PrismaMCMBool(bool value)
@@ -945,20 +998,22 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "roleplay_wheel", "Roleplay Wheel", "Deprecated roleplay wheel.", "keymap", _myKey4 as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "settings_wheel", "Settings Wheel", "Deprecated settings wheel.", "keymap", _myKey3 as String, "0|0|0||0|1")
 	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "mode_wheel", "Mode Wheel", "Deprecated chat-mode wheel.", "keymap", _godmode_key as String, "0|0|0||0|1")
-	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "soulgaze_wheel", "Soulgaze Wheel", "Deprecated Soulgaze wheel.", "keymap", _myKey6 as String, "0|0|0||0|1")
+	PublishPrismaMCMEntry("Hotkeys", "Wheel Menus (Deprecated)", "soulgaze_wheel", "SoulGaze Wheel", "Deprecated Soulgaze wheel.", "keymap", _myKey6 as String, "0|0|0||0|1")
 
 	PublishPrismaMCMEntry("Auto Activate", "Auto Activate", "enable_auto_activate", "Enable Auto Activate", "Automatically activate eligible NPCs around the player.", "toggle", PrismaMCMBool(_toggleAddAllNPCState), "0|1|1||0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Distances", "max_distance_inside", "Interior Auto Activate Distance", "Auto Activate NPCs within this distance indoors.", "slider", _max_distance_inside as String, "10|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Distances", "max_distance_outside", "Exterior Auto Activate Distance", "Auto Activate NPCs within this distance outdoors.", "slider", _max_distance_outside as String, "10|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_inside", "Interior Spatial Hearing Distance", "Set indoor conversation hearing distance.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Hearing", "spatial_hearing_outside", "Exterior Spatial Hearing Distance", "Set outdoor conversation hearing distance.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
-	PublishPrismaMCMEntry("Auto Activate", "Hearing", "auto_hearing_radius_m", "Auto Hearing Radius", "Direct auto-hearing radius in meters.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Preset", "hearing_preset", "Hearing Preset", "Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.", "menu", GetHearingPreset() as String, "0|3|1||0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "auto_hearing_radius_m", "Auto Hearing Radius", "Nearby NPCs hear you without door or path checks, within the hearing distance. In meters; 1 meter is 70 Skyrim units. Whispering and sneaking reduce it. Close mode does not use this allowance.", "slider", _auto_hearing_radius_m as String, "1|20|1|meters|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_inside", "Interior Hearing Distance", "Indoor range for listeners and the audience, in Skyrim units. Closed doors can block hearing outside the Auto Hearing Radius. Speech mode and sneaking adjust the range.", "slider", _spatial_hearing_inside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Hearing Range", "spatial_hearing_outside", "Exterior Hearing Distance", "Outdoor range for listeners and the audience, in Skyrim units. Distance fading can reduce audibility. Speech mode and sneaking adjust the range.", "slider", _spatial_hearing_outside as String, "50|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Automatic Activation", "max_distance_inside", "Interior Auto Activate Distance", "Auto Activate NPCs within this distance indoors.", "slider", _max_distance_inside as String, "10|5000|1|units|0|0")
+	PublishPrismaMCMEntry("Hearing & Awareness", "Automatic Activation", "max_distance_outside", "Exterior Auto Activate Distance", "Auto Activate NPCs within this distance outdoors.", "slider", _max_distance_outside as String, "10|5000|1|units|0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_hostile", "Add Hostile NPCs", "Allow Auto Activate to include hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_hostile_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_creature_npcs", "Add Creature NPCs", "Allow Auto Activate for a set group of creatures such as dragons, giants, Falmer, undead and animal followers. Hostile ones still need Add Hostile NPCs.", "toggle", PrismaMCMBool(_toggle_autoadd_creature_npcs_state), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Auto Activate", "Eligibility", "autoadd_allraces", "Add All races", "Allow Auto Activate for animals and other normally excluded races.", "toggle", PrismaMCMBool(_toggle_autoadd_allraces_state), "0|1|1||0|0")
 
+	int chimState = AIAgentFunctions.getChimInteractionState()
+	PublishPrismaMCMEntry("Behavior", "General Behavior", "chim_enabled", "CHIM", "Turn AI dialogue and actions on or off. Game events are still recorded when off. Speech already playing can finish.", "toggle", PrismaMCMBool(chimState == 1), "0|1|1||" + PrismaMCMReadonly(chimState != 2) + "|0")
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
-	PublishPrismaMCMEntry("Behavior", "Timers", "dynamic_profile_period", "Dynamic Profile Timer", "Period for automatic dynamic profile updates.", "slider", _dynamic_profile_period as String, "5|120|1|minutes|0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "animations", "Enable Animations", "Allow AI NPCs to perform animations.", "toggle", PrismaMCMBool(_animationstate), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "player_tts_traditional_dialogue", "Player TTS for Traditional Dialogue", "Play configured Player TTS for traditional dialogue choices.", "toggle", PrismaMCMBool(_playerTtsTraditionalDialogueState), "0|1|1||0|0")
@@ -976,15 +1031,15 @@ Function PublishPrismaMCMState()
 
 	PublishPrismaMCMEntry("Sound", "Basic", "sound_volume", "AI Voice Volume", "Set AI NPC speech volume.", "slider", _sound_volume as String, "0|500|2|%|0|0")
 	PublishPrismaMCMEntry("Sound", "Basic", "head_voice_volume", "Narrator / Player TTS Volume", "Adjust narrator and player TTS volume relative to AI voices.", "slider", _head_voice_volume as String, "0|200|5|%|0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "audio_mode", "Audio Mode", "3D Advanced: directional with distance fading and muffling. 3D Legacy: directional with legacy distance fading. 2D Flat: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling.", "enum", _audio_mode as String, "0|4|1||0|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance. 3D Advanced and Mono + Advanced Effects only.", "slider", _sound_ds as String, "0.1|20|0.1||" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness. 3D Advanced and Mono + Advanced Effects only.", "slider", _playback_dropoff_inside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness. 3D Advanced and Mono + Advanced Effects only.", "slider", _playback_dropoff_outside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "curve_legacy_distance", "3D Legacy Distance Scaler", "How strongly 3D Legacy attenuates voices with distance. Higher values attenuate less. Values below 1 select 2D Flat, retaining direction without distance fading. 3D Legacy only.", "slider", _curve_legacy_distance as String, "0|4|0.1||" + PrismaMCMReadonly(_audio_mode == 1) + "|0")
-	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing. 2D Flat, 3D Legacy and 3D Advanced only.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "audio_mode", "Audio Mode", "3D Realistic: directional with distance fading and muffling. 3D Normal: directional with legacy distance fading. 2D Flat: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling.", "enum", _audio_mode as String, "0|4|1||0|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "sound_distance_scale", "AI Voice Distance Scale", "Adjust AI NPC playback volume at distance. 3D Realistic and Mono + Advanced Effects only.", "slider", _sound_ds as String, "0.1|20|0.1||" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_inside", "Interior Playback Dropoff", "Indoor playback dropoff aggressiveness. 3D Realistic and Mono + Advanced Effects only.", "slider", _playback_dropoff_inside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "playback_dropoff_outside", "Exterior Playback Dropoff", "Outdoor playback dropoff aggressiveness. 3D Realistic and Mono + Advanced Effects only.", "slider", _playback_dropoff_outside as String, "25|200|1|%|" + PrismaMCMReadonly((_audio_mode == 2 || _audio_mode == 4)) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "curve_legacy_distance", "3D Normal Distance Scaler", "How strongly 3D Normal attenuates voices with distance. Higher values attenuate less. Values below 1 select 2D Flat, retaining direction without distance fading. 3D Normal only.", "slider", _curve_legacy_distance as String, "0|4|0.1||" + PrismaMCMReadonly(_audio_mode == 1) + "|0")
+	PublishPrismaMCMEntry("Sound", "Basic", "camera_based_audio", "Camera Based Audio", "Base 3D voice direction on camera facing. 2D Flat, 3D Normal and 3D Realistic only.", "toggle", PrismaMCMBool(_camera_based_audio_state), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_preclip", "Skip milliseconds at beginning", "Skip silence at the beginning of generated speech.", "slider", _sound_preclip as String, "0|100|10|ms|0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "sound_postclip", "Skip milliseconds at end", "Skip silence at the end of generated speech.", "slider", _sound_postclip as String, "0|2000|2|ms|0|0")
-	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed. 2D Flat, 3D Legacy and 3D Advanced only.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
+	PublishPrismaMCMEntry("Sound", "Advanced", "invert_heading", "3D Sound Invert Heading", "Invert 3D audio heading when front and back sound reversed. 2D Flat, 3D Normal and 3D Realistic only.", "toggle", PrismaMCMBool(_invertheadingstate), "0|1|1||" + PrismaMCMReadonly(IsAudioMode3D()) + "|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "lip_resolution", "Resolution of Lip Animations", "Tune lip animation sampling resolution.", "slider", _lip_res as String, "0|1000|10||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "lip_intensity", "Intensity of Lip Animations", "Tune mouth movement intensity.", "slider", _lip_int as String, "0.1|2|0.1||0|0")
 	PublishPrismaMCMEntry("Sound", "Advanced", "pause_dialogue", "Pause Dialogue on Game Pause", "Pause CHIM dialogue while game menus pause Skyrim.", "toggle", PrismaMCMBool(_pauseDialogueState), "0|1|1||0|0")
@@ -998,8 +1053,7 @@ Function PublishPrismaMCMState()
 	AIAgentFunctions.commitChimMcmSnapshot(_prismaMcmRevision)
 EndFunction
 
-; Prisma label only. The native MCM uses the "$chim_soulgaze_hotkey" translation key so
-; SkyUI resolves the casing in Scaleform instead of relying on the Papyrus string table.
+; Shared proper-name label for MCM and Prisma, independent of translation-file overrides.
 ; Build the label at runtime so the assembler cannot merge it with the "soulgaze" ID.
 ; A local variable prevents the optimizer from folding the concatenation into a literal.
 String Function SoulGazeDisplayName()
@@ -1019,12 +1073,12 @@ bool Function IsPrismaMCMValueValid(String keyName, float value)
 		return value >= 10.0 && value <= 5000.0
 	elseif keyName == "spatial_hearing_inside" || keyName == "spatial_hearing_outside"
 		return value >= 50.0 && value <= 5000.0
+	elseif keyName == "hearing_preset"
+		return value >= 0.0 && value <= 3.0 && value == ((value as Int) as Float)
 	elseif keyName == "auto_hearing_radius_m"
 		return value >= 1.0 && value <= 20.0
 	elseif keyName == "bored_period"
 		return value >= 15.0 && value <= 600.0
-	elseif keyName == "dynamic_profile_period"
-		return value >= 5.0 && value <= 120.0
 	elseif keyName == "timeout"
 		return value >= 15.0 && value <= 300.0
 	elseif keyName == "combat_barks_period"
@@ -1158,7 +1212,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	endif
 
 	bool enabled = value > 0.5
-	if keyName == "enable_auto_activate"
+	if keyName == "hearing_preset"
+		ApplyHearingPreset(value as Int)
+	elseif keyName == "enable_auto_activate"
 		_toggleAddAllNPCState = enabled
 		controlScript.setConf("_toggleAddAllNPC", value)
 	elseif keyName == "max_distance_inside"
@@ -1190,9 +1246,6 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "bored_period"
 		_bored_period = value
 		controlScript.setConf("_bored_period", value)
-	elseif keyName == "dynamic_profile_period"
-		_dynamic_profile_period = value
-		controlScript.setConf("_dynamic_profile_period", value)
 	elseif keyName == "enable_ai_actions"
 		_toggleState2 = enabled
 		controlScript.setNewActionMode(enabled as Int)
@@ -1330,8 +1383,39 @@ Function PublishPrismaMCMAgents()
 	AIAgentFunctions.commitChimMcmAgents()
 EndFunction
 
+; Refresh both menus from native state after asynchronous server acknowledgement.
+Event OnChimInteractionChanged(String eventName, String payload, Float numericValue, Form sender)
+	int chimState = AIAgentFunctions.getChimInteractionState()
+	if CurrentPage == "Behavior" && _toggleChimInteraction != -1 && UI.IsMenuOpen("Journal Menu")
+		SetToggleOptionValue(_toggleChimInteraction, chimState == 1)
+		if chimState == 2
+			SetOptionFlags(_toggleChimInteraction, OPTION_FLAG_DISABLED)
+		else
+			SetOptionFlags(_toggleChimInteraction, OPTION_FLAG_NONE)
+		endif
+	endif
+	if _prismaChimInteractionPending && chimState != 2
+		_prismaChimInteractionPending = false
+		if chimState == 3
+			AIAgentFunctions.publishChimMcmCommandResult("set|chim_enabled", false, "Couldn't connect. CHIM is off locally.")
+		else
+			AIAgentFunctions.publishChimMcmCommandResult("set|chim_enabled", true, "CHIM updated.")
+		endif
+	endif
+	_prismaMcmRevision += 1
+	PublishPrismaMCMState()
+EndEvent
+
 Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, Form sender)
-	if payload == "snapshot"
+	if payload == "set|chim_enabled"
+		if (numericValue == 0.0 || numericValue == 1.0) && AIAgentFunctions.setChimInteractionEnabled(numericValue > 0.5)
+			_prismaChimInteractionPending = true
+			OnChimInteractionChanged("", "", 0.0, None)
+		else
+			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "CHIM is updating. Try again shortly.")
+		endif
+		return
+	elseif payload == "snapshot"
 		PublishPrismaMCMState()
 		return
 	elseif payload == "agents_refresh"
@@ -1400,6 +1484,9 @@ Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, F
 EndEvent
 
 event OnPageReset(string a_page)
+	RegisterForModEvent("CHIM_InteractionChanged", "OnChimInteractionChanged")
+	_toggleChimInteraction = -1
+	_menu_hearing_preset = -1
 
 	SetCursorFillMode(LEFT_TO_Right)
 	
@@ -1412,7 +1499,7 @@ event OnPageReset(string a_page)
 		_keymap_halt = AddKeyMapOption("Halt AI Actions", _halt_key)
 		_keymap_mastermenu = AddKeyMapOption("Master Menu", _mastermenu_key)
 		_keymapOID_K7 = AddKeyMapOption("Manual AI Activate", _myKey7)
-		_keymap_soulgaze = AddKeyMapOption("$chim_soulgaze_hotkey", _soulgaze_key)
+		_keymap_soulgaze = AddKeyMapOption(SoulGazeDisplayName(), _soulgaze_key)
 		_keymapOID_K = AddKeyMapOption("Text Chat (Deprecated)", _myKey)
 
 		AddEmptyOption()
@@ -1432,7 +1519,7 @@ event OnPageReset(string a_page)
 		_keymapOID_K4 = AddKeyMapOption("Roleplay Wheel", _myKey4)
 		_keymapOID_K3 = AddKeyMapOption("Settings Wheel", _myKey3)
 		_keymap_godmode = AddKeyMapOption("Mode Wheel", _godmode_key)
-		_keymapOID_K6 = AddKeyMapOption("Soulgaze Wheel", _myKey6)
+		_keymapOID_K6 = AddKeyMapOption("SoulGaze Wheel", _myKey6)
 	endif
 	
 
@@ -1440,11 +1527,7 @@ event OnPageReset(string a_page)
 		_toggleAddAllNPC		= AddToggleOption("Enable Auto Activate", _toggleAddAllNPCState)
 		AddEmptyOption()
 		
-		_slider_max_distance_inside	= AddSliderOption("Interior Auto Activate Distance",_max_distance_inside,"{0}" )
-		_slider_max_distance_outside	= AddSliderOption("Exterior Auto Activate Distance",_max_distance_outside,"{0}" )
-		_slider_spatial_hearing_inside	= AddSliderOption("Interior Spatial Hearing Distance",_spatial_hearing_inside,"{0}" )
-		_slider_spatial_hearing_outside	= AddSliderOption("Exterior Spatial Hearing Distance",_spatial_hearing_outside,"{0}" )
-		_slider_auto_hearing_radius_m	= AddSliderOption("Auto Hearing Radius",_auto_hearing_radius_m,"{0}" )
+
 		
 		AddEmptyOption()
 		
@@ -1456,9 +1539,32 @@ event OnPageReset(string a_page)
 		
 	endif
 
+	if (a_page == "Hearing & Awareness")
+		AddHeaderOption("Hearing Preset")
+		AddEmptyOption()
+		String[] presetNames = HearingPresetNames()
+		_menu_hearing_preset = AddMenuOption("Hearing Preset", presetNames[GetHearingPreset()])
+		AddEmptyOption()
+		AddHeaderOption("Hearing Range")
+		AddEmptyOption()
+		_slider_auto_hearing_radius_m = AddSliderOption("Auto Hearing Radius", _auto_hearing_radius_m, "{0} m")
+		AddEmptyOption()
+		_slider_spatial_hearing_inside = AddSliderOption("Interior Hearing Distance", _spatial_hearing_inside, "{0} units")
+		_slider_spatial_hearing_outside = AddSliderOption("Exterior Hearing Distance", _spatial_hearing_outside, "{0} units")
+		AddHeaderOption("Automatic Activation")
+		AddEmptyOption()
+		_slider_max_distance_inside = AddSliderOption("Interior Auto Activate Distance", _max_distance_inside, "{0} units")
+		_slider_max_distance_outside = AddSliderOption("Exterior Auto Activate Distance", _max_distance_outside, "{0} units")
+	endif
 	if (a_page=="Behavior")
+		int chimState = AIAgentFunctions.getChimInteractionState()
+		int chimFlags = OPTION_FLAG_NONE
+		if chimState == 2
+			chimFlags = OPTION_FLAG_DISABLED
+		endif
+		_toggleChimInteraction = AddToggleOption("CHIM", chimState == 1, chimFlags)
+		AddEmptyOption()
 		_slider_bored_period	= AddSliderOption("Bored Event Timer (seconds)",_bored_period,"{0}" )
-		_slider_dynamic_profile_period	= AddSliderOption("Dynamic Profile Timer (minutes)",_dynamic_profile_period,"{0}" )
 		
 		;AddEmptyOption()
 		AddHeaderOption("General Behavior")
@@ -1511,7 +1617,7 @@ event OnPageReset(string a_page)
 		_slider_ds			= AddSliderOption("AI Voice Distance Scale",_sound_ds,"{1}", AudioModeOptionFlags(audioIsAdvanced))
 		_slider_playback_dropoff_inside = AddSliderOption("Interior Playback Dropoff (%)", _playback_dropoff_inside, "{0}", AudioModeOptionFlags(audioIsAdvanced))
 		_slider_playback_dropoff_outside = AddSliderOption("Exterior Playback Dropoff (%)", _playback_dropoff_outside, "{0}", AudioModeOptionFlags(audioIsAdvanced))
-		_slider_curve_legacy_distance = AddSliderOption("3D Legacy Distance Scaler", _curve_legacy_distance, "{1}", AudioModeOptionFlags(audioIsLegacy))
+		_slider_curve_legacy_distance = AddSliderOption("3D Normal Distance Scaler", _curve_legacy_distance, "{1}", AudioModeOptionFlags(audioIsLegacy))
 		_toggleCameraBasedAudio = AddToggleOption("Camera Based Audio", _camera_based_audio_state, AudioModeOptionFlags(audioIs3D))
 		; Two fillers keep the option count even so the Advanced header stays in the left column.
 		AddEmptyOption()
@@ -1619,6 +1725,11 @@ endEvent
 
 event OnOptionMenuOpen(int a_option)
 	{Called when the user selects a menu option}
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
+		SetMenuDialogOptions(HearingPresetNames())
+		SetMenuDialogStartIndex(GetHearingPreset())
+		SetMenuDialogDefaultIndex(1)
+	endif
 
 	if (a_option == _menu_audio_mode)
 		; Old saves reach this with no option strings and, on the very first open, no resolved
@@ -1632,6 +1743,12 @@ event OnOptionMenuOpen(int a_option)
 endEvent
 
 event OnOptionMenuAccept(int a_option, int a_index)
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness" && a_index >= 0 && a_index <= 3
+		ApplyHearingPreset(a_index)
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		ForcePageReset()
+	endif
 	if (a_option == _menu_audio_mode)
 		if (a_index < 0 || a_index > 4)
 			return
@@ -1735,21 +1852,21 @@ event OnOptionSliderOpen(int a_option)
 
 	if (a_option == _slider_spatial_hearing_inside)
 		SetSliderDialogStartValue(_spatial_hearing_inside)
-		SetSliderDialogDefaultValue(471)
+		SetSliderDialogDefaultValue(1000)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
 
 	if (a_option == _slider_spatial_hearing_outside)
 		SetSliderDialogStartValue(_spatial_hearing_outside)
-		SetSliderDialogDefaultValue(1018)
+		SetSliderDialogDefaultValue(1800)
 		SetSliderDialogRange(50, 5000)
 		SetSliderDialogInterval(1)
 	endIf
 
 	if (a_option == _slider_auto_hearing_radius_m)
 		SetSliderDialogStartValue(_auto_hearing_radius_m)
-		SetSliderDialogDefaultValue(8)
+		SetSliderDialogDefaultValue(10)
 		SetSliderDialogRange(1, 20)
 		SetSliderDialogInterval(1)
 	endIf
@@ -1761,12 +1878,6 @@ event OnOptionSliderOpen(int a_option)
 		SetSliderDialogInterval(1)
 	endIf
 	
-	if (a_option == _slider_dynamic_profile_period)
-		SetSliderDialogStartValue(_dynamic_profile_period)
-		SetSliderDialogDefaultValue(20)
-		SetSliderDialogRange(5, 120)
-		SetSliderDialogInterval(1)
-	endIf
 	
 	if (a_option == _slider_openmic_sensitivity)
 		SetSliderDialogStartValue(_openmic_sensitivity)
@@ -1899,11 +2010,6 @@ event OnOptionSliderAccept(int a_option, float a_value)
 		SetSliderOptionValue(a_option, a_value, "{1}")
 	endIf
 	
-	if (a_option == _slider_dynamic_profile_period)
-		_dynamic_profile_period = a_value
-		controlScript.setConf("_dynamic_profile_period",_dynamic_profile_period)
-		SetSliderOptionValue(a_option, a_value, "{1}")
-	endIf
 	
 	if (a_option == _slider_openmic_sensitivity)
 		_openmic_sensitivity = a_value
@@ -1944,6 +2050,10 @@ event OnOptionSliderAccept(int a_option, float a_value)
 	endIf
 	
 	
+	if CurrentPage == "Hearing & Awareness"
+		String[] presetNames = HearingPresetNames()
+		SetMenuOptionValue(_menu_hearing_preset, presetNames[GetHearingPreset()])
+	endif
 	_prismaMcmRevision += 1
 endEvent
 	
@@ -2006,7 +2116,6 @@ event OnGameReload()
 
 	
 	a=controlScript.setConf("_bored_period",_bored_period)
-	a=controlScript.setConf("_dynamic_profile_period",_dynamic_profile_period)
 	
 	if (_toggleAddAllNPCState)
 		a=controlScript.setConf("_toggleAddAllNPC",1)
@@ -2105,6 +2214,18 @@ event OnGameReload()
 endEvent
 
 event OnOptionDefault(int a_option)
+	if a_option == _toggleChimInteraction && CurrentPage == "Behavior"
+		AIAgentFunctions.setChimInteractionEnabled(true)
+		OnChimInteractionChanged("", "", 0.0, None)
+		return
+	endif
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
+		ApplyHearingPreset(1)
+		_prismaMcmRevision += 1
+		PublishPrismaMCMState()
+		ForcePageReset()
+		return
+	endif
 	if (a_option == _keymapOID_K)
 		controlScript.removeBinding(_myKey)
 		_myKey = _myKeyDefault
@@ -2518,6 +2639,11 @@ endEvent
 
 event OnOptionSelect(int a_option)
 	{Called when the user selects a non-dialog option}
+	if a_option == _toggleChimInteraction && CurrentPage == "Behavior"
+		AIAgentFunctions.setChimInteractionEnabled(AIAgentFunctions.getChimInteractionState() != 1)
+		OnChimInteractionChanged("", "", 0.0, None)
+		return
+	endif
 	
 	if (a_option == _toggle1OID_B)
 		_toggleState1 = !_toggleState1
@@ -2877,7 +3003,22 @@ event OnOptionSelect(int a_option)
 endEvent
 
 event OnOptionHighlight(int a_option)
-	{Called when the user highlights an option}
+	if a_option == _toggleChimInteraction && CurrentPage == "Behavior"
+		int chimState = AIAgentFunctions.getChimInteractionState()
+		if chimState == 2
+			SetInfoText("Updating CHIM...")
+		elseif chimState == 3
+			SetInfoText("Couldn't connect. CHIM is off locally. Retrying when connected.")
+		else
+			SetInfoText("Turn AI dialogue and actions on or off. Game events are still recorded when off. Speech already playing can finish.")
+		endif
+		return
+	endif
+	if a_option == _menu_hearing_preset && CurrentPage == "Hearing & Awareness"
+		SetInfoText("Realistic keeps conversations close. Recommended balances range and filtering. Extended gives groups more room. Custom uses your sliders. Presets change only hearing ranges.")
+		return
+	endif
+	; Called when the user highlights an option
 	
 	if (a_option == _keymapOID_K)
 		SetInfoText("Deprecated text chat input. Tap to type a message. Hold to make the NPC in your crosshair wait here. Use Text Chat for Prisma UI.")
@@ -2922,19 +3063,19 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("Skips specified millisecods at end of a sentence. Some TTS services add some silence at the end of audio clips.")
 	endIf
 	if (a_option == _slider_ds)
-		SetInfoText("Adjust AI NPC volume at distance. Range: 0.1 to 20.0. Used by 3D Advanced and Mono + Advanced Effects only.")
+		SetInfoText("Adjust AI NPC volume at distance. Range: 0.1 to 20.0. Used by 3D Realistic and Mono + Advanced Effects only.")
 	endIf
 	if (a_option == _slider_playback_dropoff_inside)
-		SetInfoText("Indoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by 3D Advanced and Mono + Advanced Effects only.")
+		SetInfoText("Indoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by 3D Realistic and Mono + Advanced Effects only.")
 	endIf
 	if (a_option == _slider_playback_dropoff_outside)
-		SetInfoText("Outdoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by 3D Advanced and Mono + Advanced Effects only.")
+		SetInfoText("Outdoor playback dropoff aggressiveness. 100 = current behavior. Lower values are less aggressive (default 70). Used by 3D Realistic and Mono + Advanced Effects only.")
 	endIf
 	if (a_option == _menu_audio_mode)
-		SetInfoText("3D Advanced: directional with distance fading and muffling. 3D Legacy: directional with legacy distance fading. 2D Flat: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling. Dialogue awareness is unaffected.")
+		SetInfoText("3D Realistic: directional with distance fading and muffling. 3D Normal: directional with legacy distance fading. 2D Flat: directional without distance fading. Mono: non-positional. Mono + Advanced Effects: non-positional with advanced distance fading and muffling. Dialogue awareness is unaffected.")
 	endIf
 	if (a_option == _toggleCameraBasedAudio)
-		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default. Used by 2D Flat, 3D Legacy and 3D Advanced only.")
+		SetInfoText("When enabled, 3D voice direction follows the camera facing instead of the player actor heading. Off by default. Used by 2D Flat, 3D Normal and 3D Realistic only.")
 	endIf
 	if (a_option == _toggle1OID_E)
 		SetInfoText("Enable HD mode for Soulgaze (DirectX backbuffer access, server compression). Disable for in-game screenshots (VR users should disable).")
@@ -2961,7 +3102,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 	
 	if (a_option == _toggleInvertHeading)
-		SetInfoText("Inverts the 3D audio heading. This may resolve issues where NPCs in the front are heard at a lower volume. Used by 2D Flat, 3D Legacy and 3D Advanced only.")
+		SetInfoText("Inverts the 3D audio heading. This may resolve issues where NPCs in the front are heard at a lower volume. Used by 2D Flat, 3D Normal and 3D Realistic only.")
 	endIf
 
 	if (a_option == _togglePauseDialogue)
@@ -2985,15 +3126,15 @@ event OnOptionHighlight(int a_option)
 	endIf
 
 	if (a_option == _slider_spatial_hearing_inside)
-		SetInfoText("Sets indoor conversation hearing distance for spatial awareness checks.")
+		SetInfoText("Indoor range for listeners and the audience, in Skyrim units. Closed doors can block hearing outside the Auto Hearing Radius. Speech mode and sneaking adjust the range.")
 	endIf
 
 	if (a_option == _slider_spatial_hearing_outside)
-		SetInfoText("Sets outdoor conversation hearing distance for spatial awareness checks.")
+		SetInfoText("Outdoor range for listeners and the audience, in Skyrim units. Distance fading can reduce audibility. Speech mode and sneaking adjust the range.")
 	endIf
 
 	if (a_option == _slider_auto_hearing_radius_m)
-		SetInfoText("Direct auto hearing radius in meters. Uses straight-line distance and does not require LOS or navmesh.")
+		SetInfoText("Nearby NPCs hear you without door or path checks, within the hearing distance. In meters; 1 meter is 70 Skyrim units. Whispering and sneaking reduce it. Close mode does not use this allowance.")
 	endIf
 	
 	if (a_option == _toggleAddAllNPC)
@@ -3004,9 +3145,6 @@ event OnOptionHighlight(int a_option)
 		SetInfoText("How many seconds (with some exceptions) a Bored event can potenitally be triggered.")
 	endIf
 	
-	if (a_option == _slider_dynamic_profile_period)
-		SetInfoText("Timer for automatic dynamic profile updates. Updates NPC personalities based on recent events.")
-	endIf
 	
 	if (a_option == _toggle_npc_go_near)
 		SetInfoText("When enabled NPC's will subtly move around the player to make listening to conversations easier.")
@@ -3142,7 +3280,7 @@ event OnOptionHighlight(int a_option)
 	endIf
 
 	if (a_option == _slider_curve_legacy_distance)
-		SetInfoText("Curve distance scale for the emitter. How much actors are attenuated based on distance. Higher values: less attenuation. Lower values: more attenuation. Values below 1 select 2D Flat, retaining direction without distance fading. Used by 3D Legacy only.")
+		SetInfoText("Curve distance scale for the emitter. How much actors are attenuated based on distance. Higher values: less attenuation. Lower values: more attenuation. Values below 1 select 2D Flat, retaining direction without distance fading. Used by 3D Normal only.")
 	endIf
 
 	if (a_option == _slider_maintenance_period)

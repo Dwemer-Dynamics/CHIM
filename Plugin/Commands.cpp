@@ -1,4 +1,6 @@
+#include "ChimInteraction.h"
 #include "Commands.h"
+#include "DirectorScene.h"
 
 #include "Globals.h"
 #include "DynamicDiaryBook.h"
@@ -101,13 +103,14 @@ void processActionConfirmationQueue() {
         : pending.text.substr(delimiterPosition + 1);
     const std::string title = "Allow " + (action.empty() ? std::string("action") : action) + "?";
     const std::string message = pending.actor + " wants to perform " +
-        (action.empty() ? std::string("this action") : action) + "." + describeActionParameter(parameter);
+        (action.empty() ? std::string("this action") : action) + "." +
+        (parameter.rfind("__DIRECTOR_SCENE__", 0) == 0 ? "" : describeActionParameter(parameter));
 
     g_actionConfirmationActive.store(true);
     const bool shown = PrismaUIBridge::ShowConfirmation(
         title, message, "Cancel", "Allow",
         [pending](bool accepted) mutable {
-            if (accepted) {
+            if (accepted && !DirectorScene::ApproveAction(pending.text)) {
                 SPGResponse::getInstance().enqueue(
                     "command",
                     makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
@@ -937,7 +940,7 @@ RE::TESForm* findLocation(std::string parameter) {
 
     if (!world) {
         logger::info("[FINDLOCATION] No world info when searching for {}", parameter);
-        return nullptr;
+        //return nullptr;
     }
 
     RE::TESWorldSpace* candidate(nullptr);
@@ -1086,6 +1089,7 @@ RE::TESForm* findLocation(std::string parameter) {
 }
 
 void parseRoleCommand(std::string rawCommand) {
+    if (!ChimInteraction::Enabled()) return;
     static std::string delimiter = "@";
     size_t pos = rawCommand.find(delimiter);
     if (pos == std::string::npos) {
@@ -1096,7 +1100,12 @@ void parseRoleCommand(std::string rawCommand) {
     std::string command = rawCommand.substr(0, pos);
     std::string parameter = rawCommand.substr(pos + delimiter.length());
 
-    if (command.contains("spawnCharacter")) {
+    if (command == "DirectorScene") {
+        DirectorScene::Queue(parameter);
+    } else if (command == "DirectorSceneFailed") {
+        try { DirectorScene::RequestFailed(std::stoull(parameter)); }
+        catch (const std::exception&) { logger::warn("[DIRECTOR] Invalid failure response"); }
+    } else if (command.contains("spawnCharacter")) {
         std::vector<std::string> splitResult = splitString(parameter);
 
         if (splitResult.size() != 7) {
@@ -1759,7 +1768,8 @@ void parseRoleCommand(std::string rawCommand) {
             const std::string message = splitResult[0];
             const std::string messageType = splitResult[1];
             // Browser STT commands arrive on the manager worker, while routing reads live Skyrim objects.
-            SKSE::GetTaskInterface()->AddTask([message, messageType]() {
+            SKSE::GetTaskInterface()->AddTask([message, messageType, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
                 PlayerConversationRoutingContext routingContext{};
                 routingContext.source = PlayerConversationInputSource::Voice;
                 PrismaUIBridge::ApplySavedPlayerMood(routingContext);
@@ -2120,7 +2130,8 @@ void parseRoleCommand(std::string rawCommand) {
             
             if (trainerActor) {
                 // Queue the menu opening on the main thread
-                SKSE::GetTaskInterface()->AddTask([trainerActor]() {
+                SKSE::GetTaskInterface()->AddTask([trainerActor, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
                     if (!trainerActor) {
                         logger::error("[ShowTrainingMenu] Trainer actor is null in task");
                         return;
@@ -2147,6 +2158,7 @@ void parseRoleCommand(std::string rawCommand) {
 }
 
 void parseCommand(std::string rawCommand, std::string actorname) {
+    if (!ChimInteraction::Enabled()) return;
     bool userApproved = false;
     if (rawCommand.rfind(kApprovedActionPrefix, 0) == 0) {
         userApproved = true;
@@ -2530,11 +2542,36 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         }
 
         if (!target || !targetAsActor) {
-            logger::info("[MoveTo] target {} not found", targetName);
-            HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                         "command@" + command + "@" + targetName + "@Error: target not found"),
-                             npc);
-            return;
+
+            // No target Found. Lets check if its a location.
+            auto locationForm = findLocation(parameter);
+            if (locationForm) {
+                // RE::BGSLocation* location = locationForm->As<RE::BGSLocation>();
+                std::string locatioName(trim(parameter));
+                logger::info("Location target: {}", locatioName);
+                auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                auto args = RE::MakeFunctionArguments(std::move(targetActor),
+                                                        std::move(locationForm->AsReference()), std::move(parameter));
+                RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                    "AIAgentAIMind", "TravelToLocation", args, callback);
+
+                HTTPManager::stream(
+                    std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                "command@" + command + "@" + locatioName + "@#HERIKA_NPC1# starts traveling to " +
+                                    locatioName + " , current location " + GetPlayerLocation()),
+                    targetActor);
+
+                agentPtr.get()->setCurrentCommand("TravelTo");
+                return;
+                    // agentPtr.get()->setCommandBusy(true);
+                
+            } else {
+                logger::info("[MoveTo] target {} not found", targetName);
+                HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                             "command@" + command + "@" + targetName + "@Error: target not found"),
+                                 npc);
+                return;
+            }
         }
 
         std::string resolvedTargetName(targetAsActor->GetDisplayFullName());
@@ -3103,7 +3140,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
         auto args = RE::MakeFunctionArguments(std::move(sgmodelocal));
 
-        SKSE::GetTaskInterface()->AddTask([args]() {
+        SKSE::GetTaskInterface()->AddTask([args, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
             // actor->NotifyAnimationGraph(anim);
             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentSoulGazeEffect",
@@ -4642,9 +4680,13 @@ SpatialAwareness::Settings GetPlayerSpeechSpatialSettings(RE::Actor* speaker, fl
         spatialSettings.maxAirDistance *= distanceMultiplier;
         spatialSettings.interiorMaxDistance *= distanceMultiplier;
         spatialSettings.exteriorMaxDistance *= distanceMultiplier;
+        spatialSettings.autoHearingDistance *= distanceMultiplier;
         spatialSettings.immediateDistance = spatialSettings.autoHearingDistance;
     }
 
+    // Hearing sliders must not be silently capped by the separate vision scan limit.
+    spatialSettings.maxAirDistance = std::max({spatialSettings.maxAirDistance,
+        spatialSettings.interiorMaxDistance, spatialSettings.exteriorMaxDistance});
     return spatialSettings;
 }
 
@@ -5745,7 +5787,7 @@ void StartAttack(std::string targetName, RE::Actor* actor) {
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentAIMind", "AttackTarget",
                                                                                    args, callback);
 
-        SpeakManager::getInstance().deleteQueue();  // 1.0.12
+        SpeakManager::getInstance().deleteQueue(true);  // Preserve authored turns while the attack starts.
         // I think some functions should interrupt speaking
 
         EndCommand("Attack", actor->GetDisplayFullName());  // Payrus will take care of ending
@@ -5838,7 +5880,7 @@ void StartBrawl(std::string targetName, RE::Actor* actor) {
     RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
         "AIAgentAIMind", "BrawlTarget", args, callback);
 
-    SpeakManager::getInstance().deleteQueue();
+    SpeakManager::getInstance().deleteQueue(true);
 }
 
 void Follow(std::string targetName) {}
@@ -5954,7 +5996,8 @@ bool commandAnimation(std::string anim, RE::Actor* actor) {
     auto args = RE::MakeFunctionArguments(std::move(newActor), std::move(anim));
 
 
-    SKSE::GetTaskInterface()->AddTask([args]() {
+    SKSE::GetTaskInterface()->AddTask([args, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
         //actor->NotifyAnimationGraph(anim);
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("AIAgentNpcUtil", "NpcPlayIdle",

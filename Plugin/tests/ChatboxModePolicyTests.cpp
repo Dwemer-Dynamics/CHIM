@@ -17,6 +17,13 @@ namespace
 
 int main()
 {
+    Check(ChatboxModePolicy::IsOneShot("HYPNOSIS") &&
+              ChatboxModePolicy::ModeAfterSubmission("HYPNOSIS") == "STANDARD",
+          "Hypnosis must return to Standard after submission");
+    Check(ChatboxModePolicy::ParseSubmission("Be more trusting", "HYPNOSIS").mode == "HYPNOSIS",
+          "Hypnosis instructions must preserve their submitted mode");
+    Check(ChatboxModePolicy::ParseSubmission("% hello", "HYPNOSIS").mode == "WHISPER",
+          "Existing shortcuts must still override Hypnosis");
     using namespace std::literals;
 
     Check(ChatboxModePolicy::IsOneShot("DIRECTOR"sv),

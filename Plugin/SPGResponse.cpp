@@ -1,3 +1,5 @@
+#include "PlaythroughSession.h"
+#include "ChimInteraction.h"
 #include "SPGResponse.h"
 
 #include <list>
@@ -28,6 +30,7 @@ SPGResponse& SPGResponse::getInstance() {
 }
 
 void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated) {
+    if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
     std::stringstream ss(data);
     std::string line;
     while (std::getline(ss, line)) {
@@ -83,9 +86,17 @@ void SPGResponse::eraseOldItems(const std::string& key) {
     }
 }
 
+void SPGResponse::clearGameOutput() {
+    std::lock_guard lock(m_mutex);
+    for (auto& [key, queue] : m_responses) {
+        if (ChimInteraction::IsGameOutput(key)) queue.clear();
+    }
+}
+
 void SPGResponse::enqueue(const std::string& key, const ResponseItem& item) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (ChimInteraction::IsGameOutput(key) && !ChimInteraction::Enabled()) return;
     m_responses[key].push_back(item);
     logger::info("Pushed {},{},{},{}", key, m_responses[key].size(),item.text,item.actor);
 }

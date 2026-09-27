@@ -7,7 +7,7 @@
 namespace SpatialAwareness
 {
     inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
-    inline constexpr float kAutoHearingRadiusMeters = 8.0f;
+    inline constexpr float kAutoHearingRadiusMeters = 10.0f;
     inline constexpr float kMinAutoHearingRadiusMeters = 1.0f;
     inline constexpr float kMaxAutoHearingRadiusMeters = 20.0f;
     inline constexpr float kAutoHearingDistance =
@@ -30,30 +30,22 @@ namespace SpatialAwareness
 
     struct Settings
     {
-        float maxAirDistance = 4000.0f;
+        float maxAirDistance = 5000.0f;
         float immediateDistance = 150.0f;
         float autoHearingDistance = kAutoHearingDistance;
-        // Tuned so clear-line practical audibility (volume >= 0.15) is roughly:
-        // - indoors:  ~22.5 ft (~750 units)
-        // - outdoors: ~37.5 ft (~1250 units)
-        float interiorMaxDistance = 750.0f;
-        float exteriorMaxDistance = 1250.0f;
+        // Range ceilings in Skyrim units; attenuation can make speech inaudible sooner.
+        float interiorMaxDistance = 1000.0f;
+        float exteriorMaxDistance = 1800.0f;
         float minDistanceFactor = 0.1f;
         float interiorBaseModifier = 1.0f;
         float exteriorBaseModifier = 0.7f;
-        float openDoorPenaltyBase = 0.85f;
-        float aroundCornerPenalty = 0.60f;
         float minimumAudibleVolume = 0.15f;
         float doorTriangulationAbsoluteTolerance = 80.0f;
-        float pathRatioReject = 4.0f;
-        float pathRatioDistanceReject = 2.5f;
-        float pathRatioDistanceRejectMinAir = 500.0f;
         float losConfirmPathRatio = 2.0f;
         float losConfirmMinAirDistance = 400.0f;
-        float pathComplexityStartRatio = 1.2f;
-        float pathComplexityScale = 0.6f;
-        float pathComplexityMin = 0.3f;
         float navmeshSnapDistance = 450.0f;
+
+        bool operator==(const Settings&) const = default;
     };
 
     struct Result
@@ -95,6 +87,12 @@ namespace SpatialAwareness
     void SetAutoHearingRadiusMeters(float meters);
     float GetAutoHearingRadiusMeters();
     void InvalidateCache();
+
+    void SetDoorStateCell(RE::FormID cellId);
+    void ResetDoorStates();
+    void ForgetDoorState(RE::FormID doorId);
+    void RecordDoorState(RE::TESObjectREFR* door, bool opened);
+    RE::BGSOpenCloseForm::OPEN_STATE GetDoorState(RE::TESObjectREFR* door);
 
     PathResult EvaluatePath(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());
     Result Evaluate(RE::Actor* speaker, RE::Actor* listener, const Settings& settings = GetSettings());

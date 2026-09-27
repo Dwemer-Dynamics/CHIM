@@ -32,6 +32,8 @@ struct PlayerConversationRoutingContext
     std::string explicitTargetName;
     // Route against stripped content while sending the original shortcut to HerikaServer.
     std::string symbolRoutingMode;
+    // Freeze the selected command mode before asynchronous requests or one-shot resets.
+    std::string executionMode;
     std::string routingMessage;
     std::string playerMood;
     std::string customPlayerMood;

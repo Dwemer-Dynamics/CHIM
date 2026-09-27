@@ -213,7 +213,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		endwhile
 		if (npcList != "")
 			Debug.Notification("[CHIM] Updating dynamic profiles for nearby NPCs")
-			AIAgentFunctions.logMessage(npcList, "updateprofiles_batch_async")
+			AIAgentFunctions.logMessage(npcList, "updateprofiles_batch_async_manual")
 		else
 			Debug.Notification("[CHIM] No nearby AI NPCs found")
 		endif
@@ -228,7 +228,7 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		endif
 	elseif (actionId == "rp_update_npc" && targetActor)
 		Debug.Trace("[CHIM] Updating dynamic profile for " + targetActor.GetDisplayName())
-		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async")
+		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async_manual")
 	elseif (actionId == "rp_wait" && targetActor)
 		AIAgentAIMind.StartWait(targetActor)
 	elseif (actionId == "rp_follow" && targetActor)
@@ -1344,7 +1344,7 @@ Function OpenRoleplayWheel()
 	ElseIf ( currentMode ==  "UPDATE_NPC")
 		If (leader)
 			Debug.Trace("[CHIM] Updating dynamic profile for "+leader.GetDisplayName())
-			AIAgentFunctions.logMessage(leader.GetDisplayName(),"updateprofiles_batch_async")
+			AIAgentFunctions.logMessage(leader.GetDisplayName(),"updateprofiles_batch_async_manual")
 		Else
 			Debug.Notification("[CHIM] You must look at a target to use this")
 		EndIf
@@ -1482,7 +1482,7 @@ Function OpenSettingsWheel()
 EndFunction
 
 Function OpenModeWheel()
-	String[] _modes = new String[7]
+	String[] _modes = new String[8]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
@@ -1490,8 +1490,9 @@ Function OpenModeWheel()
 	_modes[4] = "AUTOCHAT"
 	_modes[5] = "INJECTION_LOG"
 	_modes[6] = "INJECTION_CHAT"
+	_modes[7] = "HYPNOSIS"
 	
-	String[] _label = new String[7]
+	String[] _label = new String[8]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
@@ -1499,6 +1500,7 @@ Function OpenModeWheel()
 	_label[4] = "Auto Chat"
 	_label[5] = "Inject Event"
 	_label[6] = "Inject & Chat"
+	_label[7] = "Hypnosis"
 		
 	int j=0
 	UIExtensions.InitMenu("UIWheelMenu")
@@ -1598,6 +1600,10 @@ EndFunction
 
 Function sendLocation(Location curr,string tags,Cell referenceCell=None) global
 
+	if (true)
+		AIAgentFunctions.sendLocationFast(curr,tags,referenceCell);
+		return
+	endif
 	if curr
 		; ---------------------------------------------------------------------------------------------
 		ObjectReference destMarker = AIAgentFunctions.getWorldLocationMarkerFor(curr)
@@ -1984,7 +1990,7 @@ Function OpenModeToggleWheel(float holdTime)
 		Return
 	EndIf
 	
-	String[] _modes = new String[7]
+	String[] _modes = new String[8]
 	_modes[0] = "STANDARD"
 	_modes[1] = "WHISPER"
 	_modes[2] = "DIRECTOR"
@@ -1992,8 +1998,9 @@ Function OpenModeToggleWheel(float holdTime)
 	_modes[4] = "AUTOCHAT"
 	_modes[5] = "INJECTION_LOG"
 	_modes[6] = "INJECTION_CHAT"
+	_modes[7] = "HYPNOSIS"
 	
-	String[] _label = new String[7]
+	String[] _label = new String[8]
 	_label[0] = "Standard Chat"
 	_label[1] = "Whisper Chat"
 	_label[2] = "Director Mode"
@@ -2001,6 +2008,7 @@ Function OpenModeToggleWheel(float holdTime)
 	_label[4] = "Auto Chat"
 	_label[5] = "Inject Event"
 	_label[6] = "Inject & Chat"
+	_label[7] = "Hypnosis"
 	
 	If (holdTime < 0.5) 
 		; Quick press - Open wheel menu
