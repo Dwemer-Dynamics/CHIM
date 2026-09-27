@@ -59,3 +59,13 @@ See [building.md](building.md) and [custom-plugins.md](custom-plugins.md). Nativ
 ## Packaging these instructions
 
 `AIAgent/docs/CHIM/` is the single canonical copy. The FOMOD installs it for every option, and `AIAgent/AIAgent/README.md` points installed users here. A maintainer's packager may remove the payload-root README, so do not rely on that file alone. Keep the namespaced folder intact when copying or archiving the mod; do not install a generic `Data/AGENTS.md`.
+
+## Speech trace diagnostics
+
+Search `AIAgent.log` for `[SPEECH_TRACE]` and an `utterance_id` from HerikaServer's `log/chim.log`. Records use the existing optional ScriptQueue ID field; older server lines without an ID still play normally but cannot be correlated end to end.
+
+`received` means the parsed line reached the speech manager. `queued` and `dequeued` show queue admission and waiting time. Downloads have start/end markers and byte counts. `playback_started` is logged only after the audio engine accepts playback. `completed`, `interrupted`, `cancelled`, `skipped`, and `failed` report distinct outcomes. `subtitle_only_completed` means the existing audio-failure fallback displayed timed subtitles instead. `queue_removed` means the line was removed from the queue; active playback may still finish. A cancellation request alone does not prove playback stopped.
+
+The existing speech callback is not proof of audible output. Missing stages remain unknown rather than being classified as success. Trace records contain IDs and bounded metadata, not dialogue or audio. Existing log levels and support-log collection apply.
+
+Durations use the local monotonic clock. Do not compare its absolute value with the server's monotonic clock. No new network requests, protocol fields, settings, or game-state events are introduced.
