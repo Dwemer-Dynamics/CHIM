@@ -248,3 +248,5 @@ textarea { resize: vertical; line-height: 1.35; }
     .voice-filter-select { flex-basis: 100%; }
     .voice-filter-play { width: 100%; }
 }
+
+.event-private-thought { margin-top: 6px; color: #b8b8b8; font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -572,6 +572,12 @@
                 if (index === 1) cell.className = 'history-data';
                 if (index === 2) cell.className = 'history-audience';
                 cell.textContent = value;
+                if (index === 1 && historyEvent.private_thought && historyEvent.private_thought.text) {
+                    const thought = document.createElement('div');
+                    thought.className = 'event-private-thought';
+                    thought.textContent = `Private thought (${historyEvent.private_thought.owner}): ${historyEvent.private_thought.text}`;
+                    cell.appendChild(thought);
+                }
                 row.appendChild(cell);
             });
             const deleteButton = document.createElement('button');
