@@ -69,6 +69,7 @@
                 <button type="button" class="editor-tab" data-tab="relationships">🤝 Relationships</button>
                 <button type="button" class="editor-tab" data-tab="info">ℹ Info</button>
                 <button type="button" class="editor-tab" data-tab="actions">⚡ Actions</button>
+                <button type="button" class="editor-tab" data-tab="schedules">Schedules</button>
                 <button type="button" class="editor-tab" data-tab="background-life">🌍 Background Life</button>
                 <button type="button" class="editor-tab" data-tab="history">📜 History</button>
             </nav>
@@ -189,6 +190,7 @@
                         <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
                     </section>
 
+                    <section class="tab-panel" data-panel="schedules" hidden><div id="npc-schedules" data-schedule-root></div></section>
                     <section class="tab-panel" data-panel="background-life" hidden>
                         <div class="npc-action-list">
                             <article class="npc-action-card inception-card">
@@ -213,6 +215,8 @@
         </section>
     </div>
 
+    <link rel="stylesheet" href="npc_schedules.css">
+    <script src="npc_schedules.js"></script>
     <script src="npc_manager.js"></script>
 </body>
 </html>

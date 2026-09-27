@@ -3979,7 +3979,9 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 			Debug.Trace("[CHIM] BackgroundCmd, parm1: <"+cmd[1]+">")
 		endif
 		
-		if (cmd[0] == "TravelTo") 
+		if (cmd[0] == "Schedule")
+			CHIMSchedule.Execute(akTarget, cmd)
+		elseif (cmd[0] == "TravelTo")
 			Int locrefId=StringToInt(cmd[1])
 			ResetPackages(akTarget);
 			Location destination = Game.GetFormEx(locrefId) as Location;
