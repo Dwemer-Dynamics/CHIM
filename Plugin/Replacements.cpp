@@ -1,4 +1,5 @@
 #include "Replacements.h"
+#include "DirectorScene.h"
 #include "SPGResponse.h"
 
 
@@ -68,6 +69,7 @@ std::string ReplacementFor(std::string actorName, std::string originalString) {
 }
 
 void responsePop(std::string action) {
+    if (DirectorScene::IsDispatchingAction()) return;
     SPGResponse& spgResponse = SPGResponse::getInstance();
     std::string qName = action;
 

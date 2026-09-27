@@ -2,6 +2,7 @@
 
 #include "PlayerConversationRouter.h"
 #include "SpatialAwareness.h"
+#include "SpatialGeometryPolicy.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -101,27 +102,8 @@ namespace
     struct DoorBarrierScan {
         int openDoorCount = 0;
         int closedDoorCount = 0;
+        RE::FormID closedDoorCandidateFormId = 0;
     };
-
-    float DoorTriangulationTolerance(float airDistance, const SpatialAwareness::Settings& settings)
-    {
-        const float scaledTolerance = airDistance * settings.doorTriangulationPercentTolerance;
-        return std::max(settings.doorTriangulationAbsoluteTolerance, scaledTolerance);
-    }
-
-    bool IsBetweenActors(const RE::NiPoint3& playerPosition, const RE::NiPoint3& targetPosition,
-                         const RE::NiPoint3& candidatePosition, float airDistance,
-                         const SpatialAwareness::Settings& settings)
-    {
-        if (airDistance <= 0.001f || !std::isfinite(airDistance)) {
-            return false;
-        }
-
-        const float playerToCandidate = playerPosition.GetDistance(candidatePosition);
-        const float targetToCandidate = targetPosition.GetDistance(candidatePosition);
-        const float combinedDistance = playerToCandidate + targetToCandidate;
-        return combinedDistance <= airDistance + DoorTriangulationTolerance(airDistance, settings);
-    }
 
     bool IsClosedDoorState(RE::BGSOpenCloseForm::OPEN_STATE state)
     {
@@ -163,27 +145,33 @@ namespace
             return scan;
         }
 
-        const auto playerPosition = player->GetPosition();
-        const auto targetPosition = target->GetPosition();
+        const auto playerPosition = SpatialAwareness::GetEffectiveActorPosition(player);
+        const auto targetPosition = SpatialAwareness::GetEffectiveActorPosition(target);
         const float airDistance = playerPosition.GetDistance(targetPosition);
         if (!std::isfinite(airDistance) || airDistance <= 0.001f) {
             return scan;
         }
 
-        const float scanRadius = airDistance + DoorTriangulationTolerance(airDistance, settings);
-        playerCell->ForEachReferenceInRange(playerPosition, scanRadius, [&](RE::TESObjectREFR& reference) {
-            const auto* baseObject = reference.GetBaseObject();
+        const float corridorHalfWidth = std::max(settings.doorTriangulationAbsoluteTolerance, 0.0f);
+        const float scanRadius = airDistance + corridorHalfWidth;
+        playerCell->ForEachReferenceInRange(playerPosition, scanRadius, [&](RE::TESObjectREFR* reference) {
+            const auto* baseObject = reference->GetBaseObject();
             if (!baseObject || baseObject->GetFormType() != RE::FormType::Door) {
                 return RE::BSContainer::ForEachResult::kContinue;
             }
 
-            if (!IsBetweenActors(playerPosition, targetPosition, reference.GetPosition(), airDistance, settings)) {
+            const auto doorPosition = reference->GetPosition();
+            if (!SpatialGeometryPolicy::IsPointWithinSegmentCorridor(
+                    {playerPosition.x, playerPosition.y, playerPosition.z},
+                    {targetPosition.x, targetPosition.y, targetPosition.z},
+                    {doorPosition.x, doorPosition.y, doorPosition.z}, corridorHalfWidth)) {
                 return RE::BSContainer::ForEachResult::kContinue;
             }
 
-            const auto openState = RE::BGSOpenCloseForm::GetOpenState(&reference);
+            const auto openState = SpatialAwareness::GetDoorState(reference);
             if (IsClosedDoorState(openState)) {
                 ++scan.closedDoorCount;
+                scan.closedDoorCandidateFormId = reference->GetFormID();
                 return RE::BSContainer::ForEachResult::kStop;
             }
 
@@ -438,13 +426,6 @@ namespace
             return result;
         }
 
-        if (settings.immediateDistance > 0.0f && airDistance <= settings.immediateDistance) {
-            result.canCommunicate = true;
-            result.volume = 1.0f;
-            result.reason = "immediate_proximity";
-            return result;
-        }
-
         const float audibleDistance =
             playerInterior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
         if (audibleDistance > 0.0f && airDistance > audibleDistance) {
@@ -452,12 +433,18 @@ namespace
             return result;
         }
 
-        const float maxDistance = std::max(audibleDistance, 1.0f);
-        const float distanceFactor =
-            std::clamp(1.0f - (airDistance / maxDistance), settings.minDistanceFactor, 1.0f);
+        const float nearbyDistance = std::max(settings.autoHearingDistance, settings.immediateDistance);
+        if (nearbyDistance > 0.0f && airDistance <= nearbyDistance) {
+            result.canCommunicate = true;
+            result.volume = 1.0f;
+            result.reason = "immediate_proximity";
+            return result;
+        }
+
         const float environmentModifier =
             playerInterior ? settings.interiorBaseModifier : settings.exteriorBaseModifier;
-        result.volume = std::clamp(distanceFactor * environmentModifier, 0.0f, 1.0f);
+        result.volume = SpatialGeometryPolicy::HearingVolume(airDistance, audibleDistance, playerInterior,
+            environmentModifier, settings.minDistanceFactor, false);
 
         const float verticalDelta = targetPosition.z - playerPosition.z;
         if (playerInterior && std::isfinite(verticalDelta) &&
@@ -605,7 +592,7 @@ namespace
 
         const bool interior = player && player->GetParentCell() && player->GetParentCell()->IsInteriorCell();
         const float maxDistance = interior ? settings.interiorMaxDistance : settings.exteriorMaxDistance;
-        if (maxDistance > 0.0f && pathResult.pathDistance > maxDistance) {
+        if (maxDistance > 0.0f && baseResult.airDistance > maxDistance) {
             baseResult.canCommunicate = false;
             baseResult.volume = 0.0f;
             baseResult.reason = "too_far";
@@ -614,18 +601,13 @@ namespace
 
         if (baseResult.airDistance > 0.001f) {
             baseResult.pathRatio = pathResult.pathDistance / baseResult.airDistance;
-            if (baseResult.pathRatio >= settings.pathRatioReject ||
-                (baseResult.pathRatio >= settings.pathRatioDistanceReject &&
-                 baseResult.airDistance >= settings.pathRatioDistanceRejectMinAir)) {
-                baseResult.canCommunicate = false;
-                baseResult.volume = 0.0f;
-                baseResult.reason = "path_ratio_blocked";
-                return baseResult;
-            }
         }
 
-        baseResult.canCommunicate = true;
-        baseResult.reason = "path_fallback_clear";
+        baseResult.volume = SpatialGeometryPolicy::HearingVolume(baseResult.airDistance, maxDistance, interior,
+            interior ? settings.interiorBaseModifier : settings.exteriorBaseModifier,
+            settings.minDistanceFactor, true);
+        baseResult.canCommunicate = baseResult.volume >= settings.minimumAudibleVolume;
+        baseResult.reason = baseResult.canCommunicate ? "path_fallback_clear" : "too_quiet";
         return baseResult;
     }
 
@@ -698,13 +680,7 @@ namespace
                 const auto doorScan = ScanDoorBarrierBetween(playerActor, targetActor, settings);
                 result.openDoorCount = doorScan.openDoorCount;
                 result.closedDoorCount = doorScan.closedDoorCount;
-                if (doorScan.closedDoorCount > 0) {
-                    result.canCommunicate = false;
-                    result.volume = 0.0f;
-                    result.reason = "closed_door_between";
-                    storeResult(result);
-                    return;
-                }
+                result.closedDoorCandidateFormId = doorScan.closedDoorCandidateFormId;
             }
 
             bool hasLineOfSight = false;
@@ -713,8 +689,17 @@ namespace
             result.losQueryOk = losQueryOk;
             result.hasLineOfSight = losQueryOk && hasLineOfSight;
             if (result.hasLineOfSight) {
+                result.closedDoorCount = 0;
                 result.canCommunicate = true;
                 result.reason = "line_of_sight_clear";
+                storeResult(result);
+                return;
+            }
+
+            if (result.closedDoorCount > 0) {
+                result.canCommunicate = false;
+                result.volume = 0.0f;
+                result.reason = "closed_door_between";
                 storeResult(result);
                 return;
             }
@@ -1323,9 +1308,8 @@ PlayerSpatialTargetStatus SpatialSnapshotManager::GetPlayerCrosshairTargetStatus
     const bool spatialRefinementSettling = ShouldDeferPlayerSpatialForCell(playerCell, now, reason);
 
     RE::FormID crosshairFormId = 0;
-    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton();
-        crosshairPickData && crosshairPickData->target) {
-        if (auto crosshairTarget = crosshairPickData->target.get();
+    if (auto* crosshairPickData = RE::CrosshairPickData::GetSingleton(); crosshairPickData) {
+        if (auto crosshairTarget = crosshairPickData->GetActiveTarget().get();
             crosshairTarget && crosshairTarget->GetFormType() == RE::FormType::ActorCharacter) {
             crosshairFormId = crosshairTarget->GetFormID();
         }

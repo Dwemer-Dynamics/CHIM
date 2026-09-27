@@ -30,6 +30,32 @@ namespace PlayerConversationRoutingPolicy
         return message.substr(0, separator) == "diary";
     }
 
+    inline bool IsRechatRequest(std::string_view message)
+    {
+        const auto separator = message.find('|');
+        return message.substr(0, separator) == "rechat";
+    }
+
+    enum class RequestEligibility
+    {
+        EventDefault,
+        ExplicitTarget,
+        RequireEligible
+    };
+
+    // Explicit script intent applies only to its target, never to other speakers or later requests.
+    inline bool ShouldCheckAutomaticEligibility(std::string_view message, RequestEligibility eligibility,
+                                                 bool requestedActor)
+    {
+        if (eligibility == RequestEligibility::RequireEligible) {
+            return true;
+        }
+        if (eligibility == RequestEligibility::ExplicitTarget) {
+            return !requestedActor;
+        }
+        return !IsPlayerInitiatedRequest(message);
+    }
+
     struct AutomaticEligibilityFacts
     {
         bool conversationCooldown = false;
@@ -44,8 +70,13 @@ namespace PlayerConversationRoutingPolicy
         bool sceneDialogueEnabled = false;
     };
 
+    struct AutomaticEligibilityOptions
+    {
+        bool ignoreSleeping = false;
+    };
+
     inline std::string_view GetAutomaticBlockReason(
-        const AutomaticEligibilityFacts& facts, bool ignoreSleeping = false)
+        const AutomaticEligibilityFacts& facts, AutomaticEligibilityOptions options = {})
     {
         if (facts.conversationCooldown) {
             return "cooldown";
@@ -56,13 +87,11 @@ namespace PlayerConversationRoutingPolicy
         if (facts.inCombat && !facts.combatDialogueEnabled) {
             return "combat";
         }
-        if (facts.restrained) {
-            return "restrained";
-        }
+        // Restraint limits movement, not the actor's ability to speak.
         if (facts.unconscious) {
             return "unconscious";
         }
-        if (facts.sleeping && !ignoreSleeping) {
+        if (facts.sleeping && !options.ignoreSleeping) {
             return "sleeping";
         }
         if (facts.inScene && !facts.sceneDialogueEnabled) {
@@ -110,7 +139,7 @@ namespace PlayerConversationRoutingPolicy
         bool narratorMode = false;
         bool everyoneMode = false;
         bool narratorGesture = false;
-        // Shout is the only mode that can reach a sleeping direct target.
+        // Optional caller policy; ordinary direct address permits sleeping targets.
         bool blockSleepingDirectTarget = false;
     };
 
@@ -198,7 +227,7 @@ namespace PlayerConversationRoutingPolicy
         return radius <= 0.0f || distance <= radius;
     }
 
-    // Direct address bypasses soft eligibility, but only Shout can reach a sleeper.
+    // Apply an explicit caller sleep restriction independently of automatic eligibility.
     inline bool IsSleepingDirectTarget(const Request& request, const Candidate& candidate)
     {
         return request.blockSleepingDirectTarget && candidate.sleeping;

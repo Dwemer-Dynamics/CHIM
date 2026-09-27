@@ -15,9 +15,6 @@ Debug.Notification("[CHIM] OK.");
 
 endFunction
 
-
-
-
 function ResetPackages(Actor npc) global
 
 	;npc.EnableAI(false) 
@@ -388,7 +385,6 @@ function TakeASeatEnd(Actor npc) global
 
 endFunction
 
-
 function SneakToTarget(Actor npc, ObjectReference akTarget) global
 	
 
@@ -399,7 +395,6 @@ function SneakToTargetEnd(Actor npc) global
 	
 
 endFunction
-
 
 function StartWait(Actor npc) global
 
@@ -437,7 +432,7 @@ function StartWaitSoft(Actor npc) global
 
 	npc.SetFactionRank(WaitFaction,1)
 	
-	ActorUtil.AddPackageOverride(npc, WaitPackage, 50)
+	ActorUtil.AddPackageOverride(npc, WaitPackage, 60)
 	npc.EvaluatePackage()
 	
 	;Debug.Notification("Mission MoveToTarget start")
@@ -787,7 +782,7 @@ function TravelToTargetEnd(Actor npc) global
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc should wait here")
 						;Package doNothing = Game.GetForm(0x654e2) as Package ; 
 						;ActorUtil.AddPackageOverride(npc, doNothing,10)
-						Sandbox(npc,"")
+						int i = Sandbox(npc,"")
 					else
 						Debug.Trace("[CHIM] TravelToTargetEnd: "+npc.GetDisplayName()+". Travel destination was "+destinationName+" "+destination.GetFormId()+"  "+destination.GetType()+ ", npc is follower, restore")
 					endif
@@ -2280,7 +2275,8 @@ int Function SpawnAgent(string npcName,Int FormIdNPC,Int FormIdClothing, Int For
 		finalActor.Enable(true)
 		AIAgentFunctions.setDrivenByAIA(finalActor,false)
 		
-		AIAgentFunctions.logMessage("spawned@"+finalActor.GetDisplayName()+"@"+finalActor.GetFormId(),"status_msg")
+		; Correlate with the requested name, not a name distributor's display label.
+		AIAgentFunctions.logMessage("spawned@"+npcName+"@"+finalActor.GetFormId(),"status_msg")
 
 		string locationStr="";
 		if (finalActor.GetCurrentLocation())
@@ -4197,22 +4193,37 @@ bool Function BackgroundCmd(Form actorForm,string command) global
 				endif
 				Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+",Not interior, akTarget.GetPosition, Track: "+x+","+y+","+z);
 			else
-				ObjectReference destMarker=AIAgentFunctions.getWorldLocationMarkerFor(loc);
-				if (!destMarker)
+				ObjectReference destMarker = None
+				if (loc)
+					destMarker=AIAgentFunctions.getWorldLocationMarkerFor(loc);
+				endif
+				if (!destMarker && currParentLvl1)
 					destMarker=AIAgentFunctions.getWorldLocationMarkerFor(currParentLvl1);
 					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.parent.GetPosition , Track: "+currParentLvl1.GetName()+ ": "+x+","+y+","+z);
+					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.parent.GetPosition , Track: "+DecToHex(currParentLvl1.GetFormId())+ ": "+x+","+y+","+z);
 				endif;
+				
 				if (destMarker)
-					
-					x=destMarker.GetPositionX();
-					y=destMarker.GetPositionY();
-					z=destMarker.GetPositionZ();
-					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.GetPosition, Track: "+loc.GetName()+ ": "+x+","+y+","+z);
-					name=loc.GetName()
+					if (destMarker.isInInterior())
+						destMarker=AIAgentFunctions.getLocationCenterMarker(currParentLvl1,0)
+					endif
+					if (destMarker)
+						x=destMarker.GetPositionX();
+						y=destMarker.GetPositionY();
+						z=destMarker.GetPositionZ();
+						Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" loc.GetPosition, Track: "+loc.GetName()+ ": "+x+","+y+","+z);
+						name=loc.GetName()
+					else
+						x = 0
+						y = 0
+						z = 0
+						Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" could not find realc oords, Track: "+loc.GetName()+ ": "+x+","+y+","+z);
+					endif
 				else
 					x=akTarget.GetPositionX();
 					y=akTarget.GetPositionY();
 					z=akTarget.GetPositionZ();
+					useRawCoords = true 
 					name=loc.GetName();
 					Debug.Trace("[CHIM] BackgroundCmd, "+akTarget.GetDisplayName()+" akTarget.GetPosition, Track: "+x+","+y+","+z);
 				endif
@@ -4376,8 +4387,6 @@ string Function GetFormIDHexString(int formID) global
 	
 	return result
 EndFunction
-
-
 
 ; Cast Fire & Forget or instant spells - simplified to just cast on target
 function CastSpellOnTarget(Actor caster, int spellFormId, int targetFormId) global
@@ -4547,7 +4556,6 @@ function SendCellInfo(Cell loadedCell) global
 	endif
 endFunction
 
-
 function copyStatics()
 
 	Cell copyCell = Game.GetPlayer().GetParentCell().tempClone() as Cell
@@ -4611,8 +4619,6 @@ function CameraFollow(Actor npc, ObjectReference akTarget) global
 	npc.EvaluatePackage()
 	
 endFunction
-
-
 
 function sendCustomLocation(string name) global
 	
@@ -4681,8 +4687,6 @@ function sendCustomLocation(string name) global
 	endwhile
 	
 endFunction
-
-
 
 int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) global
 

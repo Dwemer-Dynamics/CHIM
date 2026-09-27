@@ -141,6 +141,191 @@ void AudioManager::setSpatialUpdatesEnabled(bool enabled)
     }
 }
 
+void AudioManager::LogDebug() {
+    logger::debug("============================================================");
+    logger::debug("[AudioManager] DEBUG AUDIO CONFIGURATION");
+    logger::debug("============================================================");
+
+    // ------------------------------------------------------------
+    // XAudio2
+    // ------------------------------------------------------------
+
+    logger::debug("[XAudio2]");
+
+    if (pXAudio2) {
+        logger::debug("  pXAudio2       : {}", static_cast<const void*>(pXAudio2));
+    } else {
+        logger::debug("  pXAudio2       : NULL");
+    }
+
+    if (pMasterVoice) {
+        XAUDIO2_VOICE_DETAILS details{};
+        pMasterVoice->GetVoiceDetails(&details);
+
+        logger::debug("  MasterChannels : {}", details.InputChannels);
+        logger::debug("  SampleRate     : {}", details.InputSampleRate);
+
+        DWORD channelMask = 0;
+        const HRESULT hr = pMasterVoice->GetChannelMask(&channelMask);
+
+        if (SUCCEEDED(hr)) {
+            logger::debug("  ChannelMask    : 0x{:08X}", channelMask);
+
+            logger::debug("  Channel layout :");
+
+            if (channelMask & SPEAKER_FRONT_LEFT) logger::debug("    FRONT_LEFT");
+
+            if (channelMask & SPEAKER_FRONT_RIGHT) logger::debug("    FRONT_RIGHT");
+
+            if (channelMask & SPEAKER_FRONT_CENTER) logger::debug("    FRONT_CENTER");
+
+            if (channelMask & SPEAKER_LOW_FREQUENCY) logger::debug("    LFE");
+
+            if (channelMask & SPEAKER_BACK_LEFT) logger::debug("    BACK_LEFT");
+
+            if (channelMask & SPEAKER_BACK_RIGHT) logger::debug("    BACK_RIGHT");
+
+            if (channelMask & SPEAKER_FRONT_LEFT_OF_CENTER) logger::debug("    FRONT_LEFT_OF_CENTER");
+
+            if (channelMask & SPEAKER_FRONT_RIGHT_OF_CENTER) logger::debug("    FRONT_RIGHT_OF_CENTER");
+
+            if (channelMask & SPEAKER_BACK_CENTER) logger::debug("    BACK_CENTER");
+
+            if (channelMask & SPEAKER_SIDE_LEFT) logger::debug("    SIDE_LEFT");
+
+            if (channelMask & SPEAKER_SIDE_RIGHT) logger::debug("    SIDE_RIGHT");
+
+            if (channelMask & SPEAKER_TOP_CENTER) logger::debug("    TOP_CENTER");
+
+            if (channelMask & SPEAKER_TOP_FRONT_LEFT) logger::debug("    TOP_FRONT_LEFT");
+
+            if (channelMask & SPEAKER_TOP_FRONT_CENTER) logger::debug("    TOP_FRONT_CENTER");
+
+            if (channelMask & SPEAKER_TOP_FRONT_RIGHT) logger::debug("    TOP_FRONT_RIGHT");
+
+            if (channelMask & SPEAKER_TOP_BACK_LEFT) logger::debug("    TOP_BACK_LEFT");
+
+            if (channelMask & SPEAKER_TOP_BACK_CENTER) logger::debug("    TOP_BACK_CENTER");
+
+            if (channelMask & SPEAKER_TOP_BACK_RIGHT) logger::debug("    TOP_BACK_RIGHT");
+        } else {
+            logger::debug("  GetChannelMask  : FAILED 0x{:08X}", static_cast<unsigned>(hr));
+        }
+    } else {
+        logger::debug("  MasterVoice     : NULL");
+    }
+
+    // ------------------------------------------------------------
+    // Source voice
+    // ------------------------------------------------------------
+
+    logger::debug("[SourceVoice]");
+
+    if (pSourceVoice) {
+        XAUDIO2_VOICE_DETAILS details{};
+        pSourceVoice->GetVoiceDetails(&details);
+
+        logger::debug("  Channels       : {}", details.InputChannels);
+        logger::debug("  SampleRate     : {}", details.InputSampleRate);
+        logger::debug("  Voice          : {}", static_cast<const void*>(pSourceVoice));
+    } else {
+        logger::debug("  Voice          : NULL");
+    }
+
+    // ------------------------------------------------------------
+    // WAV format
+    // ------------------------------------------------------------
+
+    logger::debug("[WAV Format]");
+
+    logger::debug("  FormatTag      : 0x{:04X}", wfx.wFormatTag);
+    logger::debug("  Channels       : {}", wfx.nChannels);
+    logger::debug("  SampleRate     : {}", wfx.nSamplesPerSec);
+    logger::debug("  BitsPerSample  : {}", wfx.wBitsPerSample);
+    logger::debug("  BlockAlign     : {}", wfx.nBlockAlign);
+    logger::debug("  AvgBytesSec    : {}", wfx.nAvgBytesPerSec);
+    logger::debug("  ExtraSize      : {}", wfx.cbSize);
+
+    // ------------------------------------------------------------
+    // X3DAudio
+    // ------------------------------------------------------------
+
+    logger::debug("[X3DAudio]");
+
+    logger::debug("  SrcChannels    : {}", dspSettings.SrcChannelCount);
+    logger::debug("  DstChannels    : {}", dspSettings.DstChannelCount);
+    logger::debug("  MatrixPointer  : {}", static_cast<const void*>(dspSettings.pMatrixCoefficients));
+
+    logger::debug("  SpeedOfSound   : {}", X3DAUDIO_SPEED_OF_SOUND);
+
+    // ------------------------------------------------------------
+    // Listener
+    // ------------------------------------------------------------
+
+    logger::debug("[Listener]");
+
+    logger::debug("  Position       : ({}, {}, {})", listener.Position.x, listener.Position.y, listener.Position.z);
+
+    logger::debug("  OrientFront    : ({}, {}, {})", listener.OrientFront.x, listener.OrientFront.y,
+                  listener.OrientFront.z);
+
+    logger::debug("  OrientTop      : ({}, {}, {})", listener.OrientTop.x, listener.OrientTop.y, listener.OrientTop.z);
+
+    // ------------------------------------------------------------
+    // Emitter
+    // ------------------------------------------------------------
+
+    logger::debug("[Emitter]");
+
+    logger::debug("  Channels       : {}", emitter.ChannelCount);
+    logger::debug("  DistanceScaler : {}", emitter.CurveDistanceScaler);
+    logger::debug("  InnerRadius    : {}", emitter.InnerRadius);
+    logger::debug("  InnerRadiusAng : {}", emitter.InnerRadiusAngle);
+
+    logger::debug("  Position       : ({}, {}, {})", emitter.Position.x, emitter.Position.y, emitter.Position.z);
+
+    logger::debug("  OrientFront    : ({}, {}, {})", emitter.OrientFront.x, emitter.OrientFront.y,
+                  emitter.OrientFront.z);
+
+    logger::debug("  OrientTop      : ({}, {}, {})", emitter.OrientTop.x, emitter.OrientTop.y, emitter.OrientTop.z);
+
+    // ------------------------------------------------------------
+    // Runtime settings
+    // ------------------------------------------------------------
+
+    logger::debug("[Runtime]");
+
+    logger::debug("  DefaultVolume  : {}", defaultVolume.load());
+    logger::debug("  CurrentVolume  : {}", currentVolume);
+    logger::debug("  DistanceScaler : {}", getDistanceScaler());
+    logger::debug("  LegacyNoAtten  : {}", getLegacyAudioNoattenuation());
+    logger::debug("  SpatialUpdates : {}", spatialUpdatesEnabled);
+    logger::debug("  ForceMatrix    : {}", forceSpatialMatrixUpdate);
+    logger::debug("  Ramping        : {}", isRamping);
+
+    // ------------------------------------------------------------
+    // DSP matrix contents
+    // ------------------------------------------------------------
+
+    if (dspSettings.pMatrixCoefficients && dspSettings.SrcChannelCount > 0 && dspSettings.DstChannelCount > 0) {
+        const UINT count = dspSettings.SrcChannelCount * dspSettings.DstChannelCount;
+
+        logger::debug("[DSP Matrix]");
+        logger::debug("  Dimensions     : {} x {}", dspSettings.SrcChannelCount, dspSettings.DstChannelCount);
+
+        for (UINT i = 0; i < count; ++i) {
+            logger::debug("  Matrix[{}]      : {}", i, dspSettings.pMatrixCoefficients[i]);
+        }
+    } else {
+        logger::debug("[DSP Matrix] INVALID / NOT ALLOCATED");
+    }
+
+    logger::debug("============================================================");
+    logger::debug("[AudioManager] END DEBUG AUDIO CONFIGURATION");
+    logger::debug("============================================================");
+}
+
+
 bool AudioManager::Initialize() {
     logger::debug("[AudioManager] Starting initialization");
     
@@ -208,6 +393,9 @@ bool AudioManager::Initialize() {
 
     // Other initialization steps such as loading audio data, setting source properties, etc.
     logger::info("[AudioManager] Successfully initialized with {} channels", details.InputChannels);
+
+
+    LogDebug();  // Log the debug information after initialization
 
     return true;
 }

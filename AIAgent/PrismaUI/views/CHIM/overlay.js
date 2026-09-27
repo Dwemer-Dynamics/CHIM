@@ -102,6 +102,7 @@
         'NARRATOR': { label: 'Narrator', class: 'narrator' },
         'DIRECTOR': { label: 'Director', class: 'director' },
         'CHEATMODE': { label: 'Cheat Mode', class: 'cheatmode' },
+        'HYPNOSIS': { label: 'Hypnosis', class: 'director' },
         'AUTOCHAT': { label: 'Auto Chat', class: 'autochat' },
         'INJECTION_LOG': { label: 'Event Inject', class: 'director' },
         'INJECT_LOG': { label: 'Event Inject', class: 'director' },

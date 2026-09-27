@@ -1466,31 +1466,18 @@ body {
 .story-entry.action,
 .story-entry.story,
 .story-entry.death,
-.story-entry.system,
-.story-entry.relationship,
-.story-entry.relationship-up,
-.story-entry.relationship-down {
+.story-entry.system {
     color: #a9a9b2;
     font-style: italic;
 }
 
 .story-entry.action .story-entry-speaker,
-.story-entry.story .story-entry-speaker,
-.story-entry.relationship .story-entry-speaker {
+.story-entry.story .story-entry-speaker {
     color: #c89b62;
 }
 
 .story-entry.death .story-entry-speaker {
     color: #c56f6f;
-}
-
-/* Direction stays spelled out in the event text; colour only reinforces it. */
-.story-entry.relationship-up .story-entry-speaker {
-    color: #58d68d;
-}
-
-.story-entry.relationship-down .story-entry-speaker {
-    color: #f87171;
 }
 
 .story-entry.non-llm {

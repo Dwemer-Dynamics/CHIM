@@ -1,9 +1,12 @@
+#include "PlaythroughSession.h"
 #include <SKSE/Events.h>
+#include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -53,8 +56,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.3.1"
-#define PLUGIN_RELEASE_DATE "2026-09-01"
+#define PLUGIN_VERSION "3.4.2"
+#define PLUGIN_RELEASE_DATE "2026-09-19"
 
 const char* GetPluginVersion()
 {
@@ -149,7 +152,6 @@ static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = s
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastInfoSent = std::chrono::high_resolution_clock::now();
-static std::chrono::high_resolution_clock::time_point controlLastDynamicProfileTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastWalkToTargetCheckTS = std::chrono::high_resolution_clock::now();
 static std::unordered_map<uint32_t, std::chrono::high_resolution_clock::time_point> lastReanimateEventByTarget;
 static bool playerPartyCombatActive = false;
@@ -299,10 +301,8 @@ bool forceCombatEnd = false;
 
 
 int GlobalBoredEventTimeOut=60;
-int GlobalDynamicProfileTimeOut=1200; // 20 minutes default
 int GlobalCombatBarksPeriod=30;
 int GlobalEndConversationCooldown=60; // Default 60 seconds
-static bool dynamicProfileLoggingInitialized = false;
 static std::chrono::high_resolution_clock::time_point lastGameLoadTime = std::chrono::high_resolution_clock::now();
 static const int GAME_LOAD_COOLDOWN_SECONDS = 60; // Cooldown between game loads to prevent timer abuse
 
@@ -311,6 +311,12 @@ bool inSexDescSent = false;
 int inSexLastStage = 0;
 
 bool pluginInited = false;
+
+// Shared by all initialization paths; loading another save does not reset the notification.
+static void NotifyConnectedOnce() {
+    static std::atomic<bool> shown{false};
+    if (!shown.exchange(true)) RE::DebugNotification("[CHIM] Connected");
+}
 bool pendingLoadedPluginManifestSync = false;
 bool importDataDetectionDone = false;  // Track if we've already done import data detection this session
 
@@ -465,21 +471,17 @@ namespace
 
         std::set<std::string> seenPluginNames;
 
-        if (REL::Module::IsVR()) {
-            if (auto* loadedMods = dataHandler->GetLoadedMods()) {
-                const auto loadedModCount = dataHandler->GetLoadedModCount();
-                for (std::uint32_t i = 0; i < loadedModCount; ++i) {
-                    AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedMods[i]);
-                }
+        if (auto* loadedMods = dataHandler->GetLoadedMods()) {
+            const auto loadedModCount = dataHandler->GetLoadedModCount();
+            for (std::uint32_t i = 0; i < loadedModCount; ++i) {
+                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedMods[i]);
             }
-        } else {
-            const auto& fileCollection = REL::RelocateMember<const RE::TESFileCollection>(dataHandler, 0xD70, 0);
-            for (auto* file : fileCollection.files) {
-                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, file);
-            }
+        }
 
-            for (auto* file : fileCollection.smallFiles) {
-                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, file);
+        if (auto* loadedLightMods = dataHandler->GetLoadedLightMods()) {
+            const auto loadedLightModCount = dataHandler->GetLoadedLightModCount();
+            for (std::uint32_t i = 0; i < loadedLightModCount; ++i) {
+                AppendLoadedPluginManifestEntry(payload["plugins"], seenPluginNames, loadedLightMods[i]);
             }
         }
 
@@ -509,6 +511,42 @@ namespace
             }
         }
         return serverVersion;
+    }
+
+    // Compare numeric release components so the warning names the component to update.
+    std::string GetVersionMismatchGuidance(const std::string& pluginVersion, const std::string& serverVersion)
+    {
+        const auto parseVersion = [](const std::string& version, std::array<unsigned int, 3>& parts) {
+            const char* cursor = version.data();
+            const char* end = cursor + version.size();
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                const auto result = std::from_chars(cursor, end, parts[i]);
+                if (result.ec != std::errc{}) {
+                    return false;
+                }
+                cursor = result.ptr;
+                if (i + 1 == parts.size()) {
+                    return cursor == end;
+                }
+                if (cursor == end || *cursor != '.') {
+                    return false;
+                }
+                ++cursor;
+            }
+            return false;
+        };
+
+        std::array<unsigned int, 3> pluginParts{};
+        std::array<unsigned int, 3> serverParts{};
+        if (parseVersion(pluginVersion, pluginParts) && parseVersion(serverVersion, serverParts)) {
+            if (pluginParts < serverParts) {
+                return "[CHIM] Update the plugin to match the server, or CHIM will not work.";
+            }
+            if (serverParts < pluginParts) {
+                return "[CHIM] Update the server to match the plugin, or CHIM will not work.";
+            }
+        }
+        return "[CHIM] Install matching plugin and server versions, or CHIM will not work.";
     }
 
     void ScheduleVersionMismatchStartupCheck()
@@ -542,9 +580,12 @@ namespace
                 rawServerVersion);
 
             logger::warn("[VersionCheck] {}", warning);
+            const std::string guidance = GetVersionMismatchGuidance(pluginVersion, normalizedServerVersion);
+            logger::warn("[VersionCheck] {}", guidance);
 
-            SKSE::GetTaskInterface()->AddTask([warning]() {
+            SKSE::GetTaskInterface()->AddTask([warning, guidance]() {
                 RE::DebugNotification(warning.c_str());
+                RE::DebugNotification(guidance.c_str());
             });
         }).detach();
     }
@@ -886,7 +927,7 @@ namespace
 
         RE::MenuTopicManager::Dialogue* selectedDialogue = nullptr;
         if (auto* responseNode = tm->selectedResponseNode) {
-            selectedDialogue = responseNode->front();
+            selectedDialogue = responseNode->item;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -1199,7 +1240,7 @@ namespace
 
         // Keep dialogue paused without flagging it as finished, otherwise Skyrim may skip the NPC line.
         actor->AllowPCDialogue(false);
-        actor->PauseCurrentDialogue();
+        actor->StopCurrentDialogue();
         actor->SetSpeakingDone(false);
     }
 
@@ -1554,7 +1595,7 @@ void ProcedureListenToScene() {
                 if (localactor->GetFormID() == actor->GetFormID() &&
                     (s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), s.subtitle.c_str()))) {
                     logger::info("[ProcedureListenToScene] Skipped recognized AI dialogue, actor:{},text:{}", localactor->GetDisplayFullName(),
-                        s.subtitle);
+                        s.subtitle.c_str());
                     skipThisSubtitle = true;
                     break;
                 }
@@ -2361,6 +2402,7 @@ private:
                     }
 
                     SpeakManager::getInstance().refreshPendingPlayerSubtitle();
+                    DirectorScene::ProcessActions();
 
                     ScriptLine l = SpeakManager::getInstance().getFirstItem();
 
@@ -2470,14 +2512,14 @@ private:
                         
                     }
 
-                    if (RE::MenuTopicManager::GetSingleton()->unkB1) {
+                    if (RE::MenuTopicManager::GetSingleton()->menuOpen) {
                         logger::info("[BORED] Avoiding bored event because player is in dialogue");
                         playerInDialog = true;
                     }
 
                     const bool playerSpeechSuppressActive = recordingActive || IsPlayerSpeechMaintenanceSuppressed();
                     avoidBored = playerSpeechSuppressActive || player->IsInCombat() || player->IsAttacking() || player->IsSneaking()
-                        || CheckScene(player->GetCurrentScene()) || playerInDialog;
+                        || CheckScene(player->GetCurrentScene()) || playerInDialog || DirectorScene::Active();
 
                     if (boredElapsedSeconds >= std::chrono::seconds(GlobalBoredEventTimeOut) && !avoidBored) {
                         controlLastBoredTriggerTS = currentTime;
@@ -2528,32 +2570,10 @@ private:
                         }
                     }
 
-                    // DYNAMIC PROFILE TIMER LOGIC
-                    auto dynamicProfileElapsedSeconds =
-                        std::chrono::duration_cast<std::chrono::seconds>(now - controlLastDynamicProfileTS);
-
-                    // One-time initialization log
-                    if (!dynamicProfileLoggingInitialized) {
-                        dynamicProfileLoggingInitialized = true;
-                        logger::info("[DYNAMIC_TIMER] System active - {}s timeout ({}min)", 
-                                   GlobalDynamicProfileTimeOut, GlobalDynamicProfileTimeOut / 60);
-                    }
-
-                    // Log timer status every 5 minutes for debugging
-                    static auto lastTimerLog = std::chrono::high_resolution_clock::now();
-                    auto timeSinceLastLog = std::chrono::duration_cast<std::chrono::minutes>(now - lastTimerLog);
-                    if (timeSinceLastLog >= std::chrono::minutes(5)) {
-                        lastTimerLog = now;
-                        auto remaining = GlobalDynamicProfileTimeOut - dynamicProfileElapsedSeconds.count();
-                        logger::info("[DYNAMIC_TIMER] Status: {}s elapsed, {}s remaining", 
-                                   dynamicProfileElapsedSeconds.count(), remaining);
-                    }
-
-                    if (dynamicProfileElapsedSeconds >= std::chrono::seconds(GlobalDynamicProfileTimeOut)) {
-                        // Reset timer immediately to prevent multiple triggers
-                        controlLastDynamicProfileTS = currentTime;
-                        logger::info("[DYNAMIC_TIMER] Timer triggered after {}s", dynamicProfileElapsedSeconds.count());
-
+                    // Keep gameplay telemetry independent of server profile scheduling.
+                    static auto lastTelemetryCheck = currentTime;
+                    if (currentTime - lastTelemetryCheck >= std::chrono::seconds(15)) {
+                        lastTelemetryCheck = currentTime;
                         AIAgentManager& aiam = AIAgentManager::getInstance();
                         auto player = RE::PlayerCharacter::GetSingleton();
                         std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
@@ -2571,10 +2591,6 @@ private:
                             }
                         }
                         
-                        // Always include The Narrator in dynamic profile updates if configured
-                        // The server will check if narrator has dynamic_profile enabled
-                        nearbyNPCs.push_back(NARRATOR_NAME);
-
                         // Periodic skills update (every 5 minutes for nearby NPCs)
                         static auto lastSkillsRefreshTime = currentTime;
                         auto skillsElapsed = std::chrono::duration_cast<std::chrono::minutes>(currentTime - lastSkillsRefreshTime);
@@ -2668,29 +2684,6 @@ private:
                             lastStatsRefreshTime = currentTime;
                         }
 
-                        if (!nearbyNPCs.empty()) {
-                            // Create comma-separated list of NPC names
-                            std::string npcList;
-                            for (size_t i = 0; i < nearbyNPCs.size(); ++i) {
-                                if (i > 0) npcList += ",";
-                                npcList += nearbyNPCs[i];
-                            }
-                            
-                            logger::info("[DYNAMIC_TIMER] Updating {} NPCs: {}", nearbyNPCs.size(), npcList);
-                            
-                            // Send fire-and-forget async batch request to server
-                            ThreadPool::getInstance().enqueue("DynamicProfileBatch", [npcList]() {
-                                try {
-                                    HTTPManager::log(std::format("updateprofiles_batch_async|{}|{}|{}", 
-                                                                getCurrentTimeMillis(), GetGameTimeStamp(), npcList));
-                                    logger::debug("[DYNAMIC_TIMER] Batch request sent successfully");
-                                } catch (const std::exception& e) {
-                                    logger::error("[DYNAMIC_TIMER] Failed to send batch request: {}", e.what());
-                                }
-                            });
-                        } else {
-                            logger::info("[DYNAMIC_TIMER] Skipped - no nearby AI agents found");
-                        }
                     }
 
                     // COMBAT BARKS TIMER LOGIC
@@ -3716,6 +3709,9 @@ namespace ProcessorMenu {
 
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
                                               RE::BSTEventSource<RE::MenuOpenCloseEvent>* source) override {
+            if (event && !event->opening) {
+                if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([]() { HTTPManager::ShowPlaythroughNotices(); });
+            }
            
             if (event->menuName == RE::JournalMenu::MENU_NAME) {
                 if (event->opening) {
@@ -3896,13 +3892,13 @@ namespace ProcessorScreenShot {
 namespace ProcessorNativeScreenShot {
 
     struct Hook {
-        static void thunk(ID3D11Texture2D* a_texture_2d, char const* a_path,
+        static void thunk(REX::W32::ID3D11Texture2D* a_texture_2d, char const* a_path,
                           RE::BSGraphics::TextureFileFormat a_format);
 
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
-    void Hook::thunk(ID3D11Texture2D* a_texture_2d, char const* a_path, RE::BSGraphics::TextureFileFormat a_format) {
+    void Hook::thunk(REX::W32::ID3D11Texture2D* a_texture_2d, char const* a_path, RE::BSGraphics::TextureFileFormat a_format) {
         
         func(a_texture_2d, a_path, a_format);
         if (MutexIsMakeShotNativeActivated()) {
@@ -4106,11 +4102,13 @@ namespace ProcessorDialogueMenu {
 namespace ProcessorSerialization {
 
     
+    inline const auto PlaythroughRecord = _byteswap_ulong('AIPT');
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
 
 
     void OnGameLoaded(SKSE::SerializationInterface* serde) {
+        PlaythroughSession::ResetCharacter();
         
         std::uint32_t type;
         std::uint32_t size;
@@ -4125,6 +4123,17 @@ namespace ProcessorSerialization {
         }
 
         while (serde->GetNextRecordInfo(type, version, size)) {
+            if (type == PlaythroughRecord) {
+                if ((version == 1 && size == 32) || (version == 2 && size == 33)) {
+                    std::string identity(32, '0');
+                    if (serde->ReadRecordData(identity.data(), 32) == 32) {
+                        std::uint8_t isNew = 0;
+                        if (version == 1 || (serde->ReadRecordData(&isNew, 1) == 1 && isNew <= 1))
+                            PlaythroughSession::RestoreCharacter(identity, isNew != 0);
+                    }
+                }
+                continue;
+            }
             if (type == AgentCountRecord) {
                 // First read how many items follow in this record, so we know how many times to iterate.
                 std::size_t agentCountsSize;
@@ -4341,6 +4350,13 @@ namespace ProcessorSerialization {
             }
         }
 
+        // A legacy save stays unbound until the handshake returns its canonical identity.
+        const auto identity = PlaythroughSession::Character(false);
+        if (!identity.empty() && serde->OpenRecord(PlaythroughRecord, 2)) {
+            serde->WriteRecordData(identity.data(), 32);
+            const std::uint8_t isNew = PlaythroughSession::NewCharacter() ? 1 : 0;
+            serde->WriteRecordData(&isNew, 1);
+        }
         if (!serde->OpenRecord(AgentCountRecord, 0)) {
             logger::error("Unable to open record AgentCountRecord to write cosave data.");
             return;
@@ -4390,6 +4406,7 @@ namespace ProcessorSerialization {
     }
 
     void OnRevert(SKSE::SerializationInterface*) {
+        PlaythroughSession::ResetCharacter();
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
@@ -5955,6 +5972,7 @@ OnFormsLoaded {
 }
 
 OnSaveGame{
+    if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
     logger::info("OnSaveGame");
     if (!pluginInited) {
         logger::info("Game saved first time ");
@@ -6019,10 +6037,7 @@ OnSaveGame{
 
         aiam.setPlayerName(player->GetName());
 
-        auto server = Conf::getInstance().getServer();
-        auto port = Conf::getInstance().getPort();
-        auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-        RE::DebugNotification(initMsg.c_str());
+        NotifyConnectedOnce();
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -6140,8 +6155,7 @@ static bool HasArmorSlot(RE::TESObjectARMO* armor, RE::BGSBipedObjectForm::Biped
         return false;
     }
 
-    auto slotMask = static_cast<uint64_t>(armor->GetSlotMask());
-    return (slotMask & static_cast<uint64_t>(slot)) != 0;
+    return armor->HasPartOf(slot);
 }
 
 static json CollectItemKeywords(RE::TESBoundObject* boundObject)
@@ -7859,7 +7873,11 @@ void RefreshPlayerSpells(bool forceUpdate) {
 }
 
 OnLoadedGame {
+    PlaythroughSession::Connect([]() {
     logger::info("OnLoadedGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
     // Runs twice?
     auto player = RE::PlayerCharacter::GetSingleton();
     
@@ -7892,15 +7910,6 @@ OnLoadedGame {
         controlLastBoredTriggerTS = now;
         logger::info("[BORED_TIMER] Reset - game loaded");
         
-        // Only add delay to dynamic profile timer, don't reset completely
-        auto timeSinceLastLoad = std::chrono::duration_cast<std::chrono::seconds>(now - lastGameLoadTime);
-        if (timeSinceLastLoad >= std::chrono::seconds(GAME_LOAD_COOLDOWN_SECONDS)) {
-            controlLastDynamicProfileTS = controlLastDynamicProfileTS + std::chrono::seconds(30);
-            logger::info("[DYNAMIC_TIMER] Added 30s delay after game load");
-            lastGameLoadTime = now;
-        } else {
-            logger::info("[DYNAMIC_TIMER] Skipped delay - cooldown active ({}s since last load)", timeSinceLastLoad.count());
-        }
 
         isGameReady = true;
 
@@ -7942,10 +7951,7 @@ OnLoadedGame {
 
         aiam.setPlayerName(player->GetName());
 
-        auto server = Conf::getInstance().getServer();
-        auto port = Conf::getInstance().getPort();
-        auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-        RE::DebugNotification(initMsg.c_str());
+        NotifyConnectedOnce();
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -8026,15 +8032,6 @@ OnLoadedGame {
         controlLastBoredTriggerTS = now;
         logger::info("[BORED_TIMER] Reset - game reloaded");
         
-        // Only add delay to dynamic profile timer, don't reset completely
-        auto timeSinceLastLoad = std::chrono::duration_cast<std::chrono::seconds>(now - lastGameLoadTime);
-        if (timeSinceLastLoad >= std::chrono::seconds(GAME_LOAD_COOLDOWN_SECONDS)) {
-            controlLastDynamicProfileTS = controlLastDynamicProfileTS + std::chrono::seconds(30);
-            logger::info("[DYNAMIC_TIMER] Added 30s delay after game reload");
-            lastGameLoadTime = now;
-        } else {
-            logger::info("[DYNAMIC_TIMER] Skipped delay - cooldown active ({}s since last load)", timeSinceLastLoad.count());
-        }
         isGameReady = true;
         //ProcedureSendActiveQuests();
         SpeakManager::getInstance().deleteQueue();
@@ -8127,9 +8124,11 @@ OnLoadedGame {
     }
 
     
-    std::thread([]() {
+    std::thread([epoch = PlaythroughSession::Context()]() {
+        const PlaythroughSession::Scope scope(epoch);
         // Give time to init code to finish
         std::this_thread::sleep_for(std::chrono::seconds(15));
+        if (!PlaythroughSession::Allowed(epoch)) return;
         AIAgentManager& aiamRefresh = AIAgentManager::getInstance();
         // Iterate over renamed NPCs and log their FormID and name
         auto renamedNpcs = aiamRefresh.getRenamedNpcs();
@@ -8143,10 +8142,16 @@ OnLoadedGame {
     auto now = std::chrono::high_resolution_clock::now();
     controlLastBoredTriggerTS = now + std::chrono::seconds(30);
     logger::info("[BORED_TIMER] Initialized with 30s delay");
+
+    });
 }
 
-OnLoadingGame { 
+OnLoadingGame {
+    PlaythroughSession::BeginLoad();
     logger::info("OnLoadingGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
     
 
     if (pluginInited) {
@@ -8155,7 +8160,6 @@ OnLoadingGame {
         ThreadPool::getInstance().cancelTasksByType("HTTPStreamRechat");
         controlLastBoredTriggerTS = std::chrono::high_resolution_clock::now();
         logger::info("[BORED_TIMER] Reset - game loading");
-        logger::info("[DYNAMIC_TIMER] Timer preserved during loading");
         
         SPGResponse::getInstance().clearAllQueues();
 
@@ -8179,8 +8183,14 @@ OnLoadingGame {
 }
 
 OnNewGame {
+    PlaythroughSession::BeginLoad();
+    PlaythroughSession::Character();
+    PlaythroughSession::Connect([]() {
 
     logger::info("OnNewGame");
+    SpatialAwareness::ResetDoorStates();
+    SpatialAwareness::InvalidateCache();
+    SpatialSnapshotManager::InvalidateDynamicSpatialState();
 
     /*
     ManagerMainQueue& serverPooler = ManagerMainQueue::getInstance();
@@ -8208,9 +8218,7 @@ OnNewGame {
 
     auto now = std::chrono::high_resolution_clock::now();
     controlLastBoredTriggerTS = now;
-    controlLastDynamicProfileTS = now;
     logger::info("[BORED_TIMER] Initialized for new game");
-    logger::info("[DYNAMIC_TIMER] Initialized for new game");
 
     isGameReady = true;
     auto player = RE::PlayerCharacter::GetSingleton();
@@ -8248,10 +8256,7 @@ OnNewGame {
 
 
     */
-    auto server = Conf::getInstance().getServer();
-    auto port = Conf::getInstance().getPort();
-    auto initMsg = std::format("[CHIM] Using server: http://{}:{}", server, port);
-    RE::DebugNotification(initMsg.c_str());
+    NotifyConnectedOnce();
 
     pendingLoadedPluginManifestSync = true;
     if (PostLoadedPluginManifest()) {
@@ -8269,6 +8274,8 @@ OnNewGame {
     //HTTPManager::log(std::format("newgame|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), playerinfo));
     logger::debug("OnNewGame End");
     //pluginInited = true;
+
+    }, true);
 }
 
 OnDataLoaded {
@@ -8340,6 +8347,9 @@ OnDataLoaded {
 EventHandlers {
 
     On<RE::TESCellFullyLoadedEvent>([](const RE::TESCellFullyLoadedEvent* event) {
+        auto* doorStatePlayer = RE::PlayerCharacter::GetSingleton();
+        auto* doorStateCell = doorStatePlayer ? doorStatePlayer->GetParentCell() : nullptr;
+        SpatialAwareness::SetDoorStateCell(doorStateCell ? doorStateCell->GetFormID() : 0);
         // Location Change trigger
         if (GetGameTimeStamp() == 13333334) return;
 
@@ -8547,7 +8557,7 @@ EventHandlers {
 
                             // Use door's activate text as name
                             RE::BSString actText;
-                            door->GetActivateText(event->reference, actText);
+                            door->GetActivateText(event->reference.get(), actText);
 
                             // With the following code:
                             auto locNameFull = std::string(actText);
@@ -8564,7 +8574,7 @@ EventHandlers {
                                 locName = locName.substr(0, ltPos);
                             }
                             locName.append(" (door/passage)");
-                            LocationList::GetInstance().AddLocation(locName, ref);
+                            LocationList::GetInstance().AddLocation(locName, ref.get());
 
                             /*
                             RE::TESObjectCELL* cellDoor = destination->GetParentCell();
@@ -8612,7 +8622,7 @@ EventHandlers {
                 if (npc) {
                     
                     RE::ExtraDataList* extra = &ref->extraList;
-                    NPCList::GetInstance().AddNPC(npc->GetName(), ref);
+                    NPCList::GetInstance().AddNPC(npc->GetName(), ref.get());
 
                    
                 }
@@ -8642,7 +8652,8 @@ EventHandlers {
                                          item->GetDisplayFullName());
 
                             auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                            auto args = RE::MakeFunctionArguments(std::move(item));
+                            auto* itemReference = item.get();
+                            auto args = RE::MakeFunctionArguments(std::move(itemReference));
                             RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                                 "AIAgentAIMind", "AddDelayedHint", args, callback);
 
@@ -8660,7 +8671,7 @@ EventHandlers {
                                 item->GetDisplayFullName(), event->attached);
                    std::thread([item]() {
                         std::this_thread::sleep_for(std::chrono::seconds(1));
-                        RE::TESObjectREFR *localIitem = item;
+                        RE::TESObjectREFR *localIitem = item.get();
                         if (localIitem) {
                             logger::info("AIFaction item loaded {:#x} {}", localIitem->GetFormID(),
                                          localIitem->GetDisplayFullName());
@@ -8698,7 +8709,7 @@ EventHandlers {
                             // Use door's activate text as name
                             RE::BSString actText;
 
-                            door->GetActivateText(event->reference, actText);
+                            door->GetActivateText(event->reference.get(), actText);
 
                             // With the following code:
                             auto locNameFull = std::string(actText);
@@ -8964,21 +8975,33 @@ EventHandlers {
         }
     });
     
-    //Is this working?
-    /*
     On<RE::TESOpenCloseEvent>([](const RE::TESOpenCloseEvent* event) {
-        logger::info("TESOpenCloseEvent");
-        try {
-            auto ref = event->activeRef;
-            logger::info("[OPENCLOSE] {:X}, opened: ", ref->GetFormID(), event->opened);
-        } catch (...) {
-            std::exception_ptr p = std::current_exception();
-            logger::info("Error TESOpenCloseEvent");
+        auto* door = event ? event->ref.get() : nullptr;
+        auto* base = door ? door->GetBaseObject() : nullptr;
+        if (!pluginInited || !base || base->GetFormType() != RE::FormType::Door) {
+            return;
         }
-        
-
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* cell = door->GetParentCell();
+        if (!player || !cell || !cell->IsInteriorCell() || cell != player->GetParentCell()) {
+            return;
+        }
+        SpatialAwareness::RecordDoorState(door, event->opened);
+        // Every transition must invalidate, even when activation has already
+        // queued a delayed refresh. That refresh can precede the final state.
+        SpatialAwareness::InvalidateCache();
+        SpatialSnapshotManager::InvalidateDynamicSpatialState();
+        logger::debug("[SpatialSnapshot] Door state changed door={:08X} opened={}",
+                      door->GetFormID(), event->opened);
     });
-    */
+    On<RE::TESResetEvent>([](const RE::TESResetEvent* event) {
+        auto* ref = event ? event->object.get() : nullptr;
+        auto* base = ref ? ref->GetBaseObject() : nullptr;
+        if (base && base->GetFormType() == RE::FormType::Door) {
+            SpatialAwareness::ForgetDoorState(ref->GetFormID());
+            InvalidateSpatialCachesForDoor(ref, "reset_event");
+        }
+    });
     On<RE::TESDeathEvent>([](const RE::TESDeathEvent* event) {
         try {
             if (!event->actorDying) return;
@@ -9428,7 +9451,7 @@ EventHandlers {
             return;
         }
 
-        auto* topicForm = RE::TESForm::LookupByID(event->topicInfoID);
+        auto* topicForm = RE::TESForm::LookupByID(event->topicInfoFormID);
         RE::TESTopicInfo* source =
             topicForm && topicForm->GetFormType() == RE::FormType::Info
                 ? static_cast<RE::TESTopicInfo*>(topicForm)
@@ -9442,20 +9465,21 @@ EventHandlers {
         // Check if im involved
 
         auto lastSpeaker = tm ? tm->speaker.get() : nullptr;
-        auto* topicActor = event->speaker;
+        auto* topicActor = event->speakerRef ? event->speakerRef->As<RE::Actor>() : nullptr;
+        const bool topicEnded = event->type.get() == RE::TESTopicInfoEvent::TopicInfoEventType::kTopicEnd;
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
          //if (event->speaker) {
-        if (topicActor && event->flag) {
-            auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+        if (topicActor && topicEnded) {
+            auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
             // DISABLED
             if (cameraObject && false ) {   // Will do the audio search in the other condition branch
                 if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                     auto targetActor = cameraObject.get()->As<RE::Actor>();
                     if (targetActor == topicActor) {
                         if (!source) {
-                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoID,
+                            logger::warn("[VOICE] Topic {:08X} could not be resolved for {}", event->topicInfoFormID,
                                          topicActor->GetDisplayFullName());
                             return;
                         }
@@ -9559,7 +9583,7 @@ EventHandlers {
                 } else {
                 }
             }
-        } else  if (topicActor && !event->flag) {
+        } else if (topicActor && !topicEnded) {
             if (topicActor) {
                 //std::string actorName(topicActor->GetDisplayFullName());
                 //auto agentPtr = aiam.getAgentByName(actorName);
@@ -9572,7 +9596,7 @@ EventHandlers {
                                  event->topicInfoID);*/
                 }
 
-                auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
                 if (!cameraObject) {
                     // logger::info("Checking NPC via grabbed ref");
                     // logger::info("TESTopicInfoEvent {} {}", source->GetFormID(), event->topicInfoID);
@@ -9582,7 +9606,7 @@ EventHandlers {
                         // logger::info("Grabbed ref is null");
                         auto cameraObject2 = targetObjectRef.get();
                         if (cameraObject2) {
-                            cameraObject = cameraObject2;
+                            cameraObject = cameraObject2->GetHandle();
                             logger::info("Checked NPC via grabbed ref {}", cameraObject.get()->GetDisplayFullName());
                         }
                     }
@@ -9656,7 +9680,7 @@ EventHandlers {
                                                 } else {
                                                     logger::warn("[VOICE] Skipping unreadable dialogue sample for {} from {} (topic {:08X}): {}",
                                                                  existingAgent->getActorName(), finalAudioPath,
-                                                                 event->topicInfoID, readFailure);
+                                                                 event->topicInfoFormID, readFailure);
                                                 }
                                             }
                                         }
@@ -9726,7 +9750,7 @@ EventHandlers {
             auto responseNode = tm->selectedResponseNode;
             if (responseNode) {
 
-                auto responseNodeCurrent = responseNode->front();
+                auto responseNodeCurrent = responseNode->item;
                  if (responseNodeCurrent) {
                       RE::Actor* menuListenerActor = lastSpeaker ? lastSpeaker->As<RE::Actor>() : nullptr;
                       ProcessorMenu::RememberRecentConversationTarget(menuListenerActor);
@@ -9761,7 +9785,7 @@ EventHandlers {
                                   sData["location"] = GetPlayerLocation();
                                   sData["speech"] = DialogueLastStringSay;
                                   sData["speaker"] = aiam.getPlayerName();
-                                  sData["debug"] = (event->flag) ? "true" : "false";
+                                  sData["debug"] = topicEnded ? "true" : "false";
                                   AddCachedSpeechAudience(sData, "traditional_player_speech");
                                   HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(),
                                                                GetGameTimeStamp(), sData.dump()));
@@ -9794,7 +9818,7 @@ EventHandlers {
                           }
                        }
 
-                    if (event->flag) {
+                    if (topicEnded) {
                         ResetPlayerMenuCustomPlaybackStateForNpcResponse();
 
                         auto responses = responseNodeCurrent->responses;
@@ -9805,7 +9829,7 @@ EventHandlers {
                             RE::DialogueResponse* response = *it;
                             if (!response) {
                                 logger::warn("[VOICE] Dialogue response was null for {} (topic {:08X})",
-                                             lastSpeaker->GetDisplayFullName(), event->topicInfoID);
+                                             lastSpeaker->GetDisplayFullName(), event->topicInfoFormID);
                                 continue;
                             }
 
@@ -9883,7 +9907,7 @@ EventHandlers {
                                         speakerAgent->setVoiceSamplePath(finalPath);
                                     } else {
                                         logger::warn("[VOICE] Skipping unreadable dialogue-menu sample for {} from {} (topic {:08X}): {}",
-                                                     speakerAgent->getActorName(), finalPath, event->topicInfoID,
+                                                     speakerAgent->getActorName(), finalPath, event->topicInfoFormID,
                                                      readFailure);
                                     }
                                 }
@@ -9906,7 +9930,7 @@ EventHandlers {
                                     sData["speech"] = DialogueLastStringResponse;
                                     sData["listener"] = RE::PlayerCharacter::GetSingleton()->GetDisplayFullName();
                                     sData["audios"] = audioPaths;
-                                    sData["debug"] = (event->flag) ? "true" : "false";
+                                    sData["debug"] = topicEnded ? "true" : "false";
                                     AddCachedSpeechAudience(sData, "traditional_npc_speech");
                                     HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                                                  sData.dump()));
@@ -10098,11 +10122,11 @@ EventHandlers {
 
     On<RE::TESBookReadEvent>([](const RE::TESBookReadEvent* event) {
         // Only triggers on PC?s
-        if (!event->book.get()) return;
+        if (!event->ref.get()) return;
 
         bool bypass = false;
-        auto bookRefPtr = event->book.get();
-        auto bookRef = event->book.get()->GetObjectReference();
+        auto bookRefPtr = event->ref.get();
+        auto bookRef = event->ref.get()->GetObjectReference();
         if (bookRef) {
 
             std::string fullName(bookRefPtr->GetDisplayFullName());
@@ -10115,7 +10139,7 @@ EventHandlers {
                 bypass = true;
             } else if (localName=="Generic Note") {
                 // AIAgent faction. is an ethereal note
-                std::string hashName=md5low(trim(event->book.get()->GetDisplayFullName()),false);
+                std::string hashName=md5low(trim(event->ref.get()->GetDisplayFullName()),false);
                 std::string sourceFilePath = "data/textures/AIAgent/Books/" + hashName+".png";
                 std::string destinationFilePath = "data/textures/AIAgent/Books/Note01.png";
 
@@ -10207,7 +10231,7 @@ EventHandlers {
                 RE::TESForm* spell = RE::TESForm::LookupByID(event->spell);
                 if (spell) {
                     if (spell->formType == RE::FormType::Spell) {
-                        auto cameraObject = RE::CrosshairPickData::GetSingleton()->target;
+                        auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
                         if (cameraObject && cameraObject.get() &&
                             cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                             auto targetActor = cameraObject.get()->As<RE::Actor>();
@@ -10380,7 +10404,7 @@ EventHandlers {
             return;
         }
         if (false) 
-            logger::info("Quest started, name {} editorId {} , started {} ", qqData->GetName(), qqData->formEditorID,
+            logger::info("Quest started, name {} editorId {} , started {} ", qqData->GetName(), qqData->formEditorID.c_str(),
                      event->started);
         
         if (event->started) {
@@ -10432,7 +10456,7 @@ EventHandlers {
         PostQuestProgressionQuestStage(qqData, event->stage);
         
         if (false)
-            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID,
+            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID.c_str(),
                          event->stage);
         
         
@@ -10784,14 +10808,15 @@ EventHandlers {
 
      });
      
-    /*
-    On<RE::TESFastTravelEndEvent>([](const RE::TESFastTravelEndEvent* event) {
-            HTTPManager::log(std::format("infoaction|{}|{}|The party travels for a {} hours to {} ", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                     RE::PlayerCharacter::GetSingleton()->GetName(), event->fastTravelEndHours,GetPlayerLocation()));
-            
-        });
 
-    */
+    // Skyrim VR has no TESFastTravelEndEvent source to register with.
+    if (!REL::Module::IsVR()) {
+        On<RE::TESFastTravelEndEvent>([](const RE::TESFastTravelEndEvent* event) {
+            LocationList::GetInstance().Clear();
+            std::string currentLocation = GetPlayerLocation();
+            LocationList::GetInstance().AddLocation(currentLocation,nullptr);
+        });
+    }
     On<RE::TESGrabReleaseEvent>([](const RE::TESGrabReleaseEvent* event) {
         VRItemAwareness::HandleFlatGrabReleaseEvent(event);
         if (!event) {

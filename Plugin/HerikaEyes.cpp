@@ -77,7 +77,7 @@ namespace {
         std::string refId;
 
         auto* crosshairData = RE::CrosshairPickData::GetSingleton();
-        auto crosshairTarget = crosshairData ? crosshairData->target : RE::ObjectRefHandle{};
+        auto crosshairTarget = crosshairData ? crosshairData->GetActiveTarget() : RE::ObjectRefHandle{};
         if (crosshairTarget) {
             auto reference = crosshairTarget.get();
             if (reference) {
@@ -132,8 +132,8 @@ namespace {
         }
 
         RE::FormID crosshairFormId = 0;
-        if (auto* crosshairData = RE::CrosshairPickData::GetSingleton(); crosshairData && crosshairData->target) {
-            if (auto target = crosshairData->target.get()) {
+        if (auto* crosshairData = RE::CrosshairPickData::GetSingleton(); crosshairData) {
+            if (auto target = crosshairData->GetActiveTarget().get()) {
                 crosshairFormId = target->GetFormID();
             }
         }
@@ -251,7 +251,7 @@ namespace {
         }
 
         auto* crosshairData = RE::CrosshairPickData::GetSingleton();
-        auto crosshairTarget = crosshairData ? crosshairData->target : RE::ObjectRefHandle{};
+        auto crosshairTarget = crosshairData ? crosshairData->GetActiveTarget() : RE::ObjectRefHandle{};
         if (crosshairTarget) {
             if (auto target = crosshairTarget.get()) {
                 const char* displayName = target->GetDisplayFullName();
@@ -450,18 +450,23 @@ std::string ScenarioHints() {
 ImageData* TakeShotToMemory() {
     logger::info("Init DirectX stuff");
 
-    const auto renderer = RE::BSRenderManager::GetSingleton();
+    const auto renderer = RE::BSGraphics::Renderer::GetSingleton();
 
     if (!renderer) {
         logger::info("No renderer");
         return nullptr;
     }
 
-    auto rendererData = renderer->GetRuntimeData();
+    auto& rendererData = renderer->GetRuntimeData();
+    auto* rendererWindow = RE::BSGraphics::Renderer::GetCurrentRenderWindow();
+    if (!rendererWindow) {
+        logger::info("No active renderer window");
+        return nullptr;
+    }
 
-    ID3D11Device* device = rendererData.forwarder;
-    IDXGISwapChain* swapChain = rendererData.swapChain;
-    ID3D11DeviceContext* ctx = rendererData.context;
+    ID3D11Device* device = reinterpret_cast<ID3D11Device*>(rendererData.forwarder);
+    IDXGISwapChain* swapChain = reinterpret_cast<IDXGISwapChain*>(rendererWindow->swapChain);
+    ID3D11DeviceContext* ctx = reinterpret_cast<ID3D11DeviceContext*>(rendererData.context);
 
     // device->GetImmediateContext(&ctx);
 
@@ -520,7 +525,7 @@ ImageData* TakeShotToMemory() {
         return nullptr;
     }
 
-    logger::info("Backbuffer format: {} " , desc.Format);
+    logger::info("Backbuffer format: {} ", static_cast<std::uint32_t>(desc.Format));
     /*
     // BMP header
     const int bpp = 4;
@@ -889,11 +894,11 @@ namespace {
         } else {
             auto* pick = RE::CrosshairPickData::GetSingleton();
             if (!pick) { return; }
-            auto actorPtr = pick->targetActor.get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
+            auto actorPtr = pick->targetActor[0].get();  // ObjectRefHandle -> NiPointer<TESObjectREFR>
             actor = actorPtr ? actorPtr->As<RE::Actor>() : nullptr;
             if (!actor || actor->GetFormID() != expectActor) { return; }  // player looked away / not an actor
             if (actor == player || actor->IsDead()) { return; }
-            region = ClassifyGazeRegion(actor, pick->collisionPoint);
+            region = ClassifyGazeRegion(actor, pick->collisionPoint[0]);
         }
 
         const RE::NiPoint3 delta = actor->GetPosition() - player->GetPosition();
@@ -951,7 +956,7 @@ void PollPlayerGaze() {
     } else {
         auto* pick = RE::CrosshairPickData::GetSingleton();
         if (!pick) { return; }
-        auto actorPtr = pick->targetActor.get();
+        auto actorPtr = pick->targetActor[0].get();
         if (actorPtr) { cur = actorPtr->GetFormID(); }
     }
 

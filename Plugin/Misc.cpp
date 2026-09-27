@@ -357,9 +357,6 @@ std::string BuildCurrentWorldContextDetails() {
 void ProcedureSendActiveQuests() {
     auto storyTeller = RE::BGSStoryTeller::GetSingleton();
 
-    auto playerInfo = RE::PlayerCharacter::GetSingleton()->GetPlayerRuntimeData();
-    
-    
     std::string briefing;
 
     json briefing2;
@@ -626,7 +623,7 @@ void InterruptNPC(RE::Actor* actor, AIAgent* agent) {
     logger::info("Setting dialogue busy for  {}, isPlayerTeammate {}", actor->GetDisplayFullName(),
                  actor->IsPlayerTeammate());
 
-    actor->PauseCurrentDialogue();  // Needed?
+    actor->StopCurrentDialogue();  // Needed?
     // Beta test this requests.
     // listenerPtr->StopInteractingQuick(true);  // CTD with OAR?
     actor->EndDialogue();  // Seems to flush pending skyrim dialog

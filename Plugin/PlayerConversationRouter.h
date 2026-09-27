@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Globals.h"
+#include "PlayerConversationRoutingPolicy.h"
 
 #include <cstdint>
 #include <memory>
@@ -31,6 +32,8 @@ struct PlayerConversationRoutingContext
     std::string explicitTargetName;
     // Route against stripped content while sending the original shortcut to HerikaServer.
     std::string symbolRoutingMode;
+    // Freeze the selected command mode before asynchronous requests or one-shot resets.
+    std::string executionMode;
     std::string routingMessage;
     std::string playerMood;
     std::string customPlayerMood;
@@ -76,7 +79,7 @@ namespace PlayerConversationRouter
     bool IsActorSleeping(RE::Actor* actor);
     std::string GetAutomaticBlockReason(const std::shared_ptr<AIAgent>& agent,
                                         RE::Actor* actor, RE::Actor* player,
-                                        bool ignoreSleeping = false);
+                                        PlayerConversationRoutingPolicy::AutomaticEligibilityOptions options = {});
     PlayerConversationRoutingResult Resolve(const std::string& wireMessage,
                                             const PlayerConversationRoutingContext& context);
 }

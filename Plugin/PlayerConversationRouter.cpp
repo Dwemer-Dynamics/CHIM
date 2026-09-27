@@ -24,6 +24,7 @@ namespace
         std::shared_ptr<AIAgent> agent;
         RE::Actor* actor = nullptr;
         std::string promptIdentifier;
+        std::string hardBlockReason;
         std::string automaticBlockReason;
         std::string spatialReason;
     };
@@ -74,8 +75,12 @@ namespace
             reason = "disabled";
             return false;
         }
-        if (!actor->GetActorRuntimeData().currentProcess || !actor->Is3DLoaded()) {
-            reason = "not_loaded";
+        if (!actor->GetActorRuntimeData().currentProcess) {
+            reason = "no_current_process";
+            return false;
+        }
+        if (!actor->Is3DLoaded()) {
+            reason = "no_3d";
             return false;
         }
 
@@ -99,10 +104,10 @@ namespace
     RE::FormID GetTrueCrosshairActorFormId()
     {
         auto* crosshair = RE::CrosshairPickData::GetSingleton();
-        if (!crosshair || !crosshair->target) {
+        if (!crosshair) {
             return 0;
         }
-        auto reference = crosshair->target.get();
+        auto reference = crosshair->GetActiveTarget().get();
         auto* actor = reference ? reference->As<RE::Actor>() : nullptr;
         return actor ? actor->GetFormID() : 0;
     }
@@ -297,7 +302,7 @@ bool PlayerConversationRouter::IsActorSleeping(RE::Actor* actor)
 
 std::string PlayerConversationRouter::GetAutomaticBlockReason(
     const std::shared_ptr<AIAgent>& agent, RE::Actor* actor, RE::Actor* player,
-    bool ignoreSleeping)
+    PlayerConversationRoutingPolicy::AutomaticEligibilityOptions options)
 {
     if (!agent || !actor || !player) {
         return "invalid_actor";
@@ -315,7 +320,7 @@ std::string PlayerConversationRouter::GetAutomaticBlockReason(
     facts.sleeping = IsActorSleeping(actor);
     facts.inScene = actor->GetCurrentScene() != nullptr;
     facts.sceneDialogueEnabled = AllowActorsOnScene;
-    return std::string(PlayerConversationRoutingPolicy::GetAutomaticBlockReason(facts, ignoreSleeping));
+    return std::string(PlayerConversationRoutingPolicy::GetAutomaticBlockReason(facts, options));
 }
 
 PlayerConversationSpeechMode PlayerConversationRouter::ParseSpeechMode(std::string_view mode)
@@ -363,25 +368,19 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     }
 
     const float baseListenerRadius =
-        baseSettings.autoHearingDistance > 0.0f
-            ? baseSettings.autoHearingDistance
-            : SpatialAwareness::kAutoHearingDistance;
-    const float baseDirectRadius =
         playerInterior ? baseSettings.interiorMaxDistance : baseSettings.exteriorMaxDistance;
     result.listenerRadiusUnits = context.mode == PlayerConversationSpeechMode::Close
         ? GetCloseRadiusUnits(player->IsSneaking())
         : baseListenerRadius * modifier;
     result.audienceRadiusUnits = result.listenerRadiusUnits;
-    const float directAddressRadius =
-        context.mode == PlayerConversationSpeechMode::Close
-            ? result.listenerRadiusUnits
-            : std::max(result.listenerRadiusUnits, baseDirectRadius * modifier);
+    const float directAddressRadius = result.listenerRadiusUnits;
 
     SpatialAwareness::Settings audienceSettings = baseSettings;
     audienceSettings.maxAirDistance = result.audienceRadiusUnits;
     audienceSettings.interiorMaxDistance = result.audienceRadiusUnits;
     audienceSettings.exteriorMaxDistance = result.audienceRadiusUnits;
-    audienceSettings.autoHearingDistance = 0.0f;
+    audienceSettings.autoHearingDistance = context.mode == PlayerConversationSpeechMode::Close
+        ? 0.0f : std::min(baseSettings.autoHearingDistance * modifier, result.audienceRadiusUnits);
     audienceSettings.immediateDistance = 0.0f;
     SpatialAwareness::InvalidateCache();
 
@@ -422,7 +421,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         std::string hardReason;
         candidate.policy.hardEligible = IsHardEligible(actor, player, hardReason);
         if (!candidate.policy.hardEligible) {
-            candidate.automaticBlockReason = std::move(hardReason);
+            candidate.hardBlockReason = std::move(hardReason);
             runtimeCandidates.push_back(std::move(candidate));
             continue;
         }
@@ -430,7 +429,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         candidate.policy.distance = playerPosition.GetDistance(actorPosition);
         if (!std::isfinite(candidate.policy.distance)) {
             candidate.policy.hardEligible = false;
-            candidate.automaticBlockReason = "invalid_distance";
+            candidate.hardBlockReason = "invalid_distance";
             runtimeCandidates.push_back(std::move(candidate));
             continue;
         }
@@ -469,6 +468,10 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.utterance = context.routingMessage.empty()
         ? PlayerConversationRoutingPolicy::ExtractUtterance(wireMessage)
         : PlayerConversationRoutingPolicy::Normalize(context.routingMessage);
+    // Hypnosis text describes a profile change, not a spoken address to another actor.
+    if (context.executionMode == "HYPNOSIS") {
+        policyRequest.utterance.clear();
+    }
     policyRequest.explicitTargetFormId = context.explicitTargetFormId;
     policyRequest.explicitTargetName = context.explicitTargetName;
     policyRequest.directAddressRadius = directAddressRadius;
@@ -478,8 +481,9 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         context.everyoneMode &&
         context.mode != PlayerConversationSpeechMode::Whisper &&
         context.mode != PlayerConversationSpeechMode::Close;
-    policyRequest.narratorGesture = IsNarratorGesture(player);
-    policyRequest.blockSleepingDirectTarget = context.mode != PlayerConversationSpeechMode::Shout;
+    policyRequest.narratorGesture = context.executionMode != "HYPNOSIS" && IsNarratorGesture(player);
+    // Direct address can reach a sleeper; automatic selection still uses autoEligible.
+    policyRequest.blockSleepingDirectTarget = false;
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);
     result.reason = selection.reason;
@@ -555,19 +559,42 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     }
     AddUniqueAudience(result.audience, seenAudience, player->GetName());
 
-    std::string rejected;
-    for (const auto& candidate : runtimeCandidates) {
-        if (candidate.policy.hardEligible && candidate.policy.autoEligible && candidate.policy.audible) {
+    std::string audienceExcluded;
+    std::string autoIneligible;
+    const auto appendCandidate = [](std::string& list, const RuntimeCandidate& candidate,
+                                    std::string_view reason) {
+        if (!list.empty()) {
+            list += ", ";
+        }
+        list += std::format("{}({:08X}: {})", candidate.policy.name, candidate.policy.formId,
+                            reason.empty() ? "not_eligible" : reason);
+    };
+    for (std::size_t index = 0; index < runtimeCandidates.size(); ++index) {
+        const auto& candidate = runtimeCandidates[index];
+        const bool audienceMember = !result.narrator &&
+            PlayerConversationRoutingPolicy::IsAudienceMember(
+                candidate.policy, index == selectedIndex, result.audienceRadiusUnits);
+        if (!audienceMember) {
+            std::string_view reason = "not_in_audience";
+            if (result.narrator) {
+                reason = "narrator_private";
+            } else if (!candidate.policy.hardEligible) {
+                reason = candidate.hardBlockReason;
+            } else if (candidate.policy.distance > result.audienceRadiusUnits) {
+                reason = "outside_effective_radius";
+            } else if (candidate.policy.sleeping) {
+                reason = "sleeping";
+            } else if (!candidate.spatialReason.empty()) {
+                reason = candidate.spatialReason;
+            }
+            appendCandidate(audienceExcluded, candidate, reason);
             continue;
         }
-        if (!rejected.empty()) {
-            rejected += ", ";
+
+        if (index != selectedIndex && !candidate.policy.autoEligible &&
+            !candidate.automaticBlockReason.empty()) {
+            appendCandidate(autoIneligible, candidate, candidate.automaticBlockReason);
         }
-        const std::string reason = !candidate.automaticBlockReason.empty()
-            ? candidate.automaticBlockReason
-            : candidate.spatialReason;
-        rejected += std::format("{}({:08X}: {})", candidate.policy.name, candidate.policy.formId,
-                                reason.empty() ? "not_eligible" : reason);
     }
 
     const auto inactivePresentCount = std::count_if(
@@ -576,11 +603,13 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     logger::info(
         "[PLAYER-ROUTING] source={} mode={} utterance='{}' crosshair={:08X} explicit={:08X} "
         "responder='{}' reason={} direct={} broadcast={} listener_radius={:.1f} audience_radius={:.1f} "
-        "audience_count={} present_count={} inactive_present_count={} rejected=[{}]",
+        "audience_count={} present_count={} inactive_present_count={} audience_excluded=[{}] "
+        "auto_ineligible=[{}]",
         SourceName(context.source), result.modeName, policyRequest.utterance, crosshairFormId,
         context.explicitTargetFormId, result.responderName, result.reason, result.direct ? 1 : 0,
         result.broadcast ? 1 : 0, result.listenerRadiusUnits, result.audienceRadiusUnits,
-        result.audience.size(), result.presentActors.size(), inactivePresentCount, rejected);
+        result.audience.size(), result.presentActors.size(), inactivePresentCount,
+        audienceExcluded, autoIneligible);
 
     return result;
 }

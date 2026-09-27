@@ -11,7 +11,11 @@
     let selectSequence = 0;
 
     function command(value) { if (window.chimConfigManagerCommand) window.chimConfigManagerCommand(value); }
-    function syncInputCapture() { command(document.activeElement && document.activeElement.matches('input, textarea, select') ? 'input_capture|on' : 'input_capture|off'); }
+    function syncInputCapture() {
+        const focused = document.activeElement;
+        const editing = focused && (focused.matches('input, textarea, select') || focused.closest('.mcm-hearing-preset-section .settings-tile-selector'));
+        command(editing ? 'input_capture|on' : 'input_capture|off');
+    }
     function asBool(value) {
         if (typeof value === 'boolean') return value;
         return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -26,6 +30,10 @@
             if (selector === except) return;
             selector.classList.remove('expanded');
             selector.querySelector('.settings-tile-trigger').setAttribute('aria-expanded', 'false');
+            /* Single choke point for closing, so MCM enum rows release their help suppression here
+               too; otherwise a click-outside or Escape would leave the marker stuck on. */
+            const enumRow = selector.closest('.mcm-row-enum');
+            if (enumRow) enumRow.classList.remove('mcm-enum-open');
         });
     }
     function syncTileSelect(select) {
@@ -239,7 +247,8 @@
         const metadataRoot = byId('profile-metadata-sections'); metadataRoot.replaceChildren();
         (detail.metadata_sections || []).forEach((group) => {
             const section = document.createElement('section'); section.className = 'settings-section'; const title = document.createElement('h2'); title.textContent = group.name; section.appendChild(title);
-            group.fields.forEach((field) => {
+            // Dynamic profile policy is managed in web Profiles, including when connected to an older server.
+            group.fields.filter((field) => !field.name.startsWith('DYNAMIC_PROFILE_') && field.name !== 'CONTEXT_HISTORY_DYNAMIC_PROFILE').forEach((field) => {
                 if (field.type === 'multiselect') {
                     const block = document.createElement('div'); block.className = 'field'; const label = document.createElement('span'); label.textContent = field.label; block.appendChild(label);
                     (field.options || []).forEach((option) => block.appendChild(fieldControl({name:`${field.name}:${option}`,label:option,type:'boolean'}, (field.value || []).includes(option), 'metadata_multi:'))); section.appendChild(block);
@@ -254,7 +263,8 @@
         (detail.override_sections || []).forEach((group) => {
             const section = document.createElement('section'); section.className = 'settings-section';
             const title = document.createElement('h2'); title.textContent = group.name; section.appendChild(title);
-            group.fields.forEach((field) => {
+            // Dynamic profile policy is managed in web Profiles, including when connected to an older server.
+            group.fields.filter((field) => !field.name.startsWith('DYNAMIC_PROFILE_') && field.name !== 'CONTEXT_HISTORY_DYNAMIC_PROFILE').forEach((field) => {
                 const row = document.createElement('div'); row.className = `override-field${field.enabled ? '' : ' disabled'}`;
                 const enable = document.createElement('label'); enable.className = 'override-enable';
                 const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.name = `override_enabled:${field.name}`; checkbox.checked = asBool(field.enabled);
@@ -312,10 +322,11 @@
         await responseData(await fetch(`${serverBaseUrl}/ui/api/chim_profile_manager.php`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({operation:'delete',id:selectedProfileId}) }));
         selectedProfileId = 0; await loadProfiles();
     }
-    /* ----- CHIM MCM (mirrors the six SkyUI MCM pages, rendered from native state) ----- */
+    /* ----- CHIM MCM (mirrors the SkyUI MCM pages, rendered from native state) ----- */
     const MCM_PAGES = [
         { id: 'hotkeys', label: 'Hotkeys' },
         { id: 'auto_activate', label: 'Auto Activate' },
+        { id: 'hearing_awareness', label: 'Hearing & Awareness' },
         { id: 'behavior', label: 'Behavior' },
         { id: 'sound', label: 'Sound' },
         { id: 'ai_agents', label: 'AI Agents' },
@@ -386,6 +397,21 @@
         if (!MCM_KEY_FROM_KEY.has(alias)) MCM_KEY_FROM_KEY.set(alias, row[0]);
     });
     const MCM_SAVE_TIMEOUT_MS = 12000;
+    /* The MCM payload carries only numbers, so "enum" rows get their labels from here rather than
+       from extra metadata fields. A key with no entry falls back to a read-only row. */
+    const MCM_ENUM_OPTIONS = {
+        audio_mode: [
+            { value: 2, label: '3D Realistic' },
+            { value: 1, label: '3D Normal' },
+            { value: 0, label: '2D Flat' },
+            { value: 3, label: 'Mono' },
+            { value: 4, label: 'Mono + Advanced Effects' }
+        ]
+    };
+    const MCM_AUDIO_CONTROL_MODES = {
+        sound_distance_scale: [2, 4], playback_dropoff_inside: [2, 4], playback_dropoff_outside: [2, 4],
+        curve_legacy_distance: [1], camera_based_audio: [0, 1, 2], invert_heading: [0, 1, 2]
+    };
     let mcmState = null;
     let mcmAgents = null;
     let mcmRequested = false;
@@ -576,6 +602,58 @@
         mcmSaveErrors.delete(key);
         mcmSyncRowState(row, entry);
         refreshMcmSaveBar();
+        const preset = byId('mcm-hearing-preset');
+        if (preset && HEARING_KEYS.includes(key)) {
+            preset.value = String(hearingPresetIndex());
+            syncTileSelect(preset);
+        }
+    }
+
+    // Keep these three-value presets aligned with ApplyHearingPreset in the MCM script.
+    const HEARING_KEYS = ['auto_hearing_radius_m', 'spatial_hearing_inside', 'spatial_hearing_outside'];
+    const HEARING_PRESETS = [
+        { label: 'Realistic', values: [4, 600, 1000] },
+        { label: 'Recommended', values: [10, 1000, 1800] },
+        { label: 'Extended', values: [15, 1600, 2400] }
+    ];
+    function hearingPresetIndex() {
+        const entries = HEARING_KEYS.map((key) => mcmEntryList().find((entry) => entry.key === key));
+        const index = HEARING_PRESETS.findIndex((preset) => entries.every((entry, i) => entry && Number(mcmValue(entry)) === preset.values[i]));
+        return index < 0 ? 3 : index;
+    }
+
+    // Stage the existing sliders together so Save/Discard and partial failures keep their normal behavior.
+    function mcmHearingPresetRow(entry, readonly) {
+        const row = document.createElement('div');
+        row.className = 'mcm-row';
+        const heading = mcmRowHead(entry);
+        const select = document.createElement('select');
+        select.id = 'mcm-hearing-preset';
+        select.setAttribute('aria-labelledby', heading.labelId);
+        HEARING_PRESETS.forEach((preset, index) => select.add(new Option(preset.label, String(index))));
+        const custom = new Option('Custom', '3');
+        custom.disabled = true;
+        select.add(custom);
+        select.value = String(hearingPresetIndex());
+        select.disabled = readonly || mcmSaving || HEARING_KEYS.some((key) => !mcmEntryList().some((item) => item.key === key && !item.readonly));
+        row.append(heading.head, select);
+        const helpId = mcmHelp(row, entry);
+        mcmDescribe(select, [helpId]);
+        const selector = enhanceSelect(select);
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        trigger.setAttribute('aria-labelledby', heading.labelId);
+        mcmDescribe(trigger, [helpId]);
+        select.addEventListener('change', () => {
+            const preset = HEARING_PRESETS[Number(select.value)];
+            if (!preset || select.disabled) return;
+            HEARING_KEYS.forEach((key, index) => {
+                const item = mcmEntryList().find((candidate) => candidate.key === key);
+                stageMcmValue(item, preset.values[index], null);
+            });
+            renderMcmPanel(activeMcmPage);
+            byId('mcm-hearing-preset')?.closest('.settings-tile-selector')?.querySelector('.settings-tile-trigger')?.focus();
+        });
+        return row;
     }
 
     /* ----- Staged edits: dirty state, ordered save, explicit discard ----- */
@@ -623,8 +701,16 @@
         });
         return queue;
     }
+    function mcmEntryFocusTargets(key) {
+        const targets = ['toggle', 'range', 'keycap'].map((kind) => byId(mcmControlId(kind, key))).filter(Boolean);
+        /* An enum row hides its native select, so the tile trigger is the real focus target. */
+        const select = byId(mcmControlId('select', key));
+        const selector = select ? select.closest('.settings-tile-selector') : null;
+        if (selector) targets.push(selector.querySelector('.settings-tile-trigger'));
+        return targets.filter(Boolean);
+    }
     function mcmFocusEntryControl(key) {
-        const candidates = ['toggle', 'range', 'keycap'].map((kind) => byId(mcmControlId(kind, key))).filter(Boolean);
+        const candidates = mcmEntryFocusTargets(key);
         const target = candidates.find((node) => !node.disabled) || candidates[0];
         if (target) target.focus();
     }
@@ -852,6 +938,62 @@
         number.addEventListener('change', () => commit(number.value));
         return row;
     }
+    function mcmEnumRow(entry, readonly) {
+        const options = MCM_ENUM_OPTIONS[String(entry.key || '')] || [];
+        /* Without a known option list the number cannot be labelled, so show it read-only. */
+        if (!options.length) return mcmReadonlyRow(entry, 'text');
+        const row = document.createElement('div');
+        row.className = 'mcm-row mcm-row-enum';
+        const heading = mcmRowHead(entry);
+        const controls = document.createElement('div');
+        controls.className = 'mcm-enum-controls';
+        const select = document.createElement('select');
+        select.id = mcmControlId('select', entry.key);
+        options.forEach((option) => select.appendChild(new Option(option.label, String(option.value))));
+        const current = Number(mcmValue(entry));
+        const match = options.find((option) => Number(option.value) === current) || options[0];
+        select.value = String(match.value);
+        select.disabled = readonly || mcmSaving;
+        controls.appendChild(select);
+        row.append(heading.head, controls);
+        const state = mcmRowState(row, entry, heading.head);
+        const helpId = mcmHelp(row, entry);
+        if (helpId) heading.head.setAttribute('aria-describedby', helpId);
+        const selector = enhanceSelect(select);
+        select.tabIndex = -1;
+        select.setAttribute('aria-hidden', 'true');
+        const trigger = selector.querySelector('.settings-tile-trigger');
+        const value = selector.querySelector('.settings-tile-value');
+        value.id = `mcm-enum-value-${++mcmSequence}`;
+        /* Reads as "Audio Mode, 3D Realistic" instead of just the bare option name. */
+        trigger.setAttribute('aria-labelledby', `${heading.labelId} ${value.id}`);
+        mcmDescribe(trigger, [helpId, state.pillId, state.errorId]);
+        /* The option list and the hover help both drop below the row, so one hides the other. */
+        trigger.addEventListener('click', () => {
+            row.classList.toggle('mcm-enum-open', selector.classList.contains('expanded'));
+        });
+        selector.addEventListener('keydown', (event) => {
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || select.disabled) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (!selector.classList.contains('expanded')) trigger.click();
+            const choices = Array.from(selector.querySelectorAll('.settings-tile-option:not(:disabled)'));
+            const index = choices.indexOf(document.activeElement);
+            let next = index < 0 ? select.selectedIndex : index;
+            if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = choices.length - 1;
+            else if (index >= 0) next = (index + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+            if (choices[next]) choices[next].focus();
+        });
+        select.addEventListener('change', () => {
+            row.classList.remove('mcm-enum-open');
+            stageMcmValue(entry, Number(select.value), row);
+            // Redraw from staged mode without discarding edits to the now-inactive controls.
+            renderMcmPanel(activeMcmPage);
+            mcmFocusEntryControl(entry.key);
+        });
+        return row;
+    }
     function mcmKeymapRow(entry) {
         const row = document.createElement('div');
         row.className = 'mcm-row mcm-row-keymap';
@@ -915,9 +1057,14 @@
     }
     function mcmRow(entry) {
         const type = String(entry.type || 'text').toLowerCase();
-        const readonly = entry.readonly === true;
+        let readonly = entry.readonly === true;
+        const modes = MCM_AUDIO_CONTROL_MODES[String(entry.key || '')];
+        const audioMode = modes && mcmEntryList().find((candidate) => candidate.key === 'audio_mode');
+        if (audioMode) readonly = !modes.includes(Number(mcmValue(audioMode)));
+        if (entry.key === 'hearing_preset') return mcmHearingPresetRow(entry, readonly);
         if (type === 'toggle') return mcmToggleRow(entry, readonly);
         if (type === 'slider') return mcmSliderRow(entry, readonly);
+        if (type === 'enum') return mcmEnumRow(entry, readonly);
         /* Keymaps stay editable through key capture; the payload readonly flag only mirrors the legacy MCM display. */
         if (type === 'keymap') return mcmKeymapRow(entry);
         return mcmReadonlyRow(entry, 'text');
@@ -943,6 +1090,7 @@
         sections.forEach((items, name) => {
             const card = document.createElement('section');
             card.className = 'settings-section mcm-section';
+            if (items.some((item) => item.key === 'hearing_preset')) card.classList.add('mcm-hearing-preset-section');
             const title = document.createElement('h2');
             title.textContent = name;
             card.appendChild(title);

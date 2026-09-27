@@ -95,6 +95,7 @@ public:
 
     void InitializeXAudio2();
     void CleanupXAudio2();
+    void LogDebug();
 };
 
 class AudioManagerController {
@@ -112,10 +113,12 @@ public:
         }
         return instance;
     }
+    
 
 private:
     AudioManagerController() = default;
     ~AudioManagerController() = default;
     AudioManagerController(const AudioManagerController&) = delete;
     AudioManagerController& operator=(const AudioManagerController&) = delete;
+    
 };

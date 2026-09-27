@@ -1,5 +1,9 @@
 # CHIM
 
+## For AI assistants and coding agents
+
+Start with [AGENTS.md](AGENTS.md), then the [agent guide](AIAgent/docs/CHIM/agent-guide.md), [building guide](AIAgent/docs/CHIM/building.md), or [custom plugins guide](AIAgent/docs/CHIM/custom-plugins.md). These guides ship in the mod as `docs/CHIM/`; the server has its own [instructions](https://github.com/Dwemer-Dynamics/HerikaServer/blob/unstable/AGENTS.md).
+
 CHIM is the unified monorepo-facing home for the Skyrim client mod assets and the native SKSE plugin that power the CHIM and Herika stack.
 
 This repo replaces the split source-of-truth model that previously lived across:
@@ -18,14 +22,19 @@ This repo replaces the split source-of-truth model that previously lived across:
 
 ## Build and Deploy
 
+For a standalone clone, use the [building guide](AIAgent/docs/CHIM/building.md). The wrapper commands below belong to the maintainer's parent monorepo and are not shipped in this repository.
+
 From the monorepo root:
 
 ```powershell
+git submodule update --init --recursive
 .\scripts\build-chim-plugin.ps1
 .\scripts\deploy.ps1
 ```
 
 `build-chim-plugin.ps1` now builds from `CHIM/Plugin`.
+
+The native plugin uses pinned CommonLibSSE-NG and SkyrimScripting submodules to retain one-DLL support for Skyrim SE, AE, and VR. Skyrim 1.7.104 requires SKSE 2.3.1 and Address Library All in One v13 or newer.
 
 `deploy.ps1` now sources CHIM client assets and Papyrus files from `CHIM/AIAgent`, and sources the plugin build from `CHIM/Plugin`.
 
