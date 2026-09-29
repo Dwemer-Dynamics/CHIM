@@ -31,6 +31,8 @@
     let historySearchGeneration = 0;
     let historyEventType = '';
     const historyRecipients = new Map();
+    let bglStatus = null;
+    let bglRequestGeneration = 0;
     const VOICE_FILTER_NONE_ID = 'none';
     let voiceFilterPresets = [];
     let voiceFilterPreviewAudio = null;
@@ -255,6 +257,7 @@
         byId('action-status').classList.remove('error');
         byId('bgl-action-status').textContent = '';
         byId('bgl-action-status').classList.remove('error');
+        loadBglSettings(detail.card);
         resetNpcHistory(detail.card);
         switchEditorTab('general');
         byId('save-status').textContent = '';
@@ -423,6 +426,78 @@
         const status = byId('history-status');
         status.textContent = message || '';
         status.classList.toggle('error', !!error);
+    }
+
+    function renderBglSettings(status) {
+        bglStatus = status || { background_life_enabled: false };
+        const enabled = bglStatus.background_life_enabled === true;
+        const enrollment = byId('bgl-enrollment-action');
+        enrollment.disabled = false;
+        enrollment.textContent = enabled ? 'Disable Background Life' : 'Enable Background Life';
+        document.querySelectorAll('[data-bgl-setting]').forEach((control) => {
+            control.checked = bglStatus[control.dataset.bglSetting] === true;
+            control.disabled = !enabled;
+        });
+    }
+
+    async function loadBglSettings(card) {
+        const generation = ++bglRequestGeneration;
+        bglStatus = null;
+        document.querySelectorAll('[data-bgl-setting]').forEach((control) => {
+            control.checked = false;
+            control.disabled = true;
+        });
+        byId('bgl-enrollment-action').disabled = true;
+        byId('bgl-enrollment-action').textContent = 'Loading...';
+        try {
+            const params = new URLSearchParams({ npc_name: card.name || '', refid: card.refid || '' });
+            const status = await parseResponse(await fetch(
+                `${serverBaseUrl}/ui/api/background_life_npc.php?${params.toString()}`,
+                { cache: 'no-store' }
+            ));
+            if (generation !== bglRequestGeneration || currentDetail?.card !== card) return;
+            renderBglSettings(status);
+        } catch (error) {
+            if (generation !== bglRequestGeneration || currentDetail?.card !== card) return;
+            bglStatus = null;
+            byId('bgl-enrollment-action').disabled = true;
+            byId('bgl-enrollment-action').textContent = 'Unavailable';
+            byId('bgl-action-status').textContent = `Could not load Background Life settings: ${error.message || error}`;
+            byId('bgl-action-status').classList.add('error');
+        }
+    }
+
+    async function updateBglSettings(operation, setting, value) {
+        if (!currentDetail) return;
+        const card = currentDetail.card;
+        const generation = ++bglRequestGeneration;
+        byId('bgl-enrollment-action').disabled = true;
+        document.querySelectorAll('[data-bgl-setting]').forEach((control) => { control.disabled = true; });
+        const body = new URLSearchParams({
+            operation,
+            npc_name: card.name || '',
+            refid: card.refid || ''
+        });
+        if (setting) body.set('setting', setting);
+        if (value !== undefined) body.set('value', value ? '1' : '0');
+        const statusLine = byId('bgl-action-status');
+        statusLine.textContent = 'Saving Background Life settings...';
+        statusLine.classList.remove('error');
+        try {
+            const status = await parseResponse(await fetch(`${serverBaseUrl}/ui/api/background_life_npc.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                body: body.toString()
+            }));
+            if (generation !== bglRequestGeneration || currentDetail?.card !== card) return;
+            renderBglSettings(status);
+            statusLine.textContent = 'Background Life settings saved.';
+        } catch (error) {
+            if (generation !== bglRequestGeneration || currentDetail?.card !== card) return;
+            statusLine.textContent = `Could not save Background Life settings: ${error.message || error}`;
+            statusLine.classList.add('error');
+            if (bglStatus) renderBglSettings(bglStatus);
+        }
     }
 
     function resetNpcHistory(card) {
@@ -943,6 +1018,12 @@
         runNpcAction(event.currentTarget.dataset.action || 'teleport', event.currentTarget);
     });
     byId('bgl-inception-action').addEventListener('click', (event) => runNpcAction('bgl_inception', event.currentTarget));
+    byId('bgl-enrollment-action').addEventListener('click', () => {
+        updateBglSettings(bglStatus && bglStatus.background_life_enabled ? 'disable' : 'enable');
+    });
+    document.querySelectorAll('[data-bgl-setting]').forEach((control) => {
+        control.addEventListener('change', () => updateBglSettings('toggle', control.dataset.bglSetting, control.checked));
+    });
     byId('history-refresh').addEventListener('click', loadNpcHistory);
     byId('history-event-type').addEventListener('change', (event) => {
         historyEventType = event.currentTarget.value;
