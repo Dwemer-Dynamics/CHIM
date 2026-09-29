@@ -1,4 +1,6 @@
 #include "PlaythroughSession.h"
+#include "PlayerConversationRouter.h"
+#include <RE/O/ObjectiveState.h>
 #include <SKSE/Events.h>
 #include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
@@ -6060,6 +6062,8 @@ struct InventoryItemSnapshot
     json keywords = json::array();
     std::string hashEntry;
     int gold = 0;
+    bool equipped = false;
+    bool isQuestItem = false;
 };
 
 struct ModdedEquipmentSlot
@@ -6584,6 +6588,8 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         // Get baseid (FormID in hex format)
         std::string baseID = std::format("{:08X}", boundObject->GetFormID());
         json itemKeywords = CollectItemKeywords(boundObject);
+        const bool equipped = entryData && entryData->IsWorn();
+        const bool isQuestItem = entryData && entryData->IsQuestObject();
 
         //  Check for custom name in InventoryEntryData and ExtraDataList
         if (entryData) {
@@ -6614,7 +6620,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
             inventoryItems.push_back(
-                {itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump(), boundObject->GetGoldValue()});
+                {itemName, baseID, count, itemKeywords,
+                 itemEntry + "^" + itemKeywords.dump() + "^" + (equipped ? "1" : "0") + "^" + (isQuestItem ? "1" : "0"),
+                 boundObject->GetGoldValue(), equipped, isQuestItem});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6683,7 +6691,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
                                               {"baseid", item.baseid},
                                               {"count", item.count},
                                               {"keywords", item.keywords.is_array() ? item.keywords : json::array()}, 
-                                              {"goldvalue", item.gold}
+                                              {"goldvalue", item.gold},
+                                              {"equipped", item.equipped},
+                                              {"is_quest_item", item.isQuestItem}
             });
     }
 
@@ -6874,12 +6884,6 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         return;
     }
     
-    // Skip dead NPCs
-    if (npc->IsDead()) {
-        logger::trace("[STATS_SKIP] {} is dead, skipping stats", agentName);
-        return;
-    }
-    
     auto stats = npc->AsActorValueOwner();
     if (!stats) {
         logger::warn("[STATS_UPDATE] Actor {} has no ActorValueOwner", agentName);
@@ -6914,8 +6918,13 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
    
 
     // Create hash for comparison (round to nearest 1 to avoid float precision spam, scale to 2 decimals)
-    std::string statsHash = std::format("{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.2f}", level, health,
-                                        healthMax, magicka, magickaMax, stamina, staminaMax, scale);
+    auto* actorBase = npc->GetActorBase();
+    const bool isEssential = actorBase && actorBase->IsEssential();
+    const bool isProtected = actorBase && actorBase->IsProtected();
+    const bool isDead = npc->IsDead();
+    std::string statsHash = std::format("{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.2f}|{}|{}|{}", level, health,
+                                        healthMax, magicka, magickaMax, stamina, staminaMax, scale,
+                                        isEssential, isProtected, isDead);
 
     auto formID = npc->GetFormID();
     
@@ -6945,7 +6954,10 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         {"magicka_max", magickaMax},
         {"stamina", stamina},
         {"stamina_max", staminaMax},
-        {"scale", scale}
+        {"scale", scale},
+        {"is_essential", isEssential},
+        {"is_protected", isProtected},
+        {"is_dead", isDead}
     };
     
     HTTPManager::postGameData("gamedata.php", statsDataJson);
@@ -10401,76 +10413,77 @@ EventHandlers {
     });*/
     
     On<RE::TESQuestStageEvent>([](const RE::TESQuestStageEvent* event) {
-        // Quest obtained
-        RE::TESForm* qData = RE::TESForm::LookupByID(event->formID);
-        RE::TESQuest* qqData = qData->As<RE::TESQuest>();
-        if (!qqData) return;
-        PostQuestProgressionQuestStage(qqData, event->stage);
-        
-        if (false)
-            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID.c_str(),
-                         event->stage);
-        
-        
-        bool sent = false;
-        RE::BSSimpleList<RE::BGSQuestObjective*>* objetives = &qqData->objectives;
-        RE::BGSQuestObjective* lastObjective = nullptr;
-        
-        for (auto iter = objetives->begin(); iter != objetives->end(); ++iter) {
-            lastObjective = *iter;
-            sent = false;
-            RE::BGSQuestObjective* stage = *iter;
-            if (stage->index != event->stage) {
-                continue;
-            }
-            if (stage->index == event->stage) {
-                RE::TESQuestTarget** targets = stage->targets;
+        auto* quest = event ? RE::TESForm::LookupByID<RE::TESQuest>(event->formID) : nullptr;
+        if (quest) PostQuestProgressionQuestStage(quest, event->stage);
+    });
 
-
-                RE::BSString bsString(stage->displayText);
-
-                ReplaceTagsInQuestText(&bsString, qqData, qqData->currentInstanceID);
-                auto stateX = stage->state.get();
-                
-                HTTPManager::log(std::format("_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                             qqData->GetFormEditorID(), qqData->GetName(),
-                                             lastObjective->displayText.c_str(), stage->index));
-
-                HTTPManager::log(std::format(
-                    "quest|{}|{}|(Context location: {}) Quest Updated \"{}\" new objetive: {} ", getCurrentTimeMillis(),
-                    GetGameTimeStamp(), GetPlayerLocation(), qqData->GetName(), lastObjective->displayText.c_str()));
-                
+    // Objectives have their own indices and can change without a quest stage event.
+    // Capture text at the transition; resolve actors later on the game thread.
+    static SkyrimScripting::Plugin::CallbackEventSink<RE::ObjectiveState::Event> questObjectiveSink(
+        [](const RE::ObjectiveState::Event* event) {
+            if (!pluginInited || !event || !event->objective || event->oldState == event->newState) return;
+            using State = RE::QUEST_OBJECTIVE_STATE;
+            const bool wasVisible = event->oldState == State::kDisplayed ||
+                event->oldState == State::kCompletedDisplayed || event->oldState == State::kFailedDisplayed;
+            const bool displayed = event->newState == State::kDisplayed;
+            const bool completed = (event->newState == State::kCompletedDisplayed ||
+                (wasVisible && event->newState == State::kCompleted)) &&
+                event->oldState != State::kCompleted && event->oldState != State::kCompletedDisplayed;
+            const bool failed = (event->newState == State::kFailedDisplayed ||
+                (wasVisible && event->newState == State::kFailed)) &&
+                event->oldState != State::kFailed && event->oldState != State::kFailedDisplayed;
+            if (!displayed && !completed && !failed) return;
+            auto* quest = event->objective->ownerQuest;
+            if (!quest || !quest->GetName() || !*quest->GetName()) return;
+            RE::BSString text(event->objective->displayText);
+            ReplaceTagsInQuestText(&text, quest, quest->currentInstanceID);
+            if (!text.c_str() || !*text.c_str()) return;
+            std::string objectiveText = text.c_str();
+            std::replace(objectiveText.begin(), objectiveText.end(), '|', '/');
+            std::replace(objectiveText.begin(), objectiveText.end(), '@', ' ');
+            std::string questName = quest->GetName();
+            std::replace(questName.begin(), questName.end(), '|', '/');
+            std::replace(questName.begin(), questName.end(), '@', ' ');
+            const std::string editorId = quest->GetFormEditorID();
+            const auto stage = quest->GetCurrentStageID();
+            const auto objective = event->objective->index;
+            const auto questFormId = quest->GetFormID();
+            const std::string status = completed ? "completed" : (failed ? "failed" : "displayed");
+            const auto generation = PlaythroughSession::Context();
+            SKSE::GetTaskInterface()->AddTask([objectiveText, questName, editorId, stage, objective, questFormId, status, generation]() {
+                if (!PlaythroughSession::Allowed(generation)) return;
+                PlaythroughSession::Scope scope(generation);
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto* ui = RE::UI::GetSingleton();
+                if (!player || !ui || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+                    ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) return;
+                json speakers = json::array();
+                for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+                    if (!agent || agent->isNarrator()) continue;
+                    auto* actor = agent->getActor();
+                    if (!actor || actor == player || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() ||
+                        !IsActorLoadedInPlayerCell(actor) ||
+                        actor->GetPosition().GetDistance(player->GetPosition()) > DISTANCE_ACTIVATING_NPC_OUT ||
+                        !PlayerConversationRouter::GetAutomaticBlockReason(agent, actor, player).empty()) continue;
+                    speakers.push_back(agent->getActorName());
+                    if (speakers.size() == 32) break;
+                }
+                const auto snapshotJson = json{{"source", "quest_objective_v1"}, {"speakers", speakers}}.dump();
+                const auto snapshot = HTTPManager::base64_encode(snapshotJson.data(), snapshotJson.size());
+                HTTPManager::log(std::format("_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(),
+                    GetGameTimeStamp(), editorId, questName, objectiveText, stage));
+                HTTPManager::log(std::format("quest|{}|{}|(Context location: {}) Quest \"{}\" objective {}: {}|{}",
+                    getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), questName, status, objectiveText, snapshot));
+                // Preserve the journal refresh used by quest context and memory.
                 auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                auto args = RE::MakeFunctionArguments(std::move(qqData->GetFormID()));
+                auto args = RE::MakeFunctionArguments(RE::FormID(questFormId));
                 RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                     "AIAgentAIMind", "FillLogJournal", args, callback);
-
-                sent = true;
-                
-            }
-        }
-
-        if (lastObjective && !sent) {
-            //if (lastObjective->state.get() == RE::QUEST_OBJECTIVE_STATE::) {
-                RE::TESQuestTarget** targets = lastObjective->targets;
-
-                RE::BSString bsString(lastObjective->displayText);
-                
-
-                ReplaceTagsInQuestText(&bsString, qqData, qqData->currentInstanceID);
-                HTTPManager::log(std::format(
-                    "_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                             qqData->GetFormEditorID(), qqData->GetName(),
-                                             lastObjective->displayText.c_str(), event->stage));
-
-                
-
-            //}
-        }
-
-        
-    });
-    
+                logger::info("[QUEST_COMMENT] Objective {} {} quest={} stage={} candidates={}",
+                    objective, status, editorId, stage, speakers.size());
+            });
+        });
+    RE::ObjectiveState::GetEventSource()->AddEventSink(&questObjectiveSink);
     On<RE::TESEnterBleedoutEvent>([](const RE::TESEnterBleedoutEvent* event) {
         if (!event->actor) return;
 
