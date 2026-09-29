@@ -62,12 +62,16 @@
             field('day').value=Math.floor(due/10000000); field('time').value=row?format(due).split(', ')[1]:'19:00';
             field('duration').value=row?.schedule.duration_hours || 0;field('repeat').value=Number(row?.repeat_interval_gamets || 0)*0.0000024;
             field('search').value=row?.schedule.name || '';field('location').replaceChildren(new Option('Select a recognised location',''));
+            // Keep the saved destination selectable; location_id is its current runtime FormID.
+            if(row && Number(row.location_id)>0) { const formid=Number(row.location_id); field('location').append(new Option(`${row.schedule.name || 'Saved destination'} (${formid.toString(16).toUpperCase()})`,String(formid),true,true)); }
             one('[data-editor]').hidden=false; field('subject').focus(); preview();
         }
         function preview() {
             const due=appointment();one('[data-preview]').textContent=Number.isFinite(due)?`Appointment: ${format(due)} · Departure: ${format(Math.max(0,due-1250000))}`:'';
         }
         root.addEventListener('input', preview, {signal:controller.signal});
+        // Enter in a schedule input must not submit the surrounding NPC form; buttons, selects and textareas keep their behaviour.
+        root.addEventListener('keydown', event => { if(event.key==='Enter' && !event.isComposing && event.target instanceof HTMLInputElement) event.preventDefault(); }, {signal:controller.signal});
         root.addEventListener('click', async event => {
             const button=event.target.closest('[data-action]');if(!button || busy) return;
             const action=button.dataset.action,id=Number(button.dataset.id || 0);
