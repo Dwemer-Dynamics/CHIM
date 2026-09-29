@@ -5699,49 +5699,51 @@ RE::Actor* findClosestAgent() {
     int n = aiam.getAgents().size();
     for (const auto& agent : aiam.getAgents()) {
         logger::info("Checking Actor {} {}/{}", i, agent->getActorName(), n);
-        float distance = player->GetPosition().GetDistance(agent->getActor()->GetPosition());
+        auto actor = agent->getActorByFormId();
+        if (actor) {
+            float distance = player->GetPosition().GetDistance(actor->GetPosition());
 
-        auto debugActor = agent->getActor();
+            auto debugActor = actor;
 
-        if (!debugActor) {
-            logger::error("ERROR {} {} actor is unreachable, try to readd", i, agent->getActorName());
-            i++;
-            continue;
+            if (!debugActor) {
+                logger::error("ERROR {} {} actor is unreachable, try to readd", i, agent->getActorName());
+                i++;
+                continue;
+            }
+            auto localAgentCell = agent->getActor()->GetParentCell();
+
+            if (beings.find(agent->getActorName()) == std::string::npos) {
+                logger::info("Discarding {} {} because actor is not around", i, agent->getActorName());
+                i++;
+                continue;
+            }
+
+            if (agent->getActorName() == NARRATOR_NAME) {
+                logger::info("Discarding {} {} because actor is Narrator", i, NARRATOR_NAME);
+                i++;
+                continue;
+            }
+
+            if (!localAgentCell || !agent->getActor()) {
+                logger::info("Discarding {} because no actor/no cell", i);
+                i++;
+                continue;
+            }
+
+            if (debugActor->IsOffLimits()) {
+                logger::info("Discarding {} because offlimit", i);
+                i++;
+                continue;
+            }
+
+            if (distance < minDistance && distance > 1) {
+                index = i;
+                minDistance = distance;
+                logger::debug("Selecting {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
+            } else {
+                logger::debug("Discarding {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
+            }
         }
-        auto localAgentCell = agent->getActor()->GetParentCell();
-
-        if (beings.find(agent->getActorName()) == std::string::npos) {
-            logger::info("Discarding {} {} because actor is not around", i, agent->getActorName());
-            i++;
-            continue;
-        }
-
-        if (agent->getActorName() == NARRATOR_NAME) {
-            logger::info("Discarding {} {} because actor is Narrator", i, NARRATOR_NAME);
-            i++;
-            continue;
-        }
-
-        if (!localAgentCell || !agent->getActor()) {
-            logger::info("Discarding {} because no actor/no cell", i);
-            i++;
-            continue;
-        }
-
-        if (debugActor->IsOffLimits()) {
-            logger::info("Discarding {} because offlimit", i);
-            i++;
-            continue;
-        }
-
-        if (distance < minDistance && distance > 1) {
-            index = i;
-            minDistance = distance;
-            logger::debug("Selecting {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
-        } else {
-            logger::debug("Discarding {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
-        }
-
         i++;
     }
 
