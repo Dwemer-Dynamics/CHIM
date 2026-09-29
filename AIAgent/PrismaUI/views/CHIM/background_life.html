@@ -355,6 +355,37 @@
             </div>
         </div>
 
+        <div id="letter-modal-overlay" class="rumor-modal-overlay hidden" aria-hidden="true" onclick="if (event.target === this) closeLetterModal()">
+            <div class="rumor-modal-panel letter-modal-panel" role="dialog" aria-modal="true" aria-labelledby="letter-modal-title">
+                <div class="rumor-modal-header">
+                    <div>
+                        <h2 id="letter-modal-title">Write a Letter</h2>
+                        <p id="letter-modal-subtitle">A courier will collect it from you.</p>
+                    </div>
+                    <button class="rumor-modal-close" type="button" onclick="closeLetterModal()" aria-label="Close letter">&times;</button>
+                </div>
+                <form id="letter-form" class="rumor-form" onsubmit="submitLetterForm(event)">
+                    <div id="letter-reply-context" class="letter-reply-context hidden">
+                        <span id="letter-reply-label">Replying to</span>
+                        <p id="letter-reply-body"></p>
+                    </div>
+                    <label class="rumor-field">
+                        <span>Your letter</span>
+                        <textarea id="letter-body-input" name="letter_body" rows="9" maxlength="2000" required placeholder="Write your letter here..."></textarea>
+                    </label>
+                    <div class="letter-form-meta">
+                        <span id="letter-courier-note">Courier fee and travel time apply.</span>
+                        <span id="letter-char-count">0 / 2000</span>
+                    </div>
+                    <div id="letter-form-status" class="rumor-form-status" aria-live="polite"></div>
+                    <div class="rumor-form-actions">
+                        <button class="page-button rumor-cancel-button" type="button" onclick="closeLetterModal()">Cancel</button>
+                        <button id="letter-submit-button" class="icon-button" type="button" onclick="submitLetterForm(event)">Send by Courier</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
     </div>
 
     <script src="ui_scale.js"></script>
