@@ -25,6 +25,8 @@
     let pages = 1;
     let profiles = [];
     let currentDetail = null;
+    let stopSchedules = null;
+    let editorLoadGeneration = 0;
     let loadingGeneration = 0;
     let searchTimer = null;
     let historyRecipientSearchTimer = null;
@@ -213,15 +215,19 @@
     }
 
     async function openEditor(id) {
+        if (stopSchedules) stopSchedules();
+        const editorGeneration = ++editorLoadGeneration;
         byId('editor-backdrop').classList.remove('hidden');
         byId('editor-title').textContent = 'Loading NPC...';
         resetVoiceFilterPreview();
         byId('save-status').textContent = '';
         try {
-            currentDetail = await parseResponse(await fetch(
+            const loadedDetail = await parseResponse(await fetch(
                 `${serverBaseUrl}/ui/api/chim_npc_manager.php?operation=detail&id=${encodeURIComponent(id)}`,
                 { cache: 'no-store' }
             ));
+            if (editorGeneration !== editorLoadGeneration) return;
+            currentDetail = loadedDetail;
             populateEditor(currentDetail);
         } catch (error) {
             byId('save-status').textContent = `Could not load NPC: ${error.message || error}`;
@@ -259,6 +265,8 @@
         byId('bgl-action-status').classList.remove('error');
         loadBglSettings(detail.card);
         resetNpcHistory(detail.card);
+        if (stopSchedules) stopSchedules();
+        stopSchedules = window.chimSchedules(byId('npc-schedules'), `${serverBaseUrl}/ui/api/npc_schedules.php`, detail.card.id);
         switchEditorTab('general');
         byId('save-status').textContent = '';
         byId('save-status').classList.remove('error');
@@ -957,6 +965,8 @@
     }
 
     function closeEditor() {
+        ++editorLoadGeneration;
+        if (stopSchedules) stopSchedules();
         byId('editor-backdrop').classList.add('hidden');
         resetVoiceFilterPreview();
         currentDetail = null;
@@ -964,6 +974,8 @@
     }
 
     function switchEditorTab(tabName) {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        sendCommand('input_capture|off');
         document.querySelectorAll('.editor-tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === tabName));
         document.querySelectorAll('.tab-panel').forEach((panel) => {
             const active = panel.dataset.panel === tabName;
