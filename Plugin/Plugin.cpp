@@ -150,6 +150,18 @@ static bool IsActorLoadedInPlayerCell(RE::Actor* actor)
     return actorCell && playerCell && actorCell == playerCell;
 }
 
+static std::string GetCombatBarkSituation(RE::Actor* actor)
+{
+    const auto& runtimeData = actor->GetActorRuntimeData();
+    if (runtimeData.boolBits.any(RE::Actor::BOOL_BITS::kSearchingInCombat)) {
+        return "Combat state: searching for an opponent";
+    }
+    if (runtimeData.currentCombatTarget) {
+        return "Combat state: actively fighting an opponent";
+    }
+    return "Combat state: in combat without a current target";
+}
+
 static std::chrono::high_resolution_clock::time_point controlLastCombatEndTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastLockPickedTS = std::chrono::high_resolution_clock::now();
 static std::chrono::high_resolution_clock::time_point controlLastBleedOutTriggerTS = std::chrono::high_resolution_clock::now();
@@ -2730,10 +2742,12 @@ private:
                                         return;
                                     }
 
-                                    HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
+                                    const std::string combatSituation = GetCombatBarkSituation(resolvedActor);
+                                    HTTPManager::stream(std::format("combatbark|{}|{}|{} ({})",
                                                                    getCurrentTimeMillis(),
-                                                                   GetGameTimeStamp(), 
-                                                                   GetPlayerLocation()),
+                                                                   GetGameTimeStamp(),
+                                                                   GetPlayerLocation(),
+                                                                   combatSituation),
                                                        resolvedActor);
                                 });
                             } else {
@@ -9318,15 +9332,18 @@ EventHandlers {
                                 ThreadPool::getInstance().enqueue("CombatBarkStart", [selectedActorHandle]() {
                                     auto selectedActorRef = selectedActorHandle.get();
                                     auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
-                                    if (!resolvedActor || resolvedActor->IsDead() || !IsActorLoadedInPlayerCell(resolvedActor)) {
-                                        logger::debug("[COMBAT_BARK_START] Skipped stale combat-start actor");
+                                    if (!resolvedActor || resolvedActor->IsDead() || !resolvedActor->IsInCombat() ||
+                                        !IsActorLoadedInPlayerCell(resolvedActor)) {
+                                        logger::debug("[COMBAT_BARK_START] Skipped stale or no-longer-combat actor");
                                         return;
                                     }
 
-                                    HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
+                                    const std::string combatSituation = GetCombatBarkSituation(resolvedActor);
+                                    HTTPManager::stream(std::format("combatbark|{}|{}|{} ({})",
                                                                    getCurrentTimeMillis(),
-                                                                   GetGameTimeStamp(), 
-                                                                   GetPlayerLocation()),
+                                                                   GetGameTimeStamp(),
+                                                                   GetPlayerLocation(),
+                                                                   combatSituation),
                                                        resolvedActor);
                                 });
                             } else {
