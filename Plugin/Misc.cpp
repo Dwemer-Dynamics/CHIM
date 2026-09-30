@@ -17,6 +17,8 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <random>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
@@ -39,6 +41,86 @@ std::string BuildActorReferenceSource(RE::Actor* actor)
     }
     return file ? ActorIdentityUtils::BuildReferenceSource(file->GetFilename(), refId, file->IsLight() && !REL::Module::IsVR())
                 : std::string{};
+}
+
+namespace
+{
+    std::mutex dynamicIdentityMutex;
+    std::unordered_map<RE::FormID, ActorIdentityUtils::DynamicIdentityEntry> dynamicIdentities;
+
+    RE::FormID ActorBaseId(RE::Actor* actor)
+    {
+        auto* base = actor ? actor->GetBaseObject() : nullptr;
+        return base ? base->GetFormID() : 0;
+    }
+
+    std::string NewDynamicUuid()
+    {
+        std::random_device random;
+        std::array<std::uint8_t, 16> bytes{};
+        for (auto& byte : bytes) byte = static_cast<std::uint8_t>(random() & 0xFF);
+        return ActorIdentityUtils::FormatDynamicUuid(bytes);
+    }
+}
+
+std::string BuildActorKey(RE::Actor* actor)
+{
+    if (!actor) return {};
+    if (actor->IsPlayerRef()) return std::string(ActorIdentityUtils::PlayerActorKey);
+    const auto formId = actor->GetFormID();
+    if (!ActorIdentityUtils::IsDynamicFormId(formId)) {
+        return ActorIdentityUtils::BuildActorKey(BuildActorReferenceSource(actor));
+    }
+    const auto baseId = ActorBaseId(actor);
+    if (baseId == 0 || actor->IsDeleted()) return {};
+    std::lock_guard lock(dynamicIdentityMutex);
+    auto& entry = dynamicIdentities[formId];
+    // A recycled FF FormID with another base is a different actor and gets a new identity.
+    if (entry.formId != formId || entry.baseId != baseId || !ActorIdentityUtils::IsDynamicUuid(entry.uuid)) {
+        entry = {formId, baseId, NewDynamicUuid()};
+    }
+    return ActorIdentityUtils::BuildActorKey({}, entry.uuid);
+}
+
+namespace DynamicActorIdentity
+{
+    std::vector<ActorIdentityUtils::DynamicIdentityEntry> Snapshot()
+    {
+        std::lock_guard lock(dynamicIdentityMutex);
+        std::vector<ActorIdentityUtils::DynamicIdentityEntry> entries;
+        entries.reserve(dynamicIdentities.size());
+        for (const auto& [formId, entry] : dynamicIdentities) entries.push_back(entry);
+        return entries;
+    }
+
+    void Restore(const std::vector<ActorIdentityUtils::DynamicIdentityEntry>& entries)
+    {
+        std::unordered_map<RE::FormID, ActorIdentityUtils::DynamicIdentityEntry> restored;
+        for (const auto& entry : entries) {
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(entry.formId);
+            if (!actor || actor->IsDeleted() || ActorBaseId(actor) != entry.baseId) {
+                logger::info("[ACTOR_IDENTITY] Dropping dynamic identity for {:08X}: actor missing or base changed",
+                             entry.formId);
+                continue;
+            }
+            restored.emplace(entry.formId, entry);
+        }
+        std::lock_guard lock(dynamicIdentityMutex);
+        dynamicIdentities = std::move(restored);
+    }
+
+    void Forget(std::uint32_t formId)
+    {
+        if (!ActorIdentityUtils::IsDynamicFormId(formId)) return;
+        std::lock_guard lock(dynamicIdentityMutex);
+        dynamicIdentities.erase(formId);
+    }
+
+    void Clear()
+    {
+        std::lock_guard lock(dynamicIdentityMutex);
+        dynamicIdentities.clear();
+    }
 }
 
 namespace logger = SKSE::log;

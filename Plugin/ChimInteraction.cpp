@@ -20,7 +20,7 @@ namespace {
     // Cancel pending work without interrupting the sentence already playing.
     void DiscardPending() {
         PrismaUIBridge::BumpDialogueStopGeneration();
-        for (const auto* type : {"HTTPStream", "HTTPStreamRechat", "HTTPStreamGodMode", "DirectorAction", "CombatBark", "CombatBarkStart"})
+        for (const auto* type : {"HTTPStream", "HTTPStreamRechat", "HTTPStreamGodMode", "DirectorAction"})
             ThreadPool::getInstance().cancelTasksByType(type);
         DirectorScene::Cancel();
         SPGResponse::getInstance().clearGameOutput();

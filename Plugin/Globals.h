@@ -17,6 +17,18 @@
 
 std::string BuildActorReferenceSource(RE::Actor* actor);
 
+// Physical actor identity for server events, separate from the shared profile selector.
+// Game thread only: a dynamic (FF) actor is assigned a persisted dyn: UUID on first use.
+std::string BuildActorKey(RE::Actor* actor);
+namespace DynamicActorIdentity
+{
+    std::vector<ActorIdentityUtils::DynamicIdentityEntry> Snapshot();
+    // Keeps entries whose FF reference resolves to a live actor with the recorded base.
+    void Restore(const std::vector<ActorIdentityUtils::DynamicIdentityEntry>& entries);
+    void Forget(std::uint32_t formId);
+    void Clear();
+}
+
 #define HERIKA_MAX_VISION_RANGE 5000
 
 namespace logger = SKSE::log;

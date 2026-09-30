@@ -31,9 +31,25 @@ namespace HTTPManager {
     std::string requestPlayerMenuTtsPlayResponse(std::string msg, std::string forcedActor);
     void stream(std::string msg, RE::Actor *actor);
     void stream(std::string msg, RE::Actor *actor, int rechatDepth);
+
+    // A combat bark keeps the epochs of the pass that scheduled it. Interaction stops and loads advance the
+    // dialogue stop generation; RetireCombatBarks() advances the combat generation when combat ends.
+    struct CombatBarkTicket {
+        std::uint64_t dialogueStopGeneration = 0;
+        std::uint64_t combatGeneration = 0;
+        // Game-thread recheck run with the final eligibility snapshot.
+        std::function<bool(RE::Actor*)> speakerEligible;
+    };
+    CombatBarkTicket CurrentCombatBarkTicket();
+    bool CombatBarkTicketCurrent(const CombatBarkTicket& ticket);
+    void RetireCombatBarks();
+    // Game thread only: alive, loaded and in combat without searching (kSearchingInCombat) for its target.
+    bool CombatBarkSpeakerInCombat(RE::Actor* actor);
+
     // Returns whether a targeted request was accepted for asynchronous delivery.
     bool streamForActor(std::string msg, RE::Actor* actor,
-                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth = 0);
+                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth = 0,
+                        const CombatBarkTicket* combatBark = nullptr);
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data);
     // Completion runs after the queued request receives a success or failure result.

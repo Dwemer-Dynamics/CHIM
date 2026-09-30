@@ -1,4 +1,6 @@
 #include "PlaythroughSession.h"
+#include "PlayerConversationRouter.h"
+#include <RE/O/ObjectiveState.h>
 #include <SKSE/Events.h>
 #include "DirectorScene.h"
 #include <SkyrimScripting/Plugin.h>
@@ -2166,7 +2168,68 @@ extern std::unordered_map<uint32_t, std::string> lastSpellsHash;
 extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastSkillsUpdate;
 extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastStatsUpdate;
 
+extern bool CombatBarksEnabled;
+extern bool CombatDialogueEnabled;
 
+// Rechecked on the game thread with the final eligibility snapshot.
+static bool CombatBarkSpeakerEligible(RE::Actor* actor)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    return actor && player && actor->GetFormID() != player->GetFormID() && !actor->IsDeleted() &&
+           !actor->IsDisabled() && CombatBarksEnabled && CombatDialogueEnabled && !IsWorldMaintenanceSuppressed() &&
+           IsActorLoadedInPlayerCell(actor);
+}
+
+// Pick a combat bark speaker on the game thread so filtering, selection and the dispatch check read the
+// same frame. Only actors the engine reports in combat and not searching are candidates; HTTPManager
+// repeats that check just before the request leaves the client. The ticket is taken now, so a stop, load
+// or combat end before the task runs retires it.
+static void QueueCombatBark(bool combatStart)
+{
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) return;
+
+    auto ticket = HTTPManager::CurrentCombatBarkTicket();
+    ticket.speakerEligible = CombatBarkSpeakerEligible;
+    taskInterface->AddTask([combatStart, ticket]() {
+        const char* tag = combatStart ? "[COMBAT_BARK_START]" : "[COMBAT_BARK]";
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || !CombatBarksEnabled || !CombatDialogueEnabled || IsWorldMaintenanceSuppressed()) return;
+        if (!HTTPManager::CombatBarkTicketCurrent(ticket)) {
+            logger::debug("{} Skipped - combat or interaction ended before selection", tag);
+            return;
+        }
+        if (!combatStart && SpeakManager::getInstance().hasItems()) {
+            logger::trace("{} Skipped - speech queue busy", tag);
+            return;
+        }
+
+        // The start bark keeps its nearby-agent scope; periodic barks use every agent in the player's cell.
+        const std::string beings = combatStart ? InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
+                                                                      ",", DISTANCE_ACTIVATING_NPC_OUT)
+                                               : std::string{};
+        std::vector<AIAgent*> candidates;
+        for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+            if (!agent || agent->getActorName() == NARRATOR_NAME) continue;
+            auto* actor = agent->getActor();
+            if (!HTTPManager::CombatBarkSpeakerInCombat(actor) || !CombatBarkSpeakerEligible(actor)) continue;
+            if (combatStart && beings.find(agent->getActorName()) == std::string::npos) continue;
+            candidates.push_back(agent.get());
+        }
+
+        if (candidates.empty()) {
+            logger::debug("{} No engaged AI agents available for a bark", tag);
+            return;
+        }
+
+        auto* selectedAgent = candidates[rand() % candidates.size()];
+        logger::info("{} Selected {} ({} engaged agents)", tag, selectedAgent->getActorName(), candidates.size());
+        HTTPManager::streamForActor(std::format("combatbark|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                GetPlayerLocation()),
+                                    selectedAgent->getActor(),
+                                    PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, 0, &ticket);
+    });
+}
 
 
 class ManagerMainQueue {
@@ -2697,51 +2760,11 @@ private:
                         
                         if (combatBarkElapsed >= std::chrono::seconds(GlobalCombatBarksPeriod)) {
                             lastCombatBarkCheck = currentTime;
-                            
-                            // Find AI agents currently in combat
-                            AIAgentManager& aiam = AIAgentManager::getInstance();
-                            std::vector<AIAgent*> combatAgents;
-                               for (const auto& agent : aiam.getAgents()) {
-                                   auto actor = agent->getActor();
-                                      if (actor && actor->IsInCombat() && IsActorLoadedInPlayerCell(actor)) {
-                                        // Skip player/narrator
-                                        if (actor->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
-                                            continue;
-                                        }
 
-                                        combatAgents.push_back(agent.get());
-                                      }
-                                }
-                            
-                            if (!combatAgents.empty() && !SpeakManager::getInstance().hasItems()) {
-                                // Pick random combat agent
-                                int randomIndex = rand() % combatAgents.size();
-                                auto selectedAgent = combatAgents[randomIndex];
-                                auto selectedActor = selectedAgent->getActor();
-                                
-                                logger::info("[COMBAT_BARK] Triggering bark for {} ({} agents in combat)", 
-                                            selectedAgent->getActorName(), combatAgents.size());
-                                
-                                auto selectedActorHandle = selectedActor->GetHandle();
-                                ThreadPool::getInstance().enqueue("CombatBark", [selectedActorHandle]() {
-                                    auto selectedActorRef = selectedActorHandle.get();
-                                    auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
-                                    if (!resolvedActor || resolvedActor->IsDead() || !resolvedActor->IsInCombat() ||
-                                        !IsActorLoadedInPlayerCell(resolvedActor)) {
-                                        logger::debug("[COMBAT_BARK] Skipped stale or no-longer-combat actor");
-                                        return;
-                                    }
-
-                                    HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
-                                                                   getCurrentTimeMillis(),
-                                                                   GetGameTimeStamp(), 
-                                                                   GetPlayerLocation()),
-                                                       resolvedActor);
-                                });
+                            if (!SpeakManager::getInstance().hasItems()) {
+                                QueueCombatBark(false);
                             } else {
-                                if (!combatAgents.empty()) {
-                                    logger::trace("[COMBAT_BARK] Skipped - speech queue busy ({} agents in combat)", combatAgents.size());
-                               }
+                                logger::trace("[COMBAT_BARK] Skipped - speech queue busy");
                             }
                         }
                     }
@@ -4105,6 +4128,7 @@ namespace ProcessorSerialization {
     inline const auto PlaythroughRecord = _byteswap_ulong('AIPT');
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
+    inline const auto DynamicIdentityRecord = _byteswap_ulong('AIDY');
 
 
     void OnGameLoaded(SKSE::SerializationInterface* serde) {
@@ -4130,6 +4154,17 @@ namespace ProcessorSerialization {
                         std::uint8_t isNew = 0;
                         if (version == 1 || (serde->ReadRecordData(&isNew, 1) == 1 && isNew <= 1))
                             PlaythroughSession::RestoreCharacter(identity, isNew != 0);
+                    }
+                }
+                continue;
+            }
+            if (type == DynamicIdentityRecord) {
+                std::string data(size, '\0');
+                if (version == 1 && serde->ReadRecordData(data.data(), size) == size) {
+                    if (auto entries = ActorIdentityUtils::ParseDynamicIdentities(data)) {
+                        DynamicActorIdentity::Restore(*entries);
+                    } else {
+                        logger::warn("[ACTOR_IDENTITY] Ignoring malformed dynamic identity record");
                     }
                 }
                 continue;
@@ -4192,8 +4227,9 @@ namespace ProcessorSerialization {
                             }
 
                             // targetActor->AllowPCDialogue(false);
-                            std::vector<std::string> registrationFields(45);
+                            std::vector<std::string> registrationFields(46);
                             registrationFields[44] = BuildActorReferenceSource(actor);
+                            registrationFields[45] = BuildActorKey(actor);
                             registrationFields[0] = actor->GetDisplayFullName();
                             registrationFields[1] = category;
                             registrationFields[2] = actor->GetActorBase()->GetSex() == RE::SEXES::kFemale ? "female" : "male";
@@ -4357,6 +4393,11 @@ namespace ProcessorSerialization {
             const std::uint8_t isNew = PlaythroughSession::NewCharacter() ? 1 : 0;
             serde->WriteRecordData(&isNew, 1);
         }
+        const auto dynamicIdentities =
+            ActorIdentityUtils::SerializeDynamicIdentities(DynamicActorIdentity::Snapshot());
+        if (!dynamicIdentities.empty() && serde->OpenRecord(DynamicIdentityRecord, 1)) {
+            serde->WriteRecordData(dynamicIdentities.data(), static_cast<std::uint32_t>(dynamicIdentities.size()));
+        }
         if (!serde->OpenRecord(AgentCountRecord, 0)) {
             logger::error("Unable to open record AgentCountRecord to write cosave data.");
             return;
@@ -4407,6 +4448,7 @@ namespace ProcessorSerialization {
 
     void OnRevert(SKSE::SerializationInterface*) {
         PlaythroughSession::ResetCharacter();
+        DynamicActorIdentity::Clear();
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
@@ -6108,6 +6150,8 @@ struct InventoryItemSnapshot
     json keywords = json::array();
     std::string hashEntry;
     int gold = 0;
+    bool equipped = false;
+    bool isQuestItem = false;
 };
 
 struct ModdedEquipmentSlot
@@ -6632,6 +6676,8 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         // Get baseid (FormID in hex format)
         std::string baseID = std::format("{:08X}", boundObject->GetFormID());
         json itemKeywords = CollectItemKeywords(boundObject);
+        const bool equipped = entryData && entryData->IsWorn();
+        const bool isQuestItem = entryData && entryData->IsQuestObject();
 
         //  Check for custom name in InventoryEntryData and ExtraDataList
         if (entryData) {
@@ -6662,7 +6708,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         if (!itemName.empty() && itemName != "<Missing Name>") {
             std::string itemEntry = std::format("{}^{}::{}", itemName, baseID, count);
             inventoryItems.push_back(
-                {itemName, baseID, count, itemKeywords, itemEntry + "^" + itemKeywords.dump(), boundObject->GetGoldValue()});
+                {itemName, baseID, count, itemKeywords,
+                 itemEntry + "^" + itemKeywords.dump() + "^" + (equipped ? "1" : "0") + "^" + (isQuestItem ? "1" : "0"),
+                 boundObject->GetGoldValue(), equipped, isQuestItem});
 
             if (!inventoryData.empty()) {
                 inventoryData.append("~");
@@ -6731,7 +6779,9 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
                                               {"baseid", item.baseid},
                                               {"count", item.count},
                                               {"keywords", item.keywords.is_array() ? item.keywords : json::array()}, 
-                                              {"goldvalue", item.gold}
+                                              {"goldvalue", item.gold},
+                                              {"equipped", item.equipped},
+                                              {"is_quest_item", item.isQuestItem}
             });
     }
 
@@ -6922,12 +6972,6 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         return;
     }
     
-    // Skip dead NPCs
-    if (npc->IsDead()) {
-        logger::trace("[STATS_SKIP] {} is dead, skipping stats", agentName);
-        return;
-    }
-    
     auto stats = npc->AsActorValueOwner();
     if (!stats) {
         logger::warn("[STATS_UPDATE] Actor {} has no ActorValueOwner", agentName);
@@ -6962,8 +7006,13 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
    
 
     // Create hash for comparison (round to nearest 1 to avoid float precision spam, scale to 2 decimals)
-    std::string statsHash = std::format("{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.2f}", level, health,
-                                        healthMax, magicka, magickaMax, stamina, staminaMax, scale);
+    auto* actorBase = npc->GetActorBase();
+    const bool isEssential = actorBase && actorBase->IsEssential();
+    const bool isProtected = actorBase && actorBase->IsProtected();
+    const bool isDead = npc->IsDead();
+    std::string statsHash = std::format("{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.2f}|{}|{}|{}", level, health,
+                                        healthMax, magicka, magickaMax, stamina, staminaMax, scale,
+                                        isEssential, isProtected, isDead);
 
     auto formID = npc->GetFormID();
     
@@ -6993,7 +7042,10 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         {"magicka_max", magickaMax},
         {"stamina", stamina},
         {"stamina_max", staminaMax},
-        {"scale", scale}
+        {"scale", scale},
+        {"is_essential", isEssential},
+        {"is_protected", isProtected},
+        {"is_dead", isDead}
     };
     
     HTTPManager::postGameData("gamedata.php", statsDataJson);
@@ -8813,6 +8865,9 @@ EventHandlers {
                         HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
                                                      1, objectPointer->GetDisplayFullName()));
+                        HTTPManager::log(std::format("status_msg|{}|{}|quest_item_recovered@0x{:08X}",
+                                                     getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                     static_cast<std::uint32_t>(objectPointer->GetFormID())));
                     }
                     auto activatedActor = objectPointer->As<RE::Actor>();
                     if (activatedActor) {
@@ -9001,6 +9056,10 @@ EventHandlers {
             SpatialAwareness::ForgetDoorState(ref->GetFormID());
             InvalidateSpatialCachesForDoor(ref, "reset_event");
         }
+    });
+    // A deleted FF reference can be recycled, so its identity must not follow the FormID.
+    On<RE::TESFormDeleteEvent>([](const RE::TESFormDeleteEvent* event) {
+        if (event) DynamicActorIdentity::Forget(event->formID);
     });
     On<RE::TESDeathEvent>([](const RE::TESDeathEvent* event) {
         try {
@@ -9223,14 +9282,12 @@ EventHandlers {
                     event->newState == RE::ACTOR_COMBAT_STATE::kNone) {
                     playerPartyCombatActive = false;
                 }
-                ThreadPool::getInstance().cancelTasksByType("CombatBark");
-                ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                HTTPManager::RetireCombatBarks();
                 return;
             }
 
             if (agentPointer && !targetIsPlayer && !IsActorLoadedInPlayerCell(agentPointer)) {
-                ThreadPool::getInstance().cancelTasksByType("CombatBark");
-                ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                HTTPManager::RetireCombatBarks();
                 return;
             }
 
@@ -9245,10 +9302,9 @@ EventHandlers {
                         logger::info("[COMBAT_END] Player exited combat - reset global combat flag");
                     }
 
-                    // Cancel all pending combat bark tasks
-                    logger::info("[COMBAT_END] Cancelling all combat bark tasks for {}", target->GetDisplayFullName());
-                    ThreadPool::getInstance().cancelTasksByType("CombatBark");
-                    ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                    // Retire barks scheduled during this combat, including a combat-start task not yet run.
+                    logger::info("[COMBAT_END] Retiring pending combat barks for {}", target->GetDisplayFullName());
+                    HTTPManager::RetireCombatBarks();
 
                     // Update stats when exiting combat (capture post-combat state)
                     AIAgentManager& aiamStats = AIAgentManager::getInstance();
@@ -9325,49 +9381,8 @@ EventHandlers {
                         if (CombatBarksEnabled && CombatDialogueEnabled && isPlayerEnteringCombat && !playerPartyCombatActive) {
                             playerPartyCombatActive = true;
                             logger::info("[COMBAT_BARK_START] Player party enters combat - picking random agent for bark");
-                            
-                            // Find nearby AI agents in combat to pick one for the bark
-                            AIAgentManager& aiam = AIAgentManager::getInstance();
-                            std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
-                                                                      ",", DISTANCE_ACTIVATING_NPC_OUT);
-                            std::vector<AIAgent*> nearbyAgents;
-                            
-                            for (const auto& agent : aiam.getAgents()) {
-                                if (agent->getActorName() == NARRATOR_NAME) continue; // Skip narrator
-                                auto* actor = agent->getActor();
-                                if (actor && IsActorLoadedInPlayerCell(actor) &&
-                                    beings.find(agent->getActorName()) != std::string::npos) {
-                                    nearbyAgents.push_back(agent.get());
-                                }
-                            }
-                            
-                            // Pick random agent for the combat start bark
-                            if (!nearbyAgents.empty()) {
-                                int randomIndex = rand() % nearbyAgents.size();
-                                auto selectedAgent = nearbyAgents[randomIndex];
-                                auto selectedActor = selectedAgent->getActor();
-                                
-                                logger::info("[COMBAT_BARK_START] Selected {} for combat start bark ({} nearby agents)", 
-                                            selectedAgent->getActorName(), nearbyAgents.size());
-                                
-                                auto selectedActorHandle = selectedActor->GetHandle();
-                                ThreadPool::getInstance().enqueue("CombatBarkStart", [selectedActorHandle]() {
-                                    auto selectedActorRef = selectedActorHandle.get();
-                                    auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
-                                    if (!resolvedActor || resolvedActor->IsDead() || !IsActorLoadedInPlayerCell(resolvedActor)) {
-                                        logger::debug("[COMBAT_BARK_START] Skipped stale combat-start actor");
-                                        return;
-                                    }
-
-                                    HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
-                                                                   getCurrentTimeMillis(),
-                                                                   GetGameTimeStamp(), 
-                                                                   GetPlayerLocation()),
-                                                       resolvedActor);
-                                });
-                            } else {
-                                logger::info("[COMBAT_BARK_START] No nearby AI agents available for combat bark");
-                            }
+                            // Selection runs on a later game-thread task pass, after this event returns.
+                            QueueCombatBark(true);
                         }
                         
                         auto targetVictim = agentPointer->GetActorRuntimeData().currentCombatTarget;
@@ -9397,6 +9412,10 @@ EventHandlers {
                                 }
                             }
                         }
+                    } else if (event->newState == RE::ACTOR_COMBAT_STATE::kSearching) {
+                        // A searching speaker must not send an already-selected bark. Retirement is global, so this
+                        // also drops other pending barks; combat stays active and later barks remain eligible.
+                        HTTPManager::RetireCombatBarks();
                     }
                 }
             
@@ -10449,76 +10468,77 @@ EventHandlers {
     });*/
     
     On<RE::TESQuestStageEvent>([](const RE::TESQuestStageEvent* event) {
-        // Quest obtained
-        RE::TESForm* qData = RE::TESForm::LookupByID(event->formID);
-        RE::TESQuest* qqData = qData->As<RE::TESQuest>();
-        if (!qqData) return;
-        PostQuestProgressionQuestStage(qqData, event->stage);
-        
-        if (false)
-            logger::info("Quest staged, name {} editorId {} stage {} ", qqData->GetName(), qqData->formEditorID.c_str(),
-                         event->stage);
-        
-        
-        bool sent = false;
-        RE::BSSimpleList<RE::BGSQuestObjective*>* objetives = &qqData->objectives;
-        RE::BGSQuestObjective* lastObjective = nullptr;
-        
-        for (auto iter = objetives->begin(); iter != objetives->end(); ++iter) {
-            lastObjective = *iter;
-            sent = false;
-            RE::BGSQuestObjective* stage = *iter;
-            if (stage->index != event->stage) {
-                continue;
-            }
-            if (stage->index == event->stage) {
-                RE::TESQuestTarget** targets = stage->targets;
+        auto* quest = event ? RE::TESForm::LookupByID<RE::TESQuest>(event->formID) : nullptr;
+        if (quest) PostQuestProgressionQuestStage(quest, event->stage);
+    });
 
-
-                RE::BSString bsString(stage->displayText);
-
-                ReplaceTagsInQuestText(&bsString, qqData, qqData->currentInstanceID);
-                auto stateX = stage->state.get();
-                
-                HTTPManager::log(std::format("_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                             qqData->GetFormEditorID(), qqData->GetName(),
-                                             lastObjective->displayText.c_str(), stage->index));
-
-                HTTPManager::log(std::format(
-                    "quest|{}|{}|(Context location: {}) Quest Updated \"{}\" new objetive: {} ", getCurrentTimeMillis(),
-                    GetGameTimeStamp(), GetPlayerLocation(), qqData->GetName(), lastObjective->displayText.c_str()));
-                
+    // Objectives have their own indices and can change without a quest stage event.
+    // Capture text at the transition; resolve actors later on the game thread.
+    static SkyrimScripting::Plugin::CallbackEventSink<RE::ObjectiveState::Event> questObjectiveSink(
+        [](const RE::ObjectiveState::Event* event) {
+            if (!pluginInited || !event || !event->objective || event->oldState == event->newState) return;
+            using State = RE::QUEST_OBJECTIVE_STATE;
+            const bool wasVisible = event->oldState == State::kDisplayed ||
+                event->oldState == State::kCompletedDisplayed || event->oldState == State::kFailedDisplayed;
+            const bool displayed = event->newState == State::kDisplayed;
+            const bool completed = (event->newState == State::kCompletedDisplayed ||
+                (wasVisible && event->newState == State::kCompleted)) &&
+                event->oldState != State::kCompleted && event->oldState != State::kCompletedDisplayed;
+            const bool failed = (event->newState == State::kFailedDisplayed ||
+                (wasVisible && event->newState == State::kFailed)) &&
+                event->oldState != State::kFailed && event->oldState != State::kFailedDisplayed;
+            if (!displayed && !completed && !failed) return;
+            auto* quest = event->objective->ownerQuest;
+            if (!quest || !quest->GetName() || !*quest->GetName()) return;
+            RE::BSString text(event->objective->displayText);
+            ReplaceTagsInQuestText(&text, quest, quest->currentInstanceID);
+            if (!text.c_str() || !*text.c_str()) return;
+            std::string objectiveText = text.c_str();
+            std::replace(objectiveText.begin(), objectiveText.end(), '|', '/');
+            std::replace(objectiveText.begin(), objectiveText.end(), '@', ' ');
+            std::string questName = quest->GetName();
+            std::replace(questName.begin(), questName.end(), '|', '/');
+            std::replace(questName.begin(), questName.end(), '@', ' ');
+            const std::string editorId = quest->GetFormEditorID();
+            const auto stage = quest->GetCurrentStageID();
+            const auto objective = event->objective->index;
+            const auto questFormId = quest->GetFormID();
+            const std::string status = completed ? "completed" : (failed ? "failed" : "displayed");
+            const auto generation = PlaythroughSession::Context();
+            SKSE::GetTaskInterface()->AddTask([objectiveText, questName, editorId, stage, objective, questFormId, status, generation]() {
+                if (!PlaythroughSession::Allowed(generation)) return;
+                PlaythroughSession::Scope scope(generation);
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto* ui = RE::UI::GetSingleton();
+                if (!player || !ui || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+                    ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) return;
+                json speakers = json::array();
+                for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+                    if (!agent || agent->isNarrator()) continue;
+                    auto* actor = agent->getActor();
+                    if (!actor || actor == player || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() ||
+                        !IsActorLoadedInPlayerCell(actor) ||
+                        actor->GetPosition().GetDistance(player->GetPosition()) > DISTANCE_ACTIVATING_NPC_OUT ||
+                        !PlayerConversationRouter::GetAutomaticBlockReason(agent, actor, player).empty()) continue;
+                    speakers.push_back(agent->getActorName());
+                    if (speakers.size() == 32) break;
+                }
+                const auto snapshotJson = json{{"source", "quest_objective_v1"}, {"speakers", speakers}}.dump();
+                const auto snapshot = HTTPManager::base64_encode(snapshotJson.data(), snapshotJson.size());
+                HTTPManager::log(std::format("_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(),
+                    GetGameTimeStamp(), editorId, questName, objectiveText, stage));
+                HTTPManager::log(std::format("quest|{}|{}|(Context location: {}) Quest \"{}\" objective {}: {}|{}",
+                    getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), questName, status, objectiveText, snapshot));
+                // Preserve the journal refresh used by quest context and memory.
                 auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                auto args = RE::MakeFunctionArguments(std::move(qqData->GetFormID()));
+                auto args = RE::MakeFunctionArguments(RE::FormID(questFormId));
                 RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                     "AIAgentAIMind", "FillLogJournal", args, callback);
-
-                sent = true;
-                
-            }
-        }
-
-        if (lastObjective && !sent) {
-            //if (lastObjective->state.get() == RE::QUEST_OBJECTIVE_STATE::) {
-                RE::TESQuestTarget** targets = lastObjective->targets;
-
-                RE::BSString bsString(lastObjective->displayText);
-                
-
-                ReplaceTagsInQuestText(&bsString, qqData, qqData->currentInstanceID);
-                HTTPManager::log(std::format(
-                    "_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                             qqData->GetFormEditorID(), qqData->GetName(),
-                                             lastObjective->displayText.c_str(), event->stage));
-
-                
-
-            //}
-        }
-
-        
-    });
-    
+                logger::info("[QUEST_COMMENT] Objective {} {} quest={} stage={} candidates={}",
+                    objective, status, editorId, stage, speakers.size());
+            });
+        });
+    RE::ObjectiveState::GetEventSource()->AddEventSink(&questObjectiveSink);
     On<RE::TESEnterBleedoutEvent>([](const RE::TESEnterBleedoutEvent* event) {
         if (!event->actor) return;
 

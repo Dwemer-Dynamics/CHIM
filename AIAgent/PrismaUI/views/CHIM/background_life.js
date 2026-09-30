@@ -14,6 +14,13 @@
     let rumorGeneration = 0;
     let detailData = null;
     let detailTab = 'events';
+    let detailNpcName = '';
+    // Player <-> NPC courier letters (/ui/api/background_life_letter.php). Null when the server
+    // does not offer the endpoint yet; the Letters tab then shows the legacy diary entries.
+    let letterThread = null;
+    let letterTarget = null;
+    let letterBusy = false;
+    const letterEndpoint = '/ui/api/background_life_letter.php';
     let currentPage = 1;
     let totalPages = 1;
     let searchTimer = null;
@@ -60,7 +67,11 @@
             background_life_enabled: false,
             auto_actions: false,
             send_letters: false,
-            hourly_tracking: false
+            hourly_tracking: false,
+            combat_participation: false,
+            combat_initiate: false,
+            combat_lethal: false,
+            combat_loot: false
         };
     }
 
@@ -581,7 +592,15 @@
             card.appendChild(createElement('div', 'npc-card-row-label', 'Actions'));
             const requests = createElement('div', 'npc-card-requests');
             requests.appendChild(cardRequestButton(entry, 'action', 'Trigger Action'));
-            requests.appendChild(cardRequestButton(entry, 'letter', 'Send Letter'));
+            requests.appendChild(cardRequestButton(entry, 'letter', 'Request Letter'));
+            const writeLetter = createElement('button', 'card-action card-request card-write-letter', 'Write Letter');
+            writeLetter.type = 'button';
+            writeLetter.title = `Write a letter to ${entry.name} and send it by courier`;
+            writeLetter.addEventListener('click', (event) => {
+                event.stopPropagation();
+                window.openLetterModal({ name: entry.name, refid: entry.refid || '' });
+            });
+            requests.appendChild(writeLetter);
             card.appendChild(requests);
 
             card.appendChild(createElement('div', 'npc-card-row-label', 'Rules'));
@@ -607,6 +626,10 @@
                 'Tracking',
                 'Hourly tracking'
             ));
+            actions.appendChild(cardSettingButton(entry, 'combat_participation', 'combat_participation', 'Combat', 'Combat participation'));
+            actions.appendChild(cardSettingButton(entry, 'combat_initiate', 'combat_initiate', 'Attack', 'Initiate combat'));
+            actions.appendChild(cardSettingButton(entry, 'combat_lethal', 'combat_lethal', 'Lethal', 'Lethal outcomes'));
+            actions.appendChild(cardSettingButton(entry, 'combat_loot', 'combat_loot', 'Loot', 'Loot encounters'));
             const remove = createElement('button', 'card-action remove', 'Remove');
             remove.type = 'button';
             remove.title = 'Remove NPC from Background Life';
@@ -626,7 +649,13 @@
         button.type = 'button';
         button.title = requestType === 'action'
             ? `Trigger a Background Life action for ${entry.name}`
-            : `Send a Background Life letter from ${entry.name}`;
+            : `Ask ${entry.name} to write you a letter now`;
+        // The server only writes a letter when the NPC's Letters rule is on; without it the
+        // request used to report success while nothing was sent.
+        if (requestType === 'letter' && !entry.send_letters) {
+            button.disabled = true;
+            button.title = `Turn on Letters for ${entry.name} to request a letter`;
+        }
         button.addEventListener('click', async (event) => {
             event.stopPropagation();
             button.disabled = true;
@@ -645,7 +674,7 @@
             } catch (error) {
                 setDashboardStatus(`${label} failed: ${error.message || error}`, true);
             } finally {
-                button.disabled = false;
+                button.disabled = requestType === 'letter' && !entry.send_letters;
                 button.textContent = label;
             }
         });
@@ -754,7 +783,15 @@
             currentTarget.background_life_enabled;
         byId('target-menu-toggle').disabled = busy || nearbyTargets.length === 0;
         byId('enrollment-button').disabled = busy || !currentTarget.has_target;
-        ['auto-actions-toggle', 'send-letters-toggle', 'hourly-tracking-toggle'].forEach((id) => {
+        [
+            'auto-actions-toggle',
+            'send-letters-toggle',
+            'hourly-tracking-toggle',
+            'combat-participation-toggle',
+            'combat-initiate-toggle',
+            'combat-lethal-toggle',
+            'combat-loot-toggle'
+        ].forEach((id) => {
             byId(id).disabled = busy || !available;
         });
     }
@@ -778,6 +815,10 @@
         byId('auto-actions-toggle').checked = !!currentTarget.auto_actions;
         byId('send-letters-toggle').checked = !!currentTarget.send_letters;
         byId('hourly-tracking-toggle').checked = !!currentTarget.hourly_tracking;
+        byId('combat-participation-toggle').checked = !!currentTarget.combat_participation;
+        byId('combat-initiate-toggle').checked = !!currentTarget.combat_initiate;
+        byId('combat-lethal-toggle').checked = !!currentTarget.combat_lethal;
+        byId('combat-loot-toggle').checked = !!currentTarget.combat_loot;
         setTargetControlsBusy(false);
     }
 
@@ -1191,6 +1232,9 @@
     window.openNpcDetailModal = async function (npcName) {
         detailData = null;
         detailTab = 'events';
+        detailNpcName = npcName;
+        letterThread = null;
+        loadLetterThread(npcName);
         byId('npc-detail-title').textContent = npcName;
         byId('npc-detail-status').textContent = 'Loading NPC history...';
         byId('npc-detail-status').classList.remove('error');
@@ -1216,6 +1260,122 @@
     window.closeNpcDetailModal = function () {
         byId('npc-detail-overlay').classList.add('hidden');
         byId('npc-detail-overlay').setAttribute('aria-hidden', 'true');
+        detailNpcName = '';
+    };
+
+    function letterMaxLength() {
+        const max = letterThread && Number(letterThread.max_length);
+        return max > 0 ? max : 2000;
+    }
+
+    function renderLetterCourierNote(info) {
+        const fee = info ? Number(info.fee) : NaN;
+        const hours = info ? Number(info.delay_hours) : NaN;
+        const parts = [];
+        parts.push(Number.isFinite(fee) && fee > 0 ? `Courier fee: ${fee} gold.` : 'Courier fee applies.');
+        if (Number.isFinite(hours) && hours > 0) parts.push(`Arrives in about ${hours} in-game hours.`);
+        byId('letter-courier-note').textContent = parts.join(' ');
+    }
+
+    function updateLetterCharCount() {
+        const input = byId('letter-body-input');
+        byId('letter-char-count').textContent = `${input.value.length} / ${letterMaxLength()}`;
+    }
+
+    window.openLetterModal = function (target) {
+        letterTarget = target || null;
+        if (!letterTarget || !letterTarget.name) return;
+        const replying = !!letterTarget.replyTo;
+        byId('letter-form').reset();
+        byId('letter-body-input').maxLength = letterMaxLength();
+        byId('letter-modal-title').textContent = replying
+            ? `Reply to ${letterTarget.name}`
+            : `Letter to ${letterTarget.name}`;
+        byId('letter-modal-subtitle').textContent =
+            'A courier will come to you to collect it, then carry it to them.';
+        byId('letter-reply-context').classList.toggle('hidden', !replying);
+        byId('letter-reply-label').textContent = `${letterTarget.name} wrote:`;
+        byId('letter-reply-body').textContent = replying ? (letterTarget.replyBody || '') : '';
+        byId('letter-form-status').textContent = '';
+        byId('letter-form-status').classList.remove('error');
+        byId('letter-submit-button').disabled = false;
+        byId('letter-submit-button').textContent = 'Send by Courier';
+
+        const sameNpc = letterThread && String(letterThread.npc || '').toLowerCase()
+            === String(letterTarget.name).toLowerCase();
+        renderLetterCourierNote(sameNpc ? letterThread : null);
+        if (!sameNpc) {
+            postForm(letterEndpoint, {
+                operation: 'list',
+                npc_name: letterTarget.name,
+                refid: letterTarget.refid || ''
+            }).then((payload) => {
+                if (letterTarget && payload.npc === letterTarget.name) renderLetterCourierNote(payload);
+            }).catch(() => {});
+        }
+
+        updateLetterCharCount();
+        byId('letter-modal-overlay').classList.remove('hidden');
+        byId('letter-modal-overlay').setAttribute('aria-hidden', 'false');
+        // Focusing the textarea turns on keyboard capture through the view-wide focusin handler.
+        window.setTimeout(() => byId('letter-body-input').focus(), 0);
+    };
+
+    window.closeLetterModal = function () {
+        byId('letter-modal-overlay').classList.add('hidden');
+        byId('letter-modal-overlay').setAttribute('aria-hidden', 'true');
+        // Blurring releases keyboard capture through the focusout handler.
+        if (document.activeElement && byId('letter-modal-overlay').contains(document.activeElement)) {
+            document.activeElement.blur();
+        }
+        letterTarget = null;
+    };
+
+    window.submitLetterForm = async function (event) {
+        if (event) event.preventDefault();
+        if (letterBusy || !letterTarget) return;
+        const status = byId('letter-form-status');
+        const body = byId('letter-body-input').value.trim();
+        if (!body) {
+            status.textContent = 'Write something before sending.';
+            status.classList.add('error');
+            return;
+        }
+        if (body.length > letterMaxLength()) {
+            status.textContent = `Letters are limited to ${letterMaxLength()} characters.`;
+            status.classList.add('error');
+            return;
+        }
+
+        const target = letterTarget;
+        const button = byId('letter-submit-button');
+        letterBusy = true;
+        button.disabled = true;
+        button.textContent = 'Sealing...';
+        status.textContent = '';
+        status.classList.remove('error');
+        try {
+            const values = {
+                operation: 'send',
+                npc_name: target.name,
+                refid: target.refid || '',
+                body
+            };
+            if (target.replyTo) values.reply_to = String(target.replyTo);
+            const payload = await postForm(letterEndpoint, values);
+            window.closeLetterModal();
+            setDashboardStatus(payload.message || `Letter to ${target.name} sent.`, false);
+            if (detailNpcName && detailNpcName.toLowerCase() === String(target.name).toLowerCase()) {
+                loadLetterThread(detailNpcName);
+            }
+        } catch (error) {
+            status.textContent = `Could not send the letter: ${error.message || error}`;
+            status.classList.add('error');
+            button.disabled = false;
+            button.textContent = 'Send by Courier';
+        } finally {
+            letterBusy = false;
+        }
     };
 
     function renderDetailTabs() {
@@ -1224,11 +1384,111 @@
         });
     }
 
+    function findRosterEntry(npcName) {
+        const npcs = (dashboardData && Array.isArray(dashboardData.npcs)) ? dashboardData.npcs : [];
+        const wanted = String(npcName || '').toLowerCase();
+        return npcs.find((entry) => String(entry.name || '').toLowerCase() === wanted) || null;
+    }
+
+    async function loadLetterThread(npcName) {
+        const roster = findRosterEntry(npcName);
+        try {
+            const payload = await postForm(letterEndpoint, {
+                operation: 'list',
+                npc_name: npcName,
+                refid: (roster && roster.refid) || ''
+            });
+            if (npcName !== detailNpcName) return;
+            letterThread = payload;
+        } catch (error) {
+            if (npcName !== detailNpcName) return;
+            letterThread = null;
+        }
+        if (detailTab === 'letters' && detailData) renderNpcDetail();
+    }
+
+    const letterStatusLabels = {
+        awaiting_courier: 'Waiting for courier',
+        in_transit: 'In transit',
+        delivered: 'Delivered',
+        failed: 'Lost on the road',
+        sent: 'Sent to you',
+        read: 'Read'
+    };
+
+    function renderLetterThread(content) {
+        const npcName = detailNpcName;
+        const toolbar = createElement('div', 'letter-thread-toolbar');
+        const write = createElement('button', 'icon-button', `✍ Write to ${npcName}`);
+        write.type = 'button';
+        write.addEventListener('click', () => {
+            const roster = findRosterEntry(npcName);
+            window.openLetterModal({ name: npcName, refid: (roster && roster.refid) || '' });
+        });
+        toolbar.appendChild(write);
+        content.appendChild(toolbar);
+
+        const letters = (letterThread && Array.isArray(letterThread.letters)) ? letterThread.letters : [];
+        // Letters sent before correspondence tracking exist only as diary entries.
+        const knownBodies = new Set(letters.map((letter) => String(letter.body || '').trim()));
+        const legacy = ((detailData && detailData.letters) || []).filter((entry) => {
+            return !knownBodies.has(String(entry.content || '').trim());
+        });
+        if (!letters.length && !legacy.length) {
+            content.appendChild(createElement('div', 'empty-state', 'No letters exchanged yet.'));
+            return;
+        }
+        letters.forEach((letter) => {
+            const fromPlayer = letter.direction === 'to_npc';
+            const row = createElement('article', `detail-entry letter-entry ${fromPlayer ? 'from-player' : 'from-npc'}`);
+            const head = createElement('div', 'letter-entry-head');
+            head.appendChild(createElement('time', '', letter.tamrielic_time || 'Unknown time'));
+            const status = createElement('span', `letter-status status-${letter.status}`,
+                letterStatusLabels[letter.status] || letter.status);
+            head.appendChild(status);
+            if (fromPlayer && letter.answered) {
+                head.appendChild(createElement('span', 'letter-status status-answered', 'Answered'));
+            }
+            row.appendChild(head);
+            row.appendChild(createElement('h4', '', fromPlayer ? `You → ${npcName}` : `${npcName} → You`));
+            row.appendChild(createElement('p', '', letter.body || ''));
+            if (!fromPlayer) {
+                const reply = createElement('button', 'page-button letter-reply-button', 'Reply');
+                reply.type = 'button';
+                reply.addEventListener('click', () => {
+                    const roster = findRosterEntry(npcName);
+                    window.openLetterModal({
+                        name: npcName,
+                        refid: (roster && roster.refid) || '',
+                        replyTo: letter.id,
+                        replyBody: letter.body || ''
+                    });
+                });
+                row.appendChild(reply);
+            }
+            content.appendChild(row);
+        });
+        if (legacy.length) {
+            content.appendChild(createElement('h4', 'letter-legacy-heading', 'Earlier letters'));
+            legacy.forEach((entry) => {
+                const row = createElement('article', 'detail-entry letter-entry from-npc');
+                row.appendChild(createElement('time', '', entry.tamrielic_time || 'Unknown time'));
+                row.appendChild(createElement('h4', '', `${npcName} → You`));
+                row.appendChild(createElement('p', '', entry.content || ''));
+                content.appendChild(row);
+            });
+        }
+    }
+
     function renderNpcDetail() {
         renderDetailTabs();
-        const entries = (detailData && detailData[detailTab]) || [];
         const content = byId('npc-detail-content');
         content.replaceChildren();
+        if (detailTab === 'letters' && letterThread) {
+            renderLetterThread(content);
+            return;
+        }
+        const entries = (detailData && detailData[detailTab]) || [];
         if (!entries.length) {
             content.appendChild(createElement(
                 'div',
@@ -1424,6 +1684,7 @@
             renderNpcDetail();
         });
     });
+    byId('letter-body-input').addEventListener('input', updateLetterCharCount);
     byId('refresh-button').addEventListener('click', refreshActivePage);
     byId('show-all-coords-toggle').addEventListener('change', refreshDashboard);
 
@@ -1563,6 +1824,18 @@
             byId('hourly-tracking-toggle').checked
         );
     });
+    byId('combat-participation-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_participation', byId('combat-participation-toggle').checked);
+    });
+    byId('combat-initiate-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_initiate', byId('combat-initiate-toggle').checked);
+    });
+    byId('combat-lethal-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_lethal', byId('combat-lethal-toggle').checked);
+    });
+    byId('combat-loot-toggle').addEventListener('change', () => {
+        updateTargetSetting('combat_loot', byId('combat-loot-toggle').checked);
+    });
     byId('npc-filter').addEventListener('change', () => {
         currentPage = 1;
         requestHistory();
@@ -1615,6 +1888,8 @@
         if (event.key !== 'Escape') return;
         event.preventDefault();
         const overlays = [
+            // The letter modal can open on top of the detail modal, so it closes first.
+            'letter-modal-overlay',
             'npc-detail-overlay',
             'npc-create-modal-overlay',
             'rumor-modal-overlay'
@@ -1622,6 +1897,10 @@
         const openOverlay = overlays.find((id) => {
             return !byId(id).classList.contains('hidden');
         });
+        if (openOverlay === 'letter-modal-overlay') {
+            window.closeLetterModal();
+            return;
+        }
         if (openOverlay === 'npc-detail-overlay') {
             window.closeNpcDetailModal();
             return;

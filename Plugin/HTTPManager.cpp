@@ -293,7 +293,30 @@ bool IsInPlayerFOV(RE::Actor* npc, float detectionRadius) {
 
 
 
+static std::atomic<std::uint64_t> combatBarkGeneration{0};
+// The eligibility snapshot is taken just before the bark joins the HTTP queue. A bark that waits longer than
+// this behind other requests may no longer suit the fight, so it is dropped instead of rechecked; the periodic
+// timer schedules the next one.
+static constexpr auto COMBAT_BARK_ELIGIBILITY_MAX_AGE = std::chrono::seconds(5);
+
 namespace HTTPManager {
+
+    bool CombatBarkSpeakerInCombat(RE::Actor* actor) {
+        return actor && !actor->IsDead() && actor->Is3DLoaded() && actor->IsInCombat() &&
+               !actor->GetActorRuntimeData().boolBits.any(RE::Actor::BOOL_BITS::kSearchingInCombat);
+    }
+
+    CombatBarkTicket CurrentCombatBarkTicket() {
+        return {PrismaUIBridge::GetDialogueStopGeneration(), combatBarkGeneration.load(), {}};
+    }
+
+    bool CombatBarkTicketCurrent(const CombatBarkTicket& ticket) {
+        return ChimInteraction::Enabled() &&
+               ticket.dialogueStopGeneration == PrismaUIBridge::GetDialogueStopGeneration() &&
+               ticket.combatGeneration == combatBarkGeneration.load();
+    }
+
+    void RetireCombatBarks() { ++combatBarkGeneration; }
 
     std::string EscapeJson(const std::string& input) {
         std::string out;
@@ -2518,9 +2541,17 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     bool streamForActor(std::string msg, RE::Actor* actor,
-                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth) {
+                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth,
+                        const CombatBarkTicket* combatBark) {
         if (!ChimInteraction::Enabled()) {
             if (!ChimInteraction::IsTrigger(msg)) log(std::move(msg));
+            return false;
+        }
+        const bool isCombatBark = msg.starts_with("combatbark|");
+        // An untagged combat bark is treated as scheduled now.
+        const auto combatBarkTicket = combatBark ? *combatBark : CurrentCombatBarkTicket();
+        if (isCombatBark && !CombatBarkTicketCurrent(combatBarkTicket)) {
+            logger::info("[HTTPStream] Dropping combat bark scheduled before the last stop, load or combat end");
             return false;
         }
         // Determine speaker
@@ -2535,7 +2566,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         const bool enforceAutomaticEligibility =
             PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(msg, eligibility, true);
-        const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
         
         // First try to find agent by FormID (works for all agents including narrator)
@@ -2577,16 +2607,32 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
         logger::info("Stream Called for {}", listener);
 
-        const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+        // Combat barks keep the stop generation of their scheduling pass, so a Stop All, load or player turn
+        // after selection cannot be mistaken for a fresh request.
+        const auto dialogueStopGeneration =
+            isCombatBark ? combatBarkTicket.dialogueStopGeneration : PrismaUIBridge::GetDialogueStopGeneration();
         const auto actorHandle = actor->GetHandle();
-        auto queueStreamRequest = [msg, listener, rechatDepth, dialogueStopGeneration, eligibility,
-                                   actorFormID, actorHandle, agent](bool inventoryDelivered) {
-            if (!inventoryDelivered) {
-                logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
-            }
+        auto enqueueStream = [listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle,
+                              agent, isCombatBark, combatBarkTicket](
+                                 std::string msg, std::chrono::steady_clock::time_point eligibilitySampledAt) {
             ThreadPool::getInstance().enqueue(
                 rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-                [msg, listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle, agent]() {
+                [msg = std::move(msg), listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID,
+                 actorHandle, agent, isCombatBark, combatBarkTicket, eligibilitySampledAt]() {
+                    if (isCombatBark) {
+                        if (!CombatBarkTicketCurrent(combatBarkTicket)) {
+                            logger::info("[HTTPStream] Dropping queued combat bark for {}; combat or interaction ended",
+                                         listener);
+                            return;
+                        }
+                        // Queue backlog is preventable staleness; changes during the HTTP and LLM round trip are not.
+                        const auto eligibilityAge = std::chrono::steady_clock::now() - eligibilitySampledAt;
+                        if (eligibilityAge > COMBAT_BARK_ELIGIBILITY_MAX_AGE) {
+                            logger::info("[HTTPStream] Dropping combat bark for {}; speaker check is {} ms old", listener,
+                                         std::chrono::duration_cast<std::chrono::milliseconds>(eligibilityAge).count());
+                            return;
+                        }
+                    }
                     // Recheck the target after inventory refresh and queue delay without retaining a raw pointer.
                     auto target = actorHandle.get();
                     const auto blockReason = AutomaticResponseBlockReason(msg, agent, target.get(), eligibility, actorFormID);
@@ -2599,6 +2645,37 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                                   0, eligibility, actorFormID);
                 },
                 listener, std::chrono::seconds(90));
+        };
+        auto queueStreamRequest = [msg, listener, isCombatBark, combatBarkTicket, actorHandle,
+                                   enqueueStream](bool inventoryDelivered) {
+            if (!inventoryDelivered) {
+                logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
+            }
+            if (!isCombatBark) {
+                enqueueStream(msg, {});
+                return;
+            }
+
+            // Combat can change during the inventory round trip, so recheck the speaker on the game thread as
+            // late as practical and let the worker keep the network call.
+            auto* taskInterface = SKSE::GetTaskInterface();
+            if (!taskInterface) {
+                logger::warn("[HTTPStream] Dropping combat bark for {}; task interface unavailable", listener);
+                return;
+            }
+            taskInterface->AddTask([msg, listener, combatBarkTicket, actorHandle, enqueueStream]() {
+                if (!CombatBarkTicketCurrent(combatBarkTicket)) {
+                    logger::info("[HTTPStream] Dropping combat bark for {}; combat or interaction ended", listener);
+                    return;
+                }
+                auto target = actorHandle.get();
+                if (!CombatBarkSpeakerInCombat(target.get()) ||
+                    (combatBarkTicket.speakerEligible && !combatBarkTicket.speakerEligible(target.get()))) {
+                    logger::info("[HTTPStream] Dropping combat bark for {}; speaker is no longer eligible", listener);
+                    return;
+                }
+                enqueueStream(msg, std::chrono::steady_clock::now());
+            });
         };
 
         if (actor && agent && listener != NARRATOR_NAME) {
