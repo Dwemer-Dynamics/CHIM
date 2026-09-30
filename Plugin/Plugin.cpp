@@ -2164,7 +2164,68 @@ extern std::unordered_map<uint32_t, std::string> lastSpellsHash;
 extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastSkillsUpdate;
 extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastStatsUpdate;
 
+extern bool CombatBarksEnabled;
+extern bool CombatDialogueEnabled;
 
+// Rechecked on the game thread when the speaker's final combat state is read.
+static bool CombatBarkSpeakerEligible(RE::Actor* actor)
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    return actor && player && actor->GetFormID() != player->GetFormID() && !actor->IsDeleted() &&
+           !actor->IsDisabled() && CombatBarksEnabled && CombatDialogueEnabled && !IsWorldMaintenanceSuppressed() &&
+           IsActorLoadedInPlayerCell(actor);
+}
+
+// Pick a combat bark speaker on the game thread so filtering, selection and the dispatch check read the
+// same frame. Only actors the engine reports in combat are candidates; HTTPManager adds their current
+// combat state just before the request leaves the client. The ticket is taken now, so a stop, load or
+// combat end before the task runs retires it.
+static void QueueCombatBark(bool combatStart)
+{
+    auto* taskInterface = SKSE::GetTaskInterface();
+    if (!taskInterface) return;
+
+    auto ticket = HTTPManager::CurrentCombatBarkTicket();
+    ticket.speakerEligible = CombatBarkSpeakerEligible;
+    taskInterface->AddTask([combatStart, ticket]() {
+        const char* tag = combatStart ? "[COMBAT_BARK_START]" : "[COMBAT_BARK]";
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || !CombatBarksEnabled || !CombatDialogueEnabled || IsWorldMaintenanceSuppressed()) return;
+        if (!HTTPManager::CombatBarkTicketCurrent(ticket)) {
+            logger::debug("{} Skipped - combat or interaction ended before selection", tag);
+            return;
+        }
+        if (!combatStart && SpeakManager::getInstance().hasItems()) {
+            logger::trace("{} Skipped - speech queue busy", tag);
+            return;
+        }
+
+        // The start bark keeps its nearby-agent scope; periodic barks use every agent in the player's cell.
+        const std::string beings = combatStart ? InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
+                                                                      ",", DISTANCE_ACTIVATING_NPC_OUT)
+                                               : std::string{};
+        std::vector<AIAgent*> candidates;
+        for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+            if (!agent || agent->getActorName() == NARRATOR_NAME) continue;
+            auto* actor = agent->getActor();
+            if (!actor || !actor->IsInCombat() || !CombatBarkSpeakerEligible(actor)) continue;
+            if (combatStart && beings.find(agent->getActorName()) == std::string::npos) continue;
+            candidates.push_back(agent.get());
+        }
+
+        if (candidates.empty()) {
+            logger::debug("{} No AI agents in combat available for a bark", tag);
+            return;
+        }
+
+        auto* selectedAgent = candidates[rand() % candidates.size()];
+        logger::info("{} Selected {} ({} agents in combat)", tag, selectedAgent->getActorName(), candidates.size());
+        HTTPManager::streamForActor(std::format("combatbark|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                GetPlayerLocation()),
+                                    selectedAgent->getActor(),
+                                    PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, 0, &ticket);
+    });
+}
 
 
 class ManagerMainQueue {
@@ -2695,51 +2756,11 @@ private:
                         
                         if (combatBarkElapsed >= std::chrono::seconds(GlobalCombatBarksPeriod)) {
                             lastCombatBarkCheck = currentTime;
-                            
-                            // Find AI agents currently in combat
-                            AIAgentManager& aiam = AIAgentManager::getInstance();
-                            std::vector<AIAgent*> combatAgents;
-                               for (const auto& agent : aiam.getAgents()) {
-                                   auto actor = agent->getActor();
-                                      if (actor && actor->IsInCombat() && IsActorLoadedInPlayerCell(actor)) {
-                                        // Skip player/narrator
-                                        if (actor->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
-                                            continue;
-                                        }
 
-                                        combatAgents.push_back(agent.get());
-                                      }
-                                }
-                            
-                            if (!combatAgents.empty() && !SpeakManager::getInstance().hasItems()) {
-                                // Pick random combat agent
-                                int randomIndex = rand() % combatAgents.size();
-                                auto selectedAgent = combatAgents[randomIndex];
-                                auto selectedActor = selectedAgent->getActor();
-                                
-                                logger::info("[COMBAT_BARK] Triggering bark for {} ({} agents in combat)", 
-                                            selectedAgent->getActorName(), combatAgents.size());
-                                
-                                auto selectedActorHandle = selectedActor->GetHandle();
-                                ThreadPool::getInstance().enqueue("CombatBark", [selectedActorHandle]() {
-                                    auto selectedActorRef = selectedActorHandle.get();
-                                    auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
-                                    if (!resolvedActor || resolvedActor->IsDead() || !resolvedActor->IsInCombat() ||
-                                        !IsActorLoadedInPlayerCell(resolvedActor)) {
-                                        logger::debug("[COMBAT_BARK] Skipped stale or no-longer-combat actor");
-                                        return;
-                                    }
-
-                                    HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
-                                                                   getCurrentTimeMillis(),
-                                                                   GetGameTimeStamp(), 
-                                                                   GetPlayerLocation()),
-                                                       resolvedActor);
-                                });
+                            if (!SpeakManager::getInstance().hasItems()) {
+                                QueueCombatBark(false);
                             } else {
-                                if (!combatAgents.empty()) {
-                                    logger::trace("[COMBAT_BARK] Skipped - speech queue busy ({} agents in combat)", combatAgents.size());
-                               }
+                                logger::trace("[COMBAT_BARK] Skipped - speech queue busy");
                             }
                         }
                     }
@@ -9187,14 +9208,12 @@ EventHandlers {
                     event->newState == RE::ACTOR_COMBAT_STATE::kNone) {
                     playerPartyCombatActive = false;
                 }
-                ThreadPool::getInstance().cancelTasksByType("CombatBark");
-                ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                HTTPManager::RetireCombatBarks();
                 return;
             }
 
             if (agentPointer && !targetIsPlayer && !IsActorLoadedInPlayerCell(agentPointer)) {
-                ThreadPool::getInstance().cancelTasksByType("CombatBark");
-                ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                HTTPManager::RetireCombatBarks();
                 return;
             }
 
@@ -9209,10 +9228,9 @@ EventHandlers {
                         logger::info("[COMBAT_END] Player exited combat - reset global combat flag");
                     }
 
-                    // Cancel all pending combat bark tasks
-                    logger::info("[COMBAT_END] Cancelling all combat bark tasks for {}", target->GetDisplayFullName());
-                    ThreadPool::getInstance().cancelTasksByType("CombatBark");
-                    ThreadPool::getInstance().cancelTasksByType("CombatBarkStart");
+                    // Retire barks scheduled during this combat, including a combat-start task not yet run.
+                    logger::info("[COMBAT_END] Retiring pending combat barks for {}", target->GetDisplayFullName());
+                    HTTPManager::RetireCombatBarks();
 
                     // Update stats when exiting combat (capture post-combat state)
                     AIAgentManager& aiamStats = AIAgentManager::getInstance();
@@ -9289,49 +9307,8 @@ EventHandlers {
                         if (CombatBarksEnabled && CombatDialogueEnabled && isPlayerEnteringCombat && !playerPartyCombatActive) {
                             playerPartyCombatActive = true;
                             logger::info("[COMBAT_BARK_START] Player party enters combat - picking random agent for bark");
-                            
-                            // Find nearby AI agents in combat to pick one for the bark
-                            AIAgentManager& aiam = AIAgentManager::getInstance();
-                            std::string beings = InspectManagedAgents(player->AsReference(), HERIKA_MAX_VISION_RANGE,
-                                                                      ",", DISTANCE_ACTIVATING_NPC_OUT);
-                            std::vector<AIAgent*> nearbyAgents;
-                            
-                            for (const auto& agent : aiam.getAgents()) {
-                                if (agent->getActorName() == NARRATOR_NAME) continue; // Skip narrator
-                                auto* actor = agent->getActor();
-                                if (actor && IsActorLoadedInPlayerCell(actor) &&
-                                    beings.find(agent->getActorName()) != std::string::npos) {
-                                    nearbyAgents.push_back(agent.get());
-                                }
-                            }
-                            
-                            // Pick random agent for the combat start bark
-                            if (!nearbyAgents.empty()) {
-                                int randomIndex = rand() % nearbyAgents.size();
-                                auto selectedAgent = nearbyAgents[randomIndex];
-                                auto selectedActor = selectedAgent->getActor();
-                                
-                                logger::info("[COMBAT_BARK_START] Selected {} for combat start bark ({} nearby agents)", 
-                                            selectedAgent->getActorName(), nearbyAgents.size());
-                                
-                                auto selectedActorHandle = selectedActor->GetHandle();
-                                ThreadPool::getInstance().enqueue("CombatBarkStart", [selectedActorHandle]() {
-                                    auto selectedActorRef = selectedActorHandle.get();
-                                    auto* resolvedActor = selectedActorRef.get() ? selectedActorRef.get()->As<RE::Actor>() : nullptr;
-                                    if (!resolvedActor || resolvedActor->IsDead() || !IsActorLoadedInPlayerCell(resolvedActor)) {
-                                        logger::debug("[COMBAT_BARK_START] Skipped stale combat-start actor");
-                                        return;
-                                    }
-
-                                    HTTPManager::stream(std::format("combatbark|{}|{}|{}", 
-                                                                   getCurrentTimeMillis(),
-                                                                   GetGameTimeStamp(), 
-                                                                   GetPlayerLocation()),
-                                                       resolvedActor);
-                                });
-                            } else {
-                                logger::info("[COMBAT_BARK_START] No nearby AI agents available for combat bark");
-                            }
+                            // Selection runs on a later game-thread task pass, after this event returns.
+                            QueueCombatBark(true);
                         }
                         
                         auto targetVictim = agentPointer->GetActorRuntimeData().currentCombatTarget;
