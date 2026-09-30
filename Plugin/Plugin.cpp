@@ -8777,6 +8777,9 @@ EventHandlers {
                         HTTPManager::log(std::format("itemfound|{}|{}|{} found {} {}", getCurrentTimeMillis(),
                                                      GetGameTimeStamp(), RE::PlayerCharacter::GetSingleton()->GetName(),
                                                      1, objectPointer->GetDisplayFullName()));
+                        HTTPManager::log(std::format("status_msg|{}|{}|quest_item_recovered@0x{:08X}",
+                                                     getCurrentTimeMillis(), GetGameTimeStamp(),
+                                                     static_cast<std::uint32_t>(objectPointer->GetFormID())));
                     }
                     auto activatedActor = objectPointer->As<RE::Actor>();
                     if (activatedActor) {
