@@ -5,7 +5,6 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
-#include <optional>
 #include <random>
 #include <thread>
 
@@ -81,39 +80,26 @@ void Connect(std::function<void()> resume, bool newGame) {
     std::thread([epoch, request, resume = std::move(resume)]() {
         const Scope scope(epoch);
         nlohmann::json result;
-        std::optional<std::chrono::steady_clock::time_point> busyDeadline;
-        int transportFailures = 0;
-        // Sleeps in short ticks so a newer load cancels promptly; false means this load is stale.
-        const auto wait = [epoch](int ticks) {
-            for (int tick = 0; tick < ticks; ++tick) {
-                if (epoch != Generation()) return false;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-            return epoch == Generation();
-        };
+        const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        bool transportRetried = false;
         for (;;) {
             if (epoch != Generation()) return;
             result = HTTPManager::requestPlaythroughSession(request);
             if (epoch != Generation()) return;
             if (result.value("ok",false)) break;
             const auto status = result.value("status",std::string{});
-            if (status == "transport_error") {
-                // The server may start after the save loads, so keep this load pending until it answers.
-                // Only the first retry is immediate; later ones wait so an offline server is not flooded.
-                if (++transportFailures == 2) logger::warn("[Playthrough] Server unreachable; retrying handshake every 5 seconds");
-                busyDeadline.reset();
-                if (transportFailures > 1 && !wait(50)) return;
+            if (status == "transport_error" && !transportRetried) {
+                transportRetried = true;
                 continue;
             }
-            if (status != "busy") break;
+            if (status != "busy" || std::chrono::steady_clock::now() >= busyDeadline) break;
             // Retry only pre-switch contention, retaining this load's identity and cancellation scope.
-            // The budget starts at the first busy reply so time spent waiting for the server is not charged to it.
-            if (!busyDeadline) busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-            else if (std::chrono::steady_clock::now() >= *busyDeadline) break;
-            if (!wait(10)) return;
-            if (std::chrono::steady_clock::now() >= *busyDeadline) break;
+            for (int tick = 0; tick < 10; ++tick) {
+                if (epoch != Generation()) return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (std::chrono::steady_clock::now() >= busyDeadline) break;
         }
-        if (transportFailures > 1) logger::info("[Playthrough] Server answered handshake after {} transport failures", transportFailures);
         if (epoch != Generation()) return;
         const bool accepted = result.value("ok",false);
         if (accepted) {
@@ -131,6 +117,8 @@ void Connect(std::function<void()> resume, bool newGame) {
             if (accepted) resume();
             const auto message = result.value("message",std::string{});
             if (!message.empty()) RE::DebugNotification(("[CHIM] " + message).c_str());
+            else if (result.value("status",std::string{}) == "transport_error")
+                RE::DebugNotification("[CHIM] Cannot connect to the server. Start the DwemerDistro server, then reload your save.");
             else if (!accepted) RE::DebugNotification("[CHIM] Playthrough unavailable. Open Playthrough Saves, then reload this save.");
         });
     }).detach();
