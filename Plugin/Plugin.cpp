@@ -2167,7 +2167,7 @@ extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastS
 extern bool CombatBarksEnabled;
 extern bool CombatDialogueEnabled;
 
-// Rechecked on the game thread when the speaker's final combat state is read.
+// Rechecked on the game thread with the final eligibility snapshot.
 static bool CombatBarkSpeakerEligible(RE::Actor* actor)
 {
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -2177,9 +2177,9 @@ static bool CombatBarkSpeakerEligible(RE::Actor* actor)
 }
 
 // Pick a combat bark speaker on the game thread so filtering, selection and the dispatch check read the
-// same frame. Only actors the engine reports in combat are candidates; HTTPManager adds their current
-// combat state just before the request leaves the client. The ticket is taken now, so a stop, load or
-// combat end before the task runs retires it.
+// same frame. Only actors the engine reports in combat and not searching are candidates; HTTPManager
+// repeats that check just before the request leaves the client. The ticket is taken now, so a stop, load
+// or combat end before the task runs retires it.
 static void QueueCombatBark(bool combatStart)
 {
     auto* taskInterface = SKSE::GetTaskInterface();
@@ -2208,18 +2208,18 @@ static void QueueCombatBark(bool combatStart)
         for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
             if (!agent || agent->getActorName() == NARRATOR_NAME) continue;
             auto* actor = agent->getActor();
-            if (!actor || !actor->IsInCombat() || !CombatBarkSpeakerEligible(actor)) continue;
+            if (!HTTPManager::CombatBarkSpeakerInCombat(actor) || !CombatBarkSpeakerEligible(actor)) continue;
             if (combatStart && beings.find(agent->getActorName()) == std::string::npos) continue;
             candidates.push_back(agent.get());
         }
 
         if (candidates.empty()) {
-            logger::debug("{} No AI agents in combat available for a bark", tag);
+            logger::debug("{} No engaged AI agents available for a bark", tag);
             return;
         }
 
         auto* selectedAgent = candidates[rand() % candidates.size()];
-        logger::info("{} Selected {} ({} agents in combat)", tag, selectedAgent->getActorName(), candidates.size());
+        logger::info("{} Selected {} ({} engaged agents)", tag, selectedAgent->getActorName(), candidates.size());
         HTTPManager::streamForActor(std::format("combatbark|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                                 GetPlayerLocation()),
                                     selectedAgent->getActor(),
@@ -9338,6 +9338,10 @@ EventHandlers {
                                 }
                             }
                         }
+                    } else if (event->newState == RE::ACTOR_COMBAT_STATE::kSearching) {
+                        // A searching speaker must not send an already-selected bark. Retirement is global, so this
+                        // also drops other pending barks; combat stays active and later barks remain eligible.
+                        HTTPManager::RetireCombatBarks();
                     }
                 }
             

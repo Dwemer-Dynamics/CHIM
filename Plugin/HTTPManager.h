@@ -37,12 +37,14 @@ namespace HTTPManager {
     struct CombatBarkTicket {
         std::uint64_t dialogueStopGeneration = 0;
         std::uint64_t combatGeneration = 0;
-        // Game-thread recheck run with the final combat-state snapshot.
+        // Game-thread recheck run with the final eligibility snapshot.
         std::function<bool(RE::Actor*)> speakerEligible;
     };
     CombatBarkTicket CurrentCombatBarkTicket();
     bool CombatBarkTicketCurrent(const CombatBarkTicket& ticket);
     void RetireCombatBarks();
+    // Game thread only: alive, loaded and in combat without searching (kSearchingInCombat) for its target.
+    bool CombatBarkSpeakerInCombat(RE::Actor* actor);
 
     // Returns whether a targeted request was accepted for asynchronous delivery.
     bool streamForActor(std::string msg, RE::Actor* actor,
