@@ -1830,10 +1830,15 @@ void addAllNPC() {
                     continue;
                 }
 
+                // Deduplicate by physical reference so same-name actors (e.g. generic guards or
+                // a second "Astrid" ref) can each activate. Name matching is only a fallback when
+                // the reference has no FormID to compare.
                 const auto actorFormId = actor->GetFormID();
-                if ((actorFormId != 0 && (aiam.getAgentByFormId(actorFormId) ||
-                                           !queuedFormIds.insert(actorFormId).second)) ||
-                    aiam.getAgentByName(actorLabel)) {
+                if (actorFormId != 0) {
+                    if (aiam.getAgentByFormId(actorFormId) || !queuedFormIds.insert(actorFormId).second) {
+                        continue;
+                    }
+                } else if (aiam.getAgentByName(actorLabel)) {
                     continue;
                 }
 
@@ -1912,14 +1917,13 @@ bool promoteCrosshairTargetToAI() {
     std::string actorLabel(actor->GetDisplayFullName());
     if (actorLabel.empty()) return false;
 
+    // Same-name actors are distinct references; only reject when this exact ref is already an agent.
     auto& aiam = AIAgentManager::getInstance();
-    if (aiam.getAgentByName(actorLabel)) return false;
-
     const RE::FormID actorFormId = actor->GetFormID();
-    for (const auto& agent : aiam.getAgents()) {
-        if (agent && agent->GetFormId() == actorFormId) {
-            return false;
-        }
+    if (actorFormId != 0) {
+        if (aiam.getAgentByFormId(actorFormId)) return false;
+    } else if (aiam.getAgentByName(actorLabel)) {
+        return false;
     }
 
     auto* race = actor->GetRace();
