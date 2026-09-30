@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <thread>
 
@@ -42,13 +43,16 @@ std::string Header(std::uint64_t value) {
 }
 void ResetCharacter() { std::lock_guard lock(stateMutex); character.clear(); newCharacter = false; }
 void BeginLoad() {
-    ready = false;
-    ++generation;
+    {
+        // Serializes with handshake publication, so an older load's accepted result cannot mark this one ready.
+        std::lock_guard lock(stateMutex);
+        ready = false;
+        ++generation;
+        token.clear();
+        character.clear();
+        newCharacter = false;
+    }
     PrismaUIBridge::BumpDialogueStopGeneration();
-    std::lock_guard lock(stateMutex);
-    token.clear();
-    character.clear();
-    newCharacter = false;
 }
 std::string Character(bool createIfMissing) {
     std::lock_guard lock(stateMutex);
@@ -77,25 +81,39 @@ void Connect(std::function<void()> resume, bool newGame) {
     std::thread([epoch, request, resume = std::move(resume)]() {
         const Scope scope(epoch);
         nlohmann::json result;
-        const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        bool transportRetried = false;
+        std::optional<std::chrono::steady_clock::time_point> busyDeadline;
+        int transportFailures = 0;
+        // Sleeps in short ticks so a newer load cancels promptly; false means this load is stale.
+        const auto wait = [epoch](int ticks) {
+            for (int tick = 0; tick < ticks; ++tick) {
+                if (epoch != Generation()) return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            return epoch == Generation();
+        };
         for (;;) {
             if (epoch != Generation()) return;
             result = HTTPManager::requestPlaythroughSession(request);
+            if (epoch != Generation()) return;
             if (result.value("ok",false)) break;
             const auto status = result.value("status",std::string{});
-            if (status == "transport_error" && !transportRetried) {
-                transportRetried = true;
+            if (status == "transport_error") {
+                // The server may start after the save loads, so keep this load pending until it answers.
+                // Only the first retry is immediate; later ones wait so an offline server is not flooded.
+                if (++transportFailures == 2) logger::warn("[Playthrough] Server unreachable; retrying handshake every 5 seconds");
+                busyDeadline.reset();
+                if (transportFailures > 1 && !wait(50)) return;
                 continue;
             }
-            if (status != "busy" || std::chrono::steady_clock::now() >= busyDeadline) break;
+            if (status != "busy") break;
             // Retry only pre-switch contention, retaining this load's identity and cancellation scope.
-            for (int tick = 0; tick < 10; ++tick) {
-                if (epoch != Generation()) return;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-            if (std::chrono::steady_clock::now() >= busyDeadline) break;
+            // The budget starts at the first busy reply so time spent waiting for the server is not charged to it.
+            if (!busyDeadline) busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            else if (std::chrono::steady_clock::now() >= *busyDeadline) break;
+            if (!wait(10)) return;
+            if (std::chrono::steady_clock::now() >= *busyDeadline) break;
         }
+        if (transportFailures > 1) logger::info("[Playthrough] Server answered handshake after {} transport failures", transportFailures);
         if (epoch != Generation()) return;
         const bool accepted = result.value("ok",false);
         if (accepted) {
