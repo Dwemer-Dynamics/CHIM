@@ -42,13 +42,16 @@ std::string Header(std::uint64_t value) {
 }
 void ResetCharacter() { std::lock_guard lock(stateMutex); character.clear(); newCharacter = false; }
 void BeginLoad() {
-    ready = false;
-    ++generation;
+    {
+        // Serializes with handshake publication, so an older load's accepted result cannot mark this one ready.
+        std::lock_guard lock(stateMutex);
+        ready = false;
+        ++generation;
+        token.clear();
+        character.clear();
+        newCharacter = false;
+    }
     PrismaUIBridge::BumpDialogueStopGeneration();
-    std::lock_guard lock(stateMutex);
-    token.clear();
-    character.clear();
-    newCharacter = false;
 }
 std::string Character(bool createIfMissing) {
     std::lock_guard lock(stateMutex);
@@ -82,6 +85,7 @@ void Connect(std::function<void()> resume, bool newGame) {
         for (;;) {
             if (epoch != Generation()) return;
             result = HTTPManager::requestPlaythroughSession(request);
+            if (epoch != Generation()) return;
             if (result.value("ok",false)) break;
             const auto status = result.value("status",std::string{});
             if (status == "transport_error" && !transportRetried) {
@@ -113,6 +117,8 @@ void Connect(std::function<void()> resume, bool newGame) {
             if (accepted) resume();
             const auto message = result.value("message",std::string{});
             if (!message.empty()) RE::DebugNotification(("[CHIM] " + message).c_str());
+            else if (result.value("status",std::string{}) == "transport_error")
+                RE::DebugNotification("[CHIM] Cannot connect to the server. Start the DwemerDistro server, then reload your save.");
             else if (!accepted) RE::DebugNotification("[CHIM] Playthrough unavailable. Open Playthrough Saves, then reload this save.");
         });
     }).detach();
