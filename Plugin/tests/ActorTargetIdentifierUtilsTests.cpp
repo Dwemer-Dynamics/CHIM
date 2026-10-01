@@ -452,7 +452,12 @@ int main()
         assert(only("SpawnItemRaw", 0, RoleActorArgKind::RoleTarget));
         assert(only("SpawnGoldRaw", 0, RoleActorArgKind::RoleTarget));
         assert(only("Despawn", 0, RoleActorArgKind::AgentName));
+        assert(only("Instruction", 0, RoleActorArgKind::AgentName));
+        assert(only("Suggestion", 0, RoleActorArgKind::AgentName));
         assert(only("Sandbox", 0, RoleActorArgKind::AgentName));
+        // Same-name actors: the AgentName argument may be "Name [RefID: X]", which names only that reference.
+        assert(Parse("Lydia [RefID: ff000abc]").hasRefId && Parse("Lydia [RefID: ff000abc]").refId == 0xFF000ABC);
+        assert(ActorTargetIdentifierUtils::IsUnresolvableExplicit(Parse("Lydia [RefID: 00000000]")));
         assert(only("ShowTrainingMenu", 0, RoleActorArgKind::TrainerName));
         assert(only("BackgroundCmd", 0, RoleActorArgKind::HexRef));
         assert(only("RenameNPC", 0, RoleActorArgKind::HexRef));
