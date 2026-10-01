@@ -20,13 +20,24 @@ std::string BuildActorReferenceSource(RE::Actor* actor);
 // Physical actor identity for server events, separate from the shared profile selector.
 // Game thread only: a dynamic (FF) actor is assigned a persisted dyn: UUID on first use.
 std::string BuildActorKey(RE::Actor* actor);
+// Any thread: the actor's key without assigning one; empty for an FF actor not yet registered with this base.
+std::string ExistingActorKey(RE::Actor* actor);
+// gamedata.php row identity captured from the actor being read; registers a dyn: key only on the game thread.
+ActorIdentityUtils::GameDataActorIdentity CaptureGameDataActorIdentity(RE::Actor* actor);
+// True (row must not be sent, no hash acknowledged) for an unkeyed non-player actor; logs a bounded diagnostic.
+bool HoldUnkeyedGameData(const ActorIdentityUtils::GameDataActorIdentity& identity, std::string_view kind,
+                         std::string_view actorName);
 namespace DynamicActorIdentity
 {
+    // Save-time only: prunes references that no longer exist.
     std::vector<ActorIdentityUtils::DynamicIdentityEntry> Snapshot();
-    // Keeps entries whose FF reference resolves to a live actor with the recorded base.
+    // Takes entries already remapped with ResolveFormID; drops only a live actor whose base differs.
     void Restore(const std::vector<ActorIdentityUtils::DynamicIdentityEntry>& entries);
     void Forget(std::uint32_t formId);
     void Clear();
+    // Any thread: the dyn: key currently registered for an FF FormID, without assigning one or reading the
+    // engine. Empty once the reference was forgotten (deleted) or never keyed.
+    std::string KnownActorKey(std::uint32_t formId);
 }
 
 #define HERIKA_MAX_VISION_RANGE 5000
@@ -300,7 +311,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         this->actor = actor;
         this->formID = actor->GetFormID();
-        profileKey = ActorIdentityUtils::BuildProfileKey(BuildActorReferenceSource(actor), formID);
+        // A dynamic actor's selector hashes its persisted dyn: key, never the recyclable FF FormID.
+        // Only an actor without a resolvable key keeps the legacy runtime selector; it is not a safe identity.
+        const auto dynamicKey = ActorIdentityUtils::IsDynamicFormId(formID) ? BuildActorKey(actor) : std::string{};
+        profileKey = dynamicKey.empty()
+            ? ActorIdentityUtils::BuildProfileKey(BuildActorReferenceSource(actor), formID) : dynamicKey;
         name = actor->GetDisplayFullName();
         name.erase(0, name.find_first_not_of(' '));
         name.erase(name.find_last_not_of(' ') + 1);
@@ -731,8 +746,9 @@ public:
 
         const auto parsedTarget = ActorTargetIdentifierUtils::Parse(name);
         if (parsedTarget.hasRefId) {
+            // The narrator's engine object is the player, so RefID 00000014 never selects the narrator agent.
             auto exact = std::find_if(agents.begin(), agents.end(), [&parsedTarget](const std::shared_ptr<AIAgent>& agent) {
-                return agent && agent->GetFormId() == parsedTarget.refId;
+                return agent && !agent->isNarrator() && agent->GetFormId() == parsedTarget.refId;
             });
             if (exact != agents.end()) {
                 return *exact;
@@ -740,11 +756,35 @@ public:
             logger::warn("Actor identifier '{}' referenced unavailable RefID {:08X}", name, parsedTarget.refId);
             return nullptr;
         }
+        if (parsedTarget.hasRefIdMarker) {
+            // A malformed reference is still explicit; its display text never selects an agent.
+            return nullptr;
+        }
 
-        std::string lowerName = parsedTarget.fallbackName;
+        auto matches = collectNameMatchesUnsafe(parsedTarget.fallbackName);
+        if (matches.size() == 1) {
+            return matches.front();
+        }
+        if (matches.size() > 1) {
+            logger::warn("Actor name '{}' is ambiguous across {} active agents; use a RefID identifier", name,
+                         matches.size());
+        }
+        return nullptr;
+    }
+
+    // True when a bare label matches more than one active agent, i.e. getAgentByName refused it as ambiguous.
+    bool isAmbiguousAgentName(const std::string& name) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto parsedTarget = ActorTargetIdentifierUtils::Parse(name);
+        return !parsedTarget.hasRefIdMarker && collectNameMatchesUnsafe(parsedTarget.fallbackName).size() > 1;
+    }
+
+private:
+    std::vector<std::shared_ptr<AIAgent>> collectNameMatchesUnsafe(std::string lowerName) {
+        std::vector<std::shared_ptr<AIAgent>> matches;
         const auto first = lowerName.find_first_not_of(" \t\n\r\f\v");
         if (first == std::string::npos) {
-            return nullptr;
+            return matches;
         }
         const auto last = lowerName.find_last_not_of(" \t\n\r\f\v");
         lowerName = lowerName.substr(first, last - first + 1);
@@ -752,7 +792,6 @@ public:
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-        std::vector<std::shared_ptr<AIAgent>> matches;
         for (const auto& agent : agents) {
             if (!agent) {
                 continue;
@@ -783,17 +822,10 @@ public:
                 matches.push_back(agent);
             }
         }
-
-        if (matches.size() == 1) {
-            return matches.front();
-        }
-        if (matches.size() > 1) {
-            logger::warn("Actor name '{}' is ambiguous across {} active agents; use a RefID identifier", name,
-                         matches.size());
-        }
-        return nullptr;
+        return matches;
     }
 
+public:
 
     std::shared_ptr<AIAgent> getAgentByFormId(RE::FormID formId) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -810,6 +842,15 @@ public:
         } else {
             return nullptr;  // Return nullptr if agent with given name is not found
         }
+    }
+
+    // The typed narrator agent. A physical NPC whose name matches the narrator's is never returned, and its
+    // presence cannot make the narrator ambiguous the way a name lookup would.
+    std::shared_ptr<AIAgent> getNarratorAgent() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = std::find_if(agents.begin(), agents.end(),
+                               [](const std::shared_ptr<AIAgent>& agent) { return agent && agent->isNarrator(); });
+        return it != agents.end() ? *it : nullptr;
     }
 
     void deleteAgent(std::shared_ptr<AIAgent>& agentToDelete) {

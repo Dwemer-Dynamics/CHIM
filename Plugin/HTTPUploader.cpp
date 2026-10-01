@@ -438,7 +438,8 @@ std::string HTTPUploader::UploadVoiceSampleWithText(std::string data, std::strin
 }
 
 std::string HTTPUploader::UploadBookContent(std::string data, std::string title, std::string readRequestId,
-                                            std::string bookFormId) {
+                                            std::string bookFormId,
+                                            std::vector<std::pair<std::string, std::string>> extraQuery) {
     const auto loadEpoch = PlaythroughSession::Context();
     if (!PlaythroughSession::Allowed(loadEpoch)) return {};
     const char *szHeaders = "Content-Type: multipart/form-data; boundary=----974767299852498929531610575";
@@ -468,6 +469,9 @@ std::string HTTPUploader::UploadBookContent(std::string data, std::string title,
     if (!bookFormId.empty()) {
         path.append("&book_form_id=");
         path.append(UrlEncodeQueryValue(bookFormId));
+    }
+    for (const auto& [name, value] : extraQuery) {
+        path.append("&").append(name).append("=").append(UrlEncodeQueryValue(value));
     }
 
     path.append("&ts=");

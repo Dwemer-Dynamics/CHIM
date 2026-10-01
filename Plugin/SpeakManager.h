@@ -9,14 +9,17 @@
 #include <deque>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "EventIdentityUtils.h"
 #include "Globals.h"
 #include "HeadVoiceVolumeUtils.h"
+#include "SPGResponse.h"
 
 // Track last event type for narration detection
 extern std::string lastEventType;
@@ -38,6 +41,14 @@ struct ScriptLine {
     int directorLine = 0;
     bool directorHasActions = false;
     bool rechatGenerated = false;
+    // Response identity v1, carried from the ScriptQueue item: the typed or physical speaker and the listener
+    // the server chose, with the actors bound on the game thread when the line was queued. A line carrying
+    // it is routed by these and never by its labels (actor/action are rewritten to exact identifiers).
+    bool identityPresent = false;
+    EventIdentityUtils::ResponseEndpoint speakerIdentity;
+    EventIdentityUtils::ResponseEndpoint listenerIdentity;
+    BoundActionActor speakerBinding;
+    BoundActionActor listenerBinding;
     float volumeBoost;  // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
     float duration;     // Duration of the line in seconds, used for timing animations and lip sync
 
@@ -127,6 +138,24 @@ struct ScriptLine {
     }
 };
 
+// The speaker a line or rechat was dispatched for, captured once before a wait (TTS, a deferred rechat) and
+// rechecked after it. Never resolved again from a display label or a bare FF slot.
+struct CapturedSpeaker {
+    ActorIdentityUtils::CapturedSpeakerId id;
+    BoundActionActor binding;  // Physical only: the handle and canonical key bound for the speaker.
+    std::string label;         // Presentation and legacy bookkeeping string (RechatSpeakerKey).
+    std::string speakerKey;    // Canonical key sent to the server: "narrator", or the bound actor key.
+    // The listener the line carried in response identity v1, when present: its label (the line's own listener
+    // hint), canonical key and game-thread binding. A rechat only sends listener_key while that hint is still the
+    // one in use and a physical listener still holds the bound reference; otherwise the hint is left unresolved.
+    std::string listenerLabel;
+    std::string listenerKey;
+    BoundActionActor listenerBinding;
+    bool Present() const { return id.kind != ActorIdentityUtils::CapturedSpeakerKind::None; }
+    // Internal bookkeeping key; `label` stays the presentation/payload "speaker" string.
+    std::string RechatKey() const { return ActorIdentityUtils::RechatBookkeepingKey(id, speakerKey); }
+};
+
 class SpeakManager {
 private:
     std::queue<ScriptLine> scriptQueue;
@@ -142,6 +171,7 @@ private:
 
     bool interrupt = false;
     bool forceInterruptCurrentPlayback = false;
+    // Rechat bookkeeping holds CapturedSpeaker::RechatKey values (canonical role + load generation), not labels.
     std::string lastRechatter = "";
     bool rechatInFlight = false;
     std::string rechatInFlightSpeaker = "";
@@ -160,14 +190,20 @@ private:
     std::deque<RecentAiSubtitle> recentAiSubtitles;
     struct PendingRechatRetry {
         bool active = false;
-        std::string speaker = "";
+        std::string speaker = "";  // RechatKey of boundSpeaker; boundSpeaker.label is the payload speaker.
         std::string listenerHint = "";
         std::string explicitTarget = "";
         std::string debugLauncherLine = "";
         int rechatDepth = 0;
+        CapturedSpeaker boundSpeaker;  // Rechecked before the retry is sent.
     } pendingRechatRetry;
+    // Multi-line responses reuse one audience. Written only on the game thread; keyed by the speaking actor,
+    // listener and response sequence, which advances whenever the snapshot is cleared.
     std::string audienceSnapshotKey = "";
     std::vector<std::string> audienceSnapshotCompanions = {};
+    EventIdentityUtils::EventIdentity audienceSnapshotIdentity;
+    std::chrono::steady_clock::time_point audienceSnapshotCapturedAt{};
+    std::uint64_t audienceSnapshotSequence = 0;
     bool audienceSnapshotReady = false;
     std::function<void(const ScriptLine&, int)> playerPlaybackCompletedCallback;
     std::string pendingPlayerSubtitleText;
@@ -235,10 +271,11 @@ public:
     std::string ensureRechatChainId(const std::string& speaker, const std::string& listenerHint,
                                     const std::string& explicitTarget);
 
-    bool beginRechatAttempt(const std::string& speaker);
-    void queueRechatRetry(const std::string& speaker, const std::string& listenerHint,
-                          const std::string& explicitTarget, const std::string& debugLauncherLine, int rechatDepth);
-    void completeRechatAttempt(const std::string& speaker, bool success);
+    bool beginRechatAttempt(const std::string& rechatKey);
+    void queueRechatRetry(const std::string& rechatKey, const std::string& listenerHint,
+                          const std::string& explicitTarget, const std::string& debugLauncherLine, int rechatDepth,
+                          const CapturedSpeaker* boundSpeaker = nullptr);
+    void completeRechatAttempt(const std::string& rechatKey, bool success);
 
     void abortPlay(bool forceCurrentPlayback = false) {
         std::lock_guard<std::mutex> lock(mtx);
@@ -289,6 +326,8 @@ public:
 
     // Method to process the queue
     void process(AIAgent* agent);
+    // Fixes the event time now and captures the audience on the game thread before logging _speech.
+    void QueueSpeechLog(AIAgent* agent, const ScriptLine& scriptLine, const std::string& speechListener);
     void processPlayer();
     void setPendingPlayerSubtitle(const std::string& subtitleText);
     void releasePendingPlayerSubtitle();
@@ -321,7 +360,14 @@ public:
     bool downloadFakeNote(std::string name);
 
     int rechat(std::string speaker, std::string targetedNpc, int rechatDepth, std::string debugLauncherLine,
-               std::string explicitRechatTarget = "");
+               std::string explicitRechatTarget = "", const CapturedSpeaker* boundSpeaker = nullptr);
+
+    // Any thread the agent's actor is already read on. An identity line's game-thread binding is reused; a
+    // legacy line binds the agent's current handle and registry key.
+    static CapturedSpeaker CaptureSpeaker(AIAgent* agent, const ScriptLine* line = nullptr);
+    static CapturedSpeaker CapturePlayerSpeaker();
+    // Any thread: the captured agent when it is still the same typed or bound speaker in the same load.
+    static std::shared_ptr<AIAgent> ResolveCapturedSpeaker(const CapturedSpeaker& captured);
 
      void setLastVisemeApplied(std::chrono::high_resolution_clock::time_point timePoint) {
         std::lock_guard<std::mutex> lock(mtx);

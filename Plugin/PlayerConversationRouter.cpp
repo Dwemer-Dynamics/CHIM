@@ -208,11 +208,15 @@ namespace
         }
     }
 
-    void AddUniqueAudience(std::vector<std::string>& audience, std::unordered_set<std::string>& seen,
-                           const std::string& name)
+    // Entries are unique per physical actor, so two same-named actors (registered or not) both stay.
+    // Only an entry without an actor falls back to its name.
+    void AddUniqueAudience(PlayerConversationRoutingResult& result, std::unordered_set<std::string>& seen,
+                           const std::string& name, RE::Actor* actor)
     {
-        if (!name.empty() && seen.insert(name).second) {
-            audience.push_back(name);
+        const auto seenKey = actor ? std::format("form:{:08X}", actor->GetFormID()) : "name:" + name;
+        if (!name.empty() && seen.insert(seenKey).second) {
+            result.audience.push_back(name);
+            result.audienceActors.push_back(actor);
         }
     }
 
@@ -240,7 +244,9 @@ namespace
         auto* playerWorldspace = player->GetWorldspace();
         const auto playerPosition = SpatialAwareness::GetEffectiveActorPosition(player);
         std::vector<PlayerConversationRoutingPolicy::PresenceCandidate> candidates;
+        std::vector<RE::Actor*> candidateActors;
         candidates.reserve(processLists->highActorHandles.size());
+        candidateActors.reserve(processLists->highActorHandles.size());
 
         for (auto& actorHandle : processLists->highActorHandles) {
             auto actorPointer = actorHandle.get();
@@ -272,6 +278,7 @@ namespace
             candidate.dialogueRace = race->AllowsPCDialogue();
             candidate.creature = race->HasKeywordString("ActorTypeCreature");
             candidates.push_back(std::move(candidate));
+            candidateActors.push_back(actor);
         }
 
         const auto selected = PlayerConversationRoutingPolicy::SelectPresent(request, candidates);
@@ -284,6 +291,7 @@ namespace
             present.distance = candidate.distance;
             present.managed = managedFormIds.contains(candidate.formId);
             present.creature = candidate.creature;
+            present.actorKey = BuildActorKey(candidateActors[index]);
             result.presentActors.push_back(std::move(present));
         }
     }
@@ -354,7 +362,7 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     auto& manager = AIAgentManager::getInstance();
-    auto narrator = manager.getAgentByName(NARRATOR_NAME);
+    auto narrator = manager.getNarratorAgent();
     if (!player) {
         logger::warn("[PLAYER-ROUTING] No player singleton");
         return result;
@@ -552,12 +560,13 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
         for (const auto index : audienceOrder) {
             const auto& candidate = runtimeCandidates[index];
             AddUniqueAudience(
-                result.audience,
+                result,
                 seenAudience,
-                candidate.promptIdentifier.empty() ? candidate.policy.name : candidate.promptIdentifier);
+                candidate.promptIdentifier.empty() ? candidate.policy.name : candidate.promptIdentifier,
+                candidate.actor);
         }
     }
-    AddUniqueAudience(result.audience, seenAudience, player->GetName());
+    AddUniqueAudience(result, seenAudience, player->GetName(), player);
 
     std::string audienceExcluded;
     std::string autoIneligible;

@@ -84,7 +84,10 @@
                 return;
             }
             
-            const fullText = sanitizeDialogueText((entry.speaker || '') + ': ' + (entry.text || ''));
+            // Identity-aware producers may send {name, id}; only the display name is rendered.
+            const speakerName = entry.speaker && typeof entry.speaker === 'object'
+                ? String(entry.speaker.name || '') : String(entry.speaker || '');
+            const fullText = sanitizeDialogueText(speakerName + ': ' + (entry.text || ''));
             if (!fullText) {
                 return;
             }

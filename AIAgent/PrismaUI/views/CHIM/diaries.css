@@ -309,3 +309,7 @@ body {
     color: #999;
     font-size: 1em;
 }
+
+.person-identity { display: block; font-size: 0.75em; opacity: 0.7; }
+.person-item.legacy { border-style: dashed; }
+.person-item:focus-visible { outline: 2px solid #d4b26a; outline-offset: 2px; }

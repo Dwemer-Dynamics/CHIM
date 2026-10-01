@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ActorIdentityUtils
@@ -78,17 +79,22 @@ namespace ActorIdentityUtils
         return uuid;
     }
 
+    inline bool IsActorKey(std::string_view key);
+
     // Physical actor key sent to the server. Placed references keep the same ref: form as
     // BuildProfileKey; dynamic (FF) actors need their persisted UUID. Names never become keys.
     inline std::string BuildActorKey(std::string_view source, std::string_view dynamicUuid = {})
     {
         if (source.find('/') != std::string_view::npos) {
-            return BuildProfileKey(std::string(source), 0);
+            // A plugin name the server grammar rejects (for example a .esx file) leaves the actor unresolved.
+            auto key = BuildProfileKey(std::string(source), 0);
+            return IsActorKey(key) ? key : std::string{};
         }
         return IsDynamicUuid(dynamicUuid) ? "dyn:" + std::string(dynamicUuid) : std::string{};
     }
 
-    // Mirrors chimIsActorKey(): player, narrator, ref:<lower plugin>|<8 upper hex <= 00FFFFFF>, dyn:<uuid>.
+    // Exactly chimIsActorKey(): player, narrator, dyn:<uuid>, or ref:<plugin>|00XXXXXX where the plugin is
+    // lowercase, ends in .esm/.esp/.esl, has no | / \ @ # : control or DEL byte and does not start with a space.
     inline bool IsActorKey(std::string_view key)
     {
         if (key == PlayerActorKey || key == NarratorActorKey) {
@@ -97,21 +103,23 @@ namespace ActorIdentityUtils
         if (key.starts_with("dyn:")) {
             return IsDynamicUuid(key.substr(4));
         }
-        if (!key.starts_with("ref:")) {
+        if (!key.starts_with("ref:") || key.size() < 4 + 5 + 9) {
             return false;
         }
-        const auto body = key.substr(4);
-        const auto separator = body.rfind('|');
-        if (separator == std::string_view::npos || separator == 0 || body.size() - separator != 9) {
+        const auto plugin = key.substr(4, key.size() - 4 - 9);
+        const auto local = key.substr(key.size() - 8);
+        if (key[key.size() - 9] != '|' || plugin.size() < 5 || plugin.front() == ' ') {
             return false;
         }
-        const auto plugin = body.substr(0, separator);
-        if (plugin.find_first_of("/\\|@#\r\n") != std::string_view::npos ||
-            std::any_of(plugin.begin(), plugin.end(), [](unsigned char c) { return c >= 'A' && c <= 'Z'; })) {
+        const auto extension = plugin.substr(plugin.size() - 4);
+        if (extension != ".esm" && extension != ".esp" && extension != ".esl") {
             return false;
         }
-        const auto local = body.substr(separator + 1);
-        return local.starts_with("00") && std::all_of(local.begin(), local.end(), [](char c) {
+        const bool pluginValid = std::none_of(plugin.begin(), plugin.end(), [](unsigned char c) {
+            return c < 0x20 || c == 0x7F || (c >= 'A' && c <= 'Z') || c == '|' || c == '/' || c == '\\' ||
+                   c == '@' || c == '#' || c == ':';
+        });
+        return pluginValid && local.starts_with("00") && std::all_of(local.begin(), local.end(), [](char c) {
                    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F');
                });
     }
@@ -127,6 +135,14 @@ namespace ActorIdentityUtils
     inline constexpr std::size_t DynamicIdentityEntrySize = 4 + 4 + 36;
 
     inline bool IsDynamicFormId(std::uint32_t formId) { return formId >= 0xFF000000; }
+
+    // Whether a saved dynamic identity survives a save snapshot. A non-resident reference keeps its UUID;
+    // only positive evidence (the FormID now holds a deleted reference or another base) drops it.
+    inline bool RetainDynamicIdentity(bool resident, bool deleted, std::uint32_t currentBaseId,
+                                      std::uint32_t savedBaseId)
+    {
+        return !resident || (!deleted && currentBaseId == savedBaseId);
+    }
 
     inline std::string SerializeDynamicIdentities(const std::vector<DynamicIdentityEntry>& entries)
     {
@@ -180,5 +196,157 @@ namespace ActorIdentityUtils
             return std::string(displayName);
         }
         return std::format("{} [RefID: {:08X}]", displayName, refId);
+    }
+
+    // A physical actor bound on the game thread when an action was first queued.
+    struct BoundActor {
+        std::uint32_t formId = 0;
+        std::string actorKey;  // Canonical key at binding; empty only for a static reference without a source.
+    };
+
+    // What dispatch observes now. Every field is read without computing a new identity: the handle captured at
+    // binding, the reference its FormID currently names, and the key the identity registry currently holds.
+    struct BoundActorObservation {
+        bool handleLive = false;          // The bound handle still resolves (a destroyed reference releases it).
+        std::uint32_t handleFormId = 0;   // FormID of the reference behind the bound handle.
+        bool sameReference = false;       // That FormID still names the reference behind the handle.
+        bool deleted = false;
+        std::string currentActorKey;      // Registry key for a dynamic FormID; ignored for static references.
+    };
+
+    // A cached profile key alone is not proof: a deleted FF actor's agent entry can outlive it while its FormID
+    // is recycled for a new actor with a new dyn: identity. The bound handle and key must both still match.
+    inline bool StillSameBoundActor(const BoundActor& bound, const BoundActorObservation& now)
+    {
+        if (bound.formId == 0 || !now.handleLive || now.deleted || !now.sameReference ||
+            now.handleFormId != bound.formId) {
+            return false;
+        }
+        if (IsDynamicFormId(bound.formId)) {
+            return !bound.actorKey.empty() && now.currentActorKey == bound.actorKey;
+        }
+        return true;
+    }
+
+    // A speaker captured when its line (or rechat) was dispatched, rechecked after a wait such as TTS or a
+    // deferred retry. Immutable values only: the agent entry's own fields may change while it is reused.
+    enum class CapturedSpeakerKind { None, Narrator, Player, Physical };
+    struct CapturedSpeakerId {
+        CapturedSpeakerKind kind = CapturedSpeakerKind::None;
+        std::uint32_t formId = 0;    // Physical only.
+        std::string profileKey;      // Physical only: the agent's profile key at capture.
+        std::uint64_t loadEpoch = 0;
+    };
+    struct CapturedSpeakerObservation {
+        std::uint64_t loadEpoch = 0;
+        bool agentFound = false;     // Narrator: the typed narrator agent; physical: the agent at the FormID.
+        bool agentIsNarrator = false;
+        std::uint32_t agentFormId = 0;
+        std::string agentProfileKey;
+        bool boundActorStill = false;  // The handle bound at capture still holds the same reference and key.
+    };
+
+    inline bool StillSameCapturedSpeaker(const CapturedSpeakerId& captured, const CapturedSpeakerObservation& now)
+    {
+        if (captured.kind == CapturedSpeakerKind::None || captured.loadEpoch != now.loadEpoch) return false;
+        if (captured.kind == CapturedSpeakerKind::Player) return true;
+        if (!now.agentFound) return false;
+        if (captured.kind == CapturedSpeakerKind::Narrator) return now.agentIsNarrator;
+        return !now.agentIsNarrator && captured.formId != 0 && now.agentFormId == captured.formId &&
+               now.agentProfileKey == captured.profileKey && now.boundActorStill;
+    }
+
+    // Internal rechat bookkeeping key (chain, in-flight, last rechatter, retry, completion): the captured
+    // speaker's canonical role plus its load generation, never the decorated label a recycled FF slot or a
+    // same-name reference can share. Empty when a physical speaker has no bound canonical key: such a speaker
+    // never begins a rechat. Never sent on the wire.
+    inline std::string RechatBookkeepingKey(const CapturedSpeakerId& captured, std::string_view actorKey)
+    {
+        std::string role;
+        switch (captured.kind) {
+            case CapturedSpeakerKind::Narrator: role = NarratorActorKey; break;
+            case CapturedSpeakerKind::Player: role = PlayerActorKey; break;
+            case CapturedSpeakerKind::Physical:
+                if (actorKey.empty() || actorKey == NarratorActorKey || actorKey == PlayerActorKey) return {};
+                role = actorKey;
+                break;
+            default: return {};
+        }
+        return role + "#" + std::to_string(captured.loadEpoch);
+    }
+    // gamedata.php actor rows (paired contract version 1). Each row carries the identity of the actor it
+    // was read from: the typed player is "player"/00000014; any other actor needs its canonical physical key.
+    inline constexpr int GameDataActorIdentityVersion = 1;
+    inline constexpr std::uint32_t PlayerRefId = 0x14;
+
+    struct GameDataActorIdentity {
+        std::string actorKey;              // Empty when the actor has no canonical key at capture.
+        std::uint32_t refId = 0;           // Runtime reference FormID at capture.
+        std::uint64_t loadGeneration = 0;
+
+        bool Keyed() const { return refId != 0 && !actorKey.empty(); }
+        // An unkeyed actor is held back, never sent by name: a name-only row could update a namesake. An FF actor
+        // waits for the game thread to register it; a non-FF reference that has no canonical key is never sent.
+        bool Deferred() const { return !Keyed(); }
+        bool Unkeyable() const { return !Keyed() && !IsDynamicFormId(refId); }
+    };
+
+    // The key must match the reference kind it was captured from; the player key belongs to the player only.
+    inline GameDataActorIdentity CaptureGameDataActor(bool player, std::uint32_t refId, std::string actorKey,
+                                                      std::uint64_t loadGeneration)
+    {
+        if (player) {
+            return {std::string(PlayerActorKey), PlayerRefId, loadGeneration};
+        }
+        const bool valid = refId != 0 && refId != PlayerRefId && IsActorKey(actorKey) &&
+                           actorKey != PlayerActorKey && actorKey != NarratorActorKey &&
+                           actorKey.starts_with("dyn:") == IsDynamicFormId(refId);
+        return {valid ? std::move(actorKey) : std::string{}, refId, loadGeneration};
+    }
+
+    // Field values for actor_identity_version / actor_key / actor_refid; nothing for an unkeyed actor.
+    inline std::optional<std::pair<std::string, std::string>> GameDataActorFields(const GameDataActorIdentity& identity)
+    {
+        if (!identity.Keyed()) return std::nullopt;
+        return std::pair{identity.actorKey, std::format("{:08X}", identity.refId)};
+    }
+
+    // Adds actor_identity_version/actor_key/actor_refid to one gamedata row; false (row unchanged) when unkeyed.
+    template <class Json>
+    bool ApplyGameDataActorIdentity(Json& row, const GameDataActorIdentity& identity)
+    {
+        const auto fields = GameDataActorFields(identity);
+        if (!fields) return false;
+        row["actor_identity_version"] = GameDataActorIdentityVersion;
+        row["actor_key"] = fields->first;
+        row["actor_refid"] = fields->second;
+        return true;
+    }
+
+    // activity_status attack target, paired with the row's actor_identity_version 1. attack_target_key and
+    // attack_target_refid are always present: both strings for a keyed combat target (the typed player is
+    // "player"/00000014), both null when there is no target or it cannot be keyed. attack_target stays display
+    // only and is written only beside a key, so an unkeyed target never reaches the server by name.
+    template <class Json>
+    void ApplyGameDataAttackTarget(Json& row, const std::optional<GameDataActorIdentity>& target,
+                                   const std::string& displayName)
+    {
+        const auto fields = target ? GameDataActorFields(*target) : std::nullopt;
+        if (!fields) {
+            row["attack_target_key"] = nullptr;
+            row["attack_target_refid"] = nullptr;
+            return;
+        }
+        row["attack_target_key"] = fields->first;
+        row["attack_target_refid"] = fields->second;
+        if (!displayName.empty()) row["attack_target"] = displayName;
+    }
+
+    // Change hashes are cached per FormID. Prefixing the captured identity means a new actor in a recycled FF slot
+    // or a new load never matches the previous entry, and a late acknowledgement only confirms its own actor.
+    inline std::string GameDataChangeHash(const GameDataActorIdentity& identity, std::string_view hash)
+    {
+        return std::format("{}|{:08X}|{}#", identity.actorKey, identity.refId, identity.loadGeneration) +
+               std::string(hash);
     }
 }

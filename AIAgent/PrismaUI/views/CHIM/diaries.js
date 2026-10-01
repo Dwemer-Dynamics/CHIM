@@ -91,24 +91,48 @@ function renderPeopleList() {
     container.innerHTML = '';
     
     peopleData.forEach(person => {
+        const key = diaryAuthorKey(person.author_key);
+        const label = String(person.label || person.name || 'Unknown');
+        const identity = key ? diaryKeyLabel(key) : 'Unassigned (legacy)';
         const item = document.createElement('div');
-        item.className = 'person-item';
-        item.onclick = () => selectPerson(person.name);
+        item.className = 'person-item' + (key ? '' : ' legacy');
+        item.tabIndex = 0;
+        item.setAttribute('role', 'button');
+        item.onclick = () => selectPerson(person);
+        item.onkeydown = event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPerson(person); }
+        };
         
         item.innerHTML = `
-            <span class="person-name">${escapeHtml(person.name)}</span>
-            <span class="person-count">${person.count}</span>
+            <span class="person-name">${escapeHtml(label)}<span class="person-identity">${escapeHtml(identity)}</span></span>
+            <span class="person-count">${escapeHtml(person.count)}</span>
         `;
         
         container.appendChild(item);
     });
 }
 
+// Author keys are opaque server values; the UI never builds one from a diary name.
+function diaryAuthorKey(value) {
+    const key = String(value == null ? '' : value).trim();
+    return /^(?:ref:[^|\s]+\|[0-9A-F]{8}|dyn:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|player|narrator)$/.test(key) ? key : '';
+}
+
+function diaryKeyLabel(key) {
+    if (key === 'player') return 'Player';
+    if (key === 'narrator') return 'Narrator';
+    const ref = /^ref:([^|]+)\|([0-9A-F]{8})$/.exec(key);
+    if (ref) return `${ref[2]} · ${ref[1]}`;
+    return `Dynamic actor ${key.slice(4, 12)}`;
+}
+
 /**
  * Select a person to view their entries
  */
-function selectPerson(personName) {
-    console.log('[Diaries] Selected person:', personName);
+function selectPerson(person) {
+    const key = diaryAuthorKey(person && person.author_key);
+    const personName = String((person && (person.label || person.name)) || 'Unknown');
+    console.log('[Diaries] Selected person:', personName, key || '(legacy)');
     currentPerson = personName;
     navigationStack.push('people');
     
@@ -120,8 +144,9 @@ function selectPerson(personName) {
     document.getElementById('entries-list').innerHTML = '<div class="loading">Loading entries...</div>';
     
     // Request entries from C++
+    // Keyed authors are fetched by key; only unassigned legacy groups still use their stored name.
     if (window.chimDiariesCommand) {
-        window.chimDiariesCommand('fetch_entries|' + personName);
+        window.chimDiariesCommand(key ? 'fetch_entries_key|' + key : 'fetch_entries|' + String(person && person.name || ''));
     }
 }
 
@@ -134,7 +159,7 @@ window.updateEntriesList = function(data) {
     try {
         const parsed = typeof data === 'string' ? JSON.parse(data) : data;
         entriesData = parsed.entries || [];
-        currentPerson = parsed.person || currentPerson;
+        currentPerson = parsed.person_label || (typeof parsed.person === 'string' ? parsed.person : '') || currentPerson;
         
         renderEntriesList();
     } catch (error) {
@@ -223,7 +248,8 @@ function renderDiaryContent(entry) {
     
     container.innerHTML = `
         <div class="diary-header">
-            <div class="diary-title">Diary of ${escapeHtml(entry.author)}</div>
+            <div class="diary-title">Diary of ${escapeHtml(entry.author_label || entry.author || 'Unknown')}</div>
+            <div class="diary-metadata">${escapeHtml(diaryAuthorKey(entry.author_key) ? diaryKeyLabel(entry.author_key) : 'Unassigned (legacy)')}</div>
             <div class="diary-metadata">
                 ${escapeHtml(entry.date || 'Unknown date')} • ${escapeHtml(entry.location || 'Unknown location')}
             </div>

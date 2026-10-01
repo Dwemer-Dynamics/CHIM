@@ -3,8 +3,10 @@
 #include "HTTPManager.h"
 #include "PlaythroughNotices.h"
 #include "DirectorScene.h"
+#include "EventIdentityUtils.h"
 
 #include <algorithm>
+#include <atomic>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -78,11 +80,16 @@ static bool IsPlayerStreamActor(const std::string& actorName)
         return false;
     }
 
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    // A decorated identifier is exact: only the player's own RefID is the player.
+    if (const auto parsed = ActorTargetIdentifierUtils::Parse(normalizedActorName); parsed.hasRefId) {
+        return player && parsed.refId == player->GetFormID();
+    }
+
     if (EqualsIgnoreCaseHttp(normalizedActorName, "Player")) {
         return true;
     }
 
-    auto* player = RE::PlayerCharacter::GetSingleton();
     if (player) {
         const std::string playerName = trim(player->GetName());
         if (!playerName.empty() && EqualsIgnoreCaseHttp(normalizedActorName, playerName)) {
@@ -101,16 +108,14 @@ static bool IsPlayerStreamActor(const std::string& actorName)
 
 static std::string ResolveActorProfileHash(const std::string& actorIdentifier)
 {
-    const auto target = ActorTargetIdentifierUtils::Parse(actorIdentifier);
-    if (target.hasRefId) {
-        auto agent = AIAgentManager::getInstance().getAgentByFormId(target.refId);
-        if (agent) {
-            const auto key = agent->getProfileKey();
-            if (!key.empty()) return md5(key, true);
+    // Narrator/player and older non-reference callers retain their existing selectors.
+    ActorTargetIdentifierUtils::ProfileAgentView view;
+    if (const auto target = ActorTargetIdentifierUtils::Parse(actorIdentifier); target.hasRefId) {
+        if (auto agent = AIAgentManager::getInstance().getAgentByFormId(target.refId)) {
+            view = {true, agent->isNarrator(), agent->getProfileKey()};
         }
     }
-    // Narrator/player and older non-reference callers retain their existing selectors.
-    return md5(actorIdentifier, true);
+    return md5(ActorTargetIdentifierUtils::ProfileHashSource(actorIdentifier, view), true);
 }
 
 static std::string AutomaticResponseBlockReason(
@@ -761,12 +766,75 @@ namespace HTTPManager {
         return PlaythroughSession::Allowed(loadEpoch) ? responseBody : std::string{};
     }
 
+// ASAP rechat speaker and listener: the response envelope's endpoints are the authority. Both are captured
+// from the same line, the first one an agent answered, and must match the endpoints exactly (typed narrator, or
+// the same RefID and canonical key); legacy label-only output has no authority and never starts an ASAP rechat.
+// The listener is bound here and never again at the end of the stream: a null endpoint, or a physical one whose
+// RefID no longer holds its key, stays unresolved (empty hint, no listener_key). `listenerName` is the line's
+// bare payload label, used only to decorate the bound RefID for presentation.
+static CapturedSpeaker CaptureAsapRechatSpeaker(AIAgent* agent, const EventIdentityUtils::ResponseIdentity& identity,
+                                                const std::string& listenerName)
+{
+    using Kind = ActorIdentityUtils::CapturedSpeakerKind;
+    if (!agent || !identity.present) return {};
+    auto captured = SpeakManager::CaptureSpeaker(agent);
+    const auto& endpoint = identity.actor;
+    const bool matches = endpoint.IsNarrator()
+        ? captured.id.kind == Kind::Narrator
+        : endpoint.IsPhysical() && captured.id.kind == Kind::Physical && captured.id.formId == endpoint.refId &&
+              !captured.speakerKey.empty() && captured.speakerKey == endpoint.id;
+    if (!matches) return {};
+
+    const auto& listener = identity.listener;
+    if (listener.IsNarrator() || listener.IsPlayer()) {
+        // Typed principals: the key alone names them; the hint stays empty.
+        captured.listenerKey = listener.id;
+    } else if (listener.IsPhysical()) {
+        // Registry and reference reads only (no dyn: key is assigned off the game thread); rechat() rechecks the
+        // handle and key before it sends listener_key.
+        auto* actor = RE::TESForm::LookupByID<RE::Actor>(listener.refId);
+        std::string currentKey;
+        if (actor && !actor->IsDeleted() && !actor->IsPlayerRef()) {
+            currentKey = ActorIdentityUtils::IsDynamicFormId(listener.refId)
+                ? DynamicActorIdentity::KnownActorKey(listener.refId)
+                : ActorIdentityUtils::BuildActorKey(BuildActorReferenceSource(actor));
+        }
+        if (!currentKey.empty() && currentKey == listener.id) {
+            captured.listenerBinding.actor.formId = listener.refId;
+            captured.listenerBinding.actor.actorKey = listener.id;
+            captured.listenerBinding.handle = actor->GetHandle();
+            captured.listenerKey = listener.id;
+            const auto label = ActorTargetIdentifierUtils::Parse(listenerName);
+            captured.listenerLabel = ActorIdentityUtils::BuildPromptIdentifier(
+                label.fallbackName.empty() ? "Actor" : label.fallbackName, listener.refId);
+        } else {
+            logger::info("[RECHAT] ASAP listener {:08X} no longer holds its envelope key; leaving it unresolved",
+                         listener.refId);
+        }
+    }
+    return captured;
+}
+
 int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rechatDepth = 0,
                   bool godmode = false, std::uint64_t dialogueStopGenerationSnapshot = 0,
                   std::uint64_t directorGeneration = 0,
                   PlayerConversationRoutingPolicy::RequestEligibility eligibility =
                       PlayerConversationRoutingPolicy::RequestEligibility::EventDefault,
-                  RE::FormID requestedActor = 0) {
+                  RE::FormID requestedActor = 0, std::string rechatKey = {}) {
+        // rechatKey: the bookkeeping key the rechat was begun with, decided before the request; completion never
+        // recomputes it from `speaker` (a presentation label) or the agent slot after the stream.
+        // Every exit of a rechat stream (refusal, connect/send error, timeout, empty response) completes the
+        // attempt exactly once under that key, so its in-flight state is never left behind.
+        bool rechatAttemptCompleted = rechatDepth <= 0 || rechatKey.empty();
+        auto completeRechat = [&](bool success) {
+            if (rechatAttemptCompleted) return;
+            rechatAttemptCompleted = true;
+            SpeakManager::getInstance().completeRechatAttempt(rechatKey, success);
+        };
+        struct RechatCompletionGuard {
+            std::function<void()> onExit;
+            ~RechatCompletionGuard() { onExit(); }
+        } rechatCompletionGuard{[&]() { completeRechat(false); }};
         const auto loadEpoch = PlaythroughSession::Context();
         if (!PlaythroughSession::Allowed(loadEpoch)) return 0;
         if (!ChimInteraction::Enabled() || dialogueStopGenerationSnapshot != PrismaUIBridge::GetDialogueStopGeneration()) return 0;
@@ -930,7 +998,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         bool headersProcessed = false;
         bool rechatResponseReceived = false;
         RE::Actor* npc = nullptr;
-        std::string targetFollower;
+        CapturedSpeaker asapSpeaker;  // ASAP rechat speaker, captured when its first line arrived.
         std::size_t streamedLineCount = 0;
         std::string closeReason = "unknown";
 
@@ -1060,22 +1128,60 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         logger::info("[HTTPMANAGER] Response ready, actor {}, queue {}, taskid {} ", lineParts[0],
                                      lineParts[1], tid);
                         if (rechatDepth > 0 && !rechatResponseReceived) {
-                            SpeakManager::getInstance().completeRechatAttempt(speaker, true);
+                            completeRechat(true);
                             rechatResponseReceived = true;
                         }
 
                         AIAgentManager& responseAgentManager = AIAgentManager::getInstance();
                         const std::string responseActorName = trim(lineParts[0]);
-                        auto responseAgent = responseAgentManager.getAgentByName(responseActorName);
+                        // Response identity v1 decides the actor before any eligibility or attention lookup; the
+                        // label is only resolved for legacy three-field output.
+                        const auto responseLine = EventIdentityUtils::ParseResponseLine(line);
+                        if (!responseLine.Valid()) {
+                            logger::warn("[RESPONSE_IDENTITY] Dropping streamed {} output for '{}': {}",
+                                         responseLine.queue, responseActorName, responseLine.invalidReason);
+                            continue;
+                        }
+                        const auto& responseIdentity = responseLine.identity;
+                        std::shared_ptr<AIAgent> responseAgent;
+                        bool responseIsPlayer = false;
+                        bool responseIdentityUnresolved = false;
+                        if (responseIdentity.present) {
+                            responseIsPlayer = responseIdentity.actor.IsPlayer();
+                            if (responseIdentity.actor.IsNarrator()) {
+                                responseAgent = responseAgentManager.getNarratorAgent();
+                            } else if (responseIdentity.actor.IsPhysical()) {
+                                // Registry and profile reads only: no identity is computed off the game thread.
+                                auto candidate = responseAgentManager.getAgentByFormId(responseIdentity.actor.refId);
+                                const bool sameKey = candidate && !candidate->isNarrator() &&
+                                    candidate->getProfileKey() == responseIdentity.actor.id &&
+                                    (!ActorIdentityUtils::IsDynamicFormId(responseIdentity.actor.refId) ||
+                                     DynamicActorIdentity::KnownActorKey(responseIdentity.actor.refId) ==
+                                         responseIdentity.actor.id);
+                                if (sameKey) responseAgent = candidate;
+                            }
+                            responseIdentityUnresolved = !responseIsPlayer && !responseAgent;
+                        } else {
+                            responseIsPlayer = IsPlayerStreamActor(responseActorName);
+                            responseAgent = responseAgentManager.getAgentByName(responseActorName);
+                        }
+                        if (responseIdentityUnresolved) {
+                            logger::warn("[RESPONSE_IDENTITY] Dropping streamed {} output for '{}'; {} is not the "
+                                         "managed actor it names", responseLine.queue, responseActorName,
+                                         responseIdentity.actor.id);
+                            continue;
+                        }
                         RE::Actor* responseActor = responseAgent ? responseAgent->getActor() : nullptr;
                         const bool unknownAutomaticActor =
                             PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(
-                                decodedMsg, eligibility, responseActor && responseActor->GetFormID() == requestedActor) &&
-                            !IsPlayerStreamActor(responseActorName) && !responseAgent;
+                                decodedMsg, eligibility,
+                                responseActor && !responseAgent->isNarrator() &&
+                                    responseActor->GetFormID() == requestedActor) &&
+                            !responseIsPlayer && !responseAgent;
                         std::string responseBlockReason;
                         if (unknownAutomaticActor) {
                             responseBlockReason = "not_managed";
-                        } else if (!IsPlayerStreamActor(responseActorName)) {
+                        } else if (!responseIsPlayer) {
                             responseBlockReason = AutomaticResponseBlockReason(
                                 decodedMsg, responseAgent, responseActor, eligibility, requestedActor);
                         }
@@ -1099,17 +1205,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
                         spgResponse.markUnFinished(true); // Mark the queue as still receving data
 
+                        // The ASAP rechat listener comes only from the envelope of the line its speaker is captured
+                        // from (below); later lines, label-only output and rechat target hints never replace it.
                         std::vector<std::string> lineParts2 = splitString(lineParts[2], '/');
-                        if (lineParts2.size() >= 7) {
-                            const std::string explicitRechatTarget = trim(lineParts2[6]);
-                            if (!explicitRechatTarget.empty()) {
-                                targetFollower.assign(explicitRechatTarget);
-                            } else if (lineParts2.size() >= 3) {
-                                targetFollower.assign(lineParts2[2]);
-                            }
-                        } else if (lineParts2.size() >= 3) {
-                            targetFollower.assign(lineParts2[2]);
-                        }
 
                         if (!firstReceived) {
                             // firstReceived = true;  // 1 .0.10
@@ -1118,15 +1216,21 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             std::string actorName = trim(lineParts[0]);
                             logger::info("Looking for actor with exact name: '{}'", actorName);
 
-                            if (IsPlayerStreamActor(actorName)) {
+                            if (responseIsPlayer) {
                                 firstReceived = true;
                                 logger::info("Received streamed Player line '{}'; skipping AI agent lookup", actorName);
                             } else {
-                                auto agent = aiam.getAgentByName(actorName);
+                                // The envelope agent was resolved above; a label is looked up only without one.
+                                auto agent = responseIdentity.present ? responseAgent : aiam.getAgentByName(actorName);
 
                                 if (agent) {
                                     firstReceived = true;  // 1 .0.10
                                     npc = agent.get()->getActor();
+                                    if (GlobalRechatPolicyAsap == 1) {
+                                        asapSpeaker = CaptureAsapRechatSpeaker(
+                                            agent.get(), responseIdentity,
+                                            lineParts2.size() >= 3 ? trim(lineParts2[2]) : std::string{});
+                                    }
                                     if (npc) {
                                         //npc->AllowPCDialogue(false);
                                         RE::Actor* speaker = agent.get()->getActor();
@@ -1174,7 +1278,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         if (rechatDepth > 0 && !rechatResponseReceived) {
-            SpeakManager::getInstance().completeRechatAttempt(speaker, false);
+            completeRechat(false);
         }
 
         SPGResponse& spgResponse = SPGResponse::getInstance();
@@ -1199,16 +1303,285 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         if (GlobalRechatPolicyAsap==1)
             if (npc) {
                 logger::info("[RECHAT OLD] Rechat called, task id {}", tid);
-                if (SpeakManager::getInstance().rechat(npc->GetDisplayFullName(), targetFollower, rechatDepth,
-                                                       "asap") > 0) {
-                    SpeakManager::getInstance().beginRechatAttempt(npc->GetDisplayFullName());
+                // The responder and its listener, captured from the envelope of its first line; rechat() rechecks both at
+                // dispatch, and the attempt is begun under the same key the rechat stream completes with.
+                if (!asapSpeaker.Present()) {
+                    logger::info("[RECHAT OLD] Rechat avoided; the responder has no envelope-bound speaker");
+                } else {
+                    SpeakManager::getInstance().rechat(asapSpeaker.label, asapSpeaker.listenerLabel, rechatDepth,
+                                                       "asap", "", &asapSpeaker);
                 }
             }
 
         return 0;
     }
 
-    void log(std::string msg) {
+    static void enqueueLog(std::string msg);
+
+    static std::atomic<std::thread::id> gameThreadId{};
+
+    void RegisterGameThread() { gameThreadId.store(std::this_thread::get_id()); }
+
+    bool OnGameThread() { return gameThreadId.load() == std::this_thread::get_id(); }
+
+    void HearingAudience::Add(const std::string& name, RE::Actor* actor)
+    {
+        if (name.empty()) {
+            return;
+        }
+        if (std::find(names.begin(), names.end(), name) == names.end()) {
+            names.push_back(name);
+        }
+        // Names collapse in the legacy list only; each physical actor keeps its own participant entry.
+        identity.AddParticipant(name, BuildActorKey(actor));
+    }
+
+    HearingAudience CaptureHearingAudience(RE::Actor* source)
+    {
+        HearingAudience audience;
+        audience.identity = EventIdentityUtils::EventIdentity::Capture();
+        if (!source) {
+            return audience;
+        }
+        audience.sourceWithinAutoHearingRadius = SpatialSnapshotManager::IsActorWithinAutoHearingRadius(source);
+        if (audience.sourceWithinAutoHearingRadius) {
+            const auto nearby =
+                SpatialSnapshotManager::GetPlayerNearbyManagedTargets(SpatialSnapshotManager::GetAutoHearingRadiusUnits());
+            for (const auto& target : nearby) {
+                audience.Add(target.name, target.actor);
+                ++audience.playerNearbyCount;
+            }
+        }
+
+        // Audience scope is speech audibility, not auto-activate population: the MCM hearing distance is the
+        // hard fanout guard before SpatialAwareness::Evaluate().
+        const auto spatialSettings = SpatialAwareness::GetSettings();
+        float audienceMaxDistance = spatialSettings.exteriorMaxDistance;
+        if (auto* sourceCell = source->GetParentCell(); sourceCell && sourceCell->IsInteriorCell()) {
+            audienceMaxDistance = spatialSettings.interiorMaxDistance;
+        }
+        if (spatialSettings.maxAirDistance > 0.0f) {
+            audienceMaxDistance = std::min(audienceMaxDistance, spatialSettings.maxAirDistance);
+        }
+
+        struct Candidate {
+            std::string name;
+            RE::Actor* actor = nullptr;
+            float distance = 0.0f;
+        };
+        std::vector<Candidate> candidates;
+        const auto* player = RE::PlayerCharacter::GetSingleton();
+        const auto consider = [&](std::string name, RE::Actor* actor) {
+            // Callers add the player; the source is the speaker, not one of its own hearers.
+            if (name.empty() || !actor || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled() ||
+                actor->GetFormID() == source->GetFormID() || (player && actor->GetFormID() == player->GetFormID()) ||
+                std::any_of(candidates.begin(), candidates.end(),
+                            [&](const Candidate& c) { return c.actor->GetFormID() == actor->GetFormID(); })) {
+                return;
+            }
+            const float distance = source->GetPosition().GetDistance(actor->GetPosition());
+            if (distance <= audienceMaxDistance) {
+                candidates.push_back({std::move(name), actor, distance});
+            }
+        };
+        for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
+            // The typed narrator has no physical seat; a physical NPC that shares its name keeps one.
+            if (agent && !agent->isNarrator()) {
+                consider(agent->getActorName(), agent->getActor());
+            }
+        }
+        // Unregistered actors hear too: the loaded-actor guard player-input presence uses, then the same
+        // distance and SpatialAwareness rules as managed actors. Each reference keeps its own key.
+        if (auto* processLists = RE::ProcessLists::GetSingleton()) {
+            for (auto& handle : processLists->highActorHandles) {
+                const auto pointer = handle.get();
+                auto* actor = pointer.get();
+                if (!actor || !actor->GetActorRuntimeData().currentProcess || !actor->Is3DLoaded()) {
+                    continue;
+                }
+                auto* race = actor->GetRace();
+                if (!race || (!AutoAddAllRaces && !race->AllowsPCDialogue())) {
+                    continue;
+                }
+                const char* displayName = actor->GetDisplayFullName();
+                consider(displayName ? displayName : "", actor);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const auto& lhs, const auto& rhs) { return lhs.distance < rhs.distance; });
+        for (const auto& candidate : candidates) {
+            if (SpatialAwareness::Evaluate(source, candidate.actor).canCommunicate) {
+                audience.Add(candidate.name, candidate.actor);
+            }
+        }
+        return audience;
+    }
+
+    EventIdentityUtils::EventIdentity CaptureRoster(const std::vector<std::pair<std::string, RE::Actor*>>& actors)
+    {
+        HearingAudience roster;
+        roster.identity = EventIdentityUtils::EventIdentity::Capture();
+        for (const auto& [label, actor] : actors) {
+            roster.Add(label, actor);
+        }
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            const auto playerName = AIAgentManager::getInstance().getPlayerName();
+            roster.Add(playerName.empty() ? std::string(player->GetName()) : playerName, player);
+        }
+        return roster.identity;
+    }
+
+    void log(std::string msg, const EventIdentityUtils::EventIdentity& identity) {
+        if (!identity.captured) {
+            enqueueLog(std::move(msg));
+            return;
+        }
+        // A captured identity that cannot be sent is dropped: downgrading it to legacy would let the server
+        // substitute its current nearby list for the audience that actually heard the event.
+        if (!EventIdentityUtils::AttachToRequest(msg, identity)) {
+            logger::warn("[ACTOR_IDENTITY] Dropping {}; captured identity unusable ({})",
+                         EventIdentityUtils::RequestType(msg),
+                         identity.Valid() ? "malformed request" : identity.invalidReason);
+            return;
+        }
+        enqueueLog(std::move(msg));
+    }
+
+    // Game thread only. A generic world event is heard by the player's hearing scope, the same rules player
+    // input uses; the event's actor is its target role, never an added witness. A private narrator event has
+    // an empty captured audience.
+    static EventIdentityUtils::EventIdentity CaptureEventScope(RE::Actor* target, bool privateNarrator)
+    {
+        if (privateNarrator) {
+            auto identity = EventIdentityUtils::EventIdentity::Capture();
+            identity.AddListener(std::string(ActorIdentityUtils::NarratorActorKey));
+            return identity;
+        }
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto audience = CaptureHearingAudience(player);
+        if (player) {
+            audience.Add(AIAgentManager::getInstance().getPlayerName().empty()
+                             ? std::string(player->GetName())
+                             : AIAgentManager::getInstance().getPlayerName(),
+                         player);
+        }
+        if (target) {
+            audience.identity.SetTarget(BuildActorKey(target));
+        }
+        return audience.identity;
+    }
+
+    // Returns false, with a warning, when the captured identity cannot be attached; the caller drops the event.
+    static bool AttachEventScope(std::string& msg, RE::Actor* target, bool privateNarrator)
+    {
+        const auto identity = CaptureEventScope(target, privateNarrator);
+        if (!EventIdentityUtils::AttachToRequest(msg, identity)) {
+            logger::warn("[ACTOR_IDENTITY] Dropping {}; captured identity unusable ({})",
+                         EventIdentityUtils::RequestType(msg),
+                         identity.Valid() ? "malformed request" : identity.invalidReason);
+            return false;
+        }
+        return true;
+    }
+
+    // bored keeps field 4 for its seed actor name, so its identity is field 5 (base64 JSON, the same object
+    // as other events' field 4). The seed actor is the target role; the audience is the player's hearing scope.
+    static bool AttachBoredScope(std::string& msg, RE::Actor* seed)
+    {
+        const auto identity = CaptureEventScope(seed, false);
+        const auto identityJson = EventIdentityUtils::Serialize(identity);
+        if (identityJson.empty() || !EventIdentityUtils::AppendField5(msg, identityJson)) {
+            logger::warn("[ACTOR_IDENTITY] Dropping bored; captured identity unusable ({})",
+                         identity.Valid() ? "request is not five fields" : identity.invalidReason);
+            return false;
+        }
+        return true;
+    }
+
+    // Game thread only. rechat and memory belong to `speaker` (the line that launched the rechat, the actor
+    // recalling a memory): its own seat is its own knowledge, then whoever can hear it under the _speech rules.
+    // A typed narrator speaker is private, so its audience is empty.
+    static bool AttachSpeakerScope(std::string& msg, RE::Actor* speaker, bool narrator)
+    {
+        auto identity = EventIdentityUtils::EventIdentity::Capture();
+        if (narrator) {
+            identity.SetSpeaker(std::string(ActorIdentityUtils::NarratorActorKey));
+        } else if (speaker) {
+            auto audience = CaptureHearingAudience(speaker);
+            const char* speakerName = speaker->GetDisplayFullName();
+            audience.Add(speakerName ? speakerName : "", speaker);
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (player && (audience.sourceWithinAutoHearingRadius ||
+                           SpatialAwareness::Evaluate(speaker, player).canCommunicate)) {
+                const auto playerName = AIAgentManager::getInstance().getPlayerName();
+                audience.Add(playerName.empty() ? std::string(player->GetName()) : playerName, player);
+            }
+            identity = audience.identity;
+            identity.SetSpeaker(BuildActorKey(speaker));
+        }
+        if (!EventIdentityUtils::AttachToRequest(msg, identity)) {
+            logger::warn("[ACTOR_IDENTITY] Dropping {}; captured identity unusable ({})",
+                         EventIdentityUtils::RequestType(msg),
+                         identity.Valid() ? "malformed request" : identity.invalidReason);
+            return false;
+        }
+        return true;
+    }
+
+    // Off-thread events wait at most this long for their game-thread capture.
+    static constexpr auto MaxCaptureDelay = std::chrono::seconds(30);
+
+    // Observable events capture their audience when they are created: immediately on the game thread, or in
+    // the next game-thread task when produced elsewhere (for example a Papyrus or worker thread). Other
+    // request types are sent unchanged.
+    static void WithEventScope(std::string msg, RE::Actor* target, bool privateNarrator,
+                               std::function<void(std::string)> send)
+    {
+        if (!EventIdentityUtils::IsObservableEventType(EventIdentityUtils::RequestType(msg))) {
+            send(std::move(msg));
+            return;
+        }
+        if (OnGameThread()) {
+            if (AttachEventScope(msg, target, privateNarrator)) send(std::move(msg));
+            return;
+        }
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            // Nothing was captured, so this remains a legacy event rather than one with a substituted audience.
+            logger::warn("[ACTOR_IDENTITY] {} sent without identity (task interface unavailable)",
+                         EventIdentityUtils::RequestType(msg));
+            send(std::move(msg));
+            return;
+        }
+        const auto targetHandle = target ? target->GetHandle() : RE::ActorHandle{};
+        const bool hadTarget = target != nullptr;
+        const auto loadEpoch = PlaythroughSession::Context();
+        const auto queuedAt = std::chrono::steady_clock::now();
+        tasks->AddTask([msg = std::move(msg), targetHandle, hadTarget, privateNarrator, loadEpoch, queuedAt,
+                        send = std::move(send)]() mutable {
+            if (!PlaythroughSession::Allowed(loadEpoch)) {
+                logger::info("[ACTOR_IDENTITY] Dropping {}; the load changed before capture",
+                             EventIdentityUtils::RequestType(msg));
+                return;
+            }
+            if (std::chrono::steady_clock::now() - queuedAt > MaxCaptureDelay) {
+                logger::warn("[ACTOR_IDENTITY] Dropping {}; game-thread capture expired",
+                             EventIdentityUtils::RequestType(msg));
+                return;
+            }
+            const auto target = targetHandle.get();
+            if (hadTarget && !target) {
+                // An audience captured now would not be the one present when the event happened.
+                logger::info("[ACTOR_IDENTITY] Dropping {}; its actor no longer resolves at capture",
+                             EventIdentityUtils::RequestType(msg));
+                return;
+            }
+            PlaythroughSession::Scope scope(loadEpoch);
+            if (AttachEventScope(msg, target.get(), privateNarrator)) send(std::move(msg));
+        });
+    }
+
+    static void enqueueLog(std::string msg) {
         if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
         ChimInteraction::Synchronize();
         if (ChimInteraction::IsTrigger(msg) && !ChimInteraction::Enabled()) return;
@@ -1235,7 +1608,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
     }
 
-    void log(std::string msg, std::string forcedActor) {
+    static void enqueueLogForced(std::string msg, std::string forcedActor) {
         if (!PlaythroughSession::Allowed(PlaythroughSession::Context())) return;
         ChimInteraction::Synchronize();
         if (ChimInteraction::IsTrigger(msg) && !ChimInteraction::Enabled()) return;
@@ -1260,6 +1633,20 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         } catch (const std::exception& e) {
             logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
         }
+    }
+
+    void log(std::string msg) {
+        WithEventScope(std::move(msg), nullptr, false, [](std::string request) { enqueueLog(std::move(request)); });
+    }
+
+    void logEventTarget(std::string msg, RE::Actor* target) {
+        WithEventScope(std::move(msg), target, false, [](std::string request) { enqueueLog(std::move(request)); });
+    }
+
+    void log(std::string msg, std::string forcedActor) {
+        // Callers reach this only with a name that resolved to no single agent. A bare name is not identity
+        // evidence (a physical NPC may be named like the narrator), so the event stays uncaptured legacy.
+        enqueueLogForced(std::move(msg), std::move(forcedActor));
     }
 
     bool requestPlayerMenuTtsPlay(std::string msg) {
@@ -1315,7 +1702,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
         }
 
-        const std::string listener = agent ? agent->getActorIdentifier() : actor->GetDisplayFullName();
+        const std::string listener = agent ? ActorTargetIdentifierUtils::AgentSelector(
+                                                 agent->isNarrator(), agent->getActorName(), agent->getActorIdentifier())
+                                           : actor->GetDisplayFullName();
         return requestPlayerMenuTtsPlay(std::move(msg), listener);
     }
 
@@ -1341,27 +1730,32 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
-        std::string listener = agent ? agent->getActorIdentifier() : actor->GetDisplayFullName();
-        
-        try {
-            ThreadPool::getInstance().enqueue(
-                "HTTPLogWithActor",
-                [msg, listener, interactionEpoch, allowInteraction = ChimInteraction::Enabled()]() {
-                    if (ChimInteraction::IsTrigger(msg) && (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration())) return;
-                    try {
-                        std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
-                        std::string line = sendMsg(finalMsg.c_str(), false, listener,
-                            allowInteraction && ChimInteraction::Enabled() && interactionEpoch == PrismaUIBridge::GetDialogueStopGeneration());
-                        SPGResponse& spgResponse = SPGResponse::getInstance();
-                        spgResponse.decodeAndEnqueue(line.c_str());
-                    } catch (const std::exception& e) {
-                        logger::error("[HTTPManager] Error in log thread: {}", e.what());
-                    }
-                },
-                listener, std::chrono::seconds(45));  // The server blocks while processing, so we need long timeouts.
-        } catch (const std::exception& e) {
-            logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
-        }
+        std::string listener = agent ? ActorTargetIdentifierUtils::AgentSelector(
+                                           agent->isNarrator(), agent->getActorName(), agent->getActorIdentifier())
+                                     : actor->GetDisplayFullName();
+
+        const bool privateNarrator = agent && agent->isNarrator();
+        WithEventScope(std::move(msg), actor, privateNarrator, [listener, interactionEpoch](std::string request) {
+            try {
+                ThreadPool::getInstance().enqueue(
+                    "HTTPLogWithActor",
+                    [msg = std::move(request), listener, interactionEpoch, allowInteraction = ChimInteraction::Enabled()]() {
+                        if (ChimInteraction::IsTrigger(msg) && (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration())) return;
+                        try {
+                            std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
+                            std::string line = sendMsg(finalMsg.c_str(), false, listener,
+                                allowInteraction && ChimInteraction::Enabled() && interactionEpoch == PrismaUIBridge::GetDialogueStopGeneration());
+                            SPGResponse& spgResponse = SPGResponse::getInstance();
+                            spgResponse.decodeAndEnqueue(line.c_str());
+                        } catch (const std::exception& e) {
+                            logger::error("[HTTPManager] Error in log thread: {}", e.what());
+                        }
+                    },
+                    listener, std::chrono::seconds(45));  // The server blocks while processing, so we need long timeouts.
+            } catch (const std::exception& e) {
+                logger::error("[HTTPManager] Failed to queue log task: {}", e.what());
+            }
+        });
     }
 
     std::string getServerVersionRaw() {
@@ -1488,6 +1882,26 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
     }
 
+    static int parseHttpStatusCode(const std::string& response)
+    {
+        const std::size_t lineEnd = response.find("\r\n");
+        const std::string statusLine = (lineEnd == std::string::npos) ? response : response.substr(0, lineEnd);
+        if (statusLine.rfind("HTTP/", 0) != 0) {
+            return 0;
+        }
+
+        const std::size_t firstSpace = statusLine.find(' ');
+        if (firstSpace == std::string::npos || firstSpace + 4 > statusLine.size()) {
+            return 0;
+        }
+
+        try {
+            return std::stoi(statusLine.substr(firstSpace + 1, 3));
+        } catch (...) {
+            return 0;
+        }
+    }
+
     static bool postGameDataInternal(const std::string& endpoint, const nlohmann::json& data)
     {
         const auto loadEpoch = PlaythroughSession::Context();
@@ -1573,14 +1987,15 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             }
             QueuePlaythroughNotices(fullResponse);
 
-            if (fullResponse.find("200 OK") != std::string::npos ||
-                fullResponse.find("HTTP/1.1 200") != std::string::npos ||
-                fullResponse.find("HTTP/1.0 200") != std::string::npos) {
+            // Only a real 2xx status line counts as applied; 409/422/5xx bodies may mention "200".
+            const int statusCode = parseHttpStatusCode(fullResponse);
+            if (statusCode >= 200 && statusCode < 300) {
                 logger::trace("[postGameData] Successfully sent {} for {}", dataType, actorName);
                 success = true;
             } else {
                 std::string responsePreview = fullResponse.substr(0, std::min<size_t>(200, fullResponse.length()));
-                logger::warn("[postGameData] Unexpected response for {} ({}): {}", actorName, dataType, responsePreview);
+                logger::warn("[postGameData] Not applied (HTTP {}) for {} ({}): {}", statusCode, actorName, dataType,
+                             responsePreview);
             }
         } else if (iResult == 0) {
             logger::debug("[postGameData] Connection closed by server for {} ({})", actorName, dataType);
@@ -1591,26 +2006,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         closesocket(rawSocket);
         WSACleanup();
         return success && PlaythroughSession::Allowed(loadEpoch);
-    }
-
-    static int parseHttpStatusCode(const std::string& response)
-    {
-        const std::size_t lineEnd = response.find("\r\n");
-        const std::string statusLine = (lineEnd == std::string::npos) ? response : response.substr(0, lineEnd);
-        if (statusLine.rfind("HTTP/", 0) != 0) {
-            return 0;
-        }
-
-        const std::size_t firstSpace = statusLine.find(' ');
-        if (firstSpace == std::string::npos || firstSpace + 4 > statusLine.size()) {
-            return 0;
-        }
-
-        try {
-            return std::stoi(statusLine.substr(firstSpace + 1, 3));
-        } catch (...) {
-            return 0;
-        }
     }
 
     static std::string parseHttpBody(const std::string& response)
@@ -2099,7 +2494,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
 
         if (!unifiedPlayerRouting && !agentPointer) {
-            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+            auto narrator = aiam.getNarratorAgent();
             if (narrator) {
                 logger::info("[LISTENER-RESOLVE] Routing to Narrator: no targetable NPC in ranked spatial targets (audible={}, ranked={})",
                              legacyAudibleActorCount, rankedTargets.size());
@@ -2156,7 +2551,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         auto position = player->GetPosition();
         auto forceNarratorListener = [&](const char* reason) {
-            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+            auto narrator = aiam.getNarratorAgent();
             if (!narrator) {
                 logger::warn("Narrator override requested ({}) but narrator agent was not available", reason);
                 return false;
@@ -2179,7 +2574,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         // VR: PlayerCamera->currentState->GetRotation returns degenerate quat in action_rework's
         // external camera, force-routing every utterance to Narrator. Read HMD node directly instead.
-        auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+        auto narrator = aiam.getNarratorAgent();
         if (!unifiedPlayerRouting && narrator) {
             float pitchDegrees = 0.0f;
             bool pitchValid = false;
@@ -2287,6 +2682,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         std::string outboundMsg = msg;
         json speechLogPayload;
         bool shouldLogSpeech = false;
+        // The player's _speech record reuses the audience captured for this input.
+        EventIdentityUtils::EventIdentity speechIdentity;
+        std::string identityFailure;
         const bool isPlayerInputRequest =
             msg.starts_with("inputtext") || msg.starts_with("ginputtext") || msg.starts_with("narrator_inputtext");
         const bool isSpatialSnapshotEligibleRequest =
@@ -2320,7 +2718,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     : (useEveryoneBroadcast ? "everyone" :
                        (listener == NARRATOR_NAME ? "narrator" : "direct"));
                 bool listenerCanCommunicate = false;
-                const auto addCompanion = [&](const std::string& name) {
+                // Captured here, on the game thread, from the same actors that form the audience.
+                auto eventIdentity = EventIdentityUtils::EventIdentity::Capture();
+                const auto addCompanion = [&](const std::string& name, RE::Actor* actor) {
                     if (name.empty()) {
                         return;
                     }
@@ -2328,7 +2728,14 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             audibleCompanions.end()) {
                         audibleCompanions.push_back(name);
                     }
+                    eventIdentity.AddParticipant(name, BuildActorKey(actor));
                 };
+                if (unifiedPlayerRouting) {
+                    for (std::size_t index = 0; index < playerRoute.audience.size(); ++index) {
+                        auto* actor = index < playerRoute.audienceActors.size() ? playerRoute.audienceActors[index] : nullptr;
+                        eventIdentity.AddParticipant(playerRoute.audience[index], BuildActorKey(actor));
+                    }
+                }
                 const auto addNearbyTargets = [&](const std::string& reason) {
                     const auto validTargets = SpatialSnapshotManager::GetValidPlayerSpeechTargets(reason);
                     std::size_t added = 0;
@@ -2336,7 +2743,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         if (target.name == NARRATOR_NAME) {
                             continue;
                         }
-                        addCompanion(target.name);
+                        addCompanion(target.name, target.actor);
                         ++added;
                     }
                     return added;
@@ -2351,7 +2758,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     const auto nearbyContextTargets =
                         SpatialSnapshotManager::GetPlayerNearbyManagedTargets(autoHearingRadiusUnits);
                     for (const auto& target : nearbyContextTargets) {
-                        addCompanion(target.name);
+                        addCompanion(target.name, target.actor);
                         ++nearbyContextCount;
                     }
                     logger::info(
@@ -2391,12 +2798,23 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         audienceSource = nearbyContextCount > 0
                             ? "player_nearby_context+selected_listener_fallback"
                             : "selected_listener_fallback";
-                        addCompanion(listener);
+                        addCompanion(listener, listenerPtr);
                     }
                 }
 
                 const std::string playerSpeaker = RE::PlayerCharacter::GetSingleton()->GetName();
-                addCompanion(playerSpeaker);
+                addCompanion(playerSpeaker, player);
+                eventIdentity.SetSpeaker(BuildActorKey(player));
+                if ((unifiedPlayerRouting && playerRoute.narrator) || (agentPointer && agentPointer->isNarrator())) {
+                    // The narrator hears privately; it gains a role, not an audience seat.
+                    eventIdentity.AddListener(std::string(ActorIdentityUtils::NarratorActorKey));
+                } else if (listenerPtr) {
+                    eventIdentity.AddListener(BuildActorKey(listenerPtr));
+                    if (unifiedPlayerRouting && playerRoute.direct) {
+                        eventIdentity.SetTarget(BuildActorKey(listenerPtr));
+                    }
+                }
+                speechIdentity = eventIdentity;
                 json presentActors = json::array();
                 if (unifiedPlayerRouting) {
                     for (const auto& present : playerRoute.presentActors) {
@@ -2407,6 +2825,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             { "managed", present.managed },
                             { "creature", present.creature },
                         });
+                        if (!present.actorKey.empty()) {
+                            presentActors.back()["actor_key"] = present.actorKey;
+                        }
                     }
                 }
                 logger::info(
@@ -2456,9 +2877,12 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         audienceSnapshot["listener_radius_units"] = playerRoute.listenerRadiusUnits;
                         audienceSnapshot["audience_radius_units"] = playerRoute.audienceRadiusUnits;
                     }
-                    const std::string snapshotDump = audienceSnapshot.dump();
-                    outboundMsg.append("|");
-                    outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
+                    EventIdentityUtils::Append(audienceSnapshot, eventIdentity);
+                    if (!eventIdentity.Valid()) {
+                        identityFailure = eventIdentity.invalidReason;
+                    } else if (!EventIdentityUtils::AppendField4(outboundMsg, audienceSnapshot.dump())) {
+                        identityFailure = "malformed request";
+                    }
                 } else if (unifiedPlayerRouting &&
                            (!routingContext->executionMode.empty() || !routingContext->symbolRoutingMode.empty() || !routingContext->playerMood.empty())) {
                     json requestModeSnapshot;
@@ -2474,15 +2898,28 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                             requestModeSnapshot["player_mood_custom"] = routingContext->customPlayerMood;
                         }
                     }
-                    const std::string snapshotDump = requestModeSnapshot.dump();
-                    outboundMsg.append("|");
-                    outboundMsg.append(base64_encode(snapshotDump.c_str(), snapshotDump.size()));
+                    EventIdentityUtils::Append(requestModeSnapshot, eventIdentity);
+                    if (!eventIdentity.Valid()) {
+                        identityFailure = eventIdentity.invalidReason;
+                    } else if (!EventIdentityUtils::AppendField4(outboundMsg, requestModeSnapshot.dump())) {
+                        identityFailure = "malformed request";
+                    }
+                } else if (!EventIdentityUtils::AttachToRequest(outboundMsg, eventIdentity)) {
+                    // Narrator input carries no routing snapshot; field 4 holds identity alone.
+                    identityFailure = eventIdentity.Valid() ? "malformed request" : eventIdentity.invalidReason;
                 }
             }
         } catch (const std::exception& e) {
             logger::error("Exception preparing player audience snapshot: {}", e.what());
             outboundMsg = msg;
             shouldLogSpeech = false;
+            if (isPlayerInputRequest) identityFailure = "capture exception";
+        }
+        if (!identityFailure.empty()) {
+            // Player input always captures its audience; sent as legacy, the server would substitute one.
+            logger::warn("[ACTOR_IDENTITY] Dropping player input for {}; captured identity unusable ({})", listener,
+                         identityFailure);
+            return;
         }
 
         const bool forceGodMode = GodMode && isPlayerInputRequest;
@@ -2519,7 +2956,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             if (shouldLogSpeech) {
                 try {
                     HTTPManager::log(
-                        std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), speechLogPayload.dump()));
+                        std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), speechLogPayload.dump()),
+                        speechIdentity);
                 } catch (const std::exception& e) {
                     logger::error("Exception in speech logging: {}", e.what());
                 }
@@ -2535,14 +2973,15 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         stream(msg, actor, 0); 
     }
 
-    void stream(std::string msg, RE::Actor* actor, int rechatDepth) {
+    void stream(std::string msg, RE::Actor* actor, int rechatDepth, std::string rechatKey) {
         streamForActor(std::move(msg), actor,
-            PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, rechatDepth);
+            PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, rechatDepth, nullptr,
+            std::move(rechatKey));
     }
 
     bool streamForActor(std::string msg, RE::Actor* actor,
                         PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth,
-                        const CombatBarkTicket* combatBark) {
+                        const CombatBarkTicket* combatBark, std::string rechatKey) {
         if (!ChimInteraction::Enabled()) {
             if (!ChimInteraction::IsTrigger(msg)) log(std::move(msg));
             return false;
@@ -2550,6 +2989,38 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         const bool isCombatBark = msg.starts_with("combatbark|");
         // An untagged combat bark is treated as scheduled now.
         const auto combatBarkTicket = combatBark ? *combatBark : CurrentCombatBarkTicket();
+        const bool boredScope = EventIdentityUtils::RequestType(msg) == "bored";
+        const bool speakerScope = EventIdentityUtils::IsSpeakerScopedEventType(EventIdentityUtils::RequestType(msg));
+        bool captureScope = boredScope || speakerScope ||
+            EventIdentityUtils::IsObservableEventType(EventIdentityUtils::RequestType(msg));
+        if (captureScope && !OnGameThread() && actor) {
+            // The audience is captured on the game thread at event time, so re-enter there with the same ticket.
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                const auto loadEpoch = PlaythroughSession::Context();
+                const auto queuedAt = std::chrono::steady_clock::now();
+                tasks->AddTask([msg = std::move(msg), handle = actor->GetHandle(), eligibility, rechatDepth,
+                                combatBarkTicket, loadEpoch, queuedAt, rechatKey]() mutable {
+                    if (!PlaythroughSession::Allowed(loadEpoch)) return;
+                    const auto target = handle.get();
+                    if (!target || std::chrono::steady_clock::now() - queuedAt > MaxCaptureDelay) {
+                        logger::info("[ACTOR_IDENTITY] Dropping {}; its actor no longer resolves or capture expired",
+                                     EventIdentityUtils::RequestType(msg));
+                        if (rechatDepth > 0) SpeakManager::getInstance().completeRechatAttempt(rechatKey, false);
+                        return;
+                    }
+                    PlaythroughSession::Scope scope(loadEpoch);
+                    if (!streamForActor(std::move(msg), target.get(), eligibility, rechatDepth, &combatBarkTicket,
+                                        rechatKey) && rechatDepth > 0) {
+                        SpeakManager::getInstance().completeRechatAttempt(rechatKey, false);
+                    }
+                });
+                return true;
+            }
+            // Off the game thread nothing can be captured safely; the request stays uncaptured legacy.
+            logger::warn("[ACTOR_IDENTITY] {} sent without identity (task interface unavailable)",
+                         EventIdentityUtils::RequestType(msg));
+            captureScope = false;
+        }
         if (isCombatBark && !CombatBarkTicketCurrent(combatBarkTicket)) {
             logger::info("[HTTPStream] Dropping combat bark scheduled before the last stop, load or combat end");
             return false;
@@ -2586,7 +3057,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
         
         // Use agent's name if found (handles narrator name override), otherwise use actor's display name
-        std::string listener = agent ? agent->getActorIdentifier() : actor->GetDisplayFullName();
+        // Presentation/log label only: a rechat stream completes under `rechatKey`, never this label.
+        std::string listener = agent ? ActorTargetIdentifierUtils::AgentSelector(
+                                           agent->isNarrator(), agent->getActorName(), agent->getActorIdentifier())
+                                     : actor->GetDisplayFullName();
         
         logger::info("[HTTPStream] Setting dialogue busy for actor: {}, isPlayerTeammate: {}, resolved listener: {}", 
             actor->GetDisplayFullName(), 
@@ -2611,14 +3085,19 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         // after selection cannot be mistaken for a fresh request.
         const auto dialogueStopGeneration =
             isCombatBark ? combatBarkTicket.dialogueStopGeneration : PrismaUIBridge::GetDialogueStopGeneration();
+        if (captureScope && !(boredScope     ? AttachBoredScope(msg, actor)
+                              : speakerScope ? AttachSpeakerScope(msg, actor, agent && agent->isNarrator())
+                                             : AttachEventScope(msg, actor, false))) {
+            return false;
+        }
         const auto actorHandle = actor->GetHandle();
         auto enqueueStream = [listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle,
-                              agent, isCombatBark, combatBarkTicket](
+                              agent, isCombatBark, combatBarkTicket, rechatKey](
                                  std::string msg, std::chrono::steady_clock::time_point eligibilitySampledAt) {
             ThreadPool::getInstance().enqueue(
                 rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
                 [msg = std::move(msg), listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID,
-                 actorHandle, agent, isCombatBark, combatBarkTicket, eligibilitySampledAt]() {
+                 actorHandle, agent, isCombatBark, combatBarkTicket, eligibilitySampledAt, rechatKey]() {
                     if (isCombatBark) {
                         if (!CombatBarkTicketCurrent(combatBarkTicket)) {
                             logger::info("[HTTPStream] Dropping queued combat bark for {}; combat or interaction ended",
@@ -2638,11 +3117,12 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     const auto blockReason = AutomaticResponseBlockReason(msg, agent, target.get(), eligibility, actorFormID);
                     if (!blockReason.empty()) {
                         logger::info("[HTTPStream] Dropping queued request for {} (reason={})", listener, blockReason);
+                        if (rechatDepth > 0) SpeakManager::getInstance().completeRechatAttempt(rechatKey, false);
                         return;
                     }
                     std::string finalMsg(base64_encode(msg.c_str(), std::strlen(msg.c_str())));
                     sendMsgStream(finalMsg.c_str(), false, listener, rechatDepth, false, dialogueStopGeneration,
-                                  0, eligibility, actorFormID);
+                                  0, eligibility, actorFormID, rechatKey);
                 },
                 listener, std::chrono::seconds(90));
         };

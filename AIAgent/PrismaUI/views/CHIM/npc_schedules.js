@@ -2,7 +2,7 @@
     'use strict';
     const mounts = new WeakMap();
     // One controller per NPC editor prevents late requests from replacing another NPC's schedules.
-    window.chimSchedules = function (root, api, npcId) {
+    window.chimSchedules = function (root, api, npcId, expectedActorKey) {
         mounts.get(root)?.abort();
         const controller = new AbortController(); mounts.set(root, controller);
         let clock = {}, rows = [], editId = 0, busy = false, generation = 0;
@@ -28,7 +28,8 @@
             return Math.round(Number(field('day').value) * 10000000 + (hour * 60 + minute) * 10000000 / 1440);
         };
         async function request(operation, values = {}, write = false) {
-            const payload = {npc_id:npcId, operation, epoch:clock.epoch, ...values};
+            // Schedules belong to the physical row; a linked keeper never receives them. The key is an additive guard.
+            const payload = {npc_id:npcId, operation, epoch:clock.epoch, ...(expectedActorKey?{expected_actor_key:expectedActorKey}:{}), ...values};
             const response = await fetch(write ? api : `${api}?${new URLSearchParams(payload)}`, {
                 method:write?'POST':'GET', cache:'no-store', signal:controller.signal,
                 ...(write?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})

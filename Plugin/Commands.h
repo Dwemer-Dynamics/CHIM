@@ -36,8 +36,10 @@ std::string InspectManagedAgents(RE::TESObjectREFR* reference, float visionRange
                                  float farAwayLimit, bool includeNarrator = false);
 std::string InspectAudibleActors(RE::TESObjectREFR* reference, bool useCache, float visionRange,
                                   std::string separator);
+// When `actors` is given, each listed label is also recorded with the actor it describes.
 std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCache, float visionRange,
-                                       std::string separator);
+                                       std::string separator,
+                                       std::vector<std::pair<std::string, RE::Actor*>>* actors = nullptr);
 std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange);
 
 std::string InspectSurroundingsInCell(RE::TESObjectCELL* cell, bool useCache);

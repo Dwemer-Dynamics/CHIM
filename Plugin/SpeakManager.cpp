@@ -1,6 +1,7 @@
 #include "ChimInteraction.h"
 #include "SpeakManager.h"
 #include "DirectorScene.h"
+#include "PlaythroughSession.h"
 
 #include <Windows.h>
 #include <WinInet.h>
@@ -601,6 +602,11 @@ static bool IsDirectlyAddressingPlayer(const std::string& targetName, AIAgentMan
         return false;
     }
 
+    // A decorated listener is exact: only the player's own RefID addresses the player.
+    if (const auto parsed = ActorTargetIdentifierUtils::Parse(normalizedTarget); parsed.hasRefIdMarker) {
+        return parsed.hasRefId && parsed.refId == player->GetFormID();
+    }
+
     const std::string playerName = TrimCopy(player->GetName());
     const std::string playerDisplayName = TrimCopy(player->GetDisplayFullName());
     const std::string configuredPlayerName = TrimCopy(aiam.getPlayerName());
@@ -613,6 +619,87 @@ static bool IsDirectlyAddressingPlayer(const std::string& targetName, AIAgentMan
 static std::string ResolveScriptLineListenerHint(const ScriptLine& scriptLine)
 {
     return TrimCopy(scriptLine.action);
+}
+
+// Rechat bookkeeping (in-flight, last rechatter, retry) and the rechat request name the exact speaker by the
+// agent's identifier, the same string the rechat stream reports on completion, so same-name actors never share
+// or block each other's chain.
+static std::string RechatSpeakerKey(AIAgent* agent)
+{
+    if (!agent) return {};
+    return ActorTargetIdentifierUtils::AgentSelector(agent->isNarrator(), agent->getActorName(),
+                                                     agent->getActorIdentifier());
+}
+
+CapturedSpeaker SpeakManager::CaptureSpeaker(AIAgent* agent, const ScriptLine* line)
+{
+    CapturedSpeaker captured;
+    if (!agent) return captured;
+    captured.id.loadEpoch = PlaythroughSession::Generation();
+    captured.label = RechatSpeakerKey(agent);
+    if (line && line->identityPresent && line->listenerIdentity.Present()) {
+        // The listener the server chose for this line, bound on the game thread when it was queued.
+        const auto& listener = line->listenerIdentity;
+        if (!listener.IsPhysical() || (line->listenerBinding.actor.formId == listener.refId &&
+                                       line->listenerBinding.actor.actorKey == listener.id)) {
+            captured.listenerLabel = ResolveScriptLineListenerHint(*line);
+            captured.listenerKey = listener.id;
+            if (listener.IsPhysical()) captured.listenerBinding = line->listenerBinding;
+        }
+    }
+    if (agent->isNarrator()) {
+        captured.id.kind = ActorIdentityUtils::CapturedSpeakerKind::Narrator;
+        captured.speakerKey = std::string(ActorIdentityUtils::NarratorActorKey);
+        return captured;
+    }
+    captured.id.kind = ActorIdentityUtils::CapturedSpeakerKind::Physical;
+    captured.id.formId = agent->GetFormId();
+    captured.id.profileKey = agent->getProfileKey();
+    if (line && line->identityPresent && line->speakerIdentity.IsPhysical()) {
+        // Bound on the game thread when the line was queued; only accepted for this agent's reference.
+        if (line->speakerBinding.actor.formId == captured.id.formId &&
+            line->speakerBinding.actor.actorKey == line->speakerIdentity.id) {
+            captured.binding = line->speakerBinding;
+        }
+    } else if (auto* actor = agent->getActor(); actor && actor->GetFormID() == captured.id.formId) {
+        // Registry read only: a dynamic actor's key is never computed off the game thread.
+        captured.binding.actor.formId = captured.id.formId;
+        captured.binding.actor.actorKey = ActorIdentityUtils::IsDynamicFormId(captured.id.formId)
+            ? DynamicActorIdentity::KnownActorKey(captured.id.formId) : captured.id.profileKey;
+        captured.binding.handle = actor->GetHandle();
+    }
+    captured.speakerKey = captured.binding.actor.actorKey;
+    return captured;
+}
+
+CapturedSpeaker SpeakManager::CapturePlayerSpeaker()
+{
+    CapturedSpeaker captured;
+    captured.id.kind = ActorIdentityUtils::CapturedSpeakerKind::Player;
+    captured.id.loadEpoch = PlaythroughSession::Generation();
+    captured.label = "Player";
+    captured.speakerKey = std::string(ActorIdentityUtils::PlayerActorKey);
+    return captured;
+}
+
+std::shared_ptr<AIAgent> SpeakManager::ResolveCapturedSpeaker(const CapturedSpeaker& captured)
+{
+    using Kind = ActorIdentityUtils::CapturedSpeakerKind;
+    if (captured.id.kind != Kind::Narrator && captured.id.kind != Kind::Physical) return nullptr;
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    // The narrator by type, a physical NPC by its RefID; display names never reselect either.
+    auto agent = captured.id.kind == Kind::Narrator ? aiam.getNarratorAgent()
+                                                    : aiam.getAgentByFormId(captured.id.formId);
+    ActorIdentityUtils::CapturedSpeakerObservation now;
+    now.loadEpoch = PlaythroughSession::Generation();
+    if (agent) {
+        now.agentFound = true;
+        now.agentIsNarrator = agent->isNarrator();
+        now.agentFormId = agent->GetFormId();
+        now.agentProfileKey = agent->getProfileKey();
+    }
+    now.boundActorStill = captured.id.kind == Kind::Physical && SPGResponse::StillSameBoundActor(captured.binding);
+    return ActorIdentityUtils::StillSameCapturedSpeaker(captured.id, now) ? agent : nullptr;
 }
 
 static std::string ResolveScriptLineRechatTargetHint(const ScriptLine& scriptLine)
@@ -1358,7 +1445,7 @@ struct SpeechPlaybackTrace {
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
                     float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
                     const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0,
-                    const std::string& utteranceId = "") {
+                    const std::string& utteranceId = "", const CapturedSpeaker* boundSpeaker = nullptr) {
     SpeechPlaybackTrace trace{utteranceId};
     if (!ChimInteraction::Enabled()) { trace.stage = "cancelled"; trace.reason = "interaction_disabled"; return 2; }
     const auto interactionGeneration = queuedGeneration;
@@ -1526,13 +1613,53 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
 
-    auto currentActor = aiam.getAgentByName(speaker);
+    using CapturedKind = ActorIdentityUtils::CapturedSpeakerKind;
+    const bool typedSpeaker = boundSpeaker && boundSpeaker->Present();
+    const bool typedPlayer = typedSpeaker && boundSpeaker->id.kind == CapturedKind::Player;
+    const bool playerSpeaker = typedSpeaker ? typedPlayer : speaker == "Player";
+    std::shared_ptr<AIAgent> currentActor;
+    // Keeps the bound physical speaker alive for the whole playback.
+    RE::NiPointer<RE::Actor> boundSpeakerActor;
+    if (typedSpeaker) {
+        // Captured when the line was dequeued and rechecked after TTS against the values of that moment: the
+        // load, the narrator by type, a physical NPC by its RefID, profile key and bound handle/canonical key.
+        // Display names (including a physical "The Narrator" or "Player") never reselect it.
+        if (!typedPlayer) {
+            currentActor = SpeakManager::ResolveCapturedSpeaker(*boundSpeaker);
+            if (currentActor && boundSpeaker->id.kind == CapturedKind::Physical) {
+                boundSpeakerActor = boundSpeaker->binding.handle.get();
+            }
+            if (!currentActor || (boundSpeaker->id.kind == CapturedKind::Physical && !boundSpeakerActor)) {
+                trace.stage = "cancelled";
+                trace.reason = "speaker_changed";
+                logger::warn("[SpeakManager] Speaker {} changed during TTS; dropping playback", speaker);
+                return -1;
+            }
+        } else if (!PlaythroughSession::Allowed(boundSpeaker->id.loadEpoch)) {
+            trace.stage = "cancelled";
+            trace.reason = "load_changed";
+            return -1;
+        }
+    } else {
+        currentActor = aiam.getAgentByName(speaker);
+    }
+    if (!typedSpeaker && !currentActor && speaker != "Player") {
+        // A shared name is ambiguous; the line being played may carry its speaker's exact reference.
+        const auto parsedPlaying =
+            ActorTargetIdentifierUtils::Parse(SpeakManager::getInstance().getCurrentProcessingActorName());
+        if (auto exact = parsedPlaying.hasRefId ? aiam.getAgentByFormId(parsedPlaying.refId) : nullptr;
+            exact && exact->getActorName() == speaker) {
+            currentActor = exact;
+        }
+    }
     RE::Actor* speakerActorPointer = nullptr;
     bool isNarrator = false;
 
-    if (speaker == "Player") {
+    if (playerSpeaker) {
         speakerActorPointer = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
         isNarrator = false;
+    } else if (boundSpeakerActor) {
+        speakerActorPointer = boundSpeakerActor.get();
     } else {
         if (!currentActor) {
             logger::info("{} is not an agent any more", speaker);
@@ -1548,7 +1675,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             speakerActorPointer = currentActor.get()->getActor();
     }
 
-    const bool isHeadVoice = HeadVoiceVolumeUtils::IsHeadVoice(isNarrator, speaker == "Player");
+    const bool isHeadVoice = HeadVoiceVolumeUtils::IsHeadVoice(isNarrator, playerSpeaker);
     const float headVoiceVolumeMultiplier =
         isHeadVoice ? SpeakManager::getInstance().getHeadVoiceVolumeMultiplier() : 1.0f;
     const float baseLineVolumeMultiplier =
@@ -1562,7 +1689,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     auto* playbackListenerActor = RE::PlayerCharacter::GetSingleton()->As<RE::Actor>();
     const bool dynamicSpatialPlayback =
-        !isNarrator && speaker != "Player" && speakerActorPointer != nullptr && playbackListenerActor != nullptr;
+        !isNarrator && !playerSpeaker && speakerActorPointer != nullptr && playbackListenerActor != nullptr;
     const bool enable3DAudioPlayback = dynamicSpatialPlayback && GlobalEnable3DAudioPlayback;
 
     if (enable3DAudioPlayback) {
@@ -1723,7 +1850,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         if (forcedDuration > 0) {
             duration = forcedDuration;
         }
-        if (speaker == "Player") 
+        if (playerSpeaker)
             duration = 2;
 
         logger::info("[SpeakerManager] faked duration {}",duration);
@@ -1786,7 +1913,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     bool appliedMuffleFilter = runtimeMuffleFilter;
     float appliedLineVolumeMultiplier = runtimeLineVolumeMultiplier;
     const std::string expectedSubtitleText = text;
-    const bool holdNpcTextOnlySubtitle = usingTextOnlyTiming && speaker != "Player" && !expectedSubtitleText.empty();
+    const bool holdNpcTextOnlySubtitle = usingTextOnlyTiming && !playerSpeaker && !expectedSubtitleText.empty();
     constexpr auto kNpcTextOnlySubtitleKeepAliveInterval = std::chrono::milliseconds(250);
     auto lastNpcSubtitleRefresh = std::chrono::steady_clock::now() - kNpcTextOnlySubtitleKeepAliveInterval;
 
@@ -2637,6 +2764,7 @@ void SpeakManager::deleteQueue(bool isActionCommand) {
     audienceSnapshotKey.clear();
     audienceSnapshotCompanions.clear();
     audienceSnapshotReady = false;
+    ++audienceSnapshotSequence;
     pendingPlayerSubtitleActive = false;
     pendingPlayerSubtitleText.clear();
     // If we uncomment this, rechat will happen more often. but now it's hnday because if you talk a
@@ -2729,6 +2857,7 @@ void SpeakManager::recoverFromProcessingFailure(const std::string& actorName) {
         audienceSnapshotKey.clear();
         audienceSnapshotCompanions.clear();
         audienceSnapshotReady = false;
+        ++audienceSnapshotSequence;
         playerPlaybackCompletedCallback = nullptr;
 
         if (!scriptQueue.empty()) {
@@ -2805,6 +2934,7 @@ void SpeakManager::cancelRechatChain()
     audienceSnapshotKey.clear();
     audienceSnapshotCompanions.clear();
     audienceSnapshotReady = false;
+    ++audienceSnapshotSequence;
     logger::info("[RECHAT_CHAIN] Hard-cancelled current rechat chain");
 }
 
@@ -2821,6 +2951,7 @@ void SpeakManager::startRechatChainForPlayerInput()
     audienceSnapshotKey.clear();
     audienceSnapshotCompanions.clear();
     audienceSnapshotReady = false;
+    ++audienceSnapshotSequence;
     logger::info("[RECHAT_CHAIN] Opened a fresh chain from player input");
 }
 
@@ -2837,6 +2968,7 @@ void SpeakManager::startRechatChainForAutonomousEvent()
     audienceSnapshotKey.clear();
     audienceSnapshotCompanions.clear();
     audienceSnapshotReady = false;
+    ++audienceSnapshotSequence;
     logger::info("[RECHAT_CHAIN] Opened a fresh chain from autonomous event");
 }
 
@@ -2886,9 +3018,9 @@ float SpeakManager::getPlaybackDropoffOutside()
     return g_playbackDropoffOutsidePercent.load();
 }
 
-bool SpeakManager::beginRechatAttempt(const std::string& speaker)
+bool SpeakManager::beginRechatAttempt(const std::string& rechatKey)
 {
-    if (speaker.empty()) {
+    if (rechatKey.empty()) {
         return false;
     }
 
@@ -2897,39 +3029,42 @@ bool SpeakManager::beginRechatAttempt(const std::string& speaker)
         return false;
     }
     rechatInFlight = true;
-    rechatInFlightSpeaker = speaker;
+    rechatInFlightSpeaker = rechatKey;
     return true;
 }
 
-void SpeakManager::queueRechatRetry(const std::string& speaker, const std::string& listenerHint,
+void SpeakManager::queueRechatRetry(const std::string& rechatKey, const std::string& listenerHint,
                                     const std::string& explicitTarget, const std::string& debugLauncherLine,
-                                    int rechatDepth)
+                                    int rechatDepth, const CapturedSpeaker* boundSpeaker)
 {
-    if (speaker.empty()) {
+    // A retry is only kept for the exact captured speaker it is keyed by; it is never resent from a label.
+    if (rechatKey.empty() || !boundSpeaker || boundSpeaker->RechatKey() != rechatKey) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(mtx);
-    if (!rechatInFlight || rechatInFlightSpeaker != speaker) {
+    if (!rechatInFlight || rechatInFlightSpeaker != rechatKey) {
         return;
     }
 
     pendingRechatRetry.active = true;
-    pendingRechatRetry.speaker = speaker;
+    pendingRechatRetry.speaker = rechatKey;
     pendingRechatRetry.listenerHint = listenerHint;
     pendingRechatRetry.explicitTarget = explicitTarget;
     pendingRechatRetry.debugLauncherLine = debugLauncherLine;
     pendingRechatRetry.rechatDepth = rechatDepth;
+    pendingRechatRetry.boundSpeaker = *boundSpeaker;
 }
 
-void SpeakManager::completeRechatAttempt(const std::string& speaker, bool success)
+void SpeakManager::completeRechatAttempt(const std::string& rechatKey, bool success)
 {
     PendingRechatRetry retry;
     bool shouldRetry = false;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
-        if (!rechatInFlight || rechatInFlightSpeaker != speaker) {
+        // A stale completion (an older actor or load on a reused slot/label) never clears another key's attempt.
+        if (rechatKey.empty() || !rechatInFlight || rechatInFlightSpeaker != rechatKey) {
             return;
         }
 
@@ -2938,12 +3073,12 @@ void SpeakManager::completeRechatAttempt(const std::string& speaker, bool succes
 
         if (success) {
             rechatChainClosed = false;
-            lastRechatter = speaker;
+            lastRechatter = rechatKey;
             pendingRechatRetry = PendingRechatRetry{};
             return;
         }
 
-        if (pendingRechatRetry.active && pendingRechatRetry.speaker == speaker) {
+        if (pendingRechatRetry.active && pendingRechatRetry.speaker == rechatKey) {
             retry = pendingRechatRetry;
             shouldRetry = true;
         }
@@ -2957,17 +3092,16 @@ void SpeakManager::completeRechatAttempt(const std::string& speaker, bool succes
         return;
     }
 
-    if (rechat(retry.speaker, retry.listenerHint, retry.rechatDepth, retry.debugLauncherLine,
-               retry.explicitTarget) > 0) {
-        beginRechatAttempt(retry.speaker);
-    }
+    // A captured retry is rechecked inside rechat() before any HTTP; it never resolves by its label.
+    rechat(retry.boundSpeaker.label, retry.listenerHint, retry.rechatDepth, retry.debugLauncherLine,
+               retry.explicitTarget, &retry.boundSpeaker);
 }
 
 
 
 
 int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int rechatDepth, std::string debugLauncherLine,
-                         std::string explicitRechatTarget) {
+                         std::string explicitRechatTarget, const CapturedSpeaker* boundSpeaker) {
     if (!ChimInteraction::Enabled()) return 0;
 
     // Rechat code moved here. To keep better time consistency we issue the rechat event once speaker
@@ -3005,16 +3139,24 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
     
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
-    auto agentLastSpeaker = aiam.getAgentByName(speaker);
+    // Every rechat names a captured speaker with a canonical bookkeeping key: the typed narrator or the bound
+    // physical actor, rechecked now. A bare label (which a physical "The Narrator", a namesake or a recycled FF
+    // slot could share) never selects the speaker.
+    const std::string rechatKey = boundSpeaker ? boundSpeaker->RechatKey() : std::string{};
+    if (rechatKey.empty() || boundSpeaker->id.kind == ActorIdentityUtils::CapturedSpeakerKind::Player) {
+        logger::info("[RECHAT] Rechat avoided; {} has no captured canonical speaker", speaker);
+        return 0;
+    }
+    auto agentLastSpeaker = ResolveCapturedSpeaker(*boundSpeaker);
     if (!agentLastSpeaker) {
-        logger::debug("[RECHAT] AgentLastSpeaker is null for agent: {}", speaker);
+        logger::info("[RECHAT] Rechat avoided; speaker {} no longer resolves to the actor it was captured for",
+                     speaker);
         return 0;
     }
 
-    auto speakerActor = agentLastSpeaker->getActor();
-    if (!speakerActor) {
-        speakerActor = agentLastSpeaker->getActorByFormId();
-    }
+    RE::NiPointer<RE::Actor> boundSpeakerActor;
+    if (!agentLastSpeaker->isNarrator()) boundSpeakerActor = boundSpeaker->binding.handle.get();
+    auto speakerActor = !agentLastSpeaker->isNarrator() ? boundSpeakerActor.get() : agentLastSpeaker->getActor();
     if (!speakerActor) {
         logger::debug("[RECHAT] Speaker actor is null for agent: {}", speaker);
         return 0;
@@ -3086,34 +3228,85 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
             return 0;
         }
 
-        json rechatPayload = json::object();
-        const std::string rechatChainId = ensureRechatChainId(speaker, targetedNpc, explicitRechatTarget);
-        const std::string resolvedRechatTarget =
-            !explicitRechatTarget.empty() ? explicitRechatTarget : targetedNpc;
-        rechatPayload["speaker"] = speaker;
-        rechatPayload["listener_hint"] = targetedNpc;
-        rechatPayload["rechat_target_hint"] = explicitRechatTarget;
-        rechatPayload["resolved_rechat_target"] = resolvedRechatTarget;
-        rechatPayload["origin_line"] = debugLauncherLine;
-        rechatPayload["rechat_depth"] = rechatDepth;
-        rechatPayload["chain_id"] = rechatChainId;
-        json activeAgents = json::array();
-        for (const auto& activeAgent : aiam.getAgents()) {
-            if (!activeAgent || activeAgent->isNarrator()) {
-                continue;
-            }
-            const std::string activeAgentName = trim(activeAgent->getActorName());
-            if (!activeAgentName.empty()) {
-                activeAgents.push_back(activeAgentName);
+        // The line's listener is only named by key while its hint is still the one in use and a physical
+        // listener still holds its bound reference; a changed FF slot is left unresolved, never re-resolved.
+        std::string listenerKey;
+        if (!boundSpeaker->listenerKey.empty() && TrimCopy(targetedNpc) == boundSpeaker->listenerLabel) {
+            const bool physicalListener = boundSpeaker->listenerKey != ActorIdentityUtils::NarratorActorKey &&
+                                          boundSpeaker->listenerKey != ActorIdentityUtils::PlayerActorKey;
+            if (!physicalListener || SPGResponse::StillSameBoundActor(boundSpeaker->listenerBinding)) {
+                listenerKey = boundSpeaker->listenerKey;
+            } else {
+                logger::info("[RECHAT] Listener {} no longer holds the actor it was bound to; leaving it unresolved",
+                             targetedNpc);
+                if (TrimCopy(explicitRechatTarget) == TrimCopy(targetedNpc)) explicitRechatTarget.clear();
+                targetedNpc.clear();
             }
         }
-        rechatPayload["active_agents"] = activeAgents;
+        const std::string rechatChainId = ensureRechatChainId(rechatKey, targetedNpc, explicitRechatTarget);
+        const std::string resolvedRechatTarget =
+            !explicitRechatTarget.empty() ? explicitRechatTarget : targetedNpc;
+        // Active agents: each agent entry's game-thread key and RefID are captured first, then the handle bound
+        // for that RefID is checked (handle and registry reads only; no dyn: key is assigned here). An agent whose
+        // actor changed or never had a canonical key is left out of active_agent_keys rather than replaced.
+        struct ActiveAgentSnapshot {
+            EventIdentityUtils::ActiveAgentCapture capture;
+            BoundActionActor binding;
+        };
+        std::vector<ActiveAgentSnapshot> activeSnapshots;
+        for (const auto& activeAgent : aiam.getAgents()) {
+            if (!activeAgent) continue;
+            ActiveAgentSnapshot snapshot;
+            snapshot.capture.typedNarrator = activeAgent->isNarrator();
+            snapshot.capture.label = trim(activeAgent->getActorName());
+            snapshot.capture.formId = activeAgent->GetFormId();
+            snapshot.capture.actorKey = activeAgent->getProfileKey();
+            if (auto* actor = !snapshot.capture.typedNarrator ? activeAgent->getActor() : nullptr) {
+                snapshot.binding.actor.formId = actor->GetFormID();
+                snapshot.binding.actor.actorKey = snapshot.capture.actorKey;
+                snapshot.binding.handle = actor->GetHandle();
+            }
+            activeSnapshots.push_back(std::move(snapshot));
+        }
+        std::vector<EventIdentityUtils::ActiveAgentCapture> activeCaptures;
+        for (auto& snapshot : activeSnapshots) {
+            snapshot.capture.boundFormId = snapshot.binding.actor.formId;
+            snapshot.capture.boundStill =
+                snapshot.binding.actor.formId != 0 && SPGResponse::StillSameBoundActor(snapshot.binding);
+            activeCaptures.push_back(snapshot.capture);
+        }
+        if (!PlaythroughSession::Allowed(boundSpeaker->id.loadEpoch)) {
+            logger::info("[RECHAT] Rechat cancelled before dispatch because the load changed: {}", speaker);
+            return 0;
+        }
+        EventIdentityUtils::RechatPayloadFields rechatFields;
+        rechatFields.speaker = speaker;
+        // Canonical identity of the captured speaker; "speaker" stays the decorated presentation label. The
+        // version tells the server this request carries keys it must resolve by (legacy clients send neither).
+        rechatFields.speakerKey = boundSpeaker->speakerKey;
+        rechatFields.listenerHint = targetedNpc;
+        rechatFields.listenerKey = listenerKey;
+        rechatFields.rechatTargetHint = explicitRechatTarget;
+        rechatFields.resolvedRechatTarget = resolvedRechatTarget;
+        rechatFields.originLine = debugLauncherLine;
+        rechatFields.rechatDepth = rechatDepth;
+        rechatFields.chainId = rechatChainId;
+        // active_agents stays the legacy human label list; a keyed server uses active_agent_keys only.
+        rechatFields.activeAgents = EventIdentityUtils::BuildActiveAgentLists(activeCaptures);
+        const json rechatPayload = EventIdentityUtils::BuildRechatPayload(rechatFields);
 
-        HTTPManager::stream(
-            std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
-            speakerActor,
-            rechatDepth + 1
-        );
+        // Begun here, before dispatch, under the key the stream completes with; a synchronous refusal completes it.
+        if (!beginRechatAttempt(rechatKey)) {
+            logger::info("[RECHAT] Rechat cancelled before dispatch because the chain closed: {}", speaker);
+            return 0;
+        }
+        if (!HTTPManager::streamForActor(
+                std::format("{}|{}|{}|{}", "rechat", getCurrentTimeMillis(), GetGameTimeStamp(), rechatPayload.dump()),
+                speakerActor, PlayerConversationRoutingPolicy::RequestEligibility::EventDefault, rechatDepth + 1,
+                nullptr, rechatKey)) {
+            completeRechatAttempt(rechatKey, false);
+            return 0;
+        }
         return 1;
     } else {
         ResponseItem pending = spgResponse.getFirstItem("command");
@@ -3122,6 +3315,272 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 
     return 0;
 
+}
+
+void SpeakManager::QueueSpeechLog(AIAgent* agent, const ScriptLine& scriptLine, const std::string& speechListener)
+{
+    // Immutable event-time values; the agent pointer itself is never carried past this call.
+    struct PendingSpeech {
+        RE::ActorHandle speakerHandle;
+        std::string speakerName;
+        bool speakerIsNarrator = false;
+        std::string listener;
+        std::uint32_t listenerRefId = 0;
+        // Response identity v1: the endpoints and bindings the line was queued with. When present they are the
+        // only role evidence; a recycled FF slot or a namesake is never rebound from the RefID or a name.
+        bool identityPresent = false;
+        EventIdentityUtils::ResponseEndpoint speakerIdentity;
+        EventIdentityUtils::ResponseEndpoint listenerIdentity;
+        BoundActionActor speakerBinding;
+        BoundActionActor listenerBinding;
+        std::string speech;
+        std::string utteranceId;
+        std::uint64_t interactionGeneration = 0;
+        std::string ts;
+        std::string gameTs;
+        std::uint64_t loadEpoch = 0;
+        std::uint64_t sequence = 0;
+        std::chrono::steady_clock::time_point queuedAt;
+    };
+    constexpr auto maxQueueAge = std::chrono::seconds(30);
+    constexpr auto maxSnapshotAge = std::chrono::seconds(120);
+
+    PendingSpeech pending;
+    pending.speakerName = agent->getActorName();
+    // Only the typed agent flag makes a narrator; a physical NPC named like the narrator stays physical.
+    pending.speakerIsNarrator = agent->isNarrator();
+    if (auto* speakerActor = agent->getActor(); speakerActor && !pending.speakerIsNarrator) {
+        pending.speakerHandle = speakerActor->GetHandle();
+    }
+    pending.listener = speechListener;
+    // The server's decorated listener ("Name [RefID: XXXXXXXX]") is the only listener identity evidence.
+    if (const auto parsed = ActorTargetIdentifierUtils::Parse(scriptLine.action); parsed.hasRefId) {
+        pending.listenerRefId = parsed.refId;
+    }
+    if (scriptLine.identityPresent) {
+        pending.identityPresent = true;
+        pending.speakerIdentity = scriptLine.speakerIdentity;
+        pending.listenerIdentity = scriptLine.listenerIdentity;
+        pending.speakerBinding = scriptLine.speakerBinding;
+        pending.listenerBinding = scriptLine.listenerBinding;
+        pending.listenerRefId = scriptLine.listenerIdentity.IsPhysical() ? scriptLine.listenerBinding.actor.formId : 0;
+    }
+    pending.speech = scriptLine.subtitle;
+    pending.utteranceId = scriptLine.utteranceId;
+    pending.interactionGeneration = scriptLine.interactionGeneration;
+    pending.ts = std::format("{}", getCurrentTimeMillis());
+    pending.gameTs = std::format("{}", GetGameTimeStamp());
+    pending.loadEpoch = PlaythroughSession::Context();
+    pending.queuedAt = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        pending.sequence = audienceSnapshotSequence;
+    }
+
+    auto* tasks = SKSE::GetTaskInterface();
+    if (!tasks) {
+        logger::warn("[ACTOR_IDENTITY] Dropping _speech for {}; task interface unavailable", pending.speakerName);
+        return;
+    }
+    // Never waits on the game thread, so neither side can deadlock on the other.
+    tasks->AddTask([this, pending = std::move(pending), maxQueueAge, maxSnapshotAge]() {
+        if (!PlaythroughSession::Allowed(pending.loadEpoch)) {
+            logger::info("[ACTOR_IDENTITY] Dropping _speech for {}; the load changed", pending.speakerName);
+            return;
+        }
+        if (std::chrono::steady_clock::now() - pending.queuedAt > maxQueueAge) {
+            logger::warn("[ACTOR_IDENTITY] Dropping _speech for {}; game-thread capture expired", pending.speakerName);
+            return;
+        }
+        try {
+            AIAgentManager& aiam = AIAgentManager::getInstance();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            const std::string playerName = player && player->GetName() ? player->GetName() : "";
+            const std::string playerDisplayName =
+                player && player->GetDisplayFullName() ? player->GetDisplayFullName() : "";
+            const std::string configuredPlayerName = aiam.getPlayerName();
+            // A bound physical endpoint counts only while its handle, reference and canonical key are unchanged.
+            const auto boundActor = [](const EventIdentityUtils::ResponseEndpoint& endpoint,
+                                       const BoundActionActor& binding) -> RE::NiPointer<RE::Actor> {
+                if (!endpoint.IsPhysical() || binding.actor.actorKey != endpoint.id ||
+                    !SPGResponse::StillSameBoundActor(binding)) {
+                    return nullptr;
+                }
+                return binding.handle.get();
+            };
+            const auto speakerPtr = pending.identityPresent ? boundActor(pending.speakerIdentity, pending.speakerBinding)
+                                                            : pending.speakerHandle.get();
+            if (pending.identityPresent && pending.speakerIdentity.IsPhysical() && !speakerPtr) {
+                logger::warn("[ACTOR_IDENTITY] _speech for {}; its bound speaker changed, no speaker role",
+                             pending.speakerName);
+            }
+            RE::Actor* speakerActor = speakerPtr.get();
+            if (speakerActor && (speakerActor->IsDeleted() || speakerActor->IsDisabled())) {
+                speakerActor = nullptr;
+            }
+
+            const auto iequals = [](const std::string& left, const std::string& right) {
+                return left.size() == right.size() &&
+                       std::equal(left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
+                           return std::tolower(a) == std::tolower(b);
+                       });
+            };
+            const auto joinCompanions = [](const std::vector<std::string>& names) {
+                std::string joined;
+                for (const auto& name : names) {
+                    if (!joined.empty()) joined += "|";
+                    joined += name;
+                }
+                return joined;
+            };
+            const bool listenerNamesPlayer = pending.listener.empty() || iequals(pending.listener, playerName) ||
+                iequals(pending.listener, playerDisplayName) ||
+                (!configuredPlayerName.empty() && iequals(pending.listener, configuredPlayerName));
+            const std::string resolvedListenerName = pending.listener.empty() ? playerName : pending.listener;
+
+            // Identity roles use only the server's decorated reference. A bare name may be shared by unrelated
+            // actors (or match the player or narrator by coincidence), so it stays unresolved.
+            bool listenerIsPlayer = false;
+            bool listenerIsNarrator = false;
+            RE::Actor* explicitListener = nullptr;
+            RE::NiPointer<RE::Actor> boundListener;
+            if (pending.identityPresent) {
+                // The typed endpoint decides the role; None stays unresolved instead of guessing a name.
+                listenerIsPlayer = pending.listenerIdentity.IsPlayer() && player;
+                listenerIsNarrator = pending.listenerIdentity.IsNarrator();
+                if (pending.listenerIdentity.IsPhysical()) {
+                    boundListener = boundActor(pending.listenerIdentity, pending.listenerBinding);
+                    explicitListener = boundListener.get();
+                    if (!explicitListener) {
+                        logger::warn("[ACTOR_IDENTITY] _speech for {}; its bound listener changed, no listener role",
+                                     pending.speakerName);
+                    }
+                }
+            } else if (pending.listenerRefId != 0) {
+                if (player && pending.listenerRefId == player->GetFormID()) {
+                    listenerIsPlayer = true;
+                } else if (auto refAgent = aiam.getAgentByFormId(pending.listenerRefId);
+                           refAgent && refAgent->isNarrator()) {
+                    listenerIsNarrator = true;
+                } else if (auto* refActor = RE::TESForm::LookupByID<RE::Actor>(pending.listenerRefId);
+                           refActor && !refActor->IsDeleted()) {
+                    explicitListener = refActor;
+                }
+            }
+
+            // Spatial payload only: a unique managed name (getAgentByName refuses ambiguous ones) or the
+            // player's name. It never sets a role or an audience seat.
+            RE::Actor* listenerActor = listenerIsPlayer ? player : explicitListener;
+            // With identity present the spatial payload follows the typed endpoint only, never a name fallback.
+            if (!listenerActor && !listenerIsNarrator && !pending.listener.empty() && !pending.identityPresent) {
+                if (auto directAgent = aiam.getAgentByName(pending.listener);
+                    directAgent && !directAgent->isNarrator()) {
+                    listenerActor = directAgent->getActor();
+                }
+            }
+            if (!listenerActor && !listenerIsNarrator && listenerNamesPlayer && !pending.identityPresent) {
+                listenerActor = player;
+            }
+
+            json sData;
+            sData["speaker"] = pending.speakerName;
+            sData["location"] = GetPlayerLocation();
+            sData["speech"] = pending.speech;
+            sData["utterance_id"] = pending.utteranceId;
+            sData["listener"] = resolvedListenerName;
+
+            float distance = 0.0f;
+            bool hasSpatialContext = false;
+            SpatialAwareness::Result spatialResult{};
+            if (!pending.speakerIsNarrator && speakerActor && listenerActor) {
+                spatialResult = SpatialAwareness::Evaluate(speakerActor, listenerActor);
+                hasSpatialContext = true;
+                distance = spatialResult.airDistance;
+            }
+
+            // A narrator line is private: its captured audience is empty, never the nearby crowd. So is a line
+            // whose speaker no longer resolves: substituting the listener or player as source would invent one.
+            HTTPManager::HearingAudience audience;
+            audience.identity = EventIdentityUtils::EventIdentity::Capture();
+            const auto addLegacyName = [&](const std::string& name) {
+                if (!name.empty() && std::find(audience.names.begin(), audience.names.end(), name) == audience.names.end()) {
+                    audience.names.push_back(name);
+                }
+            };
+            if (!pending.speakerIsNarrator && speakerActor) {
+                const std::string snapshotKey = std::format("{:08X}->{:08X}:{}#{}#{}", speakerActor->GetFormID(),
+                    pending.listenerRefId, resolvedListenerName, pending.interactionGeneration, pending.sequence);
+                bool reused = false;
+                {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    if (audienceSnapshotReady && audienceSnapshotKey == snapshotKey &&
+                        std::chrono::steady_clock::now() - audienceSnapshotCapturedAt <= maxSnapshotAge) {
+                        audience.names = audienceSnapshotCompanions;
+                        audience.identity = audienceSnapshotIdentity;
+                        reused = true;
+                    }
+                }
+                if (!reused) {
+                    audience = HTTPManager::CaptureHearingAudience(speakerActor);
+                    std::lock_guard<std::mutex> lock(mtx);
+                    // A clear since queuing means this response ended; do not seed the next one.
+                    if (pending.sequence == audienceSnapshotSequence) {
+                        audienceSnapshotKey = snapshotKey;
+                        audienceSnapshotCompanions = audience.names;
+                        audienceSnapshotIdentity = audience.identity;
+                        audienceSnapshotCapturedAt = std::chrono::steady_clock::now();
+                        audienceSnapshotReady = true;
+                    }
+                }
+
+                audience.Add(pending.speakerName, speakerActor);
+                // The player hears under the same rules: near enough for auto hearing, or reachable by voice.
+                if (player && (audience.sourceWithinAutoHearingRadius ||
+                               SpatialAwareness::Evaluate(speakerActor, player).canCommunicate)) {
+                    audience.Add(configuredPlayerName.empty() ? playerName : configuredPlayerName, player);
+                }
+                logger::info(
+                    "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_auto_hearing_radius={} nearby_count={} companions='{}'",
+                    pending.speakerName, resolvedListenerName, reused ? 1 : 0,
+                    audience.sourceWithinAutoHearingRadius ? 1 : 0, audience.playerNearbyCount,
+                    joinCompanions(audience.names));
+            } else if (!pending.speakerIsNarrator) {
+                logger::warn("[ACTOR_IDENTITY] _speech for {} has no resolvable speaker; captured audience is empty",
+                             pending.speakerName);
+            }
+            if (!pending.speakerIsNarrator) {
+                // Legacy companions keep naming the speaker, addressed listener and player; identity does not.
+                addLegacyName(pending.speakerName);
+                addLegacyName(pending.listener);
+                addLegacyName(configuredPlayerName.empty() ? playerName : configuredPlayerName);
+            }
+
+            // Roles are separate from witnesses: an addressed listener gets a role key, never a seat.
+            audience.identity.SetSpeaker(pending.speakerIsNarrator ? std::string(ActorIdentityUtils::NarratorActorKey)
+                                         : (pending.identityPresent && speakerActor) ? pending.speakerIdentity.id
+                                                                                     : BuildActorKey(speakerActor));
+            if (listenerIsPlayer) {
+                audience.identity.AddListener(BuildActorKey(player));
+            } else if (listenerIsNarrator) {
+                audience.identity.AddListener(std::string(ActorIdentityUtils::NarratorActorKey));
+            } else if (explicitListener) {
+                audience.identity.AddListener(pending.identityPresent ? pending.listenerIdentity.id
+                                                                      : BuildActorKey(explicitListener));
+            }
+
+            sData["companions"] = audience.names;
+            sData["distance"] = distance;
+            sData["spatial_can_communicate"] = hasSpatialContext ? spatialResult.canCommunicate : false;
+            sData["spatial_volume"] = hasSpatialContext ? spatialResult.volume : 0.0f;
+            sData["spatial_reason"] = pending.speakerIsNarrator ? "narrator" :
+                (hasSpatialContext ? spatialResult.reason : "no_listener_context");
+
+            HTTPManager::log(std::format("_speech|{}|{}|{}", pending.ts, pending.gameTs, sData.dump()),
+                             audience.identity);
+        } catch (const std::exception& e) {
+            logger::info("Error sending speech. Review encoding ({})", e.what());
+        }
+    });
 }
 
 void SpeakManager::process(AIAgent *agent) {
@@ -3247,7 +3706,9 @@ void SpeakManager::process(AIAgent *agent) {
 
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
-            if (scriptLine.actor != agent->getActorName()) {  // Character change
+            // A decorated "Name [RefID: XXXXXXXX]" line belongs to exactly that reference; a bare one to the name.
+            if (!ActorTargetIdentifierUtils::IdentifiesActor(scriptLine.actor, agent->getActorName(),
+                                                            agent->GetFormId())) {  // Character change
                 // If the mismatched item is a "Player" line, dequeue it â€” no NPC agent
                 // will ever match "Player", so it blocks the queue head forever.
                 if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
@@ -3326,11 +3787,46 @@ void SpeakManager::process(AIAgent *agent) {
             std::string speechListener = "";
 
             if (!scriptLine.action.empty()) {
-                auto currentActor = aiam.getAgentByName(scriptLine.action);  // get listener
+                // Listener facing target. A decorated "Name [RefID: XXXXXXXX]" is exact: the player's ref keeps the
+                // default player facing below, the typed narrator is never a physical target, and an unregistered
+                // physical ref is faced directly. A bare name uses only a unique managed agent.
+                RE::Actor* listenerActor = nullptr;
+                std::string listenerName;
+                RE::NiPointer<RE::Actor> boundListener;
+                if (scriptLine.identityPresent) {
+                    // An envelope line faces only its bound physical listener, rechecked now; never a RefID lookup
+                    // that a recycled FF slot could answer, and never the player/narrator as a physical target.
+                    if (scriptLine.listenerIdentity.IsPhysical() &&
+                        SPGResponse::StillSameBoundActor(scriptLine.listenerBinding)) {
+                        boundListener = scriptLine.listenerBinding.handle.get();
+                        listenerActor = boundListener.get();
+                        auto refAgent = listenerActor ? aiam.getAgentByFormId(listenerActor->GetFormID()) : nullptr;
+                        listenerName = refAgent && !refAgent->isNarrator() ? refAgent->getActorName()
+                            : (listenerActor && listenerActor->GetDisplayFullName() ? listenerActor->GetDisplayFullName() : "");
+                    }
+                } else if (const auto parsedListener = ActorTargetIdentifierUtils::Parse(scriptLine.action);
+                    parsedListener.hasRefId) {
+                    auto* playerRef = RE::PlayerCharacter::GetSingleton();
+                    if (!playerRef || parsedListener.refId != playerRef->GetFormID()) {
+                        if (auto refAgent = aiam.getAgentByFormId(parsedListener.refId)) {
+                            if (!refAgent->isNarrator()) {
+                                listenerActor = refAgent->getActorByFormId();
+                                listenerName = refAgent->getActorName();
+                            }
+                        } else if (auto* refActor = RE::TESForm::LookupByID<RE::Actor>(parsedListener.refId);
+                                   refActor && !refActor->IsDeleted() && !refActor->IsDisabled() &&
+                                   refActor->Is3DLoaded()) {
+                            listenerActor = refActor;
+                            listenerName = refActor->GetDisplayFullName() ? refActor->GetDisplayFullName() : "";
+                        }
+                    }
+                } else if (auto currentActor = aiam.getAgentByName(scriptLine.action);
+                           currentActor && !currentActor->isNarrator()) {
+                    listenerActor = currentActor->getActorByFormId();
+                    listenerName = currentActor->getActorName();
+                }
 
-                if (currentActor && !agent->isNarrator()) {
-                    auto position = currentActor->getActor()->GetPosition();
-
+                if (listenerActor && listenerActor != npc && !agent->isNarrator()) {
                     std::string animation = scriptLine.animation;
 
                     int animation_n = 0;
@@ -3343,19 +3839,19 @@ void SpeakManager::process(AIAgent *agent) {
                     int movehead = 1;
                     if (npc->GetActorRuntimeData().currentProcess->GetHeadtrackTarget())
                         if (npc->GetActorRuntimeData().currentProcess->GetHeadtrackTarget().get()->GetFormID() ==
-                            currentActor->getActor()->GetFormID()) {
+                            listenerActor->GetFormID()) {
                             movehead = 0;
                         }
 
                     logger::info("{} must look to {}, animation '{}', move head {}", npc->GetDisplayFullName(),
-                                 currentActor->getActorName(), animation, movehead);
+                                 listenerName, animation, movehead);
 
-                    speechListener.assign(currentActor->getActorName());
+                    speechListener.assign(listenerName);
 
-                    auto localActor = currentActor->getActorByFormId();
+                    auto localActor = listenerActor;
                     if (localActor) {
                         logger::info("FakeDialogueWith '{}' '{}' '{}' '{}'", npc->GetDisplayFullName(),
-                                     currentActor->getActorName(), animation_n, movehead);
+                                     listenerName, animation_n, movehead);
 
                         auto localNpc = npc;
                         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
@@ -3365,8 +3861,7 @@ void SpeakManager::process(AIAgent *agent) {
                         RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
                             "AIAgentAIMind", "FakeDialogueWith", args, callback);
                     } else {
-                        logger::warn("FakeDialogueWith failed, localActor is null for {}",
-                                     currentActor->getActorName());
+                        logger::warn("FakeDialogueWith failed, localActor is null for {}", listenerName);
                     }
 
                     logger::info("Dialogue Preparation end");
@@ -3454,6 +3949,11 @@ void SpeakManager::process(AIAgent *agent) {
             // Start playback
 
             SPGResponse& spgResponse = SPGResponse::getInstance();
+            // Captured once before TTS and any rechat; playback and every rechat (including a deferred retry)
+            // recheck it instead of re-resolving the speaker from a label or the current FF slot.
+            const CapturedSpeaker capturedSpeaker = CaptureSpeaker(agent, &scriptLine);
+            // Bookkeeping (in-flight, last rechatter, retry) uses the canonical key; the label stays presentation.
+            const std::string capturedRechatKey = capturedSpeaker.RechatKey();
             bool earlyRechat = false;
             std::string phoneticTrimmed = SM::trim(scriptLine.phonetic);
             bool unfinished = spgResponse.isUnfinished();
@@ -3488,18 +3988,17 @@ void SpeakManager::process(AIAgent *agent) {
                         logger::info("[EARLY RECHAT {}] Disabled by duration", tid, scriptLine.duration);
                         unfinished = true;
                     } else {
-                        const bool sameSpeakerAsLastRechatter = (agent->getActorName() == getLastRechatter());
-                        const bool sameSpeakerRechatInFlight = isRechatInFlightFor(agent->getActorName());
+                        const bool sameSpeakerAsLastRechatter = (capturedRechatKey == getLastRechatter());
+                        const bool sameSpeakerRechatInFlight = isRechatInFlightFor(capturedRechatKey);
                         if (!sameSpeakerAsLastRechatter && !sameSpeakerRechatInFlight) {
                             logger::info("[EARLY RECHAT {}] LAUNCH Response queue has 1 items and is finished.", tid);
-                            if (rechat(agent->getActorName(), rechatListenerHint, 0, scriptLine.subtitle,
-                                       rechatTargetHint) > 0) {
+                            if (rechat(capturedSpeaker.label, rechatListenerHint, 0, scriptLine.subtitle,
+                                       rechatTargetHint, &capturedSpeaker) > 0) {
                                 earlyRechat = true;
-                                beginRechatAttempt(agent->getActorName());
                             }
                         } else if (sameSpeakerRechatInFlight) {
                             logger::info("[EARLY RECHAT {}] AVOIDED because rechat is already in flight for {}.", tid,
-                                         agent->getActorName());
+                                         capturedRechatKey);
                         } else {
                             logger::info("[EARLY RECHAT {}] AVOIDED because lastRechatter is same.", tid);
                         }
@@ -3518,13 +4017,14 @@ void SpeakManager::process(AIAgent *agent) {
                 playbackVolumeBoost = 0.25f;
                 logger::info(
                     "[SpeakManager] Whisper mode: forcing 25% NPC playback volume for {} (direct response to player '{}')",
-                    agent->getActorName(), scriptLine.action);
+                    RechatSpeakerKey(agent), scriptLine.action);
             }
 
             SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
-            res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
-                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration, scriptLine.utteranceId);
+            res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, RechatSpeakerKey(agent), phoneticTrimmed,
+                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration, scriptLine.utteranceId,
+                                  &capturedSpeaker);
 
             const bool playbackAborted = (res == 2);
             // Off may have cleared this line and On may already have queued a new one.
@@ -3566,46 +4066,44 @@ void SpeakManager::process(AIAgent *agent) {
                                 rechatTargetHint = ResolveScriptLineRechatTargetHint(lastLine);
                             }
 
-                            const bool sameSpeakerAsLastRechatter = (agent->getActorName() == getLastRechatter());
-                            const bool sameSpeakerRechatInFlight = isRechatInFlightFor(agent->getActorName());
+                            const bool sameSpeakerAsLastRechatter = (capturedRechatKey == getLastRechatter());
+                            const bool sameSpeakerRechatInFlight = isRechatInFlightFor(capturedRechatKey);
                             if (isRechatChainClosed()) {
                             } else if (!sameSpeakerAsLastRechatter && !sameSpeakerRechatInFlight) {
                                 logger::info("[RECHAT {}] LAUNCH Response queue has 1 items and is finished.", tid);
-                                if (rechat(agent->getActorName(), rechatListenerHint, 0, scriptLine.subtitle,
-                                           rechatTargetHint) > 0) {
-                                    beginRechatAttempt(agent->getActorName());
-                                }
+                                rechat(capturedSpeaker.label, rechatListenerHint, 0, scriptLine.subtitle,
+                                           rechatTargetHint, &capturedSpeaker);
                             } else if (sameSpeakerRechatInFlight) {
                                 logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.",
-                                             tid, agent->getActorName());
-                                queueRechatRetry(agent->getActorName(), rechatListenerHint, rechatTargetHint,
-                                                 scriptLine.subtitle, 0);
+                                             tid, capturedRechatKey);
+                                queueRechatRetry(capturedRechatKey, rechatListenerHint, rechatTargetHint,
+                                                 scriptLine.subtitle, 0, &capturedSpeaker);
                             } else {
                                 logger::info("[RECHAT {}] AVOIDED because lastRechatter is same.", tid);
                             }
 
-                        } else if (countItems() == 0 && !unfinished && getLastRechatter() != agent->getActorName() &&
-                                   !isRechatInFlightFor(agent->getActorName())) {  // One liners
+                        } else if (countItems() == 0 && !unfinished && getLastRechatter() != capturedRechatKey &&
+                                   !isRechatInFlightFor(capturedRechatKey)) {  // One liners
                             // Last item item pending. Lets launch rechat event here
                             if (isRechatChainClosed()) {
                                 setLastRechatter("");
                                 resetRechatChainState();
                             } else {
                                 logger::info("[RECHAT {}] LAUNCH Response queue has 0 items and is finished. ", tid);
-                                if (rechat(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine), 0,
-                                           scriptLine.subtitle, ResolveScriptLineRechatTargetHint(scriptLine)) > 0) {
-                                    beginRechatAttempt(agent->getActorName());
-                                }
+                                rechat(capturedSpeaker.label, ResolveScriptLineListenerHint(scriptLine), 0,
+                                           scriptLine.subtitle, ResolveScriptLineRechatTargetHint(scriptLine),
+                                           &capturedSpeaker);
                             }
-                        } else if (countItems() == 0 && !unfinished && isRechatInFlightFor(agent->getActorName())) {
+                        } else if (countItems() == 0 && !unfinished && isRechatInFlightFor(capturedRechatKey)) {
                             logger::info("[RECHAT {}] Deferred retry for {} until the in-flight rechat finishes.", tid,
-                                         agent->getActorName());
-                            queueRechatRetry(agent->getActorName(), ResolveScriptLineListenerHint(scriptLine),
-                                             ResolveScriptLineRechatTargetHint(scriptLine), scriptLine.subtitle, 0);
+                                         capturedRechatKey);
+                            queueRechatRetry(capturedRechatKey, ResolveScriptLineListenerHint(scriptLine),
+                                             ResolveScriptLineRechatTargetHint(scriptLine), scriptLine.subtitle, 0,
+                                             &capturedSpeaker);
                         } else {
                             const int queueItems = countItems();
                             const bool keepChainState =
-                                unfinished || queueItems > 0 || isRechatInFlightFor(agent->getActorName());
+                                unfinished || queueItems > 0 || isRechatInFlightFor(capturedRechatKey);
                             logger::info("[RECHAT {}] NO RECHAT! Items in queue {}, unfinished {}, last rechatter {}",
                                          tid, queueItems, unfinished, getLastRechatter());
                             if (!keepChainState) {
@@ -3617,7 +4115,7 @@ void SpeakManager::process(AIAgent *agent) {
                         if (GlobalRechatPolicyAsap == 0) {
                             const int queueItems = countItems();
                             const bool keepChainState =
-                                earlyRechat || queueItems > 0 || isRechatInFlightFor(agent->getActorName());
+                                earlyRechat || queueItems > 0 || isRechatInFlightFor(capturedRechatKey);
                             logger::info(
                                 "[RECHAT {}] NO RECHAT! Last DownloadAndPlay return value was {},earlyRechat {} ", tid,
                                 res, earlyRechat ? 1 : 0);
@@ -3646,261 +4144,16 @@ void SpeakManager::process(AIAgent *agent) {
                                                         GetGameTimeStamp(), GetPlayerLocation(),
                                                         npc->GetDisplayFullName(), toSay.subtitle.c_str()));*/
 
-            try {
-                json sData;
-                const std::string speakerName = agent->getActorName();
-                const bool speakerIsNarrator = agent->isNarrator() || speakerName == NARRATOR_NAME;
-                sData["speaker"] = speakerName;
-                sData["location"] = GetPlayerLocation();
-                sData["speech"] = scriptLine.subtitle;
-                sData["utterance_id"] = scriptLine.utteranceId;
-                const std::string resolvedListenerName =
-                    speechListener.empty() ? RE::PlayerCharacter::GetSingleton()->GetName() : speechListener;
-                sData["listener"] = resolvedListenerName;
-                std::vector<std::string> audibleCompanions;
-                const auto addCompanion = [&](const std::string& name) {
-                    if (name.empty()) {
-                        return;
-                    }
-                    if (std::find(audibleCompanions.begin(), audibleCompanions.end(), name) ==
-                        audibleCompanions.end()) {
-                        audibleCompanions.push_back(name);
-                    }
-                };
-                const auto joinCompanions = [](const std::vector<std::string>& names) {
-                    std::string joined;
-                    for (const auto& name : names) {
-                        if (!joined.empty()) {
-                            joined += "|";
-                        }
-                        joined += name;
-                    }
-                    return joined;
-                };
-
-                // Calculate distance and v1-lite spatial context from speaker to listener.
-                float distance = 0.0f;
-                bool hasSpatialContext = false;
-                SpatialAwareness::Result spatialResult{};
-                auto player = RE::PlayerCharacter::GetSingleton();
-                RE::Actor* listenerActor = nullptr;
-                const auto iequals = [](const std::string& left, const std::string& right) {
-                    if (left.size() != right.size()) {
-                        return false;
-                    }
-
-                    for (std::size_t i = 0; i < left.size(); ++i) {
-                        if (std::tolower(static_cast<unsigned char>(left[i])) !=
-                            std::tolower(static_cast<unsigned char>(right[i]))) {
-                            return false;
-                        }
-                    }
-                    return true;
-                };
-                const auto normalizeName = [](std::string value) {
-                    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-                        return static_cast<char>(std::tolower(c));
-                    });
-                    return value;
-                };
-                const auto resolveActorByName = [&](const std::string& name) -> RE::Actor* {
-                    if (name.empty()) {
-                        return nullptr;
-                    }
-
-                    auto directAgent = aiam.getAgentByName(name);
-                    if (directAgent && directAgent->getActor()) {
-                        return directAgent->getActor();
-                    }
-
-                    for (const auto& namedAgent : aiam.getAgents()) {
-                        if (!namedAgent || !namedAgent->getActor()) {
-                            continue;
-                        }
-                        if (iequals(namedAgent->getActorName(), name)) {
-                            return namedAgent->getActor();
-                        }
-                    }
-
-                    return nullptr;
-                };
-                const std::string playerName = player && player->GetName() ? player->GetName() : "";
-                const std::string playerDisplayName = player && player->GetDisplayFullName() ? player->GetDisplayFullName() : "";
-                const std::string configuredPlayerName = aiam.getPlayerName();
-
-                if (!speechListener.empty()) {
-                    listenerActor = resolveActorByName(speechListener);
-                    if (!listenerActor &&
-                        (iequals(speechListener, playerName) || iequals(speechListener, playerDisplayName) ||
-                         (!configuredPlayerName.empty() && iequals(speechListener, configuredPlayerName)))) {
-                        listenerActor = player;
-                    }
-                } else {
-                    listenerActor = player;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                if (currentPlaybackUtteranceId == scriptLine.utteranceId) {
+                    currentPlaybackUtteranceConfirmed = !scriptLine.utteranceId.empty() &&
+                        (scriptLine.directorSceneId.empty() || res == 0 || res == 5);
                 }
+            }
 
-                if (!speakerIsNarrator && agent->getActor() && listenerActor) {
-                    spatialResult = SpatialAwareness::Evaluate(agent->getActor(), listenerActor);
-                    hasSpatialContext = true;
-                    distance = spatialResult.airDistance;
-                }
-
-                if (!speakerIsNarrator) {
-                    // Authoritative audience scope is evaluated from the speaking actor.
-                    RE::Actor* audibilitySource = agent->getActor();
-                    if (!audibilitySource) {
-                        audibilitySource = listenerActor ? listenerActor : RE::PlayerCharacter::GetSingleton();
-                    }
-
-                    // Keep audience stable for multi-line NPC responses.
-                    const std::string audienceSnapshotKey =
-                        normalizeName(speakerName) + "->" + normalizeName(resolvedListenerName);
-                    bool reusedAudienceSnapshot = false;
-                    bool speakerWithinAutoHearingRadius = false;
-                    std::size_t playerNearbyContextCount = 0;
-                    {
-                        std::lock_guard<std::mutex> lock(mtx);
-                        if (audienceSnapshotReady && audienceSnapshotKey == this->audienceSnapshotKey &&
-                            !audienceSnapshotCompanions.empty()) {
-                            audibleCompanions = audienceSnapshotCompanions;
-                            reusedAudienceSnapshot = true;
-                        }
-                    }
-
-                    if (!reusedAudienceSnapshot) {
-                        speakerWithinAutoHearingRadius = audibilitySource &&
-                            SpatialSnapshotManager::IsActorWithinAutoHearingRadius(audibilitySource);
-                        if (speakerWithinAutoHearingRadius) {
-                            const float autoHearingRadiusUnits =
-                                SpatialSnapshotManager::GetAutoHearingRadiusUnits();
-                            const auto playerNearbyTargets =
-                                SpatialSnapshotManager::GetPlayerNearbyManagedTargets(autoHearingRadiusUnits);
-                            for (const auto& target : playerNearbyTargets) {
-                                addCompanion(target.name);
-                                ++playerNearbyContextCount;
-                            }
-                        }
-                        const float autoHearingRadiusUnits =
-                            SpatialSnapshotManager::GetAutoHearingRadiusUnits();
-                        const float autoHearingRadiusMeters =
-                            autoHearingRadiusUnits / SpatialAwareness::kSkyrimUnitsPerMeter;
-                        logger::info(
-                            "[rework_debug][nearby_context] npc_prescan speaker='{}' listener='{}' radius_units={:.1f} radius_m={:.1f} speaker_within_auto_hearing_radius={} count={} names='{}'",
-                            speakerName, resolvedListenerName, autoHearingRadiusUnits, autoHearingRadiusMeters,
-                            speakerWithinAutoHearingRadius ? 1 : 0, playerNearbyContextCount,
-                            joinCompanions(audibleCompanions));
-
-                        // Audience scope is speech audibility, not auto-activate population.
-                        // Auto-activate can keep broader scene agents alive, but NPC speech fanout
-                        // should use the MCM spatial hearing distances before running Evaluate().
-                        const auto spatialSettings = SpatialAwareness::GetSettings();
-                        float audienceMaxDistance = spatialSettings.exteriorMaxDistance;
-                        if (audibilitySource) {
-                            auto* sourceCell = audibilitySource->GetParentCell();
-                            if (sourceCell && sourceCell->IsInteriorCell()) {
-                                audienceMaxDistance = spatialSettings.interiorMaxDistance;
-                            }
-                        }
-                        if (spatialSettings.maxAirDistance > 0.0f) {
-                            audienceMaxDistance = std::min(audienceMaxDistance, spatialSettings.maxAirDistance);
-                        }
-
-                        struct AudienceCandidate {
-                            std::shared_ptr<AIAgent> agent;
-                            RE::Actor* actor = nullptr;
-                            float distance = 0.0f;
-                        };
-
-                        std::vector<AudienceCandidate> audienceCandidates;
-                        audienceCandidates.reserve(8);
-
-                        // Build companions by cheap distance first; the MCM hearing radius is the hard fanout guard.
-                        for (const auto& candidateAgent : aiam.getAgents()) {
-                            if (!candidateAgent) {
-                                continue;
-                            }
-
-                            const std::string candidateName = candidateAgent->getActorName();
-                            if (candidateName.empty() || candidateName == NARRATOR_NAME) {
-                                continue;
-                            }
-
-                            auto* candidateActor = candidateAgent->getActor();
-                            if (!candidateActor || candidateActor->IsDead()) {
-                                continue;
-                            }
-                            if (audibilitySource && candidateActor->GetFormID() == audibilitySource->GetFormID()) {
-                                continue;
-                            }
-
-                            float candidateDistance = 0.0f;
-                            if (audibilitySource) {
-                                candidateDistance = audibilitySource->GetPosition().GetDistance(candidateActor->GetPosition());
-                                if (candidateDistance > audienceMaxDistance) {
-                                    continue;
-                                }
-                            }
-
-                            audienceCandidates.push_back(AudienceCandidate{candidateAgent, candidateActor, candidateDistance});
-                        }
-
-                        std::sort(audienceCandidates.begin(), audienceCandidates.end(),
-                                  [](const auto& lhs, const auto& rhs) {
-                                      return lhs.distance < rhs.distance;
-                                  });
-
-                        for (const auto& candidate : audienceCandidates) {
-                            const auto& candidateAgent = candidate.agent;
-                            auto* candidateActor = candidate.actor;
-                            const std::string candidateName = candidateAgent->getActorName();
-
-                            SpatialAwareness::Result candidateSpatial =
-                                SpatialAwareness::Evaluate(audibilitySource, candidateActor);
-
-                            if (candidateSpatial.canCommunicate) {
-                                addCompanion(candidateName);
-                            }
-                        }
-
-                        {
-                            std::lock_guard<std::mutex> lock(mtx);
-                            this->audienceSnapshotKey = audienceSnapshotKey;
-                            audienceSnapshotCompanions = audibleCompanions;
-                            audienceSnapshotReady = !audienceSnapshotCompanions.empty();
-                        }
-                    }
-
-                    addCompanion(speakerName);
-                    addCompanion(speechListener);
-                    addCompanion(configuredPlayerName.empty() ? playerName : configuredPlayerName);
-                    logger::info(
-                        "[rework_debug][nearby_context] npc_audience speaker='{}' listener='{}' reused={} speaker_within_auto_hearing_radius={} nearby_count={} companions='{}'",
-                        speakerName, resolvedListenerName, reusedAudienceSnapshot ? 1 : 0,
-                        speakerWithinAutoHearingRadius ? 1 : 0, playerNearbyContextCount,
-                        joinCompanions(audibleCompanions));
-                }
-
-                sData["companions"] = audibleCompanions;
-                sData["distance"] = distance;
-                sData["spatial_can_communicate"] = hasSpatialContext ? spatialResult.canCommunicate : false;
-                sData["spatial_volume"] = hasSpatialContext ? spatialResult.volume : 0.0f;
-                sData["spatial_reason"] = speakerIsNarrator ? "narrator" :
-                    (hasSpatialContext ? spatialResult.reason : "no_listener_context");
-
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    if (currentPlaybackUtteranceId == scriptLine.utteranceId) {
-                        currentPlaybackUtteranceConfirmed = !scriptLine.utteranceId.empty() &&
-                            (scriptLine.directorSceneId.empty() || res == 0 || res == 5);
-                    }
-                }
-
-                if (scriptLine.directorSceneId.empty() || res == 0 || res == 5) {
-                    HTTPManager::log(
-                        std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), sData.dump()));
-                }
-            } catch (nlohmann::json_abi_v3_11_2::detail::type_error* exception) {
-                logger::info("Error sending speech. Review encoding");
+            if (scriptLine.directorSceneId.empty() || res == 0 || res == 5) {
+                QueueSpeechLog(agent, scriptLine, speechListener);
             }
             
         }
@@ -3950,6 +4203,7 @@ void SpeakManager::process(AIAgent *agent) {
                 audienceSnapshotKey.clear();
                 audienceSnapshotCompanions.clear();
                 audienceSnapshotReady = false;
+                ++audienceSnapshotSequence;
             }
 
             if (hasTalked) {
@@ -4006,7 +4260,8 @@ void SpeakManager::processPlayer() {
             } else {
                 SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
-                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration, scriptLine.utteranceId);
+                const CapturedSpeaker playerSpeaker = CapturePlayerSpeaker();
+                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration, scriptLine.utteranceId, &playerSpeaker);
             }
         }
 

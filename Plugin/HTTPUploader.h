@@ -2,6 +2,8 @@
 #include <WinInet.h>
 #include <iostream>
 #include <string>
+#include <utility>
+#include <vector>
 #include <winhttp.h>
 #include "Misc.h"
 
@@ -18,8 +20,10 @@ public:
                                           std::string referenceText);
 	std::string UploadImage(const char* data, int size, std::string hints, int sendMode);
     std::string UploadImagePng(const char* data, int size, std::string hints, int sendMode);
+    // extraQuery: already-validated name/value pairs (identified diary metadata), URL-encoded here.
     std::string UploadBookContent(std::string data, std::string title, std::string readRequestId = "",
-                                  std::string bookFormId = "");
+                                  std::string bookFormId = "",
+                                  std::vector<std::pair<std::string, std::string>> extraQuery = {});
     static std::string UploadCSVFile(std::string data, std::string filename, std::string fileType);
     
 

@@ -11,6 +11,7 @@
 #include "NonVR.h"
 #include "HTTPUploader.h"
 #include "ThreadPool.h"
+#include "PlaythroughSession.h"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <iomanip>
 #include <random>
 #include <unordered_map>
+#include <unordered_set>
 
 using json = nlohmann::json;
 
@@ -82,14 +84,85 @@ std::string BuildActorKey(RE::Actor* actor)
     return ActorIdentityUtils::BuildActorKey({}, entry.uuid);
 }
 
+std::string ExistingActorKey(RE::Actor* actor)
+{
+    if (!actor) return {};
+    if (actor->IsPlayerRef()) return std::string(ActorIdentityUtils::PlayerActorKey);
+    const auto formId = actor->GetFormID();
+    if (!ActorIdentityUtils::IsDynamicFormId(formId)) {
+        return ActorIdentityUtils::BuildActorKey(BuildActorReferenceSource(actor));
+    }
+    const auto baseId = ActorBaseId(actor);
+    if (baseId == 0 || actor->IsDeleted()) return {};
+    std::lock_guard lock(dynamicIdentityMutex);
+    const auto it = dynamicIdentities.find(formId);
+    // An entry left by another base in a recycled FF slot is not this actor's identity.
+    return it != dynamicIdentities.end() && it->second.baseId == baseId &&
+                   ActorIdentityUtils::IsDynamicUuid(it->second.uuid)
+               ? ActorIdentityUtils::BuildActorKey({}, it->second.uuid)
+               : std::string{};
+}
+
+ActorIdentityUtils::GameDataActorIdentity CaptureGameDataActorIdentity(RE::Actor* actor)
+{
+    if (!actor) return {};
+    const auto generation = PlaythroughSession::Generation();
+    if (actor->IsPlayerRef()) {
+        return ActorIdentityUtils::CaptureGameDataActor(true, ActorIdentityUtils::PlayerRefId, {}, generation);
+    }
+    // Only the game thread may register a new dyn: identity; elsewhere an unregistered FF actor stays unkeyed.
+    auto key = HTTPManager::OnGameThread() ? BuildActorKey(actor) : ExistingActorKey(actor);
+    return ActorIdentityUtils::CaptureGameDataActor(false, actor->GetFormID(), std::move(key), generation);
+}
+
+bool HoldUnkeyedGameData(const ActorIdentityUtils::GameDataActorIdentity& identity, std::string_view kind,
+                         std::string_view actorName)
+{
+    if (!identity.Deferred()) return false;
+    if (!identity.Unkeyable()) {
+        logger::debug("[GAMEDATA_DEFER] {} {} has no registered dynamic identity yet", kind, actorName);
+        return true;
+    }
+    // A non-FF reference without a canonical key stays unkeyable, so warn once per reference (bounded).
+    static std::mutex mutex;
+    static std::unordered_set<std::uint32_t> reported;
+    std::lock_guard lock(mutex);
+    if (reported.size() < 256 && reported.insert(identity.refId).second) {
+        logger::warn("[GAMEDATA_REFUSED] {} {} ({:08X}) has no canonical actor key; gamedata not sent", kind,
+                     actorName, identity.refId);
+    }
+    return true;
+}
+
 namespace DynamicActorIdentity
 {
+    std::string KnownActorKey(std::uint32_t formId)
+    {
+        std::lock_guard lock(dynamicIdentityMutex);
+        const auto it = dynamicIdentities.find(formId);
+        return it != dynamicIdentities.end() && ActorIdentityUtils::IsDynamicUuid(it->second.uuid)
+            ? ActorIdentityUtils::BuildActorKey({}, it->second.uuid) : std::string{};
+    }
+
     std::vector<ActorIdentityUtils::DynamicIdentityEntry> Snapshot()
     {
         std::lock_guard lock(dynamicIdentityMutex);
         std::vector<ActorIdentityUtils::DynamicIdentityEntry> entries;
         entries.reserve(dynamicIdentities.size());
-        for (const auto& [formId, entry] : dynamicIdentities) entries.push_back(entry);
+        for (auto it = dynamicIdentities.begin(); it != dynamicIdentities.end();) {
+            // A lookup miss is not proof of deletion: nothing guarantees every saved FF reference is resident
+            // when saving. Only positive evidence drops an identity here: the same FormID now holds a deleted
+            // reference or one with another base. TESFormDeleteEvent (Forget) and the load-time ResolveFormID
+            // check cover the remaining invalidations.
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(it->first);
+            if (!ActorIdentityUtils::RetainDynamicIdentity(actor != nullptr, actor && actor->IsDeleted(),
+                                                           ActorBaseId(actor), it->second.baseId)) {
+                it = dynamicIdentities.erase(it);
+                continue;
+            }
+            entries.push_back(it->second);
+            ++it;
+        }
         return entries;
     }
 
@@ -97,9 +170,12 @@ namespace DynamicActorIdentity
     {
         std::unordered_map<RE::FormID, ActorIdentityUtils::DynamicIdentityEntry> restored;
         for (const auto& entry : entries) {
+            if (!ActorIdentityUtils::IsDynamicFormId(entry.formId)) continue;
+            // An actor not yet available during load keeps its entry; BuildActorKey re-checks the base on
+            // first use, and only deletion, a base change or a failed ResolveFormID ever drops it.
             auto* actor = RE::TESForm::LookupByID<RE::Actor>(entry.formId);
-            if (!actor || actor->IsDeleted() || ActorBaseId(actor) != entry.baseId) {
-                logger::info("[ACTOR_IDENTITY] Dropping dynamic identity for {:08X}: actor missing or base changed",
+            if (actor && (actor->IsDeleted() || ActorBaseId(actor) != entry.baseId)) {
+                logger::info("[ACTOR_IDENTITY] Dropping dynamic identity for {:08X}: base changed or deleted",
                              entry.formId);
                 continue;
             }
@@ -1439,6 +1515,8 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
 
     auto startTime = std::chrono::high_resolution_clock::now();
     std::vector<std::pair<std::string, RE::FormID>> results;
+    // Captured beside each result from the same actor pointer, never looked up again by name.
+    std::vector<ActorIdentityUtils::GameDataActorIdentity> resultIdentities;
     int n = 0;
 
     RE::TESObjectCELL* targetCell = target->GetParentCell();
@@ -1448,7 +1526,7 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
     for (auto& handle : processLists->lowActorHandles) {
         // Convert handle -> ActorPtr safely
         RE::Actor* actor = handle.get().get();
-        if (!actor) {
+        if (!actor || actor->IsDeleted()) {
             continue;
         }
 
@@ -1505,13 +1583,14 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
                      pos.y, pos.z, distance);
 
         results.push_back({name.empty() ? "Unknown" : name, actor->GetFormID()});
+        resultIdentities.push_back(CaptureGameDataActorIdentity(actor));
         n++;
     }
 
     for (auto& handle : processLists->middleLowActorHandles) {
         // Convert handle -> ActorPtr safely
         RE::Actor* actor = handle.get().get();
-        if (!actor) {
+        if (!actor || actor->IsDeleted()) {
             continue;
         }
 
@@ -1567,6 +1646,7 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
                      pos.y, pos.z, distance);
 
         results.push_back({name.empty() ? "Unknown" : name, actor->GetFormID()});
+        resultIdentities.push_back(CaptureGameDataActorIdentity(actor));
         n++;
     }
 
@@ -1574,15 +1654,27 @@ std::vector<std::pair<std::string, RE::FormID>> GetLowProcessActorNamesFromRef(R
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
     logger::info("[LOW ACTOR] GetLowProcessActorNamesFromRef end, ellapsed {} ms, actors found {}", duration, n);
 
+    const auto targetIdentity = CaptureGameDataActorIdentity(target);
+    if (HoldUnkeyedGameData(targetIdentity, "LOW_ACTOR", target->GetDisplayFullName())) {
+        return results;
+    }
+
     json actorsNearby = json::array();
-    for (const auto& [actorName, formId] : results) {
-        actorsNearby.push_back({{"name", actorName}, {"formId", formId}});
+    for (std::size_t index = 0; index < results.size(); ++index) {
+        const auto& [actorName, formId] = results[index];
+        if (resultIdentities[index].Deferred()) {
+            continue;  // An unkeyed namesake is left out rather than sent by name.
+        }
+        json entry{{"name", actorName}, {"formId", formId}};
+        ApplyGameDataActorIdentity(entry, resultIdentities[index]);
+        actorsNearby.push_back(std::move(entry));
     }
 
     json finalData;
     finalData["type"] = "low_process_actors";
     finalData["actor_name"] = target->GetDisplayFullName();
     finalData["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(finalData, targetIdentity);
     finalData["actors_nearby"] = actorsNearby;
     finalData["gamets"] = GetGameTimeStamp();
     finalData["ts"] = getCurrentTimeMillis();

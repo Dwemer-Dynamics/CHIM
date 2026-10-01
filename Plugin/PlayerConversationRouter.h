@@ -48,6 +48,8 @@ struct PlayerConversationPresentActor
     float distance = 0.0f;
     bool managed = false;
     bool creature = false;
+    // Physical key captured on the game thread; empty when the actor has none.
+    std::string actorKey;
 };
 
 struct PlayerConversationRoutingResult
@@ -58,6 +60,8 @@ struct PlayerConversationRoutingResult
     std::vector<PlayerConversationPresentActor> presentActors;
     std::string responderName;
     std::vector<std::string> audience;
+    // Parallel to audience: the actor behind each entry (the player included), or null.
+    std::vector<RE::Actor*> audienceActors;
     std::string reason;
     std::string modeName;
     // Set when the player addressed a specific actor that must not be reached in this mode.

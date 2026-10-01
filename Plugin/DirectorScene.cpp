@@ -13,6 +13,7 @@
 #include <set>
 #include <deque>
 #include <map>
+#include <optional>
 
 namespace DirectorScene {
 namespace {
@@ -26,7 +27,12 @@ namespace {
     };
     std::map<std::string, SceneProgress> scenes;
     std::chrono::steady_clock::time_point pendingUntil{};
-    std::deque<std::pair<std::uint64_t, nlohmann::json>> pendingCommands;
+    struct PendingCommand {
+        std::uint64_t generation = 0;
+        nlohmann::json command;
+        ResponseItem capture;  // load and agent binding taken when the server returned the action
+    };
+    std::deque<PendingCommand> pendingCommands;
     thread_local bool dispatchingAction = false;
     std::atomic<bool> dispatchInProgress{false};
 
@@ -81,7 +87,7 @@ bool IsDispatchingAction() { return dispatchingAction; }
 void ProcessActions() {
     if (!ChimInteraction::Enabled()) { Cancel(); return; }
     for (;;) {
-        std::pair<std::uint64_t, nlohmann::json> next;
+        PendingCommand next;
         {
             std::lock_guard lock(sceneMutex);
             if (pendingCommands.empty()) { FinishScenes(); return; }
@@ -89,14 +95,20 @@ void ProcessActions() {
             pendingCommands.pop_front();
             dispatchInProgress = true;
         }
-        if (next.first != Generation()) { dispatchInProgress = false; continue; }
+        if (next.generation != Generation() || !SPGResponse::StillTargetsCapturedActor(next.capture)) {
+            dispatchInProgress = false;
+            continue;
+        }
         dispatchingAction = true;
         try {
-            const auto channel = next.second.at("channel").get<std::string>();
-            auto text = next.second.at("text").get<std::string>();
+            const auto channel = next.command.at("channel").get<std::string>();
+            auto text = next.command.at("text").get<std::string>();
             if (channel == "approvedcommand") text = "__CHIM_APPROVED__" + text;
-            if (channel == "rolecommand") parseRoleCommand(text);
-            else parseCommand(text, next.second.at("actor"));
+            if (channel == "rolecommand") {
+                if (text == next.capture.text) parseRoleCommand(next.capture);
+                else parseRoleCommand(text);
+            }
+            else parseCommand(text, next.command.at("actor"));
         } catch (const std::exception& error) {
             
             logger::error("[DIRECTOR] Action could not start (exception): {}", error.what());
@@ -122,6 +134,47 @@ void Queue(const std::string& encoded) {
                 lines.is_array(), lines.size(), id.size());
             return; 
         }
+        // actor_identity / listener_identity: the response endpoint {id, refid} (listener may be null). When a
+        // line sends either it is routed by them alone: both are validated and bound on the game thread before
+        // the scene lock is taken, and an invalid or unbound endpoint rejects the scene rather than the label.
+        std::vector<std::optional<ResponseItem>> lineIdentity(lines.size());
+        // Parsed first, then bound in one game-thread capture for the whole scene (never one wait per line).
+        std::vector<std::size_t> identityLines;
+        std::vector<ResponseItem> identityItems;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            const auto& line = lines[i];
+            if (!line.contains("actor_identity") && !line.contains("listener_identity")) continue;
+            const auto actor = line.contains("actor_identity")
+                ? EventIdentityUtils::ParseResponseEndpoint(line["actor_identity"], false) : std::nullopt;
+            const auto& listenerJson = line.contains("listener_identity") ? line["listener_identity"] : nlohmann::json();
+            const auto listener = listenerJson.is_null()
+                ? std::optional<EventIdentityUtils::ResponseEndpoint>(EventIdentityUtils::ResponseEndpoint{})
+                : EventIdentityUtils::ParseResponseEndpoint(listenerJson, true);
+            const auto ref = line.value("actor_refid", "");
+            const auto legacyRef = ref.empty() ? std::optional<std::uint32_t>(0) : EventIdentityUtils::ParseRefIdHex(ref);
+            if (!actor || !actor->IsPhysical() || !listener || !legacyRef || (*legacyRef && *legacyRef != actor->refId)) {
+                logger::error("[DIRECTOR] Queue: line {} has an invalid or contradictory actor identity", i + 1);
+                ReportAborted(lines); return;
+            }
+            ResponseItem item{"", 0, line.at("speaker").get<std::string>()};
+            item.identity.present = true;
+            item.identity.actor = *actor;
+            item.identity.listener = *listener;
+            identityLines.push_back(i);
+            identityItems.push_back(std::move(item));
+        }
+        if (!identityItems.empty()) {
+            identityItems = SPGResponse::CaptureActionTargetsFromAnyThread("ScriptQueue", std::move(identityItems));
+            for (std::size_t n = 0; n < identityLines.size(); ++n) {
+                auto& item = identityItems[n];
+                if (item.bindingRefused || !SPGResponse::StillMatchesResponseIdentity(item)) {
+                    logger::error("[DIRECTOR] Queue: line {} names an actor that is not that loaded actor now",
+                                  identityLines[n] + 1);
+                    ReportAborted(lines); return;
+                }
+                lineIdentity[identityLines[n]] = std::move(item);
+            }
+        }
         std::lock_guard lock(sceneMutex);
         if (accepted.contains(id)) { logger::warn("[DIRECTOR] Queue: duplicate scene id '{}', already accepted", id); return; }
         if (token != Generation()) { 
@@ -134,21 +187,56 @@ void Queue(const std::string& encoded) {
         std::set<std::string> utterances;
         for (std::size_t i = 0; i < lines.size(); ++i) {
             const auto& line = lines[i];
-            const auto speaker = line.at("speaker").get<std::string>();
-            auto agent = AIAgentManager::getInstance().getAgentByName(speaker);
-            if (!agent || !agent->getActor() || agent->isNarrator()) { 
-                logger::error("[DIRECTOR] Queue: invalid speaker '{}' (missing agent or narrator)", speaker);
-                ReportAborted(lines); 
-                continue;
+            const auto speakerLabel = line.at("speaker").get<std::string>();
+            const auto& bound = lineIdentity[i];
+            const auto ref = bound ? std::format("{:08X}", bound->identity.actor.refId) : line.value("actor_refid", "");
+            // actor_refid selects the exact physical speaker, so namesakes stay usable; without it a bare name
+            // resolves only when unique.
+            std::shared_ptr<AIAgent> agent;
+            std::string speaker = speakerLabel;
+            if (!ref.empty()) {
+                const auto refId = static_cast<RE::FormID>(std::stoul(ref, nullptr, 16));
+                agent = AIAgentManager::getInstance().getAgentByFormId(refId);
+                const auto parsedLabel = ActorTargetIdentifierUtils::Parse(speakerLabel);
+                if (parsedLabel.hasRefId && parsedLabel.refId != refId) {
+                    logger::error("[DIRECTOR] Queue: actor_refid {} contradicts speaker '{}'", ref, speakerLabel);
+                    ReportAborted(lines); return;
+                }
+                // Downstream playback resolves the line's actor by identifier, so keep the exact reference.
+                speaker = std::format("{} [RefID: {:08X}]", parsedLabel.fallbackName, refId);
+            } else {
+                agent = AIAgentManager::getInstance().getAgentByName(speakerLabel);
             }
-            const auto ref = line.value("actor_refid", "");
+            if (!agent || !agent->getActor() || agent->isNarrator()) {
+                logger::error("[DIRECTOR] Queue: invalid speaker '{}' (missing, ambiguous, or narrator)", speakerLabel);
+                ReportAborted(lines); return;
+            }
             if (!ref.empty() && agent->getActor()->GetFormID() != std::stoul(ref, nullptr, 16)) {
                 logger::error("[DIRECTOR] Queue: actor_refid mismatch for speaker '{}' (expected {}, actual {:X})",
-                    speaker, ref, agent->getActor()->GetFormID());
+                    speakerLabel, ref, agent->getActor()->GetFormID());
+                ReportAborted(lines); return;
+            }
+            if (bound && (agent->getProfileKey() != bound->identity.actor.id ||
+                          agent->getActor()->GetFormID() != bound->identityActor.actor.formId)) {
+                logger::error("[DIRECTOR] Queue: actor_identity for '{}' is not that agent", speakerLabel);
                 ReportAborted(lines); return;
             }
             ScriptLine queued(line.at("text"), "", line.at("listener"), "", speaker, "", 1.0f, -1,
                               "explicit_disable_rechat", line.at("utterance_id"));
+            if (bound) {
+                // Routed by the bound endpoints only; a null or narrator listener leaves no listener label.
+                const auto& identity = bound->identity;
+                queued.identityPresent = true;
+                queued.speakerIdentity = identity.actor;
+                queued.listenerIdentity = identity.listener;
+                queued.speakerBinding = bound->identityActor;
+                queued.listenerBinding = bound->identityListener;
+                const auto listenerName = ActorTargetIdentifierUtils::Parse(queued.action).fallbackName;
+                queued.action = identity.listener.IsPhysical() || identity.listener.IsPlayer()
+                    ? ActorIdentityUtils::BuildPromptIdentifier(listenerName.empty() ? "Actor" : listenerName,
+                                                                identity.listener.refId)
+                    : std::string{};
+            }
             queued.directorSceneId = id;
             queued.directorGeneration = token;
             queued.directorLine = static_cast<int>(i + 1);
@@ -191,8 +279,15 @@ static void DispatchActions(const ScriptLine& line, int approvedIndex = -1) {
                 const auto text = command.value("text", "");
                 const auto actor = command.value("actor", "");
                 if (channel == "command" || channel == "rolecommand" || channel == "approvedcommand") {
+                    const auto queuedAt = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+                    // Bound on the game thread before queueing so a later load or recycled actor slot cannot
+                    // receive it; approval later reuses this binding rather than capturing again.
+                    auto capture = SPGResponse::CaptureActionTargetFromAnyThread(
+                        channel == "rolecommand" ? channel : std::string("command"), {text, queuedAt, actor});
                     std::lock_guard lock(sceneMutex);
-                    if (line.directorGeneration == generation.load()) pendingCommands.emplace_back(line.directorGeneration, command);
+                    if (line.directorGeneration == generation.load())
+                        pendingCommands.push_back({line.directorGeneration, command, std::move(capture)});
                 }
                 else if (channel == "directorconfirm") {
                     request["approved_action"] = command.at("action_index");

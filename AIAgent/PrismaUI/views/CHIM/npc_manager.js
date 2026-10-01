@@ -29,6 +29,7 @@
     let pages = 1;
     let profiles = [];
     let currentDetail = null;
+    let listedCards = [];
     let stopSchedules = null;
     let editorLoadGeneration = 0;
     let loadingGeneration = 0;
@@ -50,6 +51,40 @@
     function normalizeRefid(value) {
         const raw = String(value == null ? '' : value).trim().replace(/^0x/i, '').toUpperCase();
         return /^[0-9A-F]{1,8}$/.test(raw) ? raw.padStart(8, '0') : '';
+    }
+
+    // Canonical actor keys are opaque server-issued values. The UI only checks their shape and
+    // never builds one from a name, a runtime FormID or a list position.
+    // Same shape as the server's chimIsActorKey(): a ref: plugin is lowercase, ends in .esm/.esp/.esl, has no
+    // | / \ @ # : control or DEL character and does not start with a space; the local id is 00XXXXXX.
+    const ACTOR_KEY_PATTERN = /^(?:ref:(?! )[^A-Z|/\\@#:\x00-\x1F\x7F]+\.(?:esm|esp|esl)\|00[0-9A-F]{6}|dyn:(?!0{8}-0{4}-0{4}-0{4}-0{12}$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|player|narrator)$/;
+    function actorKey(value) {
+        const key = String(value == null ? '' : value);
+        return ACTOR_KEY_PATTERN.test(key) ? key : '';
+    }
+
+    // A readable identity for a key without exposing the raw "plugin|local" pair.
+    function actorKeyLabel(key) {
+        if (key === 'player') return 'Player';
+        if (key === 'narrator') return 'Narrator';
+        const ref = /^ref:([^|]+)\|([0-9A-F]{8})$/.exec(key || '');
+        if (ref) return `${ref[2]} · ${ref[1]}`;
+        if (/^dyn:/.test(key || '')) return `Dynamic actor ${key.slice(4, 12)}`;
+        return '';
+    }
+
+    // Event participants arrive as legacy name strings or {name, id} objects (identity format 2).
+    function participantLabel(entry) {
+        if (entry && typeof entry === 'object') {
+            const name = String(entry.name || entry.label || '').trim() || 'Unknown';
+            const key = actorKey(entry.id || entry.key);
+            return key && key !== 'player' && key !== 'narrator' ? `${name} (${actorKeyLabel(key)})` : name;
+        }
+        return String(entry == null ? '' : entry).trim();
+    }
+
+    function cardActorKey(card) {
+        return actorKey(card && card.actor_key);
     }
 
     function refidDisplay(value) {
@@ -121,7 +156,19 @@
     // operator opened, even when that actor only borrows a shared profile.
     function selectedActor() {
         const card = (currentDetail && currentDetail.card) || {};
-        return { id: Number(byId('npc-id').value || 0), refid: normalizeRefid(card.refid) };
+        const explicitKey = card.actor_key != null && String(card.actor_key) !== '';
+        const key = cardActorKey(card);
+        return { id: Number(byId('npc-id').value || 0), refid: normalizeRefid(card.refid), actorKey: key,
+            invalidKey: explicitKey && !key };
+    }
+
+    // Additive guard for writes: the server refuses when the row id no longer holds this key.
+    // Legacy rows have no key and send nothing, so ordinary edits keep working. A row whose key is
+    // present but malformed is refused here rather than written unguarded or under a rewritten key.
+    function withExpectedKey(payload, actor) {
+        if (actor && actor.invalidKey) throw new Error('this NPC has an invalid actor key; reload the list');
+        if (actor && actor.actorKey) payload.expected_actor_key = actor.actorKey;
+        return payload;
     }
 
     // Users type RefIDs either way; the stored column has no 0x prefix.
@@ -251,7 +298,8 @@
             applyProfiles(data.profiles);
             pages = Number(data.pagination && data.pagination.pages) || 1;
             page = Number(data.pagination && data.pagination.page) || 1;
-            renderCards(data.npcs || []);
+            listedCards = Array.isArray(data.npcs) ? data.npcs : [];
+            renderCards(listedCards);
             byId('page-label').textContent = `Page ${page} of ${pages}`;
             byId('previous-page').disabled = page <= 1;
             byId('next-page').disabled = page >= pages;
@@ -470,7 +518,7 @@
         loadBglSettings(detail.card);
         resetNpcHistory(detail.card);
         if (stopSchedules) stopSchedules();
-        stopSchedules = window.chimSchedules(byId('npc-schedules'), `${serverBaseUrl}/ui/api/npc_schedules.php`, detail.card.id);
+        stopSchedules = window.chimSchedules(byId('npc-schedules'), `${serverBaseUrl}/ui/api/npc_schedules.php`, detail.card.id, cardActorKey(detail.card));
         switchEditorTab('general');
         byId('save-status').textContent = '';
         byId('save-status').classList.remove('error');
@@ -761,6 +809,7 @@
         return {
             name: String((card && card.name) || 'NPC'),
             refid: refid.text,
+            actorKey: cardActorKey(card),
             source: definingMod(card) || UNKNOWN_SOURCE_LABEL
         };
     }
@@ -859,6 +908,14 @@
         empty.className = `history-empty${error ? ' error' : ''}`;
         empty.textContent = message;
         return empty;
+    }
+
+    function historyRecipientKeys() {
+        const keys = {};
+        historyRecipients.forEach((entry, id) => {
+            if (entry && entry.actorKey) keys[String(id)] = entry.actorKey;
+        });
+        return keys;
     }
 
     function renderHistoryRecipients() {
@@ -986,7 +1043,9 @@
             const values = [
                 historyEvent.type || 'Event',
                 historyEvent.data || '',
-                Array.isArray(historyEvent.recipients) ? historyEvent.recipients.join(', ') : '',
+                Array.isArray(historyEvent.recipients)
+                    ? historyEvent.recipients.map(participantLabel).filter(Boolean).join(', ')
+                    : '',
                 historyEvent.tamrielic_time || '',
                 historyEvent.local_time || ''
             ];
@@ -1011,11 +1070,11 @@
                     await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
+                        body: JSON.stringify(withExpectedKey({
                             operation: 'delete_event',
                             id: Number(byId('npc-id').value),
                             rowid: Number(historyEvent.rowid)
-                        })
+                        }, selectedActor()))
                     }));
                     setHistoryStatus('Event deleted.', false);
                     await loadNpcHistory();
@@ -1073,13 +1132,15 @@
             const data = await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                body: JSON.stringify(withExpectedKey({
                     operation: 'inject_event',
                     id: actor.id,
                     refid: actor.refid,
                     event: text,
-                    recipient_ids: Array.from(historyRecipients.keys())
-                })
+                    recipient_ids: Array.from(historyRecipients.keys()),
+                    // Row id -> key the operator saw; keyless legacy recipients are omitted, never guessed.
+                    recipient_expected_keys: historyRecipientKeys()
+                }, actor))
             }));
             byId('history-event-text').value = '';
             setHistoryStatus(data.message || 'Event injected.', false);
@@ -1141,14 +1202,174 @@
         });
     }
 
-    function addRelationshipRow(target, relationship) {
+    // Classifies a stored edge without guessing: only a canonical actor key or an explicit typed
+    // target is an actor. Name-keyed edges stay unattributed legacy data, shown but never retargeted.
+    function relationshipTarget(mapKey, relationship) {
+        const typed = relationship && relationship.target && typeof relationship.target === 'object'
+            ? relationship.target : null;
+        const typedKind = String(typed && typed.kind || '').toLowerCase();
+        const key = actorKey(typed && typed.key) || actorKey(mapKey);
+        // Relationship storage keys the player edge as "Player" (RelationshipManager::playerTargetIdentity);
+        // this is separate from the reserved event/actor key "player".
+        if (typedKind === 'player' || mapKey === 'Player') {
+            return { kind: 'player', key: 'Player', label: 'Player', editable: true };
+        }
+        if ((typedKind === 'actor' || !typedKind) && key && key !== 'player' && key !== 'narrator') {
+            const label = String(typed && typed.label || '').trim() || 'Unnamed actor';
+            return { kind: 'actor', key, label, editable: true };
+        }
+        if (typedKind === 'concept') {
+            return { kind: 'concept', key: String(typed.key || mapKey), label: String(typed.label || mapKey), editable: true };
+        }
+        return { kind: 'legacy', key: '', label: String(mapKey), editable: false };
+    }
+
+    // A keyed NPC search result becomes an actor choice; cards without a server key are not offered.
+    function relationshipActorChoice(card) {
+        const key = cardActorKey(card);
+        const selfId = Number(byId('npc-id').value || 0);
+        if (!key || key === 'player' || key === 'narrator' || Number(card.id) === selfId) return null;
+        const entry = recipientEntry(card);
+        return { kind: 'actor', key, name: entry.name, npcId: Number(card.id), identity: `${entry.refid} · ${entry.source}` };
+    }
+
+    function relationshipTargetElement(row, target, isNew) {
+        if (!isNew) {
+            const display = document.createElement('div');
+            display.className = `relationship-target relationship-target-fixed ${target.kind}`;
+            const name = document.createElement('span');
+            name.className = 'relationship-target-name';
+            name.textContent = target.label;
+            display.appendChild(name);
+            const detail = document.createElement('span');
+            detail.className = 'relationship-target-identity';
+            detail.textContent = target.kind === 'actor' ? actorKeyLabel(target.key)
+                : target.kind === 'legacy' ? 'Unattributed legacy entry (read-only)'
+                : target.kind === 'concept' ? 'Concept' : '';
+            if (detail.textContent) display.appendChild(detail);
+            return display;
+        }
+        // The target type is always explicit: an NPC is picked by exact key from the server search
+        // (any page or filter), and a concept/faction is typed text that is never resolved to an actor.
+        const picker = document.createElement('div');
+        picker.className = 'relationship-target-picker';
+        const kind = document.createElement('select');
+        kind.className = 'relationship-target';
+        kind.setAttribute('aria-label', 'Relationship target type');
+        [['', 'Choose target type'], ['player', 'Player'], ['actor', 'NPC (search)'], ['concept', 'Concept / faction']]
+            .forEach(([value, text]) => kind.appendChild(new Option(text, value)));
+        const search = document.createElement('input');
+        search.type = 'search';
+        search.className = 'relationship-target-search';
+        search.placeholder = 'Search NPC profiles';
+        search.setAttribute('aria-label', 'Search NPC for relationship');
+        const concept = document.createElement('input');
+        concept.className = 'relationship-target-concept';
+        concept.placeholder = 'Concept or faction name';
+        concept.setAttribute('aria-label', 'Concept or faction name');
+        const results = document.createElement('div');
+        results.className = 'history-search-results relationship-target-results';
+        const chosen = document.createElement('div');
+        chosen.className = 'relationship-target-identity relationship-target-chosen';
+        chosen.setAttribute('aria-live', 'polite');
+        let generation = 0;
+        let timer = null;
+        const sync = () => {
+            search.hidden = kind.value !== 'actor';
+            concept.hidden = kind.value !== 'concept';
+            results.hidden = true;
+            if (kind.value === 'player') row.targetChoice = { kind: 'player', key: 'Player', name: 'Player' };
+            else if (kind.value === 'concept') {
+                const label = concept.value.trim();
+                row.targetChoice = label ? { kind: 'concept', key: label, name: label } : null;
+            } else row.targetChoice = null;
+            chosen.textContent = '';
+        };
+        const pick = (choice) => {
+            generation += 1;
+            row.targetChoice = choice;
+            search.value = choice.name;
+            chosen.textContent = `Selected: ${choice.name} · ${choice.identity}`;
+            results.hidden = true;
+            search.focus();
+        };
+        const runSearch = async () => {
+            const term = search.value.trim();
+            const current = ++generation;
+            if (term.length < 2) { results.hidden = true; return; }
+            const query = new URLSearchParams({ operation: 'list', search: term, page: '1', limit: '10' });
+            try {
+                const data = await parseResponse(await fetch(
+                    `${serverBaseUrl}/ui/api/chim_npc_manager.php?${query.toString()}`, { cache: 'no-store' }));
+                if (current !== generation) return;
+                const choices = (Array.isArray(data.npcs) ? data.npcs : []).map(relationshipActorChoice).filter(Boolean);
+                results.replaceChildren();
+                if (!choices.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'history-search-result-identity';
+                    empty.textContent = 'No keyed NPC matches.';
+                    results.appendChild(empty);
+                }
+                choices.forEach((choice) => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'history-search-result';
+                    const name = document.createElement('span');
+                    name.className = 'history-search-result-name';
+                    name.textContent = choice.name;
+                    const identity = document.createElement('span');
+                    identity.className = 'history-search-result-identity';
+                    identity.textContent = choice.identity;
+                    button.append(name, identity);
+                    button.addEventListener('click', () => pick(choice));
+                    results.appendChild(button);
+                });
+                results.hidden = false;
+            } catch (_error) {
+                if (current === generation) results.hidden = true;
+            }
+        };
+        kind.addEventListener('change', () => {
+            sync();
+            if (kind.value === 'actor') search.focus();
+            if (kind.value === 'concept') concept.focus();
+        });
+        concept.addEventListener('input', sync);
+        search.addEventListener('input', () => {
+            row.targetChoice = null;
+            chosen.textContent = '';
+            generation += 1;
+            clearTimeout(timer);
+            timer = setTimeout(runSearch, 250);
+        });
+        search.addEventListener('keydown', (event) => {
+            const first = results.hidden ? null : results.querySelector('button');
+            if (event.key === 'ArrowDown' && first) { event.preventDefault(); first.focus(); }
+            // Escape first closes the open result list; only a second Escape reaches the editor.
+            if (event.key === 'Escape' && !results.hidden) { event.stopPropagation(); results.hidden = true; }
+        });
+        results.addEventListener('keydown', (event) => {
+            const buttons = Array.from(results.querySelectorAll('button'));
+            const index = buttons.indexOf(document.activeElement);
+            if (event.key === 'ArrowDown' && index < buttons.length - 1) { event.preventDefault(); buttons[index + 1].focus(); }
+            if (event.key === 'ArrowUp') { event.preventDefault(); (index > 0 ? buttons[index - 1] : search).focus(); }
+            if (event.key === 'Escape') { event.stopPropagation(); results.hidden = true; search.focus(); }
+        });
+        picker.append(kind, search, concept, results, chosen);
+        sync();
+        return picker;
+    }
+
+    function addRelationshipRow(mapKey, relationship, isNew) {
         const row = document.createElement('div');
         row.className = 'relationship-row';
         row.relationshipData = relationship && typeof relationship === 'object' ? { ...relationship } : {};
-        const targetInput = document.createElement('input');
-        targetInput.className = 'relationship-target';
-        targetInput.placeholder = 'NPC or Player';
-        targetInput.value = target || '';
+        row.mapKey = isNew ? '' : String(mapKey);
+        row.isNew = !!isNew;
+        const target = isNew ? { kind: 'new', label: '', editable: true } : relationshipTarget(row.mapKey, row.relationshipData);
+        row.targetInfo = target;
+        if (target.kind === 'legacy') row.classList.add('legacy');
+        const targetElement = relationshipTargetElement(row, target, isNew);
         const affinity = document.createElement('input');
         affinity.className = 'relationship-affinity';
         affinity.type = 'number';
@@ -1175,28 +1396,56 @@
         customInfo.placeholder = 'Player-only notes (not used by AI)';
         customInfo.value = String(relationship && relationship.custom_info || '');
         customInfoField.append(customInfoLabel, customInfo);
+        const label = target.label || 'new relationship';
+        affinity.setAttribute('aria-label', `Affinity with ${label}`);
+        type.setAttribute('aria-label', `Relationship type with ${label}`);
+        note.setAttribute('aria-label', `Relationship note for ${label}`);
+        // Legacy edges are preserved exactly as stored until the server offers explicit attribution.
+        if (!target.editable) [affinity, type, note, customInfo].forEach((control) => { control.disabled = true; });
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'remove-relationship';
         remove.textContent = '×';
         remove.title = 'Remove relationship';
+        remove.setAttribute('aria-label', `Remove relationship with ${label}`);
         remove.addEventListener('click', () => row.remove());
-        row.append(targetInput, affinity, type, note, remove, customInfoField);
+        row.append(targetElement, affinity, type, note, remove, customInfoField);
         byId('relationship-list').appendChild(row);
+        return row;
     }
 
     function renderRelationships(relationships) {
         byId('relationship-list').replaceChildren();
-        Object.entries(relationships).forEach(([target, relationship]) => addRelationshipRow(target, relationship));
+        Object.entries(relationships).forEach(([target, relationship]) => addRelationshipRow(target, relationship, false));
     }
 
+    // Existing edges keep their stored map key and typed target; new edges use the chosen key.
+    // Throws instead of saving when a new row has no target or collides with an existing edge.
     function collectRelationships() {
         const relationships = {};
         byId('relationship-list').querySelectorAll('.relationship-row').forEach((row) => {
-            const target = row.querySelector('.relationship-target').value.trim();
-            if (!target) return;
-            relationships[target] = {
-                ...(row.relationshipData || {}),
+            const info = row.targetInfo || {};
+            if (!row.isNew && !info.editable) {
+                relationships[row.mapKey] = { ...(row.relationshipData || {}) };
+                return;
+            }
+            let mapKey = row.mapKey;
+            const data = { ...(row.relationshipData || {}) };
+            const choice = row.targetChoice;
+            if (row.isNew) {
+                if (!choice) throw new Error('Choose a target for each new relationship.');
+                if (choice.kind === 'concept' && (actorKey(choice.key) || choice.key.toLowerCase() === 'player')) {
+                    throw new Error(`"${choice.key}" is reserved and cannot be used as a concept name.`);
+                }
+                mapKey = choice.kind === 'player' ? 'Player' : choice.key;
+                data.target = { kind: choice.kind, key: choice.key, label: choice.name };
+                if (choice.npcId) data.target_npc_id = choice.npcId;
+            }
+            if (Object.prototype.hasOwnProperty.call(relationships, mapKey)) {
+                throw new Error(`A relationship with ${info.label || (choice && choice.name) || mapKey} already exists.`);
+            }
+            relationships[mapKey] = {
+                ...data,
                 aff: Number(row.querySelector('.relationship-affinity').value || 0),
                 type: row.querySelector('.relationship-type').value,
                 note: row.querySelector('.relationship-note').value.trim(),
@@ -1243,7 +1492,7 @@
             currentDetail = await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                body: JSON.stringify(withExpectedKey({
                     id: actor.id,
                     refid: actor.refid,
                     profile_revision: String((currentDetail && currentDetail.profile_revision) || ''),
@@ -1251,7 +1500,7 @@
                     overrides: collectOverrides(),
                     relationships: collectRelationships(),
                     relationships_locked: byId('relationships-locked').checked
-                })
+                }, actor))
             }));
             populateEditor(currentDetail);
             byId('save-status').textContent = 'NPC profile saved.';
@@ -1282,13 +1531,13 @@
             const result = await parseResponse(await fetch(`${serverBaseUrl}/ui/api/chim_npc_manager.php`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                body: JSON.stringify(withExpectedKey({
                     operation: 'action',
                     action,
                     id: actor.id,
                     refid: actor.refid,
                     idea
-                })
+                }, actor))
             }));
             status.textContent = result.message || 'Action sent.';
             if (action === 'bgl_inception') byId('bgl-inception-idea').value = '';
@@ -2036,7 +2285,10 @@
         clearTimeout(historyRecipientSearchTimer);
         historyRecipientSearchTimer = setTimeout(searchHistoryRecipients, 250);
     });
-    byId('add-relationship').addEventListener('click', () => addRelationshipRow('', { aff: 0, type: 'neutral' }));
+    byId('add-relationship').addEventListener('click', () => {
+        const row = addRelationshipRow('', { aff: 0, type: 'neutral' }, true);
+        row.querySelector('.relationship-target').focus();
+    });
     byId('voice-filter-preview').addEventListener('click', requestVoiceFilterPreview);
     voiceFilterControl('tts_filter_preset').addEventListener('change', () => {
         renderVoiceFilterDescription();

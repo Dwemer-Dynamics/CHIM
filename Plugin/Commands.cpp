@@ -14,6 +14,7 @@
 #include "ResourceFileReader.h"
 #include "Replacements.h"
 #include "SPGResponse.h"
+#include "PlaythroughSession.h"
 #include "SpeakManager.h"
 #include "ThreadPool.h"
 #include "MusicManager.h"
@@ -46,15 +47,19 @@ int MoveToPlayerRetries = 0;
 using json = nlohmann::json;
 
 extern void ScriptProxyRun(const std::string& jsonStr);
+extern void ScriptProxyRunBound(const std::string& jsonStr, std::uint64_t bindingToken);
 
 namespace {
     constexpr std::string_view kApprovedActionPrefix = "__CHIM_APPROVED__";
     std::atomic_bool g_actionConfirmationActive{false};
 
-    ResponseItem makeQueuedAction(std::string text, std::string actor) {
+    // Re-queues keep the original item's load and agent binding, so approval cannot rebind the action.
+    ResponseItem makeQueuedAction(std::string text, const ResponseItem& original) {
         const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
-        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
-        return ResponseItem{std::move(text), timestamp, std::move(actor)};
+        ResponseItem item = original;
+        item.text = std::move(text);
+        item.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        return item;
     }
 
     std::string describeActionParameter(const std::string& parameter) {
@@ -78,7 +83,7 @@ void processApprovedCommandQueue() {
     }
 
     responses.dequeueFirst("approvedcommand");
-    responses.enqueue("command", makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
+    responses.enqueue("command", makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending));
 }
 
 void processActionConfirmationQueue() {
@@ -93,6 +98,9 @@ void processActionConfirmationQueue() {
     }
 
     responses.dequeueFirst("confirmcommand");
+    if (!SPGResponse::StillTargetsCapturedActor(pending)) {
+        return;
+    }
 
     const auto delimiterPosition = pending.text.find('@');
     const std::string action = delimiterPosition == std::string::npos
@@ -113,7 +121,7 @@ void processActionConfirmationQueue() {
             if (accepted && !DirectorScene::ApproveAction(pending.text)) {
                 SPGResponse::getInstance().enqueue(
                     "command",
-                    makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending.actor));
+                    makeQueuedAction(std::string(kApprovedActionPrefix) + pending.text, pending));
             }
             // Cancellation intentionally produces no game event or LLM follow-up.
             g_actionConfirmationActive.store(false);
@@ -232,6 +240,10 @@ RE::Actor* resolveExplicitActorTarget(const ActorTargetIdentifierUtils::ParsedTa
     return actor;
 }
 
+// Bare-name scan of the loaded area that counts every actor carrying the label and selects only a sole match.
+RE::TESObjectREFR* findUniqueActorInCell(const std::string& targetName, RE::TESObjectCELL* cell,
+                                         RE::Actor* sourceActor, bool allowDead, bool& ambiguous);
+
 std::vector<std::string> splitString(const std::string& input) {
     std::stringstream ss(input);
     std::string segment;
@@ -261,13 +273,16 @@ std::shared_ptr<AIAgent> findAgentForVoiceRefresh(const std::string& refIdText, 
     if (!refIdText.empty()) {
         try {
             auto formId = static_cast<RE::FormID>(std::stoul(refIdText, nullptr, 0));
+            // The narrator's engine object is the player, so its RefID never selects the narrator agent.
             auto agentPtr = aiam.getAgentByFormId(formId);
-            if (agentPtr) {
+            if (agentPtr && !agentPtr->isNarrator()) {
                 return agentPtr;
             }
         } catch (const std::exception&) {
             logger::warn("[RefreshNPCVoice] Invalid refid '{}'", refIdText);
         }
+        // A supplied reference is exact; its name may belong to a namesake.
+        return nullptr;
     }
 
     if (!npcName.empty()) {
@@ -296,7 +311,7 @@ void refreshNpcVoiceRecovery(const std::shared_ptr<AIAgent>& agentPtr, const std
         }
     }
 
-    if (!actor && !npcName.empty()) {
+    if (!actor && refIdText.empty() && !npcName.empty()) {
         AIAgentManager& aiam = AIAgentManager::getInstance();
         auto fallbackAgent = aiam.getAgentByName(npcName);
         if (fallbackAgent) {
@@ -798,11 +813,32 @@ std::string getPreferredActorDisplayName(RE::Actor* actor, const std::string& fa
 RE::Actor* resolveActionActorTarget(const std::string& rawTargetName, RE::Actor* sourceActor,
                                     float radius, bool allowDead) {
     const auto parsedTarget = ActorTargetIdentifierUtils::Parse(rawTargetName);
-    if (parsedTarget.hasRefId && sourceActor) {
-        if (auto* exactTarget = resolveExplicitActorTarget(
-                parsedTarget, sourceActor->GetParentCell(), sourceActor, radius, allowDead)) {
-            return exactTarget;
+    AIAgentManager& aiam = AIAgentManager::getInstance();
+    if (ActorTargetIdentifierUtils::IsUnresolvableExplicit(parsedTarget)) {
+        logger::warn("[ACTION_TARGET] '{}' is a malformed reference; not falling back to its name", rawTargetName);
+        return nullptr;
+    }
+    if (parsedTarget.hasRefId) {
+        // An exact reference never degrades to its label, which a namesake may share.
+        auto* exactPlayer = RE::PlayerCharacter::GetSingleton();
+        if (exactPlayer && parsedTarget.refId == exactPlayer->GetFormID()) {
+            return exactPlayer->As<RE::Actor>();
         }
+        if (sourceActor) {
+            if (auto* exactTarget = resolveExplicitActorTarget(
+                    parsedTarget, sourceActor->GetParentCell(), sourceActor, radius, allowDead)) {
+                return exactTarget;
+            }
+        }
+        if (auto exactAgent = aiam.getAgentByFormId(parsedTarget.refId); exactAgent && !exactAgent->isNarrator()) {
+            if (auto* agentActor = exactAgent->getActor();
+                agentActor && agentActor->GetFormID() == parsedTarget.refId && !agentActor->IsDeleted() &&
+                (allowDead || !agentActor->IsDead())) {
+                return agentActor;
+            }
+        }
+        logger::warn("[ACTION_TARGET] Exact target '{}' is unavailable; not falling back to its name", rawTargetName);
+        return nullptr;
     }
 
     const auto targetName = parsedTarget.fallbackName;
@@ -812,30 +848,56 @@ RE::Actor* resolveActionActorTarget(const std::string& rawTargetName, RE::Actor*
             ? (player ? player->As<RE::Actor>() : nullptr)
             : nullptr;
     }
+    // The loaded-area scan counts every actor carrying the label. The name-keyed NPC list keeps only the last
+    // actor registered under a name, and a managed agent may be out of the scanned cell, so every distinct
+    // physical candidate is counted before one is chosen: a managed agent beside an unmanaged namesake is
+    // ambiguous rather than preferred.
+    RE::TESObjectREFR* scanned = nullptr;
+    if (sourceActor && sourceActor->GetParentCell()) {
+        bool ambiguous = false;
+        scanned = findUniqueActorInCell(targetName, sourceActor->GetParentCell(), sourceActor, allowDead, ambiguous);
+        if (ambiguous) {
+            return nullptr;
+        }
+    }
     if (isPlayerTeleportTargetName(targetName)) {
+        // "me"/"you"/"player" are symbolic self-targets, but a physical actor actually carrying the label is a
+        // namesake the shortcut must not silently override.
+        if (scanned && scanned != player) {
+            logger::warn("[ACTION_TARGET] Bare target '{}' names both the player and a loaded actor; an exact "
+                         "RefID is required", targetName);
+            return nullptr;
+        }
         return player ? player->As<RE::Actor>() : nullptr;
     }
 
-    AIAgentManager& aiam = AIAgentManager::getInstance();
-    auto agentPtr = aiam.getAgentByName(targetName);
-    if (agentPtr && agentPtr->getActor()) {
-        return agentPtr->getActor();
-    }
-
-    auto npcListTarget = NPCList::GetInstance().GetNPC(targetName);
-    if (npcListTarget) {
-        if (auto actor = npcListTarget->As<RE::Actor>()) {
-            return actor;
-        }
-    }
-
-    if (!sourceActor || !sourceActor->GetParentCell()) {
+    if (aiam.isAmbiguousAgentName(targetName)) {
+        // Several managed physical actors share this label; picking one would invent a selector.
+        logger::warn("[ACTION_TARGET] Bare target '{}' is ambiguous; an exact RefID is required", targetName);
         return nullptr;
     }
-
-    auto* targetRef = findActorInCell(
-        targetName, sourceActor->GetParentCell(), sourceActor, radius, allowDead);
-    return targetRef ? targetRef->As<RE::Actor>() : nullptr;
+    RE::TESObjectREFR* managed = nullptr;
+    if (auto agentPtr = aiam.getAgentByName(targetName); agentPtr && !agentPtr->isNarrator()) {
+        if (auto* agentActor = agentPtr->getActor();
+            agentActor && !agentActor->IsDeleted() && (allowDead || !agentActor->IsDead())) {
+            managed = agentActor;
+        }
+    }
+    auto* npcListTarget = NPCList::GetInstance().GetNPC(targetName);
+    if (npcListTarget && (npcListTarget->IsDeleted() || (!allowDead && npcListTarget->IsDead()))) {
+        npcListTarget = nullptr;
+    }
+    RE::TESObjectREFR* chosen = nullptr;
+    for (auto* candidate : {managed, scanned, npcListTarget}) {
+        if (!candidate) continue;
+        if (chosen && chosen != candidate) {
+            logger::warn("[ACTION_TARGET] Bare target '{}' names more than one actor; an exact RefID is required",
+                         targetName);
+            return nullptr;
+        }
+        chosen = candidate;
+    }
+    return chosen ? chosen->As<RE::Actor>() : nullptr;
 }
 
 RE::Actor* resolveTeleportTargetActor(const std::string& rawTargetName) {
@@ -1088,8 +1150,341 @@ RE::TESForm* findLocation(std::string parameter) {
     return locationForm;
 }
 
+namespace {
+    // Resolves a role-command actor argument the way its branch does.
+    RE::Actor* resolveRoleCommandActorArg(ActorTargetIdentifierUtils::RoleActorArgKind kind, const std::string& text) {
+        using Kind = ActorTargetIdentifierUtils::RoleActorArgKind;
+        auto& aiam = AIAgentManager::getInstance();
+        switch (kind) {
+            case Kind::AgentName: {
+                auto agent = aiam.getAgentByName(text);
+                return agent ? agent->getActor() : nullptr;
+            }
+            case Kind::RoleTarget:
+                return resolveNarratorRoleTargetActor(text);
+            case Kind::TrainerName: {
+                if (const auto parsed = ActorTargetIdentifierUtils::Parse(text); parsed.hasRefIdMarker) {
+                    auto* player = RE::PlayerCharacter::GetSingleton();
+                    return player ? resolveExplicitActorTarget(parsed, player->GetParentCell(), player->As<RE::Actor>(),
+                                                               2048, false)
+                                  : nullptr;
+                }
+                if (auto agent = aiam.getAgentByName(text); agent && agent->getActor() && !agent->isNarrator()) {
+                    return agent->getActor();
+                }
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                auto* ref = player ? findActorInCell(text, player->GetParentCell(), player->As<RE::Actor>(), 2048, false)
+                                   : nullptr;
+                return ref ? ref->As<RE::Actor>() : nullptr;
+            }
+            default:
+                return nullptr;
+        }
+    }
+
+    // Numeric reference arguments: decimal ones may arrive as signed Papyrus ints, hex ones with or without 0x.
+    std::uint32_t parseRoleCommandRef(ActorTargetIdentifierUtils::RoleActorArgKind kind, const std::string& text) {
+        try {
+            if (kind == ActorTargetIdentifierUtils::RoleActorArgKind::DecimalRef) {
+                return static_cast<std::uint32_t>(std::stoll(text, nullptr, 10));
+            }
+            try {
+                return static_cast<std::uint32_t>(std::stoul(text, nullptr, 0));
+            } catch (const std::exception&) {
+                return static_cast<std::uint32_t>(std::stoul(text, nullptr, 16));
+            }
+        } catch (const std::exception&) {
+            return 0;
+        }
+    }
+
+    bool splitRoleCommand(const std::string& raw, std::string& command, std::vector<std::string>& args) {
+        const auto pos = raw.find('@');
+        if (pos == std::string::npos) return false;
+        command = raw.substr(0, pos);
+        args = splitString(raw.substr(pos + 1));
+        return true;
+    }
+}
+
+namespace {
+    // Ordinary commands: with an envelope every actor argument must carry its own target, and each label is
+    // rewritten to the bound reference, so the handler's resolver (findActorInCell / resolveActionActorTarget)
+    // selects exactly that actor and never looks the bare label up again at dispatch.
+    bool ApplyOrdinaryCommandIdentityTargets(ResponseItem& item, const std::string& command,
+                                             std::vector<std::string>& args, bool& rewritten) {
+        using Kind = ActorTargetIdentifierUtils::CommandActorArgKind;
+        const auto specs = ActorTargetIdentifierUtils::OrdinaryCommandActorArgs(command);
+        for (const auto& bound : item.identityTargets) {
+            // An envelope target must name an argument this command's handler resolves as an actor.
+            if (bound.argIndex >= args.size() ||
+                std::none_of(specs.begin(), specs.end(), [&](const auto& s) { return s.index == bound.argIndex; })) {
+                logger::warn("[RESPONSE_IDENTITY] {} argument {} is not an actor argument", command, bound.argIndex);
+                return false;
+            }
+        }
+        for (const auto& spec : specs) {
+            if (spec.index >= args.size()) continue;
+            auto& arg = args[spec.index];
+            const auto* endpoint = item.identity.TargetFor(spec.index);
+            const bool hasEnvelope = endpoint && std::any_of(item.identityTargets.begin(), item.identityTargets.end(),
+                [&](const BoundActionActor& b) { return b.argIndex == spec.index; });
+            const auto start = arg.find('{');
+            const auto end = arg.rfind('}');
+            const bool json = spec.kind == Kind::JsonTarget ||
+                (spec.kind == Kind::JsonTargetOrName && start != std::string::npos);
+            nlohmann::json payload;
+            std::string label;
+            if (json) {
+                if (start != std::string::npos && end != std::string::npos && end > start) {
+                    payload = nlohmann::json::parse(arg.substr(start, end - start + 1), nullptr, false);
+                }
+                if (!payload.is_object()) {
+                    // Not this handler's JSON form (CastSpell's legacy spell name): never an actor here.
+                    if (hasEnvelope) return false;
+                    continue;
+                }
+                if (payload.contains("target") && payload["target"].is_string()) {
+                    label = payload["target"].get<std::string>();
+                }
+            } else {
+                label = arg;
+            }
+            label = jusTrim(label);
+            if (!hasEnvelope) {
+                if (label.empty() || ActorTargetIdentifierUtils::IsCastSpellNonActorTarget(command, label)) continue;
+                logger::warn("[RESPONSE_IDENTITY] Refusing {}; actor argument {} has no identity", command, spec.index);
+                return false;
+            }
+            if (endpoint->IsNarrator() || endpoint->refId == 0 ||
+                ActorTargetIdentifierUtils::IsCastSpellNonActorTarget(command, label)) {
+                return false;
+            }
+            const auto parsed = ActorTargetIdentifierUtils::Parse(label);
+            if (parsed.hasRefIdMarker) {
+                if (!parsed.hasRefId || parsed.refId != endpoint->refId) return false;
+                continue;
+            }
+            const auto exact = ActorIdentityUtils::BuildPromptIdentifier(
+                parsed.fallbackName.empty() ? "Actor" : parsed.fallbackName, endpoint->refId);
+            if (json) {
+                payload["target"] = exact;
+                arg = arg.substr(0, start) + payload.dump() + arg.substr(end + 1);
+            } else {
+                arg = exact;
+            }
+            rewritten = true;
+        }
+        return true;
+    }
+}
+
+bool ApplyResponseIdentityTargets(ResponseItem& item, bool rewriteBareArgs, bool ordinaryCommand) {
+    std::string command;
+    std::vector<std::string> args;
+    if (!splitRoleCommand(item.text, command, args)) return item.identity.targets.empty();
+    if (ordinaryCommand) {
+        bool rewritten = false;
+        if (!ApplyOrdinaryCommandIdentityTargets(item, command, args, rewritten)) return false;
+        if (rewritten && rewriteBareArgs) {
+            std::string text = command;
+            for (const auto& arg : args) text += "@" + arg;
+            item.text = std::move(text);
+        }
+        return true;
+    }
+    bool rewritten = false;
+    using Kind = ActorTargetIdentifierUtils::RoleActorArgKind;
+    const auto specs = ActorTargetIdentifierUtils::RoleCommandActorArgs(command);
+    for (const auto& bound : item.identityTargets) {
+        const auto* endpoint = item.identity.TargetFor(bound.argIndex);
+        if (!endpoint || bound.argIndex >= args.size()) return false;
+        const auto spec = std::find_if(specs.begin(), specs.end(), [&](const auto& s) { return s.index == bound.argIndex; });
+        // An envelope target must name an argument this command's branch resolves as an actor.
+        if (spec == specs.end()) return false;
+        const auto text = jusTrim(args[bound.argIndex]);
+        if (spec->kind == Kind::DecimalRef || spec->kind == Kind::HexRef) {
+            // The branch reads this parameter as a number, so it must already be the envelope's actor.
+            if (parseRoleCommandRef(spec->kind, text) != endpoint->refId) return false;
+            continue;
+        }
+        // A name parameter: its label is display text ("Babe", "Dead" and "123" are names), never a reference.
+        const auto parsed = ActorTargetIdentifierUtils::Parse(text);
+        if (parsed.hasRefIdMarker) {
+            if (!parsed.hasRefId || parsed.refId != endpoint->refId) return false;
+            continue;
+        }
+        if (rewriteBareArgs) {
+            args[bound.argIndex] = ActorIdentityUtils::BuildPromptIdentifier(
+                parsed.fallbackName.empty() ? "Actor" : parsed.fallbackName, endpoint->refId);
+            rewritten = true;
+        }
+    }
+    if (rewritten) {
+        std::string text = command;
+        for (const auto& arg : args) text += "@" + arg;
+        item.text = std::move(text);
+    }
+    return true;
+}
+
+namespace {
+    // ScriptProxy's actors are JSON parameters, not '@' arguments. Every parameter that names a loaded actor is
+    // bound now; with declared actor_targets each must be bound to its declared endpoint, else nothing runs.
+    void CaptureScriptProxyTargets(ResponseItem& item, const std::string& jsonText) {
+        const auto command = nlohmann::json::parse(jsonText, nullptr, false);
+        const auto identity = EventIdentityUtils::ParseScriptProxyIdentity(command);
+        const auto refuse = [&](std::string_view why) {
+            logger::warn("[SCRIPTPROXY_IDENTITY] Refusing ScriptProxy command: {}", why);
+            item.bindingRefused = true;
+            item.roleTargets.clear();
+            item.scriptProxyKeys.clear();
+        };
+        if (!identity.Valid()) return refuse(identity.invalidReason);
+        for (const auto& [key, endpoint] : identity.targets) {
+            auto bound = SPGResponse::BindResponseEndpoint(endpoint, item.scriptProxyKeys.size());
+            if (bound.actor.formId == 0) return refuse("declared actor " + key + " is not that loaded actor now");
+            item.scriptProxyKeys.push_back(key);
+            item.roleTargets.push_back(std::move(bound));
+        }
+        for (const auto& entry : command.items()) {
+            const auto& key = entry.key();
+            if (EventIdentityUtils::IsScriptProxyReservedKey(key) || identity.TargetFor(key)) continue;
+            const auto refId = EventIdentityUtils::ScriptProxyRefValue(entry.value());
+            auto* form = refId ? RE::TESForm::LookupByID(refId) : nullptr;
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            if (!actor) continue;  // Spells, factions, base forms, items and non-actor references are not actors.
+            if (identity.declared) return refuse("actor parameter " + key + " has no declared identity");
+            auto bound = SPGResponse::BindActor(actor, item.scriptProxyKeys.size());
+            if (bound.actor.formId == 0) return refuse("actor parameter " + key + " has no stable identity");
+            item.scriptProxyKeys.push_back(key);
+            item.roleTargets.push_back(std::move(bound));
+        }
+    }
+}
+
+void CaptureRoleCommandTargets(ResponseItem& item) {
+    std::string command;
+    std::vector<std::string> args;
+    if (!splitRoleCommand(item.text, command, args)) return;
+    if (command.contains("ScriptProxy")) {
+        // The response envelope's '@' targets cannot address a nested JSON parameter.
+        if (!item.identity.targets.empty()) {
+            item.bindingRefused = true;
+            return;
+        }
+        CaptureScriptProxyTargets(item, item.text.substr(item.text.find('@') + 1));
+        return;
+    }
+    using Kind = ActorTargetIdentifierUtils::RoleActorArgKind;
+    for (const auto& spec : ActorTargetIdentifierUtils::RoleCommandActorArgs(command)) {
+        if (spec.index >= args.size()) continue;
+        const auto text = jusTrim(args[spec.index]);
+        RE::Actor* actor = nullptr;
+        bool bareName = false;
+        if (item.identity.present) {
+            // The envelope is the binding: its bound target for this argument, or none for a non-actor one.
+            const auto envelope = std::find_if(item.identityTargets.begin(), item.identityTargets.end(),
+                                               [&](const BoundActionActor& b) { return b.argIndex == spec.index; });
+            if (envelope != item.identityTargets.end()) {
+                item.roleTargets.push_back(*envelope);
+                continue;
+            }
+            const bool numeric = spec.kind == Kind::DecimalRef || spec.kind == Kind::HexRef;
+            if (!numeric && !text.empty()) {
+                logger::warn("[RESPONSE_IDENTITY] Refusing role command {}; actor argument {} has no identity",
+                             command, spec.index);
+                item.bindingRefused = true;
+                return;
+            }
+        }
+        if (spec.kind == Kind::DecimalRef || spec.kind == Kind::HexRef) {
+            const auto refId = parseRoleCommandRef(spec.kind, text);
+            auto* form = refId ? RE::TESForm::LookupByID(refId) : nullptr;
+            actor = form ? form->As<RE::Actor>() : nullptr;
+            // A marker, container, base form or unloaded reference is not an actor binding.
+            if (!actor) continue;
+        } else {
+            const auto parsed = ActorTargetIdentifierUtils::Parse(text);
+            if (ActorTargetIdentifierUtils::IsUnresolvableExplicit(parsed)) {
+                logger::warn("[ACTION_IDENTITY] Refusing role command {}; '{}' is a malformed reference", command, text);
+                item.bindingRefused = true;
+                return;
+            }
+            if (parsed.hasRefId) {
+                // An explicit reference binds that physical actor and never its label.
+                auto* form = RE::TESForm::LookupByID(parsed.refId);
+                actor = form ? form->As<RE::Actor>() : nullptr;
+                if (!actor || actor->IsDeleted()) {
+                    logger::warn("[ACTION_IDENTITY] Refusing role command {}; {} is not a loaded actor", command, text);
+                    item.bindingRefused = true;
+                    return;
+                }
+            } else {
+                actor = resolveRoleCommandActorArg(spec.kind, text);
+                if (!actor) {
+                    // An unresolved bare label stays unresolved: dispatch refuses it if it names anyone later.
+                    BoundActionActor unresolved;
+                    unresolved.argIndex = spec.index;
+                    unresolved.bareName = true;
+                    unresolved.unresolved = true;
+                    item.roleTargets.push_back(std::move(unresolved));
+                    continue;
+                }
+                bareName = true;
+            }
+        }
+        auto bound = SPGResponse::BindActor(actor, spec.index, bareName);
+        if (bound.actor.formId == 0) {
+            logger::warn("[ACTION_IDENTITY] Refusing role command {}; '{}' has no stable identity", command, text);
+            item.bindingRefused = true;
+            return;
+        }
+        item.roleTargets.push_back(std::move(bound));
+    }
+}
+
+bool RoleCommandTargetsStillBound(const ResponseItem& item) {
+    if (item.roleTargets.empty()) return true;
+    std::string command;
+    std::vector<std::string> args;
+    if (!splitRoleCommand(item.text, command, args)) return false;
+    const auto specs = ActorTargetIdentifierUtils::RoleCommandActorArgs(command);
+    for (const auto& bound : item.roleTargets) {
+        if (!bound.unresolved && !SPGResponse::StillSameBoundActor(bound)) return false;
+        if (!bound.bareName) continue;
+        // The branch resolves the label again: it must select exactly the bound actor. A label that named nobody
+        // at capture must still name nobody, and a bound label that now names nobody is refused as well.
+        const auto spec = std::find_if(specs.begin(), specs.end(), [&](const auto& s) { return s.index == bound.argIndex; });
+        if (spec == specs.end() || bound.argIndex >= args.size()) return false;
+        auto* current = resolveRoleCommandActorArg(spec->kind, jusTrim(args[bound.argIndex]));
+        if (bound.unresolved ? current != nullptr : (!current || current->GetFormID() != bound.actor.formId)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+namespace {
+    // The queued item being dispatched, so ScriptProxy can hand its captured bindings to Papyrus.
+    thread_local const ResponseItem* g_dispatchingRoleItem = nullptr;
+}
+
+void parseRoleCommand(const ResponseItem& item) {
+    g_dispatchingRoleItem = &item;
+    try {
+        parseRoleCommand(item.text);
+    } catch (...) {
+        g_dispatchingRoleItem = nullptr;
+        throw;
+    }
+    g_dispatchingRoleItem = nullptr;
+}
+
 void parseRoleCommand(std::string rawCommand) {
     if (!ChimInteraction::Enabled()) return;
+    const ResponseItem* dispatchItem = g_dispatchingRoleItem;
+    g_dispatchingRoleItem = nullptr;  // Only the queued command itself, never a nested dispatch.
     static std::string delimiter = "@";
     size_t pos = rawCommand.find(delimiter);
     if (pos == std::string::npos) {
@@ -1146,8 +1541,59 @@ void parseRoleCommand(std::string rawCommand) {
     } else if (command.contains("spawnBook")) {
         std::vector<std::string> splitResult = splitString(parameter);
 
-        if (splitResult.size() != 5) {
+        if (splitResult.size() != 5 && splitResult.size() != 6) {
             logger::info("Command has not enough parms {}", command);
+        } else if (splitResult.size() == 6) {
+            // Identified physical diary: never touches the legacy title cache or the Papyrus title spawn.
+            const auto identity = DiaryBookIdentityUtils::ParseIdentityArgument(splitResult[5]);
+            constexpr std::string_view encodedPrefix = "b64:";
+            const auto content = splitResult[4].starts_with(encodedPrefix)
+                ? HTTPManager::base64_decode(splitResult[4].substr(encodedPrefix.size()))
+                : std::string{};
+            const auto recipientFormID = static_cast<RE::FormID>(std::strtoul(splitResult[2].c_str(), nullptr, 10));
+            // The queued item's load and recipient binding (a handle, never the actor) travel into the task.
+            DiaryBookIdentityUtils::DispatchBinding binding;
+            binding.loadEpoch = dispatchItem ? dispatchItem->loadEpoch : PlaythroughSession::Generation();
+            binding.recipientFormId = recipientFormID;
+            std::optional<BoundActionActor> boundRecipient;
+            if (dispatchItem && dispatchItem->text == rawCommand) {
+                for (const auto& bound : dispatchItem->roleTargets) {
+                    if (bound.argIndex == 2 && !bound.unresolved) boundRecipient = bound;
+                }
+            }
+            if (boundRecipient) {
+                binding.recipientBound = true;
+                binding.boundFormId = boundRecipient->actor.formId;
+            }
+            if (!identity || content.empty()) {
+                logger::warn("[PHYSICAL_DIARY] Rejected identified diary with malformed identity or content");
+            } else {
+                SKSE::GetTaskInterface()->AddTask(
+                    [identity = *identity, content, title = splitResult[0], binding, boundRecipient]() mutable {
+                        const bool boundStillSame = boundRecipient && SPGResponse::StillSameBoundActor(*boundRecipient);
+                        if (!DiaryBookIdentityUtils::DispatchStillCurrent(binding, PlaythroughSession::Generation(),
+                                                                          boundStillSame)) {
+                            logger::warn("[PHYSICAL_DIARY] Dropping identified diary; its load or bound recipient "
+                                         "changed before delivery");
+                            return;
+                        }
+                        RE::Actor* recipient = nullptr;
+                        if (boundRecipient) {
+                            const auto live = boundRecipient->handle.get();
+                            recipient = live ? live.get() : nullptr;
+                        } else {
+                            recipient = RE::TESForm::LookupByID<RE::Actor>(binding.recipientFormId);
+                        }
+                        if (!recipient ||
+                            !DiaryBookIdentityUtils::RecipientMatches(identity, BuildActorKey(recipient))) {
+                            logger::warn("[PHYSICAL_DIARY] Identified diary recipient does not match the bound actor");
+                            return;
+                        }
+                        if (!DynamicDiaryBook::DeliverIdentifiedDiary(recipient, title, identity, std::move(content))) {
+                            logger::warn("[PHYSICAL_DIARY] Identified diary could not be delivered");
+                        }
+                    });
+            }
         } else {
             int fidType = atoi(splitResult[1].c_str());
             int fidLoc = atoi(splitResult[2].c_str());
@@ -1801,17 +2247,73 @@ void parseRoleCommand(std::string rawCommand) {
         } else {
             RE::Actor* readerActor = nullptr;
             auto& manager = AIAgentManager::getInstance();
-            const auto readerAgent = manager.getAgentByName(readerName);
-            if (readerAgent) {
+            // reader_identity {id, refid} names the exact reader agent; otherwise a decorated or unique bare
+            // reader name. An unbound, ambiguous or malformed reader is refused, never searched as the player.
+            bool readerRefused = false;
+            std::shared_ptr<AIAgent> readerAgent;
+            if (payload.is_object() && payload.contains("reader_identity")) {
+                const auto endpoint = EventIdentityUtils::ParseResponseEndpoint(payload["reader_identity"], false);
+                readerAgent = endpoint && endpoint->IsPhysical() ? manager.getAgentByFormId(endpoint->refId) : nullptr;
+                readerRefused = !readerAgent || readerAgent->isNarrator() || readerAgent->getProfileKey() != endpoint->id ||
+                                !readerAgent->getActor() || readerAgent->getActor()->GetFormID() != endpoint->refId;
+            } else {
+                const auto parsedReader = ActorTargetIdentifierUtils::Parse(readerName);
+                readerRefused = ActorTargetIdentifierUtils::IsUnresolvableExplicit(parsedReader) ||
+                                manager.isAmbiguousAgentName(readerName);
+                if (!readerRefused) {
+                    readerAgent = manager.getAgentByName(readerName);
+                    readerRefused = parsedReader.hasRefId && !readerAgent;
+                }
+            }
+            if (readerAgent && !readerRefused) {
                 readerActor = readerAgent->getActor();
             }
 
-            auto match = findInventoryBookByTitle(readerActor, bookTitle);
-            if (!match.book && !match.ambiguous) {
+            auto match = readerRefused ? InventoryBookLookupResult{} : findInventoryBookByTitle(readerActor, bookTitle);
+            if (readerRefused) {
+                logger::warn("[UploadBookContentByTitle] Reader '{}' does not name one bound agent", readerName);
+            }
+            if (!match.book && !match.ambiguous && !readerRefused) {
                 match = findInventoryBookByTitle(RE::PlayerCharacter::GetSingleton(), bookTitle);
             }
 
-            if (match.ambiguous) {
+            // Identified diaries upload their own copy's text and identity, never the template description.
+            // An optional book_key selects among carried identified copies; legacy keyless diaries keep the
+            // existing template upload below.
+            const auto requestedBookKey = extractStructuredActionStringField(payload, {"book_key"});
+            std::optional<DynamicDiaryBook::IdentifiedDiary> identifiedMatch;
+            bool identifiedAmbiguous = false;
+            if (!readerRefused && (!requestedBookKey.empty() || DynamicDiaryBook::IsPhysicalDiaryBook(match.book))) {
+                const auto normalizedTitle = toLower(trim(bookTitle));
+                for (auto* holder : {readerActor, static_cast<RE::Actor*>(RE::PlayerCharacter::GetSingleton())}) {
+                    if (!holder || identifiedMatch || identifiedAmbiguous) {
+                        continue;
+                    }
+                    for (auto& carried : DynamicDiaryBook::CarriedIdentifiedDiaries(holder)) {
+                        const bool selected = requestedBookKey.empty()
+                            ? toLower(trim(carried.title)) == normalizedTitle
+                            : carried.identity.bookKey == requestedBookKey;
+                        if (!selected) {
+                            continue;
+                        }
+                        identifiedAmbiguous = identifiedMatch.has_value();
+                        identifiedMatch = std::move(carried);
+                    }
+                }
+            }
+
+            if (identifiedAmbiguous) {
+                logger::warn("[UploadBookContentByTitle] '{}' matches multiple identified diaries", bookTitle);
+                RE::DebugNotification("[CHIM] That request matches multiple books. Please name the exact title.");
+            } else if (identifiedMatch) {
+                DynamicDiaryBook::QueueIdentifiedDiaryUpload(
+                    *identifiedMatch, readerActor ? BuildActorKey(readerActor) : std::string(ActorIdentityUtils::PlayerActorKey),
+                    requestToken);
+                RE::DebugNotification("[CHIM] Retrieving book content...");
+            } else if (!requestedBookKey.empty()) {
+                logger::warn("[UploadBookContentByTitle] No carried identified diary has the requested book key");
+                RE::DebugNotification("[CHIM] The requested book is not in the reader's or player's inventory.");
+            } else if (match.ambiguous) {
                 logger::warn("[UploadBookContentByTitle] '{}' matches multiple books in the selected inventory",
                              bookTitle);
                 RE::DebugNotification("[CHIM] That request matches multiple books. Please name the exact title.");
@@ -2103,7 +2605,22 @@ void parseRoleCommand(std::string rawCommand) {
         } else {
             
             std::string jsonStr(splitResult[0].c_str());
-            ScriptProxyRun(jsonStr);
+            if (dispatchItem && dispatchItem->text == rawCommand && dispatchItem->roleTargetsCaptured) {
+                // Rechecked here as well as at dequeue; the token lets the json getters recheck again.
+                if (dispatchItem->bindingRefused || !RoleCommandTargetsStillBound(*dispatchItem)) {
+                    logger::warn("[SCRIPTPROXY_IDENTITY] Dropping ScriptProxy command; a bound actor changed");
+                } else {
+                    std::vector<std::pair<std::string, BoundActionActor>> actors;
+                    for (const auto& bound : dispatchItem->roleTargets) {
+                        if (bound.argIndex < dispatchItem->scriptProxyKeys.size()) {
+                            actors.emplace_back(dispatchItem->scriptProxyKeys[bound.argIndex], bound);
+                        }
+                    }
+                    ScriptProxyRunBound(jsonStr, ScriptProxyBindings::Register(std::move(actors)));
+                }
+            } else {
+                ScriptProxyRun(jsonStr);
+            }
 
         }
     } else if (command.contains("ShowTrainingMenu")) {
@@ -2113,8 +2630,15 @@ void parseRoleCommand(std::string rawCommand) {
             
             // First try to find as AIAgent
             AIAgentManager& aiam = AIAgentManager::getInstance();
-            auto agentPtr = aiam.getAgentByName(splitResult[0]);
-            if (agentPtr && agentPtr->getActor()) {
+            const auto parsedTrainer = ActorTargetIdentifierUtils::Parse(jusTrim(splitResult[0]));
+            auto agentPtr = parsedTrainer.hasRefIdMarker ? nullptr : aiam.getAgentByName(splitResult[0]);
+            if (parsedTrainer.hasRefIdMarker) {
+                // A bound or explicit trainer is exactly that loaded actor near the player, never a name match.
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                trainerActor = player ? resolveExplicitActorTarget(parsedTrainer, player->GetParentCell(),
+                                                                   player->As<RE::Actor>(), 2048, false)
+                                      : nullptr;
+            } else if (agentPtr && agentPtr->getActor() && !agentPtr->isNarrator()) {
                 trainerActor = agentPtr->getActor();
             } else {
                 // If not an AIAgent, search for vanilla NPC by name
@@ -2130,10 +2654,20 @@ void parseRoleCommand(std::string rawCommand) {
             
             if (trainerActor) {
                 // Queue the menu opening on the main thread
-                SKSE::GetTaskInterface()->AddTask([trainerActor, interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+                // Carry a handle plus the reference and persistent key, never a raw pointer, so a recycled slot
+                // or another load cannot open this trainer's menu for a different actor.
+                SKSE::GetTaskInterface()->AddTask([trainerHandle = trainerActor->GetHandle(),
+                                                   trainerFormId = trainerActor->GetFormID(),
+                                                   trainerKey = BuildActorKey(trainerActor),
+                                                   loadEpoch = PlaythroughSession::Context(),
+                                                   interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
             if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
-                    if (!trainerActor) {
-                        logger::error("[ShowTrainingMenu] Trainer actor is null in task");
+                    const auto trainerPtr = trainerHandle.get();
+                    RE::Actor* trainerActor = trainerPtr.get();
+                    if (loadEpoch != PlaythroughSession::Generation() || !trainerActor ||
+                        trainerActor->GetFormID() != trainerFormId || trainerActor->IsDeleted() ||
+                        (!trainerKey.empty() && BuildActorKey(trainerActor) != trainerKey)) {
+                        logger::warn("[ShowTrainingMenu] Trainer {:08X} is no longer the selected actor", trainerFormId);
                         return;
                     }
                     
@@ -2219,6 +2753,10 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         logger::info("No actor found for {}", actorname);
         responsePop("command");
         return;
+    }
+    // An exact identifier selected the agent; event text and self-target checks keep using its name.
+    if (ActorTargetIdentifierUtils::Parse(actorname).hasRefId) {
+        actorname = agentPtr->getActorName();
     }
 
     std::string command = rawCommand.substr(0, pos);
@@ -4995,7 +5533,8 @@ std::string InspectAudibleActors(RE::TESObjectREFR* reference, bool useCache, fl
 }
 
 std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCache, float visionRange,
-                                       std::string separator) {
+                                       std::string separator,
+                                       std::vector<std::pair<std::string, RE::Actor*>>* actors) {
     (void) reference;
     (void) useCache;
     std::vector<std::string> results;
@@ -5079,6 +5618,9 @@ std::string InspectSurroundingsNavmesh(RE::TESObjectREFR* reference, bool useCac
             actorLabel += " (sleeping)";
         }
 
+        if (actors) {
+            actors->emplace_back(actorLabel, target);
+        }
         results.push_back(actorLabel);
         targetHandle.get()->DecRefCount();
     }
@@ -5366,7 +5908,6 @@ std::string InspectNearbyItems(RE::TESObjectREFR* reference, float visionRange) 
 
 RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* cell, RE::Actor* sourceActor,
                                    float radius, bool allowDead) {
-    RE::TESObjectREFR* target = nullptr;
     auto player = RE::PlayerCharacter::GetSingleton();
 
     // Validate source actor
@@ -5376,122 +5917,93 @@ RE::TESObjectREFR* findActorInCell(std::string targetName, RE::TESObjectCELL* ce
     }
 
     const auto parsedTarget = ActorTargetIdentifierUtils::Parse(targetName);
+    if (ActorTargetIdentifierUtils::IsUnresolvableExplicit(parsedTarget)) {
+        return nullptr;
+    }
     if (parsedTarget.hasRefId) {
         if (auto* exactTarget =
                 resolveExplicitActorTarget(parsedTarget, cell, sourceActor, radius, allowDead)) {
             return exactTarget->AsReference();
         }
+        // The exact reference is unavailable here; its label may belong to a different actor.
+        return nullptr;
     }
 
     targetName = parsedTarget.fallbackName;
     if (targetName.empty()) {
         return nullptr;
     }
+    if (AIAgentManager::getInstance().isAmbiguousAgentName(targetName)) {
+        logger::warn("findActorInCell: '{}' names several managed actors; an exact RefID is required", targetName);
+        return nullptr;
+    }
 
-    float lastDistance = 10000;
+    bool ambiguous = false;
+    return findUniqueActorInCell(targetName, cell, sourceActor, allowDead, ambiguous);
+}
+
+RE::TESObjectREFR* findUniqueActorInCell(const std::string& targetName, RE::TESObjectCELL* cell,
+                                         RE::Actor* sourceActor, bool allowDead, bool& ambiguous) {
+    ambiguous = false;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!sourceActor || !player || targetName.empty()) {
+        return nullptr;
+    }
+
+    // Every living, enabled actor whose label carries the name is a candidate, whether or not it is visible:
+    // a namesake out of sight still makes the bare name ambiguous. Visibility keeps its previous rules (the
+    // source's line of sight in the cell, the actor's line of sight to the player among high actors).
+    std::vector<ActorTargetIdentifierUtils::NameCandidate> candidates;
+    std::vector<RE::TESObjectREFR*> references;
     if (cell) {
-        cell->ForEachReference([&target, &targetName, &sourceActor, allowDead,
-                                &lastDistance](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
-            float distance = 10000;
-            // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(), object.GetFormID());
-
-            RE::TESForm* baseForm = object->GetBaseObject();
-
-            if (!baseForm) {
+        cell->ForEachReference([&](RE::TESObjectREFR* object) -> RE::BSContainer::ForEachResult {
+            RE::TESForm* baseForm = object ? object->GetBaseObject() : nullptr;
+            if (!baseForm || baseForm->formType != RE::FormType::NPC) {
                 return RE::BSContainer::ForEachResult::kContinue;
             }
-
-            // logger::info("[findActorInCell], found reference {} , type  {:X}", object.GetName(),
-            // baseForm->GetFormID());
-            if (baseForm->formType == RE::FormType::NPC) {
-                const char* currentNPC = object->GetName();
-                // logger::info("[findActorInCell], found NPC {}", currentNPC);
-
-                RE::Actor* actorNpc = object->As<RE::Actor>();
-                if (actorNpc) {
-                    if (actorNpc->IsDead() && !allowDead) return RE::BSContainer::ForEachResult::kContinue;
-                    if (actorNpc->IsDisabled()) {
-                        logger::info("[findActorInCell], disabled {}", currentNPC);
-                        return RE::BSContainer::ForEachResult::kContinue;
-                    }
-
-                    std::string actorLabel(actorNpc->GetDisplayFullName());
-
-                    if (containsCaseInsensitive(actorLabel, targetName)) {
-                        bool hasLos = false;
-                        if (sourceActor && actorNpc) {
-                            sourceActor->HasLineOfSight(actorNpc->AsReference(), hasLos);
-                        }
-                        if (hasLos) {
-                            distance = sourceActor->GetPosition().GetDistance(actorNpc->GetPosition());
-                            if (distance < lastDistance) {
-                                lastDistance = distance;
-                                target = object;
-                            }
-
-                            // return RE::BSContainer::ForEachResult::kStop;
-                        }
-                    }
-                    // logger::info("Actor {} ", actorLabel);
-                } else {
-                    // Reference found, but no actor
-
-                    std::string actorLabel(object->GetDisplayFullName());
-                    logger::info("[findActorInCell], reference {}", actorLabel);
-                    if (containsCaseInsensitive(actorLabel, targetName)) {
-                        bool hasLos = true;
-                        if (sourceActor && actorNpc) {
-                            sourceActor->HasLineOfSight(actorNpc->AsReference(), hasLos);
-                        }
-                        if (hasLos) {
-                            target = object;
-                            // return RE::BSContainer::ForEachResult::kStop;
-                        }
-                    }
-
-                    // logger::info("NPC {} ", actorLabel);
-                }
+            RE::Actor* actorNpc = object->As<RE::Actor>();
+            if (actorNpc && ((actorNpc->IsDead() && !allowDead) || actorNpc->IsDisabled())) {
+                return RE::BSContainer::ForEachResult::kContinue;
             }
-
+            std::string actorLabel(actorNpc ? actorNpc->GetDisplayFullName() : object->GetDisplayFullName());
+            if (!containsCaseInsensitive(actorLabel, targetName)) {
+                return RE::BSContainer::ForEachResult::kContinue;
+            }
+            bool hasLos = !actorNpc;
+            if (actorNpc) {
+                sourceActor->HasLineOfSight(actorNpc->AsReference(), hasLos);
+            }
+            candidates.push_back({object->GetFormID(), actorLabel, hasLos});
+            references.push_back(object);
             return RE::BSContainer::ForEachResult::kContinue;
         });
     }
 
-    if (target)
-        return target;
-
-    else {
-        // Actors lurking around
-        if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
-            for (auto& targetHandle : processLists->highActorHandles) {
-                if (auto targetLocal = targetHandle.get();
-                    targetLocal && targetLocal->GetActorRuntimeData().currentProcess) {
-                    bool hasLos = false;
-                    if (sourceActor && targetLocal) {
-                        // sourceActor->HasLineOfSight(targetHandle.get().get()->AsReference(), hasLos);
-                        if (targetHandle.get().get()) {
-                            targetHandle.get().get()->HasLineOfSight(player->AsReference(), hasLos);
-                        } else {
-                            ;
-                        }
-                    }
-                    std::string actorLabel(targetLocal.get()->GetDisplayFullName());
-                    logger::debug("[findActorInCell], found actor {}, haslos: {}", actorLabel, hasLos ? "yes" : "no");
-                    if (hasLos && !actorLabel.empty()) {
-                        if (containsCaseInsensitive(actorLabel, targetName) && (!targetLocal->IsDead()) &&
-                            (!targetLocal->IsDisabled())) {
-                            // if (agentActor->GetPosition().GetDistance(targetLocal->GetPosition())
-                            // <HERIKA_MAX_VISION_RANGE) {
-                            target = targetHandle.get().get()->AsReference();
-                            return target;
-                            //}
-                        }
-                    }
-                }
+    // Actors lurking around
+    if (const auto processLists = RE::ProcessLists::GetSingleton(); processLists) {
+        for (auto& targetHandle : processLists->highActorHandles) {
+            auto targetLocal = targetHandle.get();
+            if (!targetLocal || !targetLocal->GetActorRuntimeData().currentProcess || targetLocal->IsDead() ||
+                targetLocal->IsDisabled()) {
+                continue;
             }
+            std::string actorLabel(targetLocal->GetDisplayFullName());
+            if (actorLabel.empty() || !containsCaseInsensitive(actorLabel, targetName)) {
+                continue;
+            }
+            bool hasLos = false;
+            targetLocal->HasLineOfSight(player->AsReference(), hasLos);
+            candidates.push_back({targetLocal->GetFormID(), actorLabel, hasLos});
+            references.push_back(targetLocal->AsReference());
         }
     }
-    return nullptr;
+
+    const int selected = ActorTargetIdentifierUtils::SelectUniqueNameMatch(candidates, targetName, &ambiguous);
+    if (ambiguous) {
+        logger::warn("findActorInCell: '{}' matches several loaded actors; an exact RefID is required", targetName);
+        return nullptr;
+    }
+    return selected >= 0 ? references[static_cast<std::size_t>(selected)] : nullptr;
 }
 
 RE::FormID findFurnitureInCell(RE::TESObjectCELL* cell, RE::Actor* herika, int mode) {
@@ -5792,7 +6304,7 @@ void StartAttack(std::string targetName, RE::Actor* actor) {
         SpeakManager::getInstance().deleteQueue(true);  // Preserve authored turns while the attack starts.
         // I think some functions should interrupt speaking
 
-        EndCommand("Attack", actor->GetDisplayFullName());  // Payrus will take care of ending
+        EndCommand("Attack", ActorIdentityUtils::BuildPromptIdentifier(actor->GetDisplayFullName(), actor->GetFormID()));  // Payrus will take care of ending
 
     } else {
         /* HTTPLogger->info(
@@ -5817,8 +6329,9 @@ void StartBrawl(std::string targetName, RE::Actor* actor) {
     }
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
-    auto agentPtr = aiam.getAgentByName(actor->GetDisplayFullName());
-    if (!agentPtr) {
+    // The initiator is already a physical actor; its label could name a namesake or be ambiguous.
+    auto agentPtr = aiam.getAgentByFormId(actor->GetFormID());
+    if (!agentPtr || agentPtr->isNarrator()) {
         logger::warn("StartBrawl: agentptr is null for {}", actor->GetDisplayFullName());
         return;
     }
@@ -5898,7 +6411,9 @@ void StopCurrent(RE::Actor* npc) {
 void EndCommand(std::string command, std::string actor) {
     if (command.contains("TravelTo") || command.contains("MoveTo")) {
         AIAgentManager& aiam = AIAgentManager::getInstance();
-        auto agentPtr = aiam.getAgentByName(actor);
+        // getAgentByName selects a decorated reference exactly; a malformed one names nobody.
+        auto agentPtr = ActorTargetIdentifierUtils::IsUnresolvableExplicit(ActorTargetIdentifierUtils::Parse(actor))
+            ? nullptr : aiam.getAgentByName(actor);
 
         if (!agentPtr) {
             logger::info("No AI actor found, can't end command");

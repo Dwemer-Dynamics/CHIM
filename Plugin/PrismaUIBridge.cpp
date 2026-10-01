@@ -2586,6 +2586,9 @@ R"CHIM(
             // Extract person name
             std::string person = cmd.substr(14);
             FetchDiariesData("entries", person);
+        } else if (cmd.rfind("fetch_entries_key|", 0) == 0) {
+            // Opaque author key chosen from the people list; never derived from a name.
+            FetchDiariesData("entries_key", cmd.substr(18));
         } else if (cmd.substr(0, 12) == "fetch_entry|") {
             // Extract entry ID
             std::string entryId = cmd.substr(12);
@@ -2746,6 +2749,20 @@ R"CHIM(
                             pos += 3;
                         }
                         url = "/HerikaServer/ui/api/chim_diaries.php?person=" + encodedPerson;
+                    } else if (mode == "entries_key") {
+                        // Percent-encode every byte outside the unreserved set so '|' and ':' survive.
+                        static constexpr char hex[] = "0123456789ABCDEF";
+                        std::string encodedKey;
+                        for (const unsigned char value : param) {
+                            if (std::isalnum(value) != 0 || value == '-' || value == '_' || value == '.' || value == '~') {
+                                encodedKey.push_back(static_cast<char>(value));
+                            } else {
+                                encodedKey.push_back('%');
+                                encodedKey.push_back(hex[value >> 4]);
+                                encodedKey.push_back(hex[value & 0x0F]);
+                            }
+                        }
+                        url = "/HerikaServer/ui/api/chim_diaries.php?author_key=" + encodedKey;
                     } else if (mode == "entry") {
                         url = "/HerikaServer/ui/api/chim_diaries.php?entry=" + param;
                     }
@@ -2806,7 +2823,7 @@ R"CHIM(
                         std::string jsCall;
                         if (mode == "people") {
                             jsCall = "window.updatePeopleList('" + escapedResponse + "')";
-                        } else if (mode == "entries") {
+                        } else if (mode == "entries" || mode == "entries_key") {
                             jsCall = "window.updateEntriesList('" + escapedResponse + "')";
                         } else if (mode == "entry") {
                             jsCall = "window.updateDiaryContent('" + escapedResponse + "')";
@@ -6455,7 +6472,7 @@ R"CHIM(
         }
 
         if (IsChatboxNarratorOnlyMode()) {
-            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+            auto narrator = aiam.getNarratorAgent();
             if (narrator) {
                 ChatboxNearbyAgent narratorTarget{};
                 narratorTarget.actor = narrator->getActor();

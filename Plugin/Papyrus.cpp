@@ -1,5 +1,6 @@
 #include "ChimInteraction.h"
 #include "Papyrus.h"
+#include "PlaythroughSession.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1590,7 +1591,7 @@ int sendMessageReal(
         auto camera = RE::PlayerCamera::GetSingleton();
         auto cameraState = camera->currentState.get();
         if (cameraState) {
-            auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+            auto narrator = aiam.getNarratorAgent();
             if (narrator) {
                 RE::NiQuaternion rotation;
                 cameraState->GetRotation(rotation);
@@ -1800,6 +1801,28 @@ static bool isAutoActivationRaceAllowed(RE::Actor* actor, RE::TESRace* race) {
            editorID == "dlc2SpectralDragonRace" || editorID == "DLC2RigidSkeletonRace";
 }
 
+// Activation runs later on a pool thread; it applies only to the same load and the same physical actor
+// (FormID and persistent key) that was selected, never to a new actor in a recycled slot.
+static void EnqueueAutoActivation(RE::Actor* actor, const std::string& actorLabel) {
+    const auto actorHandle = actor->GetHandle();
+    const auto formId = actor->GetFormID();
+    const auto actorKey = BuildActorKey(actor);
+    const auto loadEpoch = PlaythroughSession::Context();
+    ThreadPool::getInstance().enqueue(
+        "AddAllNPC",
+        [actorHandle, formId, actorKey, loadEpoch]() {
+            if (loadEpoch != PlaythroughSession::Generation()) return;
+            const auto current = actorHandle.get();
+            if (!current || current->GetFormID() != formId || current->IsDeleted() ||
+                (!actorKey.empty() && BuildActorKey(current.get()) != actorKey)) {
+                logger::info("[AUTOADD] Skipping {:08X}; the selected actor is no longer this reference", formId);
+                return;
+            }
+            setDrivenByAIReal(actorHandle, false, false, false, false);
+        },
+        actorLabel);
+}
+
 void addAllNPC() {
     static std::mutex mtx;
     std::lock_guard<std::mutex> lock(mtx);  // Lock the function, unlocks at the end
@@ -1841,7 +1864,8 @@ void addAllNPC() {
                     if (aiam.getAgentByFormId(actorFormId) || !queuedFormIds.insert(actorFormId).second) {
                         continue;
                     }
-                } else if (aiam.getAgentByName(actorLabel)) {
+                } else {
+                    // Without a FormID there is no physical identity; a shared label must not stand in for one.
                     continue;
                 }
 
@@ -1878,10 +1902,7 @@ void addAllNPC() {
                 }
                 logger::info("Auto-adding {}", actorLabel);
 
-                auto actorHandle = actor->GetHandle();
-                ThreadPool::getInstance().enqueue(
-                    "AddAllNPC", [actorHandle]() { setDrivenByAIReal(actorHandle, false, false, false, false); },
-                    actorLabel);
+                EnqueueAutoActivation(actor, actorLabel);
             }
         }
     }
@@ -1925,8 +1946,8 @@ bool promoteCrosshairTargetToAI() {
     const RE::FormID actorFormId = actor->GetFormID();
     if (actorFormId != 0) {
         if (aiam.getAgentByFormId(actorFormId)) return false;
-    } else if (aiam.getAgentByName(actorLabel)) {
-        return false;
+    } else {
+        return false;  // no physical identity; a label match could be any namesake
     }
 
     auto* race = actor->GetRace();
@@ -1948,11 +1969,7 @@ bool promoteCrosshairTargetToAI() {
     lastPromoteAttempt = now;
 
     logger::info("[AUTOADD] Fast-promoting crosshair NPC {} dist={:.0f}", actorLabel, distance);
-    auto actorHandle = actor->GetHandle();
-    ThreadPool::getInstance().enqueue(
-        "AddAllNPC",
-        [actorHandle]() { setDrivenByAIReal(actorHandle, false, false, false, false); },
-        actorLabel);
+    EnqueueAutoActivation(actor, actorLabel);
 
     return true;
 }
@@ -2345,6 +2362,15 @@ int Papyrus::logMessageForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE
 
         HTTPManager::log(std::format("{}|{}|{}|{}", type, getCurrentTimeMillis(), GetGameTimeStamp(), msg),
                          actorPtr->getActor());
+    } else if (const auto parsed = ActorTargetIdentifierUtils::Parse(actor); parsed.hasRefIdMarker) {
+        // An exact identifier names its reference, never its label: an unmanaged actor is logged by pointer,
+        // and a reference that is not a loaded actor is dropped rather than sent as a bare name.
+        auto* exact = parsed.hasRefId ? RE::TESForm::LookupByID<RE::Actor>(parsed.refId) : nullptr;
+        if (exact && !exact->IsDeleted()) {
+            HTTPManager::log(std::format("{}|{}|{}|{}", type, getCurrentTimeMillis(), GetGameTimeStamp(), msg), exact);
+        } else {
+            logger::warn("[ACTION_IDENTITY] Dropping {} for '{}'; it is not a loaded actor", type, actor);
+        }
     } else {
         // Fallback, using forcedActor
         HTTPManager::log(std::format("{}|{}|{}|{}", type, getCurrentTimeMillis(), GetGameTimeStamp(), msg), actor);
@@ -2644,6 +2670,12 @@ int Papyrus::commandEnded(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMSt
 int Papyrus::commandEndedForActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
                                   RE::StaticFunctionTag*, std::string command, std::string npc) {
     ScopedPapyrusLock lock("commandEndedForActor");
+    // AIAgentAIMind sends "Name [RefID: XXXXXXXX]"; getAgentByName selects that reference exactly and never its
+    // label. A malformed reference names nobody. A bare name from an older script still resolves only if unique.
+    if (ActorTargetIdentifierUtils::IsUnresolvableExplicit(ActorTargetIdentifierUtils::Parse(npc))) {
+        logger::warn("commandEndedForActor: '{}' is a malformed reference; {} not ended", npc, command);
+        return -1;
+    }
     if (command.contains("attack") || command.contains("Attack")) {
         AIAgentManager& aiam = AIAgentManager::getInstance();
         auto agentPtr = aiam.getAgentByName(npc);
@@ -3904,16 +3936,26 @@ RE::FormID Papyrus::getForm(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VM
         auto j = nlohmann::json::parse(jsonStr);
         if (j.contains(key)) {
             // Accept both int and hex string
+            // A FormID can become an actor in Papyrus, so the bound-actor check applies here as in getActor.
             if (j.at(key).is_number_integer()) {
-                return static_cast<RE::FormID>(j.at(key).get<uint32_t>());
+                const auto intval = static_cast<RE::FormID>(j.at(key).get<uint32_t>());
+                if (intval && !ScriptProxyBindings::Allows(j, key, intval)) {
+                    logger::warn("[getForm] '{}' is not the form bound when the command was queued", key);
+                    return 0;
+                }
+                return intval;
             } else if (j.at(key).is_string()) {
                 std::string val = j.at(key).get<std::string>();
                 try {
                     uint32_t intval = 0;
                     intval = std::stoul(val, nullptr, 0);
+                    if (intval && !ScriptProxyBindings::Allows(j, key, intval)) {
+                        logger::warn("[getForm] '{}' is not the form bound when the command was queued", key);
+                        return 0;
+                    }
                     RE::TESForm* form = RE::TESForm::LookupByID(intval);
                     if (form)
-                        return static_cast<RE::FormID>(std::stoul(val, nullptr, 0));
+                        return static_cast<RE::FormID>(intval);
                     else
                         logger::warn("[getForm] No form found for FormID '{}'", val);
                 } catch (...) {
@@ -3951,6 +3993,10 @@ RE::Actor* Papyrus::getActor(RE::BSScript::Internal::VirtualMachine* a_vm, RE::V
                         intval = 0;  // default fallback
                     }
                 }
+            }
+            if (intval && !ScriptProxyBindings::Allows(j, key, intval)) {
+                logger::warn("[getActor] '{}' is not the actor bound when the command was queued", key);
+                return nullptr;
             }
             if (intval) {
                 RE::TESForm* form = RE::TESForm::LookupByID(intval);
@@ -3999,6 +4045,10 @@ RE::TESObjectREFR* Papyrus::getReference(RE::BSScript::Internal::VirtualMachine*
                         intval = 0;  // default fallback
                     }
                 }
+            }
+            if (intval && !ScriptProxyBindings::Allows(j, key, intval)) {
+                logger::warn("[getReference] '{}' is not the reference bound when the command was queued", key);
+                return nullptr;
             }
             if (intval) {
                 RE::TESForm* form = RE::TESForm::LookupByID(intval);
@@ -5142,14 +5192,32 @@ int Papyrus::scanActorsAroundOffline(RE::BSScript::IVirtualMachine* a_vm, RE::VM
                                      RE::StaticFunctionTag*, RE::Actor* target) {
     
     ScopedPapyrusLock lock("scanActorsAroundOffline");
-        // Run GetLowProcessActorNamesFromRef in a separate thread - no need to wait for result
-    ThreadPool::getInstance().enqueue(
-        "ScanActorsAroundOffline",
-        [target]() {
-            GetLowProcessActorNamesFromRef(target);
-            // Result is handled internally by GetLowProcessActorNamesFromRef
-        },
-        target ? target->GetDisplayFullName() : "unknown");
+    if (!target) {
+        return 0;
+    }
+    // Only the engine handle, FormID and any already-registered key cross threads. The process lists are walked
+    // and identities assigned on the game thread; the finished JSON is posted off-thread by postGameData.
+    const auto handle = target->GetHandle();
+    const RE::FormID formId = target->GetFormID();
+    const std::string capturedKey = CaptureGameDataActorIdentity(target).actorKey;
+    // Queued like ThreadPool work: the callback keeps the originating load and is dropped after a new one.
+    SKSE::GetTaskInterface()->AddTask([handle, formId, capturedKey, epoch = PlaythroughSession::Context()]() {
+        const PlaythroughSession::Scope scope(epoch);
+        if (!PlaythroughSession::Allowed(epoch)) {
+            return;
+        }
+        auto actor = handle.get();
+        // The handle refuses a reused slot; FormID, deletion and a previously captured key re-check it.
+        if (!actor || actor->GetFormID() != formId || actor->IsDeleted()) {
+            logger::debug("[LOW ACTOR] Scan target {:08X} is gone or replaced; not sent", formId);
+            return;
+        }
+        if (!capturedKey.empty() && CaptureGameDataActorIdentity(actor.get()).actorKey != capturedKey) {
+            logger::debug("[LOW ACTOR] Scan target {:08X} changed identity; not sent", formId);
+            return;
+        }
+        GetLowProcessActorNamesFromRef(actor.get());
+    });
 
     return 0;
 }
@@ -5407,6 +5475,7 @@ int addBasicProfileReal(RE::ObjectRefHandle targetObject) {
                     }
                     metainfo.append("@").append(classData);
                     metainfo.append("@").append(BuildActorReferenceSource(targetActor));
+                    metainfo.append("@").append(BuildActorKey(targetActor));
 
                     category.append(metainfo);
 

@@ -89,7 +89,7 @@ function MoveToTarget(Actor npc, ObjectReference akTarget, int intent) global
 	npc.EvaluatePackage()
 	;Debug.Notification("[CHIM] "+npc.GetDisplayName()+" is moving to "+akTarget.GetDisplayName())
 	Debug.Trace("[CHIM] MoveToTarget "+npc.GetDisplayName()+" is moving to "+akTarget.GetDisplayName())
-	AIAgentFunctions.logMessageForActor("started_moving@"+akTarget.GetDisplayName(),"status_msg",npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor("started_moving@"+akTarget.GetDisplayName(),"status_msg", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 
 endFunction
 
@@ -99,9 +99,9 @@ function MoveToTargetEnd(Actor npc) global
 	
 
 	if (npc.GetParentCell()==Game.GetPlayer().GetParentCell())
-		AIAgentFunctions.logMessageForActor("reached_destination_player@"+npc.GetDisplayName(),"status_msg",npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("reached_destination_player@"+npc.GetDisplayName(),"status_msg", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 	else
-		AIAgentFunctions.logMessageForActor("reached_destination@"+npc.GetDisplayName(),"status_msg",npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("reached_destination@"+npc.GetDisplayName(),"status_msg", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 	endif
 	
 	ObjectReference destination=StorageUtil.GetFormValue(npc, "LastMoveToLocation") as ObjectReference;
@@ -144,7 +144,7 @@ function MoveToTargetEnd(Actor npc) global
 						MoveInventoryItem(npc, destinationActor, itemForm, itemAmount, itemName)
 						
 						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName()+".")
-						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName(),"itemtransfer",npc.GetDisplayName())
+						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" gave "+itemAmount+" "+itemName+" to "+destinationActor.GetDisplayName(),"itemtransfer", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 					else
 						Debug.Trace("[CHIM] ERROR: Could not find Form with ID "+formID)
 					endif
@@ -274,7 +274,7 @@ function MoveToTargetEnd(Actor npc) global
 						string logMessage
 						logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 						Debug.TraceUser("ChimHTTPSender", logMessage)
-						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
+						AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 						
 						Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 					endif
@@ -300,7 +300,7 @@ function MoveToTargetEnd(Actor npc) global
 	PO3_SKSEFunctions.SetLinkedRef(npc,None,MoveTargetKw)
 	npc.EvaluatePackage()
 	
-	AIAgentFunctions.commandEndedForActor("MoveTo",npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("MoveTo", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 
 	;string taskid = JDB.solveStr(".aiff.currentTaskId");
 	
@@ -723,7 +723,7 @@ function TravelToTarget(Actor npc, ObjectReference akTarget,String place) global
 	;Debug.Notification("Mission MoveToTarget start")
 	if (place=="")
 		place="a Unknown Place";
-		AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" has left the place","infoaction",npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" has left the place","infoaction", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 	endif;
 	ShowDebugNotification("[CHIM] "+npc.GetDisplayName()+ " starts travel to "+place);
 	Debug.Trace("[CHHIM] TravelToTarget called: "+npc.GetDisplayName()+" "+place+ ", actor"+akTarget.GetDisplayName())
@@ -830,8 +830,8 @@ function TravelToTargetEnd(Actor npc) global
 					string logMessage
 					logMessage = "itempickup|"+currentTime+"|"+gameTime+"|"+npc.GetDisplayName()+" picked up "+itemName
 					Debug.TraceUser("ChimHTTPSender", logMessage)
-					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup",npc.GetDisplayName())
-					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"infoaction",npc.GetDisplayName())
+					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"itempickup", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
+					AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" picked up "+itemName,"infoaction", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 					Debug.Notification("[CHIM] "+npc.GetDisplayName()+" picked up "+itemName+".")
 				endif
 			endif
@@ -850,7 +850,7 @@ function TravelToTargetEnd(Actor npc) global
 	endif
 		
 	Debug.Trace("[CHIM] TravelToTargetEnd: End processing for "+npc.GetDisplayName()+" ")
-	AIAgentFunctions.commandEndedForActor("TravelTo",npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("TravelTo", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 	
 	Cell currCell = npc.GetParentCell()
 	Location currLoc = npc.GetCurrentLocation()
@@ -873,7 +873,7 @@ int Function MoveToPlayer(Actor npc,String taskid, int intent) global
 	;finalActor.SetFactionRank(SandboxFaction,1)
 	
 	;ActorUtil.AddPackageOverride(finalActor, SandboxPackage, 65,0)
-	AIAgentFunctions.logMessageForActor("moving@"+npc.GetDisplayName()+"@"+taskid,"status_msg",npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor("moving@"+npc.GetDisplayName()+"@"+taskid,"status_msg", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
     
 	Utility.wait(3);
 	
@@ -1075,7 +1075,7 @@ function AttackTarget(Actor npc, ObjectReference akTarget,bool lethal=true) glob
 			
 			npc.startCombat(targetAsActor);
 			
-			AIAgentFunctions.logMessageForActor("command@Attack@"+akTarget.GetDisplayName()+"@"+npc.GetDisplayName()+combatString+akTarget.GetDisplayName(),"funcret",npc.GetDisplayName())
+			AIAgentFunctions.logMessageForActor("command@Attack@"+akTarget.GetDisplayName()+"@"+npc.GetDisplayName()+combatString+akTarget.GetDisplayName(),"funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 			
 		else 
 			PO3_SKSEFunctions.SetLinkedRef(npc,akTarget)
@@ -1083,7 +1083,7 @@ function AttackTarget(Actor npc, ObjectReference akTarget,bool lethal=true) glob
 			npc.EvaluatePackage()
 			;npc.startCombat(targetAsActor);
 			Debug.Notification("[CHIM] "+npc.GetDisplayName()+" attacks "+akTarget.GetDisplayName())
-			AIAgentFunctions.logMessageForActor("command@Attack@"+akTarget.GetDisplayName()+"@"+npc.GetDisplayName()+combatString+akTarget.GetDisplayName(),"funcret",npc.GetDisplayName())
+			AIAgentFunctions.logMessageForActor("command@Attack@"+akTarget.GetDisplayName()+"@"+npc.GetDisplayName()+combatString+akTarget.GetDisplayName(),"funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 		endif;
 	else
 		Debug.Notification("[CHIM] Could not reach target "+akTarget.GetDisplayName());
@@ -1098,7 +1098,7 @@ endFunction
 function BrawlTarget(Actor npc, Actor opponent) global
 	if (!npc || !opponent || npc == opponent || npc.IsDead() || opponent.IsDead())
 		if (npc)
-			AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+			AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 		endif
 		return
 	endif
@@ -1114,8 +1114,8 @@ function BrawlTarget(Actor npc, Actor opponent) global
 	Quest vanillaBrawlQuest = Game.GetForm(0x00047AE6) as Quest
 	if (!favorDialogue || !vanillaBrawlQuest || vanillaBrawlQuest.IsRunning())
 		Debug.Trace("[CHIM] BrawlTarget could not start DGIntimidateQuest")
-		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest is unavailable or already running", "funcret", npc.GetDisplayName())
-		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest is unavailable or already running", "funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 		return
 	endif
 
@@ -1129,12 +1129,12 @@ function BrawlTarget(Actor npc, Actor opponent) global
 
 	if (!vanillaBrawlQuest.IsRunning())
 		Debug.Trace("[CHIM] DGIntimidateQuest did not start for "+npc.GetDisplayName())
-		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest did not start", "funcret", npc.GetDisplayName())
-		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@Error. Skyrim's vanilla brawl quest did not start", "funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 		return
 	endif
 
-	AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@"+npc.GetDisplayName()+" starts a vanilla Skyrim brawl with "+player.GetDisplayName(), "funcret", npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor("command@Brawl@"+player.GetDisplayName()+"@"+npc.GetDisplayName()+" starts a vanilla Skyrim brawl with "+player.GetDisplayName(), "funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 
 	string outcomeCode = ""
 	string outcomeText = ""
@@ -1165,8 +1165,8 @@ function BrawlTarget(Actor npc, Actor opponent) global
 	endif
 
 	Debug.Trace("[CHIM] Brawl outcome "+outcomeCode+": "+outcomeText)
-	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
-	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
+	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 endFunction
 
 ; Unequip one recorded hand without removing its item from inventory.
@@ -1206,8 +1206,8 @@ function NpcBrawlTarget(Actor npc, Actor opponent) global
 	ActorBase npcBase = AIAgentNpcUtil.getProperActorBase(npc)
 	ActorBase opponentBase = AIAgentNpcUtil.getProperActorBase(opponent)
 	if (!npcBase || !opponentBase || npc.IsInCombat() || opponent.IsInCombat())
-		AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@Error. NPC brawlers must be valid and out of combat", "funcret", npc.GetDisplayName())
-		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@Error. NPC brawlers must be valid and out of combat", "funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
+		AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 		return
 	endif
 
@@ -1243,7 +1243,7 @@ function NpcBrawlTarget(Actor npc, Actor opponent) global
 	npc.StartCombat(opponent)
 	opponent.StartCombat(npc)
 
-	AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@"+npc.GetDisplayName()+" starts an unarmed spar with "+opponent.GetDisplayName(), "funcret", npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor("command@Brawl@"+opponent.GetDisplayName()+"@"+npc.GetDisplayName()+" starts an unarmed spar with "+opponent.GetDisplayName(), "funcret", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 
 	string outcomeText = ""
 	float outcomeWaitBegan = Utility.GetCurrentRealTime()
@@ -1291,8 +1291,8 @@ function NpcBrawlTarget(Actor npc, Actor opponent) global
 	opponent.EvaluatePackage()
 
 	Debug.Trace("[CHIM] NPC brawl outcome: "+outcomeText)
-	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName())
-	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor(outcomeText, "infoaction", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
+	AIAgentFunctions.commandEndedForActor("Brawl", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 endFunction
 
 function RecoverFromCombat(Actor npc) global;Triggers on defeated actor
@@ -1308,7 +1308,7 @@ function RecoverFromCombat(Actor npc) global;Triggers on defeated actor
 			winner.StopCombat()
 			npc.StopCombat()
 		endif
-		AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" has lost combat and is wounded bleedingout.","instruction",npc.GetDisplayName())
+		AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" has lost combat and is wounded bleedingout.","instruction", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 		Utility.wait(10);Wait, sometimes opponent still agressive
 
 		npc.RestoreAV("Health",20)	
@@ -1352,7 +1352,7 @@ function AttackTargetEnd(Actor npc) global
 	npc.EvaluatePackage()
 	PO3_SKSEFunctions.SetLinkedRef(npc,None)
 	
-	AIAgentFunctions.commandEndedForActor("Attack",npc.GetDisplayName())
+	AIAgentFunctions.commandEndedForActor("Attack", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 	;Debug.Notification("[CHIM] end attack command:  "+npc.GetDisplayName() )
 
 endFunction
@@ -2690,7 +2690,7 @@ int Function CombatPlayer(Actor npc) global
 	npc.SetRelationshipRank(Game.GetPlayer(), -4)
 	npc.startCombat(Game.GetPlayer())
 	;npc.SendAssaultAlarm()
-	AIAgentFunctions.logMessageForActor("combat_start@"+npc.GetDisplayName(),"status_msg",npc.GetDisplayName())
+	AIAgentFunctions.logMessageForActor("combat_start@"+npc.GetDisplayName(),"status_msg", npc.GetDisplayName() + " [RefID: " + DecToHex(npc.GetFormID()) + "]")
 	
 	
 endFunction

@@ -28,6 +28,7 @@
 
 #include "Commands.h"
 #include "DynamicDiaryBook.h"
+#include "GameDataDeliveryCache.h"
 #include "Globals.h"
 #include "Conf.h"
 #include "Misc.h"
@@ -379,11 +380,55 @@ namespace
         return true;
     }
 
+    // Game thread: copies a ScriptQueue item's bound identity onto its speech line. The physical speaker and
+    // listener become exact identifiers so every later label consumer selects them; a null or narrator
+    // listener leaves no listener rather than the payload's bare label.
+    void BindScriptLineIdentity(ScriptLine& line, const ResponseItem& item)
+    {
+        const auto& identity = item.identity;
+        line.identityPresent = true;
+        line.speakerIdentity = identity.actor;
+        line.listenerIdentity = identity.listener;
+        line.speakerBinding = item.identityActor;
+        line.listenerBinding = item.identityListener;
+        auto exact = [](const std::string& label, std::uint32_t refId) {
+            const auto name = ActorTargetIdentifierUtils::Parse(label).fallbackName;
+            return ActorIdentityUtils::BuildPromptIdentifier(name.empty() ? "Actor" : name, refId);
+        };
+        if (identity.actor.IsPhysical() || identity.actor.IsPlayer()) {
+            line.actor = exact(line.actor, identity.actor.refId);
+        }
+        line.action = identity.listener.IsPhysical() || identity.listener.IsPlayer()
+            ? exact(line.action, identity.listener.refId)
+            : std::string{};
+    }
+
+    // Any thread: the agent an identity line names, if its bound actor is unchanged. The narrator is typed and
+    // never found through the player reference its engine object uses.
+    std::shared_ptr<AIAgent> ScriptLineIdentityAgent(const ScriptLine& line)
+    {
+        auto& aiam = AIAgentManager::getInstance();
+        if (line.speakerIdentity.IsNarrator()) return aiam.getNarratorAgent();
+        if (!line.speakerIdentity.IsPhysical() || !SPGResponse::StillSameBoundActor(line.speakerBinding) ||
+            (line.listenerIdentity.IsPhysical() && !SPGResponse::StillSameBoundActor(line.listenerBinding))) {
+            logger::warn("[RESPONSE_IDENTITY] Dropping speech for {}; its bound actor changed", line.actor);
+            return nullptr;
+        }
+        auto agent = aiam.getAgentByFormId(line.speakerBinding.actor.formId);
+        return agent && !agent->isNarrator() && agent->getProfileKey() == line.speakerIdentity.id ? agent : nullptr;
+    }
+
     bool IsPlayerActorName(const std::string& actorName)
     {
         const std::string normalizedActorName = trim(actorName);
         if (normalizedActorName.empty()) {
             return false;
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        // A decorated identifier is exact: only the player's own RefID is the player.
+        if (const auto parsed = ActorTargetIdentifierUtils::Parse(normalizedActorName); parsed.hasRefId) {
+            return player && parsed.refId == player->GetFormID();
         }
 
         if (EqualsIgnoreCasePlugin(normalizedActorName, NARRATOR_NAME)) {
@@ -394,7 +439,6 @@ namespace
             return true;
         }
 
-        auto* player = RE::PlayerCharacter::GetSingleton();
         if (player) {
             const std::string playerName = trim(player->GetName());
             if (!playerName.empty() && EqualsIgnoreCasePlugin(normalizedActorName, playerName)) {
@@ -1942,6 +1986,10 @@ json BuildTransformationStatePayload(RE::Actor* actor, const std::string& actorN
     if (normalizedName.empty()) {
         return json();
     }
+    const auto identity = CaptureGameDataActorIdentity(actor);
+    if (HoldUnkeyedGameData(identity, "TRANSFORMATION", normalizedName)) {
+        return json();
+    }
 
     auto* race = actor->GetRace();
     const std::string raceName = race && race->GetFullName() ? trim(race->GetFullName()) : "";
@@ -1974,6 +2022,7 @@ json BuildTransformationStatePayload(RE::Actor* actor, const std::string& actorN
     payload["is_vampire_lord_form"] = isVampireLordForm;
     payload["race_name"] = raceName;
     payload["race_editor_id"] = raceEditorId;
+    ApplyGameDataActorIdentity(payload, identity);
 
     return payload;
 }
@@ -1986,6 +2035,10 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
 
     const auto normalizedName = trim(agentName);
     if (normalizedName.empty()) {
+        return json();
+    }
+    const auto identity = CaptureGameDataActorIdentity(npc);
+    if (HoldUnkeyedGameData(identity, "ACTIVITY", normalizedName)) {
         return json();
     }
 
@@ -2058,13 +2111,15 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
         currentAction = "moving";
     }
 
+    // The engine's combat target, resolved through its handle in this same snapshot; its name and identity come
+    // from that one actor. Spells and base forms are never used as a target identity.
     std::string attackTargetName;
-    auto agent = AIAgentManager::getInstance().getAgentByFormId(npc->GetFormID());
-    if (agent) {
-        auto* attackTarget = agent->getAttackTarget();
-        if (attackTarget) {
-            if (attackTarget->GetDisplayFullName())
-                attackTargetName = trim(attackTarget->GetDisplayFullName());
+    std::optional<ActorIdentityUtils::GameDataActorIdentity> attackTargetIdentity;
+    if (auto attackTarget = npc->GetActorRuntimeData().currentCombatTarget.get();
+        attackTarget && !attackTarget->IsDeleted()) {
+        attackTargetIdentity = CaptureGameDataActorIdentity(attackTarget.get());
+        if (attackTarget->GetDisplayFullName()) {
+            attackTargetName = trim(attackTarget->GetDisplayFullName());
         }
     }
 
@@ -2072,6 +2127,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     payload["type"] = "activity_status";
     payload["actor_name"] = normalizedName;
     payload["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(payload, identity);
     payload["timestamp"] = getCurrentTimeMillis();
     payload["gamets"] = GetGameTimeStamp();
     payload["current_action"] = currentAction;
@@ -2090,9 +2146,7 @@ json BuildActivityStatusPayload(RE::Actor* npc, const std::string& agentName, co
     payload["is_weapon_drawn"] = isWeaponDrawn;
     payload["is_restrained"] = isRestrained;
 
-    if (!attackTargetName.empty()) {
-        payload["attack_target"] = attackTargetName;
-    }
+    ActorIdentityUtils::ApplyGameDataAttackTarget(payload, attackTargetIdentity, attackTargetName);
 
     return payload;
 }
@@ -2160,11 +2214,9 @@ void RefreshAIAgentSpells(RE::Actor* npc, const std::string& agentName, bool for
 void RefreshPlayerSpells(bool forceUpdate = false);
 
 // Track last known equipment/inventory/skills/stats hashes (declared here for use in ManagerMainQueue)
-extern std::unordered_map<uint32_t, std::string> lastEquipmentHash;
-extern std::unordered_map<uint32_t, std::string> lastInventoryHash;
-extern std::unordered_map<uint32_t, std::string> lastSkillsHash;
-extern std::unordered_map<uint32_t, std::string> lastStatsHash;
-extern std::unordered_map<uint32_t, std::string> lastSpellsHash;
+extern GameDataDeliveryCache gEquipmentDelivery;
+extern GameDataDeliveryCache gInventoryDelivery;
+extern GameDataDeliveryCache gStatsDelivery;
 extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastSkillsUpdate;
 extern std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastStatsUpdate;
 
@@ -2420,7 +2472,8 @@ private:
                                 if (elapsed > std::chrono::seconds(8)) {
                                     logger::debug("[ManagerMainQueue] Performing periodic NPC inspection");
                                     auto player = RE::PlayerCharacter::GetSingleton();
-                                    auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
+                                    std::vector<std::pair<std::string, RE::Actor*>> resultActors;
+                                    auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/", &resultActors);
                                     if (REL::Module::GetRuntime() != REL::Module::Runtime::VR) {
                                         // Send nearby items context BEFORE infonpc_close (so it gets logged in same request)
                                         std::string itemsResult = InspectNearbyItems(player->AsReference(), 256.0f);
@@ -2434,8 +2487,8 @@ private:
                                         result.append("/");
                                     }
                                     result.append(AIAgentManager::getInstance().getPlayerName());
-                                    HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(),
-                                                                 GetGameTimeStamp(), result));
+                                    HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result),
+                                 HTTPManager::CaptureRoster(resultActors));
                                     PostNearbyActivityStatus(player, 3000.0f);
 
                                     controlLastInfoSent = std::chrono::high_resolution_clock::now();
@@ -2453,14 +2506,19 @@ private:
                     if (!newResponse.text.empty()) {
                         ScriptLine l = ScriptLine::parse(newResponse.text, newResponse.actor.c_str());
                         l.rechatGenerated = newResponse.rechatGenerated;
+                        // Re-checked on the game thread before the line enters the speech queue.
+                        const bool identityRefused =
+                            newResponse.identity.present && !SPGResponse::StillTargetsCapturedActor(newResponse);
+                        if (newResponse.identity.present && !identityRefused) BindScriptLineIdentity(l, newResponse);
 
-                        if (IsPlayerActorName(l.actor)) {  // Player has talk. Remove NPC speech.
+                        if (identityRefused) {
+                            // Dropped: the actor the server named is not the bound actor now.
+                        } else if (l.identityPresent ? l.speakerIdentity.IsPlayer() : IsPlayerActorName(l.actor)) {  // Player has talk. Remove NPC speech.
                             SpeakManager::getInstance().deleteQueue();
                             if (SpeakManager::getInstance().getProcessing())
                                 SpeakManager::getInstance().abortPlay(true);
                         }
-                        SpeakManager::getInstance().insertInQueue(l);
-
+                        if (!identityRefused) SpeakManager::getInstance().insertInQueue(l);
                         responsePop("ScriptQueue");
                     }
 
@@ -2490,12 +2548,15 @@ private:
                                         if (actorname == "rolemaster") {
                                             logger::info("[ProcessingThread] Processing rolemaster action: {}", threadData.action);
                                             SpeakManager::getInstance().dequeueFirstItem();
-                                        } else if (IsPlayerActorName(actorname)) {
+                                        } else if (threadData.identityPresent ? threadData.speakerIdentity.IsPlayer()
+                                                                              : IsPlayerActorName(actorname)) {
                                             logger::info("[ProcessingThread] Processing player action");
                                             SpeakManager::getInstance().processPlayer();
                                         } else {
                                             AIAgentManager& aiam = AIAgentManager::getInstance();
-                                            auto agentPtr = aiam.getAgentByName(actorname);
+                                            // An identity line names its agent exactly; only legacy lines use the label.
+                                            auto agentPtr = threadData.identityPresent ? ScriptLineIdentityAgent(threadData)
+                                                                                       : aiam.getAgentByName(actorname);
                                             if (agentPtr) {
                                                 if (agentPtr->getAvailable()) {
                                                     // Allow speech in bleedout (wounded/dying), but skip if unconscious (knocked out)
@@ -2549,15 +2610,27 @@ private:
                     processActionConfirmationQueue();
 
                     newResponse = spgResponse.getFirstItem("command");
-                    if (!newResponse.text.empty()) {
+                    if (!newResponse.text.empty() && !SPGResponse::StillTargetsCapturedActor(newResponse)) {
+                        responsePop("command");
+                    } else if (!newResponse.text.empty()) {
                         logger::info("[COMMAND_QUEUE] Processing command: {} for actor: {}", newResponse.text, newResponse.actor);
-                        parseCommand(newResponse.text, newResponse.actor);
+                        // An envelope names its agent by the bound FormID (just rechecked); the label is
+                        // presentation and a namesake must not be selected by it.
+                        std::string commandActor = newResponse.actor;
+                        if (newResponse.identity.present && newResponse.actorFormId != 0) {
+                            const auto name = ActorTargetIdentifierUtils::Parse(newResponse.actor).fallbackName;
+                            commandActor = ActorIdentityUtils::BuildPromptIdentifier(name.empty() ? "Actor" : name,
+                                                                                     newResponse.actorFormId);
+                        }
+                        parseCommand(newResponse.text, commandActor);
                     }
 
                     newResponse = spgResponse.getFirstItem("rolecommand");
-                    if (!newResponse.text.empty()) {
+                    if (!newResponse.text.empty() && !SPGResponse::StillTargetsCapturedActor(newResponse)) {
+                        responsePop("rolecommand");
+                    } else if (!newResponse.text.empty()) {
                         logger::info("Rolemaster in action {}", newResponse.text);
-                        parseRoleCommand(newResponse.text);
+                        parseRoleCommand(newResponse);
                     }
 
                     auto boredElapsedSeconds =
@@ -2701,6 +2774,15 @@ private:
                                 if (beings.find(agent->getActorName()) != std::string::npos) {
                                     auto npc = agent->getActor();
                                     if (!npc || npc->IsDead()) continue;
+
+                                    // Bounded automatic retry of event-driven rows whose newest state is not
+                                    // acknowledged (failed/409/reordered); re-harvested only then, with backoff.
+                                    if (gEquipmentDelivery.NeedsRetry(npc->GetFormID())) {
+                                        RefreshAIAgentEquipment(npc, agent->getActorName(), false);
+                                    }
+                                    if (gInventoryDelivery.NeedsRetry(npc->GetFormID())) {
+                                        RefreshAIAgentInventory(npc, agent->getActorName(), false, false, {});
+                                    }
                                     
                                     // Check if NPC is at full health before update
                                     auto stats = npc->AsActorValueOwner();
@@ -2717,11 +2799,11 @@ private:
                                                               stamina >= staminaMax - 1.0f);
                                         
                                         // RefreshAIAgentStats has hash diffing - only sends if changed
-                                        auto beforeHash = lastStatsHash[npc->GetFormID()];
+                                        const auto beforeTicket = gStatsDelivery.Latest(npc->GetFormID());
                                         RefreshAIAgentStats(npc, agent->getActorName(), false);
-                                        auto afterHash = lastStatsHash[npc->GetFormID()];
+                                        const auto afterTicket = gStatsDelivery.Latest(npc->GetFormID());
                                         
-                                        if (beforeHash != afterHash) {
+                                        if (beforeTicket != afterTicket) {
                                             statsUpdated++;
                                             
                                             // Check if they just reached full health
@@ -2743,6 +2825,8 @@ private:
                             // Also refresh player stats periodically
                             RefreshPlayerStats();
                             RefreshPlayerTransformationState();
+                            if (gEquipmentDelivery.NeedsRetry(player->GetFormID())) RefreshPlayerEquipment();
+                            if (gInventoryDelivery.NeedsRetry(player->GetFormID())) RefreshPlayerInventory();
                             
                             lastStatsRefreshTime = currentTime;
                         }
@@ -4129,6 +4213,8 @@ namespace ProcessorSerialization {
     inline const auto AgentCountRecord = _byteswap_ulong('AIAC');
     inline const auto NamesCountRecord = _byteswap_ulong('AIAX');
     inline const auto DynamicIdentityRecord = _byteswap_ulong('AIDY');
+    inline const auto DiaryBookRecord = _byteswap_ulong('AIBK');
+    inline constexpr std::uint32_t DiaryBookRecordVersion = DiaryBookIdentityUtils::RecordVersion;
 
 
     void OnGameLoaded(SKSE::SerializationInterface* serde) {
@@ -4146,8 +4232,22 @@ namespace ProcessorSerialization {
             logger::warn("[LOADED_PLUGINS] Pre-restore manifest sync failed; normal load sync will retry");
         }
 
+        bool diaryRecordSeen = false;
         while (serde->GetNextRecordInfo(type, version, size)) {
-            if (type == PlaythroughRecord) {
+            if (type == DiaryBookRecord) {
+                diaryRecordSeen = true;
+                std::string record(size, '\0');
+                const bool complete = version >= 1 && version <= DiaryBookRecordVersion &&
+                    (size == 0 || serde->ReadRecordData(record.data(), size) == size);
+                if (!complete) {
+                    record.assign(1, '\xFF');  // Unknown version or short read: reset rather than import.
+                }
+                static SKSE::SerializationInterface* activeSerde = nullptr;
+                activeSerde = serde;
+                DynamicDiaryBook::RestoreInstances(record, true, version, [](std::uint32_t oldId, std::uint32_t& newId) {
+                    return activeSerde->ResolveFormID(oldId, newId);
+                });
+            } else if (type == PlaythroughRecord) {
                 if ((version == 1 && size == 32) || (version == 2 && size == 33)) {
                     std::string identity(32, '0');
                     if (serde->ReadRecordData(identity.data(), 32) == 32) {
@@ -4162,7 +4262,24 @@ namespace ProcessorSerialization {
                 std::string data(size, '\0');
                 if (version == 1 && serde->ReadRecordData(data.data(), size) == size) {
                     if (auto entries = ActorIdentityUtils::ParseDynamicIdentities(data)) {
-                        DynamicActorIdentity::Restore(*entries);
+                        // Saved IDs follow the save's load order: remap both the reference and its base
+                        // before any live lookup, so a reordered plugin keeps the legitimate UUID.
+                        std::vector<ActorIdentityUtils::DynamicIdentityEntry> resolved;
+                        resolved.reserve(entries->size());
+                        for (auto& entry : *entries) {
+                            RE::FormID refId = 0;
+                            RE::FormID baseId = 0;
+                            if (!serde->ResolveFormID(entry.formId, refId) ||
+                                !serde->ResolveFormID(entry.baseId, baseId)) {
+                                logger::info("[ACTOR_IDENTITY] Dropping dynamic identity {:08X}: form no longer resolves",
+                                             entry.formId);
+                                continue;
+                            }
+                            entry.formId = refId;
+                            entry.baseId = baseId;
+                            resolved.push_back(std::move(entry));
+                        }
+                        DynamicActorIdentity::Restore(resolved);
                     } else {
                         logger::warn("[ACTOR_IDENTITY] Ignoring malformed dynamic identity record");
                     }
@@ -4372,6 +4489,10 @@ namespace ProcessorSerialization {
                 logger::warn("Unknown record type in cosave.");
             }
         }
+        if (!diaryRecordSeen) {
+            // Older saves have no identified diaries; never import them from another save or a title cache.
+            DynamicDiaryBook::RestoreInstances({}, false, DiaryBookRecordVersion, nullptr);
+        }
 
     }
 
@@ -4397,6 +4518,10 @@ namespace ProcessorSerialization {
             ActorIdentityUtils::SerializeDynamicIdentities(DynamicActorIdentity::Snapshot());
         if (!dynamicIdentities.empty() && serde->OpenRecord(DynamicIdentityRecord, 1)) {
             serde->WriteRecordData(dynamicIdentities.data(), static_cast<std::uint32_t>(dynamicIdentities.size()));
+        }
+        const auto diaryInstances = DynamicDiaryBook::SerializeInstances();
+        if (serde->OpenRecord(DiaryBookRecord, DiaryBookRecordVersion)) {
+            serde->WriteRecordData(diaryInstances.data(), static_cast<std::uint32_t>(diaryInstances.size()));
         }
         if (!serde->OpenRecord(AgentCountRecord, 0)) {
             logger::error("Unable to open record AgentCountRecord to write cosave data.");
@@ -4449,6 +4574,7 @@ namespace ProcessorSerialization {
     void OnRevert(SKSE::SerializationInterface*) {
         PlaythroughSession::ResetCharacter();
         DynamicActorIdentity::Clear();
+        DynamicDiaryBook::Revert();
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
         aiam.removeAllAgents();
@@ -4901,12 +5027,15 @@ namespace
                         actorName = batch.front()["actor_name"].get<std::string>();
                     }
 
-                    HTTPManager::postGameData("gamedata.php", json{
+                    json batchPayload{
                         {"type", "player_items_acquired"},
                         {"actor_type", "player"},
                         {"actor_name", actorName},
                         {"items", batch}
-                    });
+                    };
+                    // Every queued item already carries the typed player identity it was captured with.
+                    ApplyGameDataActorIdentity(batchPayload, ActorIdentityUtils::CaptureGameDataActor(true, 0, {}, 0));
+                    HTTPManager::postGameData("gamedata.php", batchPayload);
                 }
             }
 
@@ -4968,6 +5097,7 @@ namespace
             {"barter_suppressed", barterSuppressed},
             {"crafting_active", craftingActive}
         };
+        ApplyGameDataActorIdentity(payload, ActorIdentityUtils::CaptureGameDataActor(true, 0, {}, 0));
 
         if (source != 0) {
             payload["source_form_id"] = FormatQuestProgressionFormID(source);
@@ -6059,7 +6189,7 @@ OnSaveGame{
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
-        auto oldNarrator = aiam.getAgentByName(NARRATOR_NAME);
+        auto oldNarrator = aiam.getNarratorAgent();
         if (oldNarrator) aiam.deleteAgent(oldNarrator);
 
         // Lets add the player/narrator agent
@@ -6108,15 +6238,25 @@ OnSaveGame{
 
 }
 
-// Track last known equipment/inventory/skills/stats hashes to avoid duplicate updates
-std::unordered_map<uint32_t, std::string> lastEquipmentHash;
-std::unordered_map<uint32_t, std::string> lastInventoryHash;
+// Track acknowledged equipment/inventory/skills/stats/spells hashes to avoid duplicate updates
+GameDataDeliveryCache gEquipmentDelivery;
+GameDataDeliveryCache gInventoryDelivery;
 std::mutex lastInventoryHashMutex;
 std::unordered_map<uint32_t, std::unordered_map<std::string, std::vector<std::function<void(bool)>>>>
     pendingInventoryDeliveries;
-std::unordered_map<uint32_t, std::string> lastSkillsHash;
-std::unordered_map<uint32_t, std::string> lastStatsHash;
-std::unordered_map<uint32_t, std::string> lastSpellsHash;
+GameDataDeliveryCache gSkillsDelivery;
+GameDataDeliveryCache gStatsDelivery;
+GameDataDeliveryCache gSpellsDelivery;
+
+// Completion for a cached gamedata POST; captures only the FormID/ticket/hash, never the actor.
+static std::function<void(bool)> GameDataDeliveryAck(GameDataDeliveryCache& cache, std::uint32_t formID,
+                                                     std::uint64_t ticket, std::string hash, const char* tag)
+{
+    return [&cache, formID, ticket, hash = std::move(hash), tag](bool success) {
+        cache.Complete(formID, ticket, hash, success);
+        if (!success) logger::warn("[{}] {:08X} delivery failed; next refresh will retry", tag, formID);
+    };
+}
 
 // Track last update times for periodic updates
 std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> lastSkillsUpdate;
@@ -6575,24 +6715,25 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
         return;
     }
 
+    const auto identity = CaptureGameDataActorIdentity(npc);
+    if (HoldUnkeyedGameData(identity, "EQUIPMENT", agentName)) {
+        return;
+    }
+    equipmentHash = ActorIdentityUtils::GameDataChangeHash(identity, equipmentHash);
     auto formID = npc->GetFormID();
 
-    // Check if equipment changed (or force update on save load)
-    if (!forceUpdate && lastEquipmentHash.find(formID) != lastEquipmentHash.end()) {
-        if (lastEquipmentHash[formID] == equipmentHash) {
-            logger::trace("[EQUIPMENT_SKIP] {} equipment unchanged", agentName);
-            return;
-        }
+    const auto equipmentTicket = gEquipmentDelivery.Begin(formID, equipmentHash, forceUpdate);
+    if (equipmentTicket == 0) {
+        logger::trace("[EQUIPMENT_SKIP] {} equipment unchanged", agentName);
+        return;
     }
-
-    // Equipment changed or first time tracking - send update
-    lastEquipmentHash[formID] = equipmentHash;
 
     // Build JSON data for equipment update
     json equipmentData;
     equipmentData["type"] = "equipment";
     equipmentData["actor_name"] = agentName;
     equipmentData["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(equipmentData, identity);
     equipmentData["timestamp"] = getCurrentTimeMillis();
     equipmentData["gamets"] = GetGameTimeStamp();
     equipmentData["equipment"] = {
@@ -6608,7 +6749,8 @@ static void RefreshAIAgentEquipmentImpl(RE::Actor* npc, const std::string& agent
         {"right_hand", BuildEquipmentItemJson(rightHand, rightHand_baseid, rightHand_keywords)}};
     AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
 
-    HTTPManager::postGameData("gamedata.php", equipmentData);
+    HTTPManager::postGameData("gamedata.php", equipmentData,
+        GameDataDeliveryAck(gEquipmentDelivery, formID, equipmentTicket, equipmentHash, "EQUIPMENT_DELIVERY"));
 
     logger::info("[EQUIPMENT_UPDATE] {} equipment updated", agentName);
 }
@@ -6730,11 +6872,18 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
         inventoryHash.append(item.hashEntry);
     }
 
+    const auto identity = CaptureGameDataActorIdentity(npc);
+    if (HoldUnkeyedGameData(identity, "INVENTORY", agentName)) {
+        if (completion) completion(false);
+        return;
+    }
+    inventoryHash = ActorIdentityUtils::GameDataChangeHash(identity, inventoryHash);
     auto formID = npc->GetFormID();
 
     // Check if inventory changed (or force update on save load)
     bool inventoryUnchanged = false;
     bool joinedPendingDelivery = false;
+    std::uint64_t inventoryTicket = 0;
     {
         std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
         auto actorPending = pendingInventoryDeliveries.find(formID);
@@ -6746,14 +6895,15 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
             }
         }
 
-        const auto lastHash = lastInventoryHash.find(formID);
         inventoryUnchanged =
-            !joinedPendingDelivery && !forceUpdate && lastHash != lastInventoryHash.end() &&
-            lastHash->second == inventoryHash;
+            !joinedPendingDelivery && !forceUpdate && gInventoryDelivery.Delivered(formID, inventoryHash);
 
-        if (!joinedPendingDelivery && !inventoryUnchanged && !synchronous) {
-            auto& callbacks = pendingInventoryDeliveries[formID][inventoryHash];
-            if (completion) callbacks.push_back(std::move(completion));
+        if (!joinedPendingDelivery && !inventoryUnchanged) {
+            inventoryTicket = gInventoryDelivery.Issue(formID, inventoryHash);
+            if (!synchronous) {
+                auto& callbacks = pendingInventoryDeliveries[formID][inventoryHash];
+                if (completion) callbacks.push_back(std::move(completion));
+            }
         }
     }
     if (joinedPendingDelivery) {
@@ -6770,6 +6920,7 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
     inventoryDataJson["type"] = "inventory";
     inventoryDataJson["actor_name"] = agentName;
     inventoryDataJson["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(inventoryDataJson, identity);
     inventoryDataJson["timestamp"] = getCurrentTimeMillis();
     inventoryDataJson["gamets"] = GetGameTimeStamp();
     inventoryDataJson["items"] = json::array();
@@ -6785,14 +6936,12 @@ void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, b
             });
     }
 
-    auto acknowledgeDelivery = [formID, inventoryHash, agentName, itemCount = inventoryItems.size(),
+    auto acknowledgeDelivery = [formID, inventoryHash, inventoryTicket, agentName, itemCount = inventoryItems.size(),
                                 completion = std::move(completion), synchronous](bool success) mutable {
         std::vector<std::function<void(bool)>> pendingCompletions;
         {
             std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
-            if (success) {
-                lastInventoryHash[formID] = inventoryHash;
-            }
+            gInventoryDelivery.Complete(formID, inventoryTicket, inventoryHash, success);
 
             if (!synchronous) {
                 auto actorPending = pendingInventoryDeliveries.find(formID);
@@ -6906,24 +7055,25 @@ void RefreshAIAgentSkills(RE::Actor* npc, const std::string& agentName, bool for
         archery, block, onehanded, twohanded, conjuration, destruction, illusion, restoration,
         alteration, enchanting, smithing, heavyarmor, lightarmor, pickpocket, lockpicking, sneak, alchemy, speechcraft);
     
+    const auto identity = CaptureGameDataActorIdentity(npc);
+    if (HoldUnkeyedGameData(identity, "SKILLS", agentName)) {
+        return;
+    }
+    skillsHash = ActorIdentityUtils::GameDataChangeHash(identity, skillsHash);
     auto formID = npc->GetFormID();
     
-    // Check if skills changed (or force update)
-    if (!forceUpdate && lastSkillsHash.find(formID) != lastSkillsHash.end()) {
-        if (lastSkillsHash[formID] == skillsHash) {
-            logger::trace("[SKILLS_SKIP] {} skills unchanged", agentName);
-            return;
-        }
+    const auto skillsTicket = gSkillsDelivery.Begin(formID, skillsHash, forceUpdate);
+    if (skillsTicket == 0) {
+        logger::trace("[SKILLS_SKIP] {} skills unchanged", agentName);
+        return;
     }
-    
-    // Skills changed - send update
-    lastSkillsHash[formID] = skillsHash;
     
     // Build JSON data for skills update
     json skillsDataJson;
     skillsDataJson["type"] = "skills";
     skillsDataJson["actor_name"] = agentName;
     skillsDataJson["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(skillsDataJson, identity);
     skillsDataJson["timestamp"] = getCurrentTimeMillis();
     skillsDataJson["gamets"] = GetGameTimeStamp();
     skillsDataJson["skills"] = {
@@ -6947,7 +7097,8 @@ void RefreshAIAgentSkills(RE::Actor* npc, const std::string& agentName, bool for
         {"speechcraft", speechcraft}
     };
     
-    HTTPManager::postGameData("gamedata.php", skillsDataJson);
+    HTTPManager::postGameData("gamedata.php", skillsDataJson,
+        GameDataDeliveryAck(gSkillsDelivery, formID, skillsTicket, skillsHash, "SKILLS_DELIVERY"));
     
     logger::info("[SKILLS_UPDATE] {} skills changed, sent update", agentName);
 }
@@ -7014,24 +7165,25 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
                                         healthMax, magicka, magickaMax, stamina, staminaMax, scale,
                                         isEssential, isProtected, isDead);
 
+    const auto identity = CaptureGameDataActorIdentity(npc);
+    if (HoldUnkeyedGameData(identity, "STATS", agentName)) {
+        return;
+    }
+    statsHash = ActorIdentityUtils::GameDataChangeHash(identity, statsHash);
     auto formID = npc->GetFormID();
     
-    // Check if stats changed (or force update)
-    if (!forceUpdate && lastStatsHash.find(formID) != lastStatsHash.end()) {
-        if (lastStatsHash[formID] == statsHash) {
-            logger::trace("[STATS_SKIP] {} stats unchanged", agentName);
-            return;
-        }
+    const auto statsTicket = gStatsDelivery.Begin(formID, statsHash, forceUpdate);
+    if (statsTicket == 0) {
+        logger::trace("[STATS_SKIP] {} stats unchanged", agentName);
+        return;
     }
-    
-    // Stats changed - send update
-    lastStatsHash[formID] = statsHash;
     
 
     json statsDataJson;
     statsDataJson["type"] = "stats";
     statsDataJson["actor_name"] = agentName;
     statsDataJson["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(statsDataJson, identity);
     statsDataJson["timestamp"] = getCurrentTimeMillis();
     statsDataJson["gamets"] = GetGameTimeStamp();
     statsDataJson["stats"] = {
@@ -7048,7 +7200,8 @@ void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forc
         {"is_dead", isDead}
     };
     
-    HTTPManager::postGameData("gamedata.php", statsDataJson);
+    HTTPManager::postGameData("gamedata.php", statsDataJson,
+        GameDataDeliveryAck(gStatsDelivery, formID, statsTicket, statsHash, "STATS_DELIVERY"));
     
     // Calculate percentages for logging
     int hpPercent = (int)((health / healthMax) * 100);
@@ -7369,19 +7522,19 @@ void RefreshPlayerEquipment(bool forceUpdate) {
     }
     
     auto formID = player->GetFormID();
+    // Load-scoped like NPC hashes, so an earlier load's acknowledgement never confirms this load's state.
+    equipmentHash = ActorIdentityUtils::GameDataChangeHash(CaptureGameDataActorIdentity(player), equipmentHash);
     
-    if (!forceUpdate && lastEquipmentHash.find(formID) != lastEquipmentHash.end()) {
-        if (lastEquipmentHash[formID] == equipmentHash) {
-            return;
-        }
+    const auto equipmentTicket = gEquipmentDelivery.Begin(formID, equipmentHash, forceUpdate);
+    if (equipmentTicket == 0) {
+        return;
     }
-    
-    lastEquipmentHash[formID] = equipmentHash;
     
     json equipmentData;
     equipmentData["type"] = "equipment";
     equipmentData["actor_name"] = player->GetDisplayFullName();
     equipmentData["actor_type"] = "player";
+    ApplyGameDataActorIdentity(equipmentData, CaptureGameDataActorIdentity(player));
     equipmentData["timestamp"] = getCurrentTimeMillis();
     equipmentData["gamets"] = GetGameTimeStamp();
     equipmentData["equipment"] = {
@@ -7398,7 +7551,8 @@ void RefreshPlayerEquipment(bool forceUpdate) {
     };
     AddModdedEquipmentToJson(equipmentData["equipment"], moddedEquipment);
     
-    HTTPManager::postGameData("gamedata.php", equipmentData);
+    HTTPManager::postGameData("gamedata.php", equipmentData,
+        GameDataDeliveryAck(gEquipmentDelivery, formID, equipmentTicket, equipmentHash, "EQUIPMENT_DELIVERY"));
     logger::info("[PLAYER_EQUIPMENT_UPDATE] Player equipment updated");
 }
 
@@ -7467,14 +7621,15 @@ void RefreshPlayerInventory(bool forceUpdate) {
     }
     
     auto formID = player->GetFormID();
+    // Load-scoped like NPC hashes, so an earlier load's acknowledgement never confirms this load's state.
+    inventoryHash = ActorIdentityUtils::GameDataChangeHash(CaptureGameDataActorIdentity(player), inventoryHash);
     
-    {
-        std::lock_guard<std::mutex> lock(lastInventoryHashMutex);
-        const auto lastHash = lastInventoryHash.find(formID);
-        if (!forceUpdate && lastHash != lastInventoryHash.end() && lastHash->second == inventoryHash) {
-            return;
-        }
-        lastInventoryHash[formID] = inventoryHash;
+    const auto inventoryTicket = gInventoryDelivery.Begin(formID, inventoryHash, forceUpdate);
+    if (inventoryTicket == 0) {
+        return;
+    }
+    if (inventoryItems.empty()) {
+        gInventoryDelivery.Complete(formID, inventoryTicket, inventoryHash, true);
     }
     
     if (!inventoryItems.empty()) {
@@ -7482,6 +7637,7 @@ void RefreshPlayerInventory(bool forceUpdate) {
         inventoryDataJson["type"] = "inventory";
         inventoryDataJson["actor_name"] = player->GetDisplayFullName();
         inventoryDataJson["actor_type"] = "player";
+        ApplyGameDataActorIdentity(inventoryDataJson, CaptureGameDataActorIdentity(player));
         inventoryDataJson["timestamp"] = getCurrentTimeMillis();
         inventoryDataJson["gamets"] = GetGameTimeStamp();
         inventoryDataJson["items"] = json::array();
@@ -7497,7 +7653,8 @@ void RefreshPlayerInventory(bool forceUpdate) {
             });
         }
         
-        HTTPManager::postGameData("gamedata.php", inventoryDataJson);
+        HTTPManager::postGameData("gamedata.php", inventoryDataJson,
+            GameDataDeliveryAck(gInventoryDelivery, formID, inventoryTicket, inventoryHash, "INVENTORY_DELIVERY"));
         logger::info("[PLAYER_INVENTORY_UPDATE] Player inventory updated ({} items)", inventoryItems.size());
     }
 }
@@ -7533,19 +7690,19 @@ void RefreshPlayerSkills(bool forceUpdate) {
         alteration, enchanting, smithing, heavyarmor, lightarmor, pickpocket, lockpicking, sneak, alchemy, speechcraft);
     
     auto formID = player->GetFormID();
+    // Load-scoped like NPC hashes, so an earlier load's acknowledgement never confirms this load's state.
+    skillsHash = ActorIdentityUtils::GameDataChangeHash(CaptureGameDataActorIdentity(player), skillsHash);
     
-    if (!forceUpdate && lastSkillsHash.find(formID) != lastSkillsHash.end()) {
-        if (lastSkillsHash[formID] == skillsHash) {
-            return;
-        }
+    const auto skillsTicket = gSkillsDelivery.Begin(formID, skillsHash, forceUpdate);
+    if (skillsTicket == 0) {
+        return;
     }
-    
-    lastSkillsHash[formID] = skillsHash;
     
     json skillsDataJson;
     skillsDataJson["type"] = "skills";
     skillsDataJson["actor_name"] = player->GetDisplayFullName();
     skillsDataJson["actor_type"] = "player";
+    ApplyGameDataActorIdentity(skillsDataJson, CaptureGameDataActorIdentity(player));
     skillsDataJson["timestamp"] = getCurrentTimeMillis();
     skillsDataJson["gamets"] = GetGameTimeStamp();
     skillsDataJson["skills"] = {
@@ -7569,7 +7726,8 @@ void RefreshPlayerSkills(bool forceUpdate) {
         {"speechcraft", speechcraft}
     };
     
-    HTTPManager::postGameData("gamedata.php", skillsDataJson);
+    HTTPManager::postGameData("gamedata.php", skillsDataJson,
+        GameDataDeliveryAck(gSkillsDelivery, formID, skillsTicket, skillsHash, "SKILLS_DELIVERY"));
     logger::info("[PLAYER_SKILLS_UPDATE] Player skills updated");
 }
 
@@ -7606,19 +7764,19 @@ void RefreshPlayerStats(bool forceUpdate) {
         level, health, healthMax, magicka, magickaMax, stamina, staminaMax, scale);
     
     auto formID = player->GetFormID();
+    // Load-scoped like NPC hashes, so an earlier load's acknowledgement never confirms this load's state.
+    statsHash = ActorIdentityUtils::GameDataChangeHash(CaptureGameDataActorIdentity(player), statsHash);
     
-    if (!forceUpdate && lastStatsHash.find(formID) != lastStatsHash.end()) {
-        if (lastStatsHash[formID] == statsHash) {
-            return;
-        }
+    const auto statsTicket = gStatsDelivery.Begin(formID, statsHash, forceUpdate);
+    if (statsTicket == 0) {
+        return;
     }
-    
-    lastStatsHash[formID] = statsHash;
     
     json statsDataJson;
     statsDataJson["type"] = "stats";
     statsDataJson["actor_name"] = player->GetDisplayFullName();
     statsDataJson["actor_type"] = "player";
+    ApplyGameDataActorIdentity(statsDataJson, CaptureGameDataActorIdentity(player));
     statsDataJson["timestamp"] = getCurrentTimeMillis();
     statsDataJson["gamets"] = GetGameTimeStamp();
     statsDataJson["stats"] = {
@@ -7632,7 +7790,8 @@ void RefreshPlayerStats(bool forceUpdate) {
         {"scale", scale}
     };
     
-    HTTPManager::postGameData("gamedata.php", statsDataJson);
+    HTTPManager::postGameData("gamedata.php", statsDataJson,
+        GameDataDeliveryAck(gStatsDelivery, formID, statsTicket, statsHash, "STATS_DELIVERY"));
     
     int hpPercent = (int)((health / healthMax) * 100);
     int mpPercent = (int)((magicka / magickaMax) * 100);
@@ -7749,23 +7908,25 @@ void RefreshAIAgentSpells(RE::Actor* npc, const std::string& agentName, bool for
         spellsHash.append(spell);
     }
     
+    const auto identity = CaptureGameDataActorIdentity(npc);
+    if (HoldUnkeyedGameData(identity, "SPELLS", agentName)) {
+        return;
+    }
+    spellsHash = ActorIdentityUtils::GameDataChangeHash(identity, spellsHash);
     auto formID = npc->GetFormID();
     
-    // Check if changed
-    if (!forceUpdate && lastSpellsHash.find(formID) != lastSpellsHash.end()) {
-        if (lastSpellsHash[formID] == spellsHash) {
-            logger::trace("[SPELLS_SKIP] {} spells unchanged", agentName);
-            return;
-        }
+    const auto spellsTicket = gSpellsDelivery.Begin(formID, spellsHash, forceUpdate);
+    if (spellsTicket == 0) {
+        logger::trace("[SPELLS_SKIP] {} spells unchanged", agentName);
+        return;
     }
-    
-    lastSpellsHash[formID] = spellsHash;
     
     // Build JSON
     json spellsData;
     spellsData["type"] = "spells";
     spellsData["actor_name"] = agentName;
     spellsData["actor_type"] = "npc";
+    ApplyGameDataActorIdentity(spellsData, identity);
     spellsData["timestamp"] = getCurrentTimeMillis();
     spellsData["gamets"] = GetGameTimeStamp();
     spellsData["spells"] = json::array();
@@ -7789,7 +7950,8 @@ void RefreshAIAgentSpells(RE::Actor* npc, const std::string& agentName, bool for
         }
     }
     
-    HTTPManager::postGameData("gamedata.php", spellsData);
+    HTTPManager::postGameData("gamedata.php", spellsData,
+        GameDataDeliveryAck(gSpellsDelivery, formID, spellsTicket, spellsHash, "SPELLS_DELIVERY"));
     logger::trace("[SPELLS_UPDATE] {} spells updated ({} spells)", agentName, spellsList.size());
 }
 
@@ -7882,21 +8044,20 @@ void RefreshPlayerSpells(bool forceUpdate) {
     }
     
     auto formID = player->GetFormID();
+    // Load-scoped like NPC hashes, so an earlier load's acknowledgement never confirms this load's state.
+    spellsHash = ActorIdentityUtils::GameDataChangeHash(CaptureGameDataActorIdentity(player), spellsHash);
     
-    // Check if changed
-    if (!forceUpdate && lastSpellsHash.find(formID) != lastSpellsHash.end()) {
-        if (lastSpellsHash[formID] == spellsHash) {
-            return;
-        }
+    const auto spellsTicket = gSpellsDelivery.Begin(formID, spellsHash, forceUpdate);
+    if (spellsTicket == 0) {
+        return;
     }
-    
-    lastSpellsHash[formID] = spellsHash;
     
     // Build JSON
     json spellsData;
     spellsData["type"] = "spells";
     spellsData["actor_name"] = player->GetDisplayFullName();
     spellsData["actor_type"] = "player";
+    ApplyGameDataActorIdentity(spellsData, CaptureGameDataActorIdentity(player));
     spellsData["timestamp"] = getCurrentTimeMillis();
     spellsData["gamets"] = GetGameTimeStamp();
     spellsData["spells"] = json::array();
@@ -7920,7 +8081,8 @@ void RefreshPlayerSpells(bool forceUpdate) {
         }
     }
     
-    HTTPManager::postGameData("gamedata.php", spellsData);
+    HTTPManager::postGameData("gamedata.php", spellsData,
+        GameDataDeliveryAck(gSpellsDelivery, formID, spellsTicket, spellsHash, "SPELLS_DELIVERY"));
     logger::trace("[PLAYER_SPELLS_UPDATE] Player spells updated ({} spells)", spellsList.size());
 }
 
@@ -7982,7 +8144,7 @@ OnLoadedGame {
 
         AIAgentManager& aiam = AIAgentManager::getInstance();
 
-        auto oldNarrator = aiam.getAgentByName(NARRATOR_NAME);
+        auto oldNarrator = aiam.getNarratorAgent();
         if (oldNarrator) aiam.deleteAgent(oldNarrator);
 
         // Lets add the player/narrator agent
@@ -8042,13 +8204,14 @@ OnLoadedGame {
             }
         }
         
-        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
+        std::vector<std::pair<std::string, RE::Actor*>> resultCloseActors;
+        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/", &resultCloseActors);
         if (!resultClose.empty()) {
             resultClose.append("/");
         }
         resultClose.append(AIAgentManager::getInstance().getPlayerName());
-        HTTPManager::log(
-            std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose));
+        HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose),
+                                 HTTPManager::CaptureRoster(resultCloseActors));
         PostNearbyActivityStatus(player, 3000.0f);
 
         logger::debug("Sending init msg init|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp() + 1, PLUGIN_VERSION);
@@ -8120,13 +8283,14 @@ OnLoadedGame {
             }
         }
         
-        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
+        std::vector<std::pair<std::string, RE::Actor*>> resultCloseActors;
+        auto resultClose = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/", &resultCloseActors);
         if (!resultClose.empty()) {
             resultClose.append("/");
         }
         resultClose.append(AIAgentManager::getInstance().getPlayerName());
-        HTTPManager::log(
-            std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose));
+        HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), resultClose),
+                                 HTTPManager::CaptureRoster(resultCloseActors));
         PostNearbyActivityStatus(player, 3000.0f);
 
 
@@ -8288,7 +8452,7 @@ OnNewGame {
     
     AIAgentManager& aiam = AIAgentManager::getInstance();
 
-    auto oldNarrator = aiam.getAgentByName(NARRATOR_NAME);
+    auto oldNarrator = aiam.getNarratorAgent();
     if (oldNarrator) aiam.deleteAgent(oldNarrator);
 
     // Lets add the player/narrator agent
@@ -8333,6 +8497,7 @@ OnNewGame {
 OnDataLoaded {
     
     logger::info("OnDataLoaded");
+    HTTPManager::RegisterGameThread();
     VRItemAwareness::Initialize();
     logger::trace("Initializing trampoline...");
     auto& trampoline = SKSE::GetTrampoline();
@@ -8492,12 +8657,14 @@ EventHandlers {
                                          "(beings in range:" + result + ")"));
             */
 
-            auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/");
+            std::vector<std::pair<std::string, RE::Actor*>> resultActors;
+            auto result = InspectSurroundingsNavmesh(player->AsReference(), true, 3000, "/", &resultActors);
             if (!result.empty()) {
                 result.append("/");
             }
             result.append(AIAgentManager::getInstance().getPlayerName());
-            HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result));
+            HTTPManager::log(std::format("infonpc_close|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), result),
+                                 HTTPManager::CaptureRoster(resultActors));
 
 
             BackGroundDialogueQueue.clear();
@@ -9064,6 +9231,12 @@ EventHandlers {
     On<RE::TESDeathEvent>([](const RE::TESDeathEvent* event) {
         try {
             if (!event->actorDying) return;
+            // The victim is the event's target role. The audience stays the player's hearing scope and the killer
+            // is never made the speaker; display text is unchanged.
+            RE::Actor* victimActor = event->actorDying->As<RE::Actor>();
+            const auto logDeath = [victimActor](std::string msg) {
+                HTTPManager::logEventTarget(std::move(msg), victimActor);
+            };
             if (!event->actorKiller) {
                 //Died
                 if (event->dead == 0) {
@@ -9073,7 +9246,7 @@ EventHandlers {
                 auto activated = event->actorDying->GetDisplayFullName();
                 std::string victimLegend;
                 victimLegend.append(activated);
-                HTTPManager::log(
+                logDeath(
                     std::format("death|{}|{}|(Context location: {}){} died", getCurrentTimeMillis(),
                                              GetGameTimeStamp(), GetPlayerLocation(), victimLegend
                                 ));
@@ -9147,7 +9320,7 @@ EventHandlers {
                             if (possibleWeapon) {
                                 
                                 if (herika->IsInKillMove())
-                                    HTTPManager::log(std::format(
+                                    logDeath(std::format(
                                         "death|{}|{}|(Context location: {}){} has defeated {} with {} in an awesome move",
                                         getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                         herika->GetDisplayFullName(),
@@ -9155,18 +9328,18 @@ EventHandlers {
                                 else {
                                     // Check if "boss"
                                     if (possibleWeapon->GetFormType() == RE::FormType::Weapon) {
-                                            HTTPManager::log(std::format(
+                                            logDeath(std::format(
                                                 "death|{}|{}|(Context location: {}){} has defeated {} using weapon {}",
                                                 getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                                 herika->GetDisplayFullName(), victimLegend, possibleWeapon->GetName()));
                                     }else if (possibleWeapon->GetFormType() == RE::FormType::Weapon) {
-                                        HTTPManager::log(std::format(
+                                        logDeath(std::format(
                                             "death|{}|{}|(Context location: {}){} has defeated {} using spell {}",
                                             getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                             herika->GetDisplayFullName(), victimLegend, possibleWeapon->GetName()));
                                     }
                                     else {
-                                        HTTPManager::log(std::format(
+                                        logDeath(std::format(
                                             "death|{}|{}|(Context location: {}){} has defeated {} using {} ",
                                             getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                             herika->GetDisplayFullName(), victimLegend, possibleWeapon->GetName()));
@@ -9176,12 +9349,12 @@ EventHandlers {
                             else {
                                 
                                 if (herika->IsInKillMove())
-                                    HTTPManager::log(std::format(
+                                    logDeath(std::format(
                                         "death|{}|{}|(Context location: {}){} has defeated {}  in an awesome move",
                                         getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                         herika->GetDisplayFullName(), victimLegend));
                                 else
-                                    HTTPManager::log(std::format("death|{}|{}|(Context location: {}){} has defeated {}",
+                                    logDeath(std::format("death|{}|{}|(Context location: {}){} has defeated {}",
                                                      getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), herika->GetDisplayFullName(),
                                                                  victimLegend));
                             }
@@ -9200,27 +9373,27 @@ EventHandlers {
                     
                             if (player->IsInKillMove()) {
                         
-                                HTTPManager::log(std::format(
+                                logDeath(std::format(
                                     "death|{}|{}|(Context location: {}){} has defeated {} with {} in an awesome move",
                                     getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), activator,
                                     victimLegend, possibleWeapon->GetName()));
                             } else {
                         
-                                HTTPManager::log(std::format("death|{}|{}|(Context location: {}){} has defeated {} with {}",
+                                logDeath(std::format("death|{}|{}|(Context location: {}){} has defeated {} with {}",
                                                     getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                                 activator, victimLegend, possibleWeapon->GetName()));
                             }
                         } else {
                     
 
-                            HTTPManager::log(std::format("death|{}|{}|(Context location: {}){} has defeated {}",
+                            logDeath(std::format("death|{}|{}|(Context location: {}){} has defeated {}",
                                                 getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), activator, victimLegend));
                         }  
                     }
 
                     
                 } else if (event->actorDying->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
-                    HTTPManager::log(std::format("playerdied|{}|{}|(Context location: {}){} has killed {}",
+                    logDeath(std::format("playerdied|{}|{}|(Context location: {}){} has killed {}",
                                                  getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                                  activator, victimLegend)); 
                     SpeakManager::getInstance().abortPlay();
@@ -9229,7 +9402,7 @@ EventHandlers {
                     
                 
                 } else {
-                    HTTPManager::log(std::format("death|{}|{}|(Context location: {}) {} has killed {}",
+                    logDeath(std::format("death|{}|{}|(Context location: {}) {} has killed {}",
                                                  getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(),
                                                  activator, victimLegend)); 
                 }
@@ -9269,7 +9442,7 @@ EventHandlers {
             }
             if (!agentPointer) {
                 if (target->GetFormID() == 0x14 || target->GetFormID() == 0x7) {
-                    auto narrator = aiam.getAgentByName(NARRATOR_NAME);
+                    auto narrator = aiam.getNarratorAgent();
                     if (narrator) agentPointer = narrator->getActor();
                 }
             }
@@ -10140,8 +10313,15 @@ EventHandlers {
     });
 
     On<RE::TESBookReadEvent>([](const RE::TESBookReadEvent* event) {
-        // Only triggers on PC?s
-        if (!event->ref.get()) return;
+        // Inventory reads have no reference; only identified diaries are resolved from the engine unique id.
+        if (!event->ref.get()) {
+            DynamicDiaryBook::IdentifiedDiary read;
+            if (DynamicDiaryBook::QueueInventoryDiaryRead(event->baseFormID, event->uniqueID, &read) &&
+                read.instanceId != 0) {
+                DynamicDiaryBook::QueueIdentifiedDiaryUpload(read, std::string(ActorIdentityUtils::PlayerActorKey));
+            }
+            return;
+        }
 
         bool bypass = false;
         auto bookRefPtr = event->ref.get();
@@ -10153,9 +10333,14 @@ EventHandlers {
             auto bookDescription = bookRef->As<RE::TESDescription>();
             std::string localName(bookForm->GetName());
 
+            DynamicDiaryBook::IdentifiedDiary identifiedRead;
             if (DynamicDiaryBook::QueueReadableBook(
-                    bookRefPtr->AsReference(), bookRef->As<RE::TESObjectBOOK>(), fullName)) {
+                    bookRefPtr->AsReference(), bookRef->As<RE::TESObjectBOOK>(), fullName, &identifiedRead)) {
                 bypass = true;
+                if (identifiedRead.instanceId != 0) {
+                    DynamicDiaryBook::QueueIdentifiedDiaryUpload(identifiedRead,
+                                                                 std::string(ActorIdentityUtils::PlayerActorKey));
+                }
             } else if (localName=="Generic Note") {
                 // AIAgent faction. is an ethereal note
                 std::string hashName=md5low(trim(event->ref.get()->GetDisplayFullName()),false);
@@ -10255,10 +10440,10 @@ EventHandlers {
                             cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
                             auto targetActor = cameraObject.get()->As<RE::Actor>();
                             if (targetActor) {
-                                HTTPManager::log(std::format("npcspellcast|{}|{}|{} casts {} on {}",
+                                HTTPManager::logEventTarget(std::format("npcspellcast|{}|{}|{} casts {} on {}",
                                                              getCurrentTimeMillis(), GetGameTimeStamp(),
                                                              event->object->GetDisplayFullName(), spell->GetName(),
-                                                             targetActor->GetDisplayFullName()));
+                                                             targetActor->GetDisplayFullName()), targetActor);
                             } else {
                                 HTTPManager::log(std::format("npcspellcast|{}|{}|{} casts {} ", getCurrentTimeMillis(),
                                                              GetGameTimeStamp(), event->object->GetDisplayFullName(),
@@ -10388,9 +10573,9 @@ EventHandlers {
             lastReanimateEventByTarget[targetFormID] = now;
             
             // Send reanimation event to server immediately
-            HTTPManager::log(std::format("npc_reanimated|{}|{}|{}",
+            HTTPManager::logEventTarget(std::format("npc_reanimated|{}|{}|{}",
                                        getCurrentTimeMillis(), GetGameTimeStamp(), 
-                                       targetName));
+                                       targetName), targetActor);
             
             logger::info("Reanimation detected: {} reanimated (FormID: {:#x})", 
                         targetName, targetFormID);
@@ -10513,6 +10698,9 @@ EventHandlers {
                 if (!player || !ui || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
                     ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) return;
                 json speakers = json::array();
+                // Parallel to speakers: each candidate's physical key (empty when it has none), so namesakes
+                // stay distinct for a server that selects by key. Names stay for older servers.
+                json speakerKeys = json::array();
                 for (const auto& agent : AIAgentManager::getInstance().getAgents()) {
                     if (!agent || agent->isNarrator()) continue;
                     auto* actor = agent->getActor();
@@ -10521,14 +10709,32 @@ EventHandlers {
                         actor->GetPosition().GetDistance(player->GetPosition()) > DISTANCE_ACTIVATING_NPC_OUT ||
                         !PlayerConversationRouter::GetAutomaticBlockReason(agent, actor, player).empty()) continue;
                     speakers.push_back(agent->getActorName());
+                    const auto speakerKey = BuildActorKey(actor);
+                    speakerKeys.push_back(speakerKey.empty() ? json(nullptr) : json(speakerKey));
                     if (speakers.size() == 32) break;
                 }
-                const auto snapshotJson = json{{"source", "quest_objective_v1"}, {"speakers", speakers}}.dump();
+                json snapshotObject = {{"source", "quest_objective_v1"}, {"speakers", speakers},
+                                       {"speaker_keys", speakerKeys}};
+                // The objective is observed by the player's hearing scope now; the identity shares field 4
+                // with the speaker snapshot, so a capture that cannot be sent drops the event.
+                auto audience = HTTPManager::CaptureHearingAudience(player);
+                const auto playerName = AIAgentManager::getInstance().getPlayerName();
+                audience.Add(playerName.empty() ? std::string(player->GetName()) : playerName, player);
+                const bool questSendable = audience.identity.Sendable();
+                if (!questSendable) {
+                    logger::warn("[ACTOR_IDENTITY] Dropping quest; captured identity unusable ({})",
+                                 audience.identity.invalidReason);
+                }
+                EventIdentityUtils::Append(snapshotObject, audience.identity);
+                const auto snapshotJson = snapshotObject.dump();
                 const auto snapshot = HTTPManager::base64_encode(snapshotJson.data(), snapshotJson.size());
                 HTTPManager::log(std::format("_uquest|{}|{}|{}@{}@{}@{}", getCurrentTimeMillis(),
                     GetGameTimeStamp(), editorId, questName, objectiveText, stage));
-                HTTPManager::log(std::format("quest|{}|{}|(Context location: {}) Quest \"{}\" objective {}: {}|{}",
-                    getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), questName, status, objectiveText, snapshot));
+                if (questSendable) {
+                    HTTPManager::log(std::format("quest|{}|{}|(Context location: {}) Quest \"{}\" objective {}: {}|{}",
+                        getCurrentTimeMillis(), GetGameTimeStamp(), GetPlayerLocation(), questName, status, objectiveText,
+                        snapshot));
+                }
                 // Preserve the journal refresh used by quest context and memory.
                 auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
                 auto args = RE::MakeFunctionArguments(RE::FormID(questFormId));
@@ -10602,6 +10808,13 @@ EventHandlers {
             return;
         }
         
+         {
+             // The declared event carries an ObjectRefHandle; resolve it now while the world reference exists.
+             const auto movedReference = event_o->reference.get();
+             DynamicDiaryBook::OnDiaryContainerChanged(event_o->oldContainer, event_o->newContainer, event_o->baseObj,
+                                                       event_o->uniqueID,
+                                                       movedReference ? movedReference->GetFormID() : 0);
+         }
          const RE::TESContainerChangedEventEx* event = RE::castWrongStruct(event_o);
          auto item = event->baseObj;
          auto source = event->oldContainer;
