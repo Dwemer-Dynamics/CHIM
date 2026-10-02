@@ -385,6 +385,10 @@ textarea { resize: vertical; line-height: 1.35; }
 .reference-name { color: #e4e0d9; font-weight: 700; overflow-wrap: anywhere; }
 .reference-plugin { color: #c2b39b; overflow-wrap: anywhere; }
 .reference-formid-list { color: #dfe6f2; font-family: "Consolas", "Courier New", monospace; letter-spacing: .02em; overflow-wrap: anywhere; }
+.reference-scope-all { color: #e8c48f; font-family: inherit; letter-spacing: 0; }
+.reference-hint.reference-scope-all { color: #e8c48f; }
+#reference-plugin-name:disabled { opacity: .55; cursor: not-allowed; }
+#reference-plugin-name:disabled::placeholder { color: #e8c48f; opacity: 1; }
 .reference-muted { color: var(--muted); font-style: italic; font-family: inherit; }
 .reference-row.overridden .reference-name, .reference-row.overridden .reference-plugin, .reference-row.overridden .reference-formid-list { color: #8b929c; }
 .reference-cell-message { padding: 14px 9px; color: var(--muted); text-align: center; font-size: .72rem; font-style: italic; }

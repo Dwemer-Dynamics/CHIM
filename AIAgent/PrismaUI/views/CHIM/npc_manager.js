@@ -1608,7 +1608,7 @@
     <header class="editor-header">
         <div class="reference-heading">
             <h2 id="reference-title">Reference Groups</h2>
-            <p id="reference-intro" class="reference-intro">A group lists the exact placed references that are the same character, so they share one profile. Changing or disabling a rule releases its automatic links. Matching actors share again when they next register. Manual links and original profile data are preserved.</p>
+            <p id="reference-intro" class="reference-intro">A group lists the exact placed references that are the same character, so they share one profile. Leave FormIDs empty to link every placed actor with that exact name from every plugin, sharing one profile, memories and relationships. Changing or disabling a rule releases its automatic links. Matching actors share again when they next register. Manual links and original profile data are preserved.</p>
         </div>
         <button id="reference-close" class="icon-button" type="button" aria-label="Close reference groups">&times;</button>
     </header>
@@ -1627,8 +1627,9 @@
                     <input id="reference-display-name" type="text" maxlength="120" placeholder="Sigrid">
                 </label>
                 <label class="form-field">
-                    <span>Plugin file</span>
-                    <input id="reference-plugin-name" type="text" maxlength="120" spellcheck="false" placeholder="Skyrim.esm">
+                    <span id="reference-plugin-label">Plugin file</span>
+                    <input id="reference-plugin-name" type="text" maxlength="120" spellcheck="false" placeholder="Skyrim.esm"
+                           aria-describedby="reference-formids-hint">
                 </label>
             </div>
             <label class="form-field">
@@ -1636,7 +1637,7 @@
                 <textarea id="reference-formids" class="reference-formids" rows="3" spellcheck="false"
                           aria-describedby="reference-formids-hint" placeholder="0001A66C"></textarea>
             </label>
-            <p id="reference-formids-hint" class="reference-hint">Local FormIDs from the plugin above, without the load order prefix. One per line, or separated by spaces or commas.</p>
+            <p id="reference-formids-hint" class="reference-hint" aria-live="polite">Local FormIDs from the plugin above, without the load order prefix. One per line, or separated by spaces or commas.</p>
             <label class="check-field"><input id="reference-enabled" type="checkbox"><span>Enabled</span></label>
             <div class="reference-editor-actions">
                 <span id="reference-editor-status" class="reference-editor-status" role="status" aria-live="polite"></span>
@@ -1751,13 +1752,20 @@
         return { ids, invalid };
     }
 
+    const REFERENCE_EXACT_HINT = 'Local FormIDs from the plugin above, without the load order prefix. One per line, or separated by spaces or commas.';
+    const REFERENCE_ALL_HINT = 'No FormIDs: every placed actor with this exact name, from every plugin, shares one profile, memories and relationships. The plugin file is not used.';
+
+    // A catch-all row matches by name alone, which the server marks with catch_all and plugin '*'.
     function referenceRow(row, isDefault) {
         const source = row && typeof row === 'object' ? row : {};
+        const plugin = String(source.plugin_name == null ? '' : source.plugin_name).trim();
+        const catchAll = toBoolean(source.catch_all, false) || plugin === '*';
         return {
             key: String(source.group_key == null ? '' : source.group_key).trim(),
             name: String(source.display_name == null ? '' : source.display_name).trim(),
-            plugin: String(source.plugin_name == null ? '' : source.plugin_name).trim(),
-            formids: normalizeFormidList(source.local_formids),
+            plugin: catchAll ? '' : plugin,
+            catchAll,
+            formids: catchAll ? [] : normalizeFormidList(source.local_formids),
             enabled: toBoolean(source.enabled, true),
             overridesDefault: !isDefault && toBoolean(source.overrides_default, false)
         };
@@ -1802,7 +1810,16 @@
         return cell;
     }
 
+    function referencePluginCell(group) {
+        return group.catchAll
+            ? referenceTextCell('Plugin', 'All plugins', 'reference-plugin reference-scope-all')
+            : referenceTextCell('Plugin', group.plugin || 'Unknown plugin', 'reference-plugin');
+    }
+
     function referenceFormidCell(group) {
+        if (group.catchAll) {
+            return referenceTextCell('Reference FormIDs', 'All references with this name', 'reference-formid-list reference-scope-all');
+        }
         return group.formids.length
             ? referenceTextCell('Reference FormIDs', group.formids.join(', '), 'reference-formid-list')
             : referenceTextCell('Reference FormIDs', 'None listed', 'reference-formid-list', true);
@@ -1863,7 +1880,7 @@
             row.className = `reference-row${override ? ' overridden' : ''}`;
             row.append(
                 referenceTextCell('Character or group', group.name || 'Unnamed group', 'reference-name'),
-                referenceTextCell('Plugin', group.plugin || 'Unknown plugin', 'reference-plugin'),
+                referencePluginCell(group),
                 referenceFormidCell(group)
             );
             const status = referenceCell('Status');
@@ -1912,7 +1929,7 @@
             row.className = 'reference-row';
             row.append(
                 referenceTextCell('Character or group', group.name || 'Unnamed group', 'reference-name'),
-                referenceTextCell('Plugin', group.plugin || 'Unknown plugin', 'reference-plugin'),
+                referencePluginCell(group),
                 referenceFormidCell(group)
             );
             const kind = referenceCell('Kind');
@@ -1982,16 +1999,20 @@
             note.textContent = 'Your version is used instead of the built-in one. Reset it later to go back.';
             note.hidden = false;
         } else if (mode === 'add') {
-            note.textContent = 'List every placed reference that is the same character.';
+            note.textContent = 'List every placed reference that is the same character, or leave FormIDs empty to match the name in all plugins.';
             note.hidden = false;
         } else {
             note.textContent = '';
             note.hidden = true;
         }
         byId('reference-display-name').value = source.name || '';
-        byId('reference-plugin-name').value = source.plugin || '';
+        const pluginField = byId('reference-plugin-name');
+        pluginField.disabled = false;
+        pluginField.dataset.retained = '';
+        pluginField.value = source.plugin || '';
         byId('reference-formids').value = (source.formids || []).join('\n');
         byId('reference-enabled').checked = source.enabled !== false;
+        updateReferenceScope();
         setReferenceEditorStatus('', false);
         editor.hidden = false;
         byId('reference-add').setAttribute('aria-expanded', 'true');
@@ -1999,6 +2020,42 @@
         const first = byId('reference-display-name');
         first.focus();
         if (typeof first.select === 'function') first.select();
+    }
+
+    // An empty FormID list is the all-plugins choice on its own, so the plugin field is set aside
+    // (its value kept for when FormIDs return) and the hint and save label follow as the operator types.
+    function updateReferenceScope() {
+        const parsed = readFormidField(byId('reference-formids').value);
+        const empty = !parsed.ids.length && !parsed.invalid.length;
+        const plugin = byId('reference-plugin-name');
+        if (empty && !plugin.disabled) {
+            plugin.dataset.retained = plugin.value;
+            plugin.value = '';
+            plugin.disabled = true;
+        } else if (!empty && plugin.disabled) {
+            plugin.disabled = false;
+            plugin.value = plugin.dataset.retained || '';
+            plugin.dataset.retained = '';
+        }
+        const hint = byId('reference-formids-hint');
+        const text = empty ? REFERENCE_ALL_HINT : REFERENCE_EXACT_HINT;
+        // Rewriting identical text would re-announce the live hint on every keystroke.
+        if (hint.textContent !== text) hint.textContent = text;
+        hint.classList.toggle('reference-scope-all', empty);
+        byId('reference-plugin-label').textContent = empty ? 'Plugin file (not used: all plugins)' : 'Plugin file';
+        plugin.placeholder = empty ? 'All plugins' : 'Skyrim.esm';
+        byId('reference-save').textContent = empty ? 'Save for all plugins' : 'Save group';
+    }
+
+    // The server refuses a second, name-only group beside an enabled exact one, so the operator
+    // is pointed at the group to edit instead of a failed save.
+    function referenceNameConflict(name, key) {
+        const effective = referenceState.defaults
+            .filter((group) => !customGroupFor(group.key))
+            .map((group) => ({ group, builtin: true }))
+            .concat(referenceState.custom.map((group) => ({ group, builtin: false })));
+        return effective.find(({ group }) => group.enabled && !group.catchAll
+            && group.key !== key && group.name === name) || null;
     }
 
     function closeReferenceEditor(focusTarget) {
@@ -2051,6 +2108,20 @@
         }
     }
 
+    // Exact groups name 2-32 references from one plugin; a name-only group skips these checks.
+    function exactReferenceProblem(plugin, parsed) {
+        if (!plugin) return { field: 'reference-plugin-name', message: 'Enter the plugin file the references come from.' };
+        if (!/^[^\\/:*?"<>|\x00-\x1F]+\.es[mpl]$/i.test(plugin)) {
+            return { field: 'reference-plugin-name', message: 'Enter a plugin filename ending in .esp, .esm or .esl.' };
+        }
+        if (parsed.invalid.length) return { field: 'reference-formids', message: `Not valid FormIDs: ${parsed.invalid.join(', ')}` };
+        if (parsed.ids.length < 2) {
+            return { field: 'reference-formids', message: 'Add at least two reference FormIDs, or remove them all to match the name in all plugins.' };
+        }
+        if (parsed.ids.length > 32) return { field: 'reference-formids', message: 'A group can contain up to 32 reference FormIDs.' };
+        return null;
+    }
+
     async function saveReferenceGroup(event) {
         event.preventDefault();
         if (referenceState.saving || !referenceState.editing) return;
@@ -2062,29 +2133,19 @@
             byId('reference-display-name').focus();
             return;
         }
-        if (!plugin) {
-            setReferenceEditorStatus('Enter the plugin file the references come from.', true);
-            byId('reference-plugin-name').focus();
+        const catchAll = !parsed.ids.length && !parsed.invalid.length;
+        const conflict = catchAll ? referenceNameConflict(name, referenceState.editing.key) : null;
+        if (conflict) {
+            setReferenceEditorStatus(conflict.builtin
+                ? `Customize the built-in "${name}" group to match it in all plugins.`
+                : `Edit your existing "${name}" group to match it in all plugins.`, true);
+            byId('reference-display-name').focus();
             return;
         }
-        if (!/^[^\\/:*?"<>|\x00-\x1F]+\.es[mpl]$/i.test(plugin)) {
-            setReferenceEditorStatus('Enter a plugin filename ending in .esp, .esm or .esl.', true);
-            byId('reference-plugin-name').focus();
-            return;
-        }
-        if (parsed.invalid.length) {
-            setReferenceEditorStatus(`Not valid FormIDs: ${parsed.invalid.join(', ')}`, true);
-            byId('reference-formids').focus();
-            return;
-        }
-        if (parsed.ids.length < 2) {
-            setReferenceEditorStatus('Add at least two reference FormIDs.', true);
-            byId('reference-formids').focus();
-            return;
-        }
-        if (parsed.ids.length > 32) {
-            setReferenceEditorStatus('A group can contain up to 32 reference FormIDs.', true);
-            byId('reference-formids').focus();
+        const problem = catchAll ? null : exactReferenceProblem(plugin, parsed);
+        if (problem) {
+            setReferenceEditorStatus(problem.message, true);
+            byId(problem.field).focus();
             return;
         }
 
@@ -2100,8 +2161,8 @@
                     operation: 'reference_group_save',
                     group_key: key,
                     display_name: name,
-                    plugin_name: plugin,
-                    local_formids: parsed.ids,
+                    plugin_name: catchAll ? '*' : plugin,
+                    local_formids: catchAll ? [] : parsed.ids,
                     enabled: byId('reference-enabled').checked
                 })
             }));
@@ -2218,6 +2279,7 @@
             byId('reference-add').addEventListener('click', () => openReferenceEditor('add', null));
             byId('reference-cancel').addEventListener('click', () => closeReferenceEditor());
             byId('reference-editor').addEventListener('submit', saveReferenceGroup);
+            byId('reference-formids').addEventListener('input', updateReferenceScope);
         }
 
         trigger.addEventListener('click', (event) => openReferenceModal(event.currentTarget));
