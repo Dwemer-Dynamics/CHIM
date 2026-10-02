@@ -302,3 +302,5 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
+
+.event-private-thought { margin-top: 6px; color: #b8b8b8; font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; }
