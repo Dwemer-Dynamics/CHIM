@@ -3064,6 +3064,11 @@ int Papyrus::removeAgentByName(RE::BSScript::Internal::VirtualMachine* a_vm, RE:
         if (actor) {
             logger::info("About to restore voice for {}", name);
             actor->GetActorBase()->voiceType = already->getOriginalVoice();
+            // CHIM_NPC listeners receive a display name, so a RefID-targeted removal reports the actor's name.
+            const char* displayName = actor->GetDisplayFullName();
+            if (ActorTargetIdentifierUtils::Parse(name).hasRefId && displayName && displayName[0] != '\0') {
+                name = displayName;
+            }
         }
         aiam.deleteAgent(already);
     }

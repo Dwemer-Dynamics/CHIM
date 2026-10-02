@@ -240,12 +240,14 @@ float		_combat_barks_period			= 30.0
 ; AI Agents page variables
 int[] 		_agentToggleOIDs
 string[]	_currentAgentNames
+Actor[]		_currentAgentActors
 int			_toggleAddAllNowNPC
 int			_removeAllAgentsOID
 
 ; New variables for nearby non-agent NPCs
 int[]		_nearbyNpcToggleOIDs
 string[]	_nearbyNpcNames
+Actor[]		_nearbyNpcActors
 int			_refreshNearbyNPCsOID
 
 
@@ -1356,6 +1358,62 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	return true
 EndFunction
 
+bool Function McmActorListHas(Actor[] actors, Actor akActor)
+	if !akActor
+		return false
+	endif
+	int i = 0
+	while i < actors.Length
+		if actors[i] == akActor
+			return true
+		endif
+		i += 1
+	endwhile
+	return false
+EndFunction
+
+; Display label for one physical actor; a RefID is appended only when another actor in the list shares its name.
+String Function McmActorLabel(Actor akActor, Actor[] peers)
+	String actorName = akActor.GetDisplayName()
+	int i = 0
+	while i < peers.Length
+		if peers[i] && peers[i] != akActor && peers[i].GetDisplayName() == actorName
+			return actorName + " [RefID: " + AIAgentAIMind.DecToHex(akActor.GetFormID()) + "]"
+		endif
+		i += 1
+	endwhile
+	return actorName
+EndFunction
+
+; Resolves a Prisma agent target (hex RefID, or a legacy display name) to an actor still present in candidates.
+; A legacy name only resolves when exactly one candidate carries it.
+Actor Function ResolveMcmAgentTarget(String target, Actor[] candidates)
+	Actor playerActor = Game.GetPlayer()
+	if StringUtil.GetLength(target) == 8
+		Actor exact = Game.GetFormEx(AIAgentAIMind.HexToInt(target)) as Actor
+		if exact && exact != playerActor && McmActorListHas(candidates, exact)
+			return exact
+		endif
+	endif
+	Actor named = None
+	int i = 0
+	while i < candidates.Length
+		if candidates[i] && candidates[i] != playerActor && candidates[i].GetDisplayName() == target
+			if named
+				return None
+			endif
+			named = candidates[i]
+		endif
+		i += 1
+	endwhile
+	return named
+EndFunction
+
+; Removes exactly this physical agent, never another active agent with the same name.
+Function RemoveMcmAgent(Actor akActor)
+	AIAgentFunctions.removeAgentByName(akActor.GetDisplayName() + " [RefID: " + AIAgentAIMind.DecToHex(akActor.GetFormID()) + "]")
+EndFunction
+
 Function PublishPrismaMCMAgents()
 	AIAgentFunctions.beginChimMcmAgents()
 	Actor playerActor = Game.GetPlayer()
@@ -1443,28 +1501,26 @@ Event OnPrismaMCMRequest(String eventName, String payload, Float numericValue, F
 		PublishPrismaMCMAgents()
 		return
 	elseif StringUtil.Find(payload, "agent_add|") == 0
-		String actorName = StringUtil.Substring(payload, 10)
 		Actor[] nearbyActors = AIAgentFunctions.findAllNearbyNonAgents()
-		int i = 0
-		Actor actorToAdd = None
-		while i < nearbyActors.Length && !actorToAdd
-			if nearbyActors[i] && nearbyActors[i].GetDisplayName() == actorName
-				actorToAdd = nearbyActors[i]
-			endif
-			i += 1
-		endwhile
+		Actor actorToAdd = ResolveMcmAgentTarget(StringUtil.Substring(payload, 10), nearbyActors)
 		if actorToAdd
 			AIAgentFunctions.setDrivenByAIA(actorToAdd, true)
-			AIAgentFunctions.publishChimMcmCommandResult(payload, true, "AI agent added: " + actorName)
+			AIAgentFunctions.publishChimMcmCommandResult(payload, true, "AI agent added: " + McmActorLabel(actorToAdd, nearbyActors))
 		else
 			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "The NPC is no longer nearby.")
 		endif
 		PublishPrismaMCMAgents()
 		return
 	elseif StringUtil.Find(payload, "agent_remove|") == 0
-		String actorName = StringUtil.Substring(payload, 13)
-		AIAgentFunctions.removeAgentByName(actorName)
-		AIAgentFunctions.publishChimMcmCommandResult(payload, true, "AI agent removed: " + actorName)
+		Actor[] activeAgents = AIAgentFunctions.findAllAgents()
+		Actor actorToRemove = ResolveMcmAgentTarget(StringUtil.Substring(payload, 13), activeAgents)
+		if actorToRemove
+			String removedLabel = McmActorLabel(actorToRemove, activeAgents)
+			RemoveMcmAgent(actorToRemove)
+			AIAgentFunctions.publishChimMcmCommandResult(payload, true, "AI agent removed: " + removedLabel)
+		else
+			AIAgentFunctions.publishChimMcmCommandResult(payload, false, "The AI agent is no longer active.")
+		endif
 		PublishPrismaMCMAgents()
 		return
 	elseif payload == "tool|sync_factions_locations"
@@ -1661,13 +1717,15 @@ event OnPageReset(string a_page)
 		; Get current AI agents (all agents, not just nearby)
 		Actor[] allAgents = AIAgentFunctions.findAllAgents()
 		_currentAgentNames = new string[128]  ; Maximum agents we can display
+		_currentAgentActors = new Actor[128]
 		_agentToggleOIDs = new int[128]
-		
+
 		int i = 0
 		int displayedAgents = 0
 		while i < allAgents.Length && displayedAgents < 120  ; Leave some room for other options
 			if (allAgents[i] && allAgents[i].GetDisplayName() != "The Narrator" && allAgents[i] != Game.GetPlayer())
-				_currentAgentNames[displayedAgents] = allAgents[i].GetDisplayName()
+				_currentAgentActors[displayedAgents] = allAgents[i]
+				_currentAgentNames[displayedAgents] = McmActorLabel(allAgents[i], allAgents)
 				_agentToggleOIDs[displayedAgents] = AddToggleOption("Remove: " + _currentAgentNames[displayedAgents], false)
 				displayedAgents += 1
 			endif
@@ -1693,13 +1751,15 @@ event OnPageReset(string a_page)
 		; Get nearby NPCs that are NOT currently AI agents
 		Actor[] nearbyNonAgents = AIAgentFunctions.findAllNearbyNonAgents()
 		_nearbyNpcNames = new string[128]
+		_nearbyNpcActors = new Actor[128]
 		_nearbyNpcToggleOIDs = new int[128]
-		
+
 		int j = 0
 		int displayedNearbyNPCs = 0
 		while j < nearbyNonAgents.Length && displayedNearbyNPCs < 60  ; Limit to reasonable number
 			if (nearbyNonAgents[j] && nearbyNonAgents[j].GetDisplayName() != "The Narrator" && nearbyNonAgents[j] != Game.GetPlayer())
-				_nearbyNpcNames[displayedNearbyNPCs] = nearbyNonAgents[j].GetDisplayName()
+				_nearbyNpcActors[displayedNearbyNPCs] = nearbyNonAgents[j]
+				_nearbyNpcNames[displayedNearbyNPCs] = McmActorLabel(nearbyNonAgents[j], nearbyNonAgents)
 				_nearbyNpcToggleOIDs[displayedNearbyNPCs] = AddToggleOption("Add: " + _nearbyNpcNames[displayedNearbyNPCs], false)
 				displayedNearbyNPCs += 1
 			endif
@@ -2951,9 +3011,15 @@ event OnOptionSelect(int a_option)
  			if (a_option == _agentToggleOIDs[i] && _currentAgentNames[i] != "")
  				bool confirmed = ShowMessage("Remove AI agent '" + _currentAgentNames[i] + "'?", true, "$Yes", "$No")
  				if (confirmed)
- 					AIAgentFunctions.removeAgentByName(_currentAgentNames[i])
- 					ForcePageReset()
- 					ShowMessage("Removed AI agent: " + _currentAgentNames[i])
+					; Revalidate the stored actor: the list may be stale, and a name could match another agent.
+					if (_currentAgentActors && McmActorListHas(AIAgentFunctions.findAllAgents(), _currentAgentActors[i]))
+						RemoveMcmAgent(_currentAgentActors[i])
+						ForcePageReset()
+						ShowMessage("Removed AI agent: " + _currentAgentNames[i])
+					else
+						ForcePageReset()
+						ShowMessage("AI agent is no longer active: " + _currentAgentNames[i])
+					endif
  				endif
  				return
  			endif
@@ -2975,23 +3041,19 @@ event OnOptionSelect(int a_option)
  				bool confirmed = ShowMessage("Add AI agent '" + _nearbyNpcNames[k] + "'?", true, "$Yes", "$No")
  				if (confirmed)
  					Actor targetNPC = None
- 					
- 					; Find the actual actor by name from the nearby non-agents list
- 					Actor[] nearbyNonAgents = AIAgentFunctions.findAllNearbyNonAgents()
- 					int m = 0
- 					while m < nearbyNonAgents.Length && !targetNPC
- 						if (nearbyNonAgents[m] && nearbyNonAgents[m].GetDisplayName() == _nearbyNpcNames[k])
- 							targetNPC = nearbyNonAgents[m]
- 						endif
- 						m += 1
- 					endwhile
- 					
+
+					; Add the exact listed actor only while it is still a nearby non-agent
+					if (_nearbyNpcActors && McmActorListHas(AIAgentFunctions.findAllNearbyNonAgents(), _nearbyNpcActors[k]))
+						targetNPC = _nearbyNpcActors[k]
+					endif
+
  					if (targetNPC)
  						AIAgentFunctions.setDrivenByAIA(targetNPC, true)
  						ForcePageReset()
  						ShowMessage("Added AI agent: " + _nearbyNpcNames[k])
  					else
- 						ShowMessage("Could not find NPC: " + _nearbyNpcNames[k])
+						ForcePageReset()
+						ShowMessage("NPC is no longer nearby and available: " + _nearbyNpcNames[k])
  					endif
  				endif
  				return

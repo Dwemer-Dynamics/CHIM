@@ -3874,27 +3874,14 @@ R"CHIM(
                });
     }
 
-    static std::string ResolveMcmActorName(const std::string& rawFormId) {
-        try {
-            size_t consumed = 0;
-            const auto formId = static_cast<RE::FormID>(std::stoul(rawFormId, &consumed, 16));
-            if (consumed != rawFormId.size()) {
-                return {};
-            }
-            auto* actor = RE::TESForm::LookupByID<RE::Actor>(formId);
-            if (!actor) {
-                return {};
-            }
-            const char* displayName = actor->GetDisplayFullName();
-            if (!displayName || displayName[0] == '\0') {
-                return {};
-            }
-            std::string name = displayName;
-            std::replace(name.begin(), name.end(), '|', ' ');
-            return name;
-        } catch (...) {
-            return {};
+    // Accepts only the 8-digit RefID published for agent rows, and only while it still names a loaded actor.
+    static bool IsMcmActorRefId(const std::string& rawFormId) {
+        if (rawFormId.size() != 8 ||
+            !std::all_of(rawFormId.begin(), rawFormId.end(), [](unsigned char ch) { return std::isxdigit(ch); })) {
+            return false;
         }
+        const auto formId = static_cast<RE::FormID>(std::stoul(rawFormId, nullptr, 16));
+        return RE::TESForm::LookupByID<RE::Actor>(formId) != nullptr;
     }
 
     static void HandleChimMcmCommand(const std::string& command) {
@@ -3928,12 +3915,13 @@ R"CHIM(
         if (command.starts_with(addPrefix) || command.starts_with(removePrefix)) {
             const bool adding = command.starts_with(addPrefix);
             const auto prefixSize = adding ? addPrefix.size() : removePrefix.size();
-            const std::string actorName = ResolveMcmActorName(command.substr(prefixSize));
-            if (actorName.empty()) {
+            // Forward the exact RefID; Papyrus resolves and revalidates that physical actor, never a same-name one.
+            const std::string refId = command.substr(prefixSize);
+            if (!IsMcmActorRefId(refId)) {
                 PublishChimMcmCommandResult(command, false, "The selected NPC is no longer available.");
                 return;
             }
-            QueueChimMcmEvent(std::string(adding ? "agent_add|" : "agent_remove|") + actorName);
+            QueueChimMcmEvent(command);
             return;
         }
 
