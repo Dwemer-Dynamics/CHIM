@@ -2981,7 +2981,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
     bool streamForActor(std::string msg, RE::Actor* actor,
                         PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth,
-                        const CombatBarkTicket* combatBark, std::string rechatKey) {
+                        const CombatBarkTicket* combatBark, std::string rechatKey, bool fromCaptureTask) {
         if (!ChimInteraction::Enabled()) {
             if (!ChimInteraction::IsTrigger(msg)) log(std::move(msg));
             return false;
@@ -2993,7 +2993,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         const bool speakerScope = EventIdentityUtils::IsSpeakerScopedEventType(EventIdentityUtils::RequestType(msg));
         bool captureScope = boredScope || speakerScope ||
             EventIdentityUtils::IsObservableEventType(EventIdentityUtils::RequestType(msg));
-        if (captureScope && !OnGameThread() && actor) {
+        if (captureScope && !fromCaptureTask && !OnGameThread() && actor) {
             // The audience is captured on the game thread at event time, so re-enter there with the same ticket.
             if (auto* tasks = SKSE::GetTaskInterface()) {
                 const auto loadEpoch = PlaythroughSession::Context();
@@ -3009,8 +3009,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         return;
                     }
                     PlaythroughSession::Scope scope(loadEpoch);
+                    // SKSE may run this task off the registered thread; never re-post it.
                     if (!streamForActor(std::move(msg), target.get(), eligibility, rechatDepth, &combatBarkTicket,
-                                        rechatKey) && rechatDepth > 0) {
+                                        rechatKey, true) && rechatDepth > 0) {
                         SpeakManager::getInstance().completeRechatAttempt(rechatKey, false);
                     }
                 });

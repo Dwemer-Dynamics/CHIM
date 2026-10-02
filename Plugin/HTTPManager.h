@@ -76,7 +76,8 @@ namespace HTTPManager {
     // Returns whether a targeted request was accepted for asynchronous delivery.
     bool streamForActor(std::string msg, RE::Actor* actor,
                         PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth = 0,
-                        const CombatBarkTicket* combatBark = nullptr, std::string rechatKey = {});
+                        const CombatBarkTicket* combatBark = nullptr, std::string rechatKey = {},
+                        bool fromCaptureTask = false);
 
     void postGameData(const std::string& endpoint, const nlohmann::json& data);
     // Completion runs after the queued request receives a success or failure result.
