@@ -122,20 +122,27 @@
 
     // Sharing state rides along with both list cards and the detail payload. A group can be linked
     // automatically by the server, and auto_link_disabled outlives the link itself, so it is read
-    // even when the row is no longer shared.
+    // even when the row is no longer shared. The server sends at most a capped slice of members
+    // (exact nearby RefIDs first), so the group size comes from member_count, not members.length.
     function sharingState(source) {
         const sharing = source && source.profile_sharing;
+        const unlinked = { linked: false, ownerId: 0, members: [], memberCount: 0, truncated: false, automatic: false };
         if (!sharing || typeof sharing !== 'object') {
-            return { linked: false, ownerId: 0, members: [], automatic: false, autoLinkDisabled: false };
+            return { ...unlinked, autoLinkDisabled: false };
         }
         const autoLinkDisabled = !!sharing.auto_link_disabled;
         if (!sharing.linked) {
-            return { linked: false, ownerId: 0, members: [], automatic: false, autoLinkDisabled };
+            return { ...unlinked, autoLinkDisabled };
         }
+        const members = Array.isArray(sharing.members) ? sharing.members : [];
+        const reported = Number(sharing.member_count);
+        const memberCount = Math.max(members.length, Number.isFinite(reported) ? Math.floor(reported) : 0);
         return {
             linked: true,
             ownerId: Number(sharing.owner_id || 0),
-            members: Array.isArray(sharing.members) ? sharing.members : [],
+            members,
+            memberCount,
+            truncated: !!sharing.members_truncated || memberCount > members.length,
             automatic: !!sharing.automatic,
             autoLinkDisabled
         };
@@ -254,12 +261,28 @@
         return { byRefid, byUniqueName };
     }
 
+    // A collapsed shared-profile card stands for every linked physical actor, and the keeper's own
+    // reference may not be loaded at all. The card is nearby through whichever linked member is
+    // closest, and that member (not the keeper) supplies the distance shown on the card.
     function findNearbyTarget(lookup, npc) {
-        const refid = normalizeRefid(npc && npc.refid);
-        if (refid && lookup.byRefid.has(refid)) return lookup.byRefid.get(refid);
-        if (duplicateCount(npc) > 1) return null;
+        let best = null;
+        const consider = (member) => {
+            const refid = normalizeRefid(member && member.refid);
+            const target = refid ? lookup.byRefid.get(refid) : null;
+            if (target && (!best || Number(target.distance || 0) < Number(best.target.distance || 0))) {
+                best = { target, member };
+            }
+        };
+        const sharing = sharingState(npc);
+        consider(npc);
+        sharing.members.forEach(consider);
+        if (best) return best;
+        // A name match is only a guess. A shared group is matched solely by its members' exact RefIDs,
+        // which the server lists first when they are nearby, so a capped list still carries them.
+        if (duplicateCount(npc) > 1 || (sharing.linked && sharing.memberCount > 1)) return null;
         const name = String((npc && npc.name) || '').trim().toLowerCase();
-        return (name && lookup.byUniqueName.get(name)) || null;
+        const target = name && lookup.byUniqueName.get(name);
+        return target ? { target, member: npc } : null;
     }
 
     function applyProfiles(nextProfiles) {
@@ -279,6 +302,9 @@
         const profileId = byId('profile-filter').value;
         if (search) params.set('search', search);
         if (profileId) params.set('profile_id', profileId);
+        // One card per explicitly shared profile: the server lists the keeper and carries its linked
+        // members in profile_sharing. Unlinked same-name actors still arrive as separate cards.
+        params.set('collapse_shared', '1');
         if (scope === 'nearby') {
             params.set('refids', nearbyTargets.map((target) => target.refid || '').filter(Boolean).join(','));
             params.set('names', nearbyTargets.map((target) => target.name || '').filter(Boolean).join('|'));
@@ -318,11 +344,11 @@
         grid.replaceChildren();
         const lookup = nearbyLookup();
         const ordered = Array.from(npcs);
-        const targets = new Map();
-        ordered.forEach((npc) => targets.set(npc, findNearbyTarget(lookup, npc)));
+        const matches = new Map();
+        ordered.forEach((npc) => matches.set(npc, findNearbyTarget(lookup, npc)));
         const distanceOf = (npc) => {
-            const target = targets.get(npc);
-            return Number((target && target.distance) || 99999);
+            const match = matches.get(npc);
+            return Number((match && match.target.distance) || 99999);
         };
         ordered.sort((left, right) => {
             const byDistance = distanceOf(left) - distanceOf(right);
@@ -345,7 +371,9 @@
         }
 
         ordered.forEach((npc) => {
-            const target = targets.get(npc);
+            const match = matches.get(npc);
+            const target = match && match.target;
+            const sharing = sharingState(npc);
             const duplicates = duplicateCount(npc);
             const card = document.createElement('button');
             card.type = 'button';
@@ -376,10 +404,23 @@
             copy.appendChild(profile);
             const flags = document.createElement('div');
             flags.className = 'npc-card-flags';
-            if (target) flags.appendChild(pill(`${Number(target.distance || 0).toFixed(1)}m`, 'nearby'));
+            if (target) {
+                const distance = pill(`${Number(target.distance || 0).toFixed(1)}m`, 'nearby');
+                // Say which linked reference is nearby when it is not the keeper shown on the card.
+                const nearbyRefid = normalizeRefid(match.member && match.member.refid);
+                if (nearbyRefid && nearbyRefid !== normalizeRefid(npc.refid)) {
+                    distance.append(srOnly(' away, linked actor '), document.createTextNode(` · ${nearbyRefid}`));
+                    distance.title = `Nearby as linked actor ${nearbyRefid}`;
+                }
+                flags.appendChild(distance);
+            }
             if (npc.favorite) flags.appendChild(pill('Favorite', 'good'));
             if (npc.locked) flags.appendChild(pill('Locked'));
-            if (sharingState(npc).linked) flags.appendChild(pill('Shared profile', 'shared'));
+            if (sharing.linked) {
+                flags.appendChild(pill(sharing.memberCount > 1
+                    ? `Shared · ${sharing.memberCount} actors`
+                    : 'Shared profile', 'shared'));
+            }
             copy.appendChild(flags);
             card.append(portrait, copy);
             const chain = modChain(npc);
@@ -464,7 +505,9 @@
         return element;
     }
 
-    async function openEditor(id) {
+    // focusSharing is set when the operator moves between linked actors from inside the editor, so
+    // focus lands on the rebuilt sharing panel instead of being dropped with the old member button.
+    async function openEditor(id, focusSharing) {
         if (stopSchedules) stopSchedules();
         const editorGeneration = ++editorLoadGeneration;
         byId('editor-backdrop').classList.remove('hidden');
@@ -479,6 +522,11 @@
             if (editorGeneration !== editorLoadGeneration) return;
             currentDetail = loadedDetail;
             populateEditor(currentDetail);
+            const heading = byId('sharing-heading');
+            if (focusSharing && heading && !byId('sharing-panel').hidden) {
+                heading.tabIndex = -1;
+                heading.focus();
+            }
         } catch (error) {
             byId('save-status').textContent = `Could not load NPC: ${error.message || error}`;
             byId('save-status').classList.add('error');
@@ -608,6 +656,7 @@
 
         const list = byId('sharing-members');
         list.replaceChildren();
+        const lookup = nearbyLookup();
         if (!sharing.members.length) {
             const empty = document.createElement('li');
             empty.className = 'sharing-empty';
@@ -636,8 +685,30 @@
             originNode.append(srOnly('Reference origin '), document.createTextNode(origin || 'Unknown plugin'));
             identity.append(refidNode, originNode);
             item.appendChild(identity);
+            const nearby = refid.known ? lookup.byRefid.get(refid.text) : null;
+            if (nearby) item.appendChild(pill(`Nearby ${Number(nearby.distance || 0).toFixed(1)}m`, 'nearby'));
+            // Each physical actor keeps its own RefID, favorite, lock, actions and schedules, so the
+            // single list card reaches them here rather than through extra top-level cards.
+            const memberId = Number(member.id || 0);
+            if (memberId > 0 && memberId !== Number(card.id || 0)) {
+                const open = document.createElement('button');
+                open.type = 'button';
+                open.className = 'button secondary compact sharing-member-open';
+                open.textContent = 'Open actor';
+                open.setAttribute('aria-label', `Open ${String(member.name || 'Unknown NPC')} (${refid.text}) settings`);
+                open.addEventListener('click', () => openEditor(memberId, true));
+                item.appendChild(open);
+            }
             list.appendChild(item);
         });
+        if (sharing.truncated) {
+            const more = document.createElement('li');
+            more.className = 'sharing-empty';
+            const hidden = sharing.memberCount - sharing.members.length;
+            more.textContent = `Showing ${sharing.members.length} of ${sharing.memberCount} actors; nearby actors are listed first. `
+                + `${hidden} more ${hidden === 1 ? 'is' : 'are'} linked to this profile and can be reviewed from the CHIM NPC page in a browser.`;
+            list.appendChild(more);
+        }
     }
 
     function voiceFilterControl(name) {

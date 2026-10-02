@@ -246,6 +246,8 @@ textarea { resize: vertical; line-height: 1.35; }
 .sharing-member-origin { color: #c2b39b; font-size: .7rem; overflow-wrap: anywhere; }
 .sharing-member-refid.unknown, .sharing-member-origin.unknown { color: var(--muted); font-style: italic; font-family: inherit; }
 .sharing-empty { color: var(--muted); font-size: .72rem; font-style: italic; }
+.sharing-member-open { margin-left: auto; align-self: center; }
+.sharing-member-open:focus-visible, .sharing-panel h3:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [data-panel="info"] .form-grid { align-items: start; }
 .voice-group { display: grid; gap: 6px; min-width: 0; }
 .voice-filter-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 7px; }
@@ -326,6 +328,7 @@ textarea { resize: vertical; line-height: 1.35; }
     .npc-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
     .identity-grid { grid-template-columns: 1fr; }
     .sharing-member { flex-direction: column; align-items: flex-start; }
+    .sharing-member-open { margin-left: 0; align-self: stretch; }
     .relationship-row { grid-template-columns: 1fr 80px 130px auto; }
     .relationship-row .remove-relationship { grid-column: 4; grid-row: 1; }
     .relationship-row .relationship-note { grid-column: 1 / -1; }
