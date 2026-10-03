@@ -16,7 +16,7 @@
     let lastRowId = 0;
     let narratorName = 'The Narrator';
     let serverUrl = 'http://192.168.169.218:8081/HerikaServer';
-    const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext']);
+    const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext', 'relationship']);
 
     /**
      * Update the history panel with data from the server
