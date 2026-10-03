@@ -393,21 +393,61 @@ body {
     margin-top: 10px;
 }
 
+/* The Background Life button sits beside the target name. In narrow columns the name and
+   the Override marker truncate in proportion to their widths; the distance and the button
+   always stay whole. */
+.chatbox-current-target-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.chatbox-current-target-row .chatbox-control-value {
+    flex: 0 1 auto;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#chatbox-current-target .target-name {
+    min-width: 0;
+}
+
+#chatbox-current-target .target-distance {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+#chatbox-current-target .target-distance + .target-distance {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .chatbox-bgl-add {
-    width: 100%;
-    min-height: 26px;
-    margin-top: 6px;
-    padding: 4px 8px;
+    flex: 0 0 auto;
+    height: 20px;
+    padding: 0 5px;
     border: 1px solid rgba(242, 124, 17, 0.3);
     border-radius: 4px;
     background: rgba(30, 30, 40, 0.9);
     color: #ddd;
-    font-size: 0.78em;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 0.7em;
+    line-height: 18px;
     white-space: nowrap;
     cursor: pointer;
     pointer-events: auto;
+}
+
+.chatbox-bgl-add[hidden] {
+    display: none;
+}
+
+/* Clickable but unable to add right now; a click explains why or checks again. */
+.chatbox-bgl-add.unavailable {
+    opacity: 0.55;
 }
 
 .chatbox-bgl-add:hover:not(:disabled) {
@@ -1154,9 +1194,7 @@ body {
     gap: 14px;
     width: 100%;
     min-height: 0;
-    /* +32px reserves the Background Life button row (26px + 6px margin) so it
-       does not push the action rows under Recent Context on short screens. */
-    max-height: calc(58vh + 32px);
+    max-height: 58vh;
 }
 
 .chatbox-targets-window {
@@ -1173,7 +1211,7 @@ body {
 
 .focus-chatbox-panel {
     width: auto;
-    max-height: calc(58vh + 32px);
+    max-height: 58vh;
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;

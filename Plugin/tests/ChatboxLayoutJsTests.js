@@ -635,7 +635,9 @@ test('shows saved Player affinity and adds the captured chat target to Backgroun
     assert.equal(formatPlayerAffinity(null), '');
     assert.equal(formatPlayerAffinity(undefined), '');
 
-    assert.match(html, /id="chatbox-current-target"[\s\S]*?id="chatbox-bgl-add"[\s\S]*?class="chatbox-profile-inline"/);
+    assert.match(html, /class="chatbox-current-target-row">\s*<div class="chatbox-control-value" id="chatbox-current-target">[\s\S]*?<\/div>\s*<button id="chatbox-bgl-add"[^>]*>Add BGL<\/button>\s*<\/div>\s*<div class="chatbox-profile-inline">/);
+    assert.doesNotMatch(css, /58vh \+ 32px/);
+    assert.match(script, /'Adding…' : \(enrolled \? 'In BGL' : 'Add BGL'\)/);
     assert.match(script, /sendControlCommand\(`bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}`\)/);
     assert.match(bridge, /cmd\.starts_with\("bgl_enroll\|"\)\) \{\s*EnrollChatboxTargetInBackgroundLife\(cmd\.substr\(11\)\)/);
     assert.equal('bgl_enroll|'.length, 11);

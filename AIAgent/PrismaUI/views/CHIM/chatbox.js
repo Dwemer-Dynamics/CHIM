@@ -133,6 +133,8 @@
     let bglCurrentTarget = null;
     let bglEnrollment = null;
     let bglEnrollSequence = 0;
+    const bglUnknownRetryDelaysMs = [3000, 10000, 30000];
+    let bglUnknownRetry = null;
 
     // Server URL
     let serverUrl = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
@@ -925,7 +927,8 @@
     }
 
     // Fetch statuses for the current target set: all of them when forced, else only uncached
-    // ones. One normal read runs at a time; later calls are coalesced into one follow-up.
+    // ones and entries marked for a recheck. One normal read runs at a time; later calls are
+    // coalesced into one follow-up.
     async function requestBglTargetStatuses(force) {
         if (!isChatFocused || bglServerSupported === false) return;
         if (bglFetchInFlight) {
@@ -934,7 +937,10 @@
         }
         const targets = force
             ? bglVisibleTargets
-            : bglVisibleTargets.filter(function(target) { return !bglTargetCache.has(bglTargetKey(target)); });
+            : bglVisibleTargets.filter(function(target) {
+                const entry = bglTargetCache.get(bglTargetKey(target));
+                return !entry || entry.recheck;
+            });
         if (targets.length === 0) return;
 
         const flight = { abort: null };
@@ -957,6 +963,36 @@
         }
     }
 
+    // An unknown current target is read again a few times while the chat stays open, because
+    // CHIM can register the NPC after the first read (for example, after a save load).
+    // Each target gets at most bglUnknownRetryDelaysMs.length extra reads per chat open.
+    function scheduleBglUnknownRetry() {
+        const key = bglCurrentTarget ? bglTargetKey(bglCurrentTarget) : '';
+        const entry = key ? bglTargetCache.get(key) : null;
+        if (!bglUnknownRetry || bglUnknownRetry.key !== key) {
+            if (bglUnknownRetry) window.clearTimeout(bglUnknownRetry.timerId);
+            bglUnknownRetry = key ? { key, attempt: 0, timerId: null } : null;
+        }
+        const retry = bglUnknownRetry;
+        if (!retry || retry.timerId || retry.attempt >= bglUnknownRetryDelaysMs.length || !isChatFocused ||
+            bglServerSupported !== true || !entry || entry.status !== 'unknown') {
+            return;
+        }
+        retry.timerId = window.setTimeout(function() {
+            retry.timerId = null;
+            if (bglUnknownRetry !== retry || !isChatFocused) return;
+            retry.attempt += 1;
+            const current = bglTargetCache.get(retry.key);
+            if (!current || current.status !== 'unknown') return;
+            // The normal read fetches only this target; the response replaces the marked entry.
+            current.recheck = true;
+            requestBglTargetStatuses(false);
+        }, bglUnknownRetryDelaysMs[retry.attempt]);
+    }
+
+    // Compact button beside the current target name: Add BGL, Adding… or In BGL, with the full
+    // explanation in the tooltip. Hidden without a single NPC target. States that cannot add
+    // right now stay clickable but dimmed so a click can explain why or check the server again.
     function renderBglAddButton() {
         if (!bglAddButton) return;
         const target = bglCurrentTarget;
@@ -964,32 +1000,39 @@
         const adding = !!(bglEnrollment && target && bglEnrollment.formId === target.formId);
         const enrolled = !adding && !!(entry && entry.status === 'found' && entry.background_life_enabled);
         let title = '';
+        let unavailable = true;
         if (!target) {
             title = 'Select a single NPC target to add them to Background Life.';
-        } else if (!bglNativeAvailable || bglServerSupported === false) {
-            title = 'Adding from chat needs the current CHIM plugin and server.';
         } else if (adding) {
             title = `Adding ${target.name} to Background Life.`;
         } else if (enrolled) {
             title = `${target.name} is in Background Life.`;
+        } else if (!bglNativeAvailable) {
+            title = 'Adding from chat needs the current CHIM plugin.';
+        } else if (bglEnrollment) {
+            title = 'Another Background Life add is in progress.';
+        } else if (bglServerSupported === false) {
+            title = 'The CHIM server did not report Background Life status. Click to check again.';
         } else if (!entry) {
-            title = 'Checking Background Life status.';
+            title = `Add ${target.name} to Background Life. Checking the saved status.`;
+            unavailable = false;
         } else if (entry.status === 'ambiguous') {
             title = 'Several saved NPCs share this name. Use the Background Life page.';
         } else if (entry.status !== 'found') {
-            title = 'CHIM has not saved this NPC yet.';
-        } else if (bglEnrollment) {
-            title = 'Another Background Life add is in progress.';
+            title = `The server has no saved CHIM record for ${target.name} yet. Click to check again.`;
         } else {
             title = `Add ${target.name} to Background Life.`;
+            unavailable = false;
         }
 
-        const canAdd = !!target && bglNativeAvailable && bglServerSupported === true && !bglEnrollment &&
-            !!entry && entry.status === 'found' && !entry.background_life_enabled;
-        setTextIfChanged(bglAddButton, adding ? 'Adding…' : (enrolled ? 'In Background Life' : 'Add to Background Life'));
-        bglAddButton.disabled = !canAdd;
+        bglAddButton.hidden = !target;
+        setTextIfChanged(bglAddButton, adding ? 'Adding…' : (enrolled ? 'In BGL' : 'Add BGL'));
+        bglAddButton.disabled = !target || adding || enrolled;
         bglAddButton.classList.toggle('enrolled', enrolled);
+        bglAddButton.classList.toggle('unavailable', !!target && !adding && !enrolled && unavailable);
         bglAddButton.title = title;
+        bglAddButton.setAttribute('aria-label', title);
+        scheduleBglUnknownRetry();
     }
 
     function finishBglEnrollment(enrollment, added, message) {
@@ -1007,11 +1050,26 @@
         }
     }
 
-    // Adds exactly the target captured at click time. The game sends enable_bg; success is
-    // reported only after the server's saved status shows the NPC enrolled.
+    // Adds exactly the target captured at click time. Unless the cached status already shows a
+    // saved, unenrolled NPC, one fresh read checks the server first, and every outcome is
+    // reported in the chat. The game then sends enable_bg; success is reported only after the
+    // server's saved status shows the NPC enrolled.
     function startBglEnrollment() {
         const target = bglCurrentTarget;
-        if (!target || bglEnrollment || !window.chimChatboxCommand || bglAddButton.disabled) return;
+        if (!target || !bglAddButton || bglAddButton.disabled) return;
+        if (bglEnrollment) {
+            pushChatboxSystemMessage(`Another Background Life add is in progress. Try ${target.name} again when it finishes.`);
+            return;
+        }
+        if (!bglNativeAvailable || !window.chimChatboxCommand) {
+            pushChatboxSystemMessage('Adding to Background Life from chat needs the current CHIM plugin.');
+            return;
+        }
+        const entry = bglTargetCache.get(bglTargetKey(target));
+        if (entry && entry.status === 'ambiguous') {
+            pushChatboxSystemMessage(`Several saved NPCs are named ${target.name}. Add them from the Background Life page.`);
+            return;
+        }
 
         const enrollment = {
             requestId: String(++bglEnrollSequence),
@@ -1022,12 +1080,51 @@
             scope: bglScope,
             timeoutId: null
         };
+        bglEnrollment = enrollment;
+        renderBglAddButton();
+        if (bglServerSupported === true && entry && entry.status === 'found' && !entry.background_life_enabled) {
+            sendBglEnrollCommand(enrollment);
+        } else {
+            verifyBglTargetBeforeEnroll(enrollment);
+        }
+    }
+
+    function sendBglEnrollCommand(enrollment) {
         enrollment.timeoutId = window.setTimeout(function() {
             finishBglEnrollment(enrollment, false, 'The game did not respond.');
         }, bglNativeTimeoutMs);
-        bglEnrollment = enrollment;
-        renderBglAddButton();
         sendControlCommand(`bgl_enroll|${enrollment.requestId}|${enrollment.formId}`);
+    }
+
+    // One bounded read of the clicked target. Only a saved, unenrolled NPC is sent to the game.
+    async function verifyBglTargetBeforeEnroll(enrollment) {
+        let reply = null;
+        try {
+            reply = await fetchBglTargetStatuses([{ refid: enrollment.refid, name: enrollment.name }]);
+        } catch (_err) {
+            finishBglEnrollment(enrollment, false,
+                'The CHIM server did not report Background Life status. Check that it is running and up to date.');
+            return;
+        }
+        // A null reply means the server address changed, which already settled this add.
+        if (bglEnrollment !== enrollment || !reply) return;
+        enrollment.scope = reply.scope;
+        targetRowsByKey.forEach(renderTargetAffinity);
+        const saved = reply.statuses.get(bglTargetKey(enrollment));
+        if (saved && saved.status === 'found' && saved.background_life_enabled) {
+            bglEnrollment = null;
+            renderBglAddButton();
+            pushChatboxSystemMessage(`${enrollment.name} is already in Background Life.`);
+        } else if (saved && saved.status === 'found') {
+            sendBglEnrollCommand(enrollment);
+        } else if (saved && saved.status === 'ambiguous') {
+            finishBglEnrollment(enrollment, false,
+                'Several saved NPCs share this name. Add them from the Background Life page.');
+        } else {
+            finishBglEnrollment(enrollment, false,
+                'The server has no saved CHIM record for them yet. Loading a save removes NPC records ' +
+                'that were not backed up by that save; try again once CHIM registers them again.');
+        }
     }
 
     // At most four bounded reads (each limited by bglFetchTimeoutMs), so an add always settles.
@@ -1649,6 +1746,9 @@
         refreshProfileLlmMode(true);
         // Each open retries the server once and refreshes the current target set.
         bglServerSupported = bglServerSupported === false ? null : bglServerSupported;
+        // Each open also renews the unknown-target recheck budget.
+        if (bglUnknownRetry) window.clearTimeout(bglUnknownRetry.timerId);
+        bglUnknownRetry = null;
         requestBglTargetStatuses(true);
         setContextPlacement(true);
         window.openFocusChatbox();
