@@ -466,6 +466,12 @@ body {
     cursor: not-allowed;
 }
 
+/* Waiting for the save load and Background Life setup; kept readable, not clickable. */
+.chatbox-bgl-add.loading:disabled {
+    opacity: 0.7;
+    cursor: progress;
+}
+
 .chatbox-bgl-add.enrolled:disabled {
     opacity: 0.85;
     color: #a9d8a9;

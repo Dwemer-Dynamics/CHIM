@@ -120,6 +120,9 @@
     const bglFetchTimeoutMs = 6000;
     const bglTargetCache = new Map();
     let bglNativeAvailable = false;
+    // True while the game loads a save and runs its Background Life setup. Only the current
+    // plugin sends it (on DOM ready and on every load change); older plugins leave it false.
+    let bglLoading = false;
     let bglServerSupported = null;
     let bglScope = '';
     let bglScopeSequence = 0;
@@ -339,7 +342,7 @@
         const normalized = String(url || '').replace(/\/$/, '');
         if (normalized && normalized !== serverUrl) {
             serverUrl = normalized;
-            resetBglTargetCache();
+            resetBglTargetCache('The server address changed before it was confirmed.');
         }
     };
 
@@ -826,9 +829,10 @@
         return target.refid + '|' + target.name;
     }
 
-    // A new server URL starts a new generation: in-flight reads and any add in progress are
-    // abandoned, and their late results, errors and cache writes are ignored.
-    function resetBglTargetCache() {
+    // A new server URL or a save load starts a new generation: in-flight reads, unknown-status
+    // retries and any add in progress are abandoned, and their late results, errors and cache
+    // writes are ignored. cancelMessage explains the abandoned add.
+    function resetBglTargetCache(cancelMessage) {
         bglGeneration += 1;
         bglTargetCache.clear();
         bglScope = '';
@@ -838,9 +842,10 @@
         bglFetchInFlight = null;
         bglFetchQueued = null;
         bglRefreshKey = '';
+        if (bglUnknownRetry) window.clearTimeout(bglUnknownRetry.timerId);
+        bglUnknownRetry = null;
         if (bglEnrollment) {
-            finishBglEnrollment(bglEnrollment, false,
-                'The server address changed before it was confirmed. Check the Background Life page.');
+            finishBglEnrollment(bglEnrollment, false, cancelMessage + ' Check the Background Life page.');
         }
         targetRowsByKey.forEach(renderTargetAffinity);
         renderBglAddButton();
@@ -930,7 +935,7 @@
     // ones and entries marked for a recheck. One normal read runs at a time; later calls are
     // coalesced into one follow-up.
     async function requestBglTargetStatuses(force) {
-        if (!isChatFocused || bglServerSupported === false) return;
+        if (!isChatFocused || bglLoading || bglServerSupported === false) return;
         if (bglFetchInFlight) {
             bglFetchQueued = { force: !!force || !!(bglFetchQueued && bglFetchQueued.force) };
             return;
@@ -975,7 +980,7 @@
         }
         const retry = bglUnknownRetry;
         if (!retry || retry.timerId || retry.attempt >= bglUnknownRetryDelaysMs.length || !isChatFocused ||
-            bglServerSupported !== true || !entry || entry.status !== 'unknown') {
+            bglLoading || bglServerSupported !== true || !entry || entry.status !== 'unknown') {
             return;
         }
         retry.timerId = window.setTimeout(function() {
@@ -990,9 +995,10 @@
         }, bglUnknownRetryDelaysMs[retry.attempt]);
     }
 
-    // Compact button beside the current target name: Add BGL, Adding… or In BGL, with the full
-    // explanation in the tooltip. Hidden without a single NPC target. States that cannot add
-    // right now stay clickable but dimmed so a click can explain why or check the server again.
+    // Compact button beside the current target name: Loading…, Add BGL, Adding… or In BGL,
+    // with the full explanation in the tooltip. Hidden without a single NPC target. States
+    // that cannot add right now stay clickable but dimmed so a click can explain why or check
+    // the server again; Loading… stays disabled until the game reports the save is ready.
     function renderBglAddButton() {
         if (!bglAddButton) return;
         const target = bglCurrentTarget;
@@ -1003,6 +1009,8 @@
         let unavailable = true;
         if (!target) {
             title = 'Select a single NPC target to add them to Background Life.';
+        } else if (bglLoading) {
+            title = 'Waiting for CHIM to finish loading this save before adding to Background Life.';
         } else if (adding) {
             title = `Adding ${target.name} to Background Life.`;
         } else if (enrolled) {
@@ -1025,11 +1033,21 @@
             unavailable = false;
         }
 
+        let label = 'Add BGL';
+        if (bglLoading) {
+            label = 'Loading…';
+        } else if (adding) {
+            label = 'Adding…';
+        } else if (enrolled) {
+            label = 'In BGL';
+        }
         bglAddButton.hidden = !target;
-        setTextIfChanged(bglAddButton, adding ? 'Adding…' : (enrolled ? 'In BGL' : 'Add BGL'));
-        bglAddButton.disabled = !target || adding || enrolled;
-        bglAddButton.classList.toggle('enrolled', enrolled);
-        bglAddButton.classList.toggle('unavailable', !!target && !adding && !enrolled && unavailable);
+        setTextIfChanged(bglAddButton, label);
+        bglAddButton.disabled = !target || bglLoading || adding || enrolled;
+        bglAddButton.classList.toggle('loading', bglLoading);
+        bglAddButton.classList.toggle('enrolled', !bglLoading && enrolled);
+        bglAddButton.classList.toggle('unavailable',
+            !!target && !bglLoading && !adding && !enrolled && unavailable);
         bglAddButton.title = title;
         bglAddButton.setAttribute('aria-label', title);
         scheduleBglUnknownRetry();
@@ -1160,6 +1178,14 @@
     window.setChatboxBackgroundLifeAvailable = function(available) {
         bglNativeAvailable = !!available;
         renderBglAddButton();
+    };
+
+    // Starting a load drops everything from the previous save; finishing it reads fresh
+    // statuses once (requestBglTargetStatuses runs from the reset).
+    window.setChatboxBackgroundLifeLoading = function(loading) {
+        if (bglLoading === !!loading) return;
+        bglLoading = !!loading;
+        resetBglTargetCache('A save started loading before it was confirmed.');
     };
 
     window.onChatboxBackgroundLifeEnroll = function(resultJson) {

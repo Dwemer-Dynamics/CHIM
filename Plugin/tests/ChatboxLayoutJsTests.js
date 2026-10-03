@@ -637,9 +637,10 @@ test('shows saved Player affinity and adds the captured chat target to Backgroun
 
     assert.match(html, /class="chatbox-current-target-row">\s*<div class="chatbox-control-value" id="chatbox-current-target">[\s\S]*?<\/div>\s*<button id="chatbox-bgl-add"[^>]*>Add BGL<\/button>\s*<\/div>\s*<div class="chatbox-profile-inline">/);
     assert.doesNotMatch(css, /58vh \+ 32px/);
-    assert.match(script, /'Adding…' : \(enrolled \? 'In BGL' : 'Add BGL'\)/);
+    assert.match(script, /if \(bglLoading\) \{\s*label = 'Loading…';\s*\} else if \(adding\) \{\s*label = 'Adding…';\s*\} else if \(enrolled\) \{\s*label = 'In BGL';/);
+    assert.match(script, /bglAddButton\.disabled = !target \|\| bglLoading \|\| adding \|\| enrolled;/);
     assert.match(script, /sendControlCommand\(`bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}`\)/);
     assert.match(bridge, /cmd\.starts_with\("bgl_enroll\|"\)\) \{\s*EnrollChatboxTargetInBackgroundLife\(cmd\.substr\(11\)\)/);
     assert.equal('bgl_enroll|'.length, 11);
-    assert.match(bridge, /EnrollChatboxTargetInBackgroundLife[\s\S]*?AddTask[\s\S]*?ApplyBackgroundLifeEnrollment\(actor, formId, target->name, true\)/);
+    assert.match(bridge, /EnrollChatboxTargetInBackgroundLife[\s\S]*?if \(!ChatboxBackgroundLifeReady\(loadEpoch\)\)[\s\S]*?AddTask\(\[requestId, formId, loadEpoch\]\(\) \{\s*\/\/.*\s*if \(!ChatboxBackgroundLifeReady\(loadEpoch\)\)[\s\S]*?ApplyBackgroundLifeEnrollment\(actor, formId, target->name, true\)/);
 });
