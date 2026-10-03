@@ -626,3 +626,18 @@ test('applies the saved Prisma mood to both speech-to-text paths', () => {
     assert.match(voicerec, /routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?HTTPManager::streamPlayer/);
     assert.match(commands, /command\.contains\("ImpersonatePlayer"\)[\s\S]*?routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?sendMessageReal\(message, messageType, routingContext\)/);
 });
+
+test('shows saved Player affinity and adds the captured chat target to Background Life', () => {
+    const formatPlayerAffinity = loadChatboxFunction('formatPlayerAffinity');
+    assert.equal(formatPlayerAffinity(25), '(+25)');
+    assert.equal(formatPlayerAffinity(-10), '(-10)');
+    assert.equal(formatPlayerAffinity(0), '(0)');
+    assert.equal(formatPlayerAffinity(null), '');
+    assert.equal(formatPlayerAffinity(undefined), '');
+
+    assert.match(html, /id="chatbox-current-target"[\s\S]*?id="chatbox-bgl-add"[\s\S]*?class="chatbox-profile-inline"/);
+    assert.match(script, /sendControlCommand\(`bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}`\)/);
+    assert.match(bridge, /cmd\.starts_with\("bgl_enroll\|"\)\) \{\s*EnrollChatboxTargetInBackgroundLife\(cmd\.substr\(11\)\)/);
+    assert.equal('bgl_enroll|'.length, 11);
+    assert.match(bridge, /EnrollChatboxTargetInBackgroundLife[\s\S]*?AddTask[\s\S]*?ApplyBackgroundLifeEnrollment\(actor, formId, target->name, true\)/);
+});

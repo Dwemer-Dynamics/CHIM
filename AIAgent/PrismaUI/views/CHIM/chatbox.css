@@ -393,6 +393,45 @@ body {
     margin-top: 10px;
 }
 
+.chatbox-bgl-add {
+    width: 100%;
+    min-height: 26px;
+    margin-top: 6px;
+    padding: 4px 8px;
+    border: 1px solid rgba(242, 124, 17, 0.3);
+    border-radius: 4px;
+    background: rgba(30, 30, 40, 0.9);
+    color: #ddd;
+    font-size: 0.78em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.chatbox-bgl-add:hover:not(:disabled) {
+    border-color: rgba(242, 124, 17, 0.68);
+    background: rgba(242, 124, 17, 0.16);
+}
+
+.chatbox-bgl-add:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
+}
+
+.chatbox-bgl-add:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.chatbox-bgl-add.enrolled:disabled {
+    opacity: 0.85;
+    color: #a9d8a9;
+    border-color: rgba(120, 200, 120, 0.4);
+}
+
 .chatbox-profile-menu-toggle:hover:not(:disabled),
 .chatbox-profile-menu-toggle[aria-expanded="true"] {
     border-color: rgba(242, 124, 17, 0.68);
@@ -1115,7 +1154,9 @@ body {
     gap: 14px;
     width: 100%;
     min-height: 0;
-    max-height: 58vh;
+    /* +32px reserves the Background Life button row (26px + 6px margin) so it
+       does not push the action rows under Recent Context on short screens. */
+    max-height: calc(58vh + 32px);
 }
 
 .chatbox-targets-window {
@@ -1132,7 +1173,7 @@ body {
 
 .focus-chatbox-panel {
     width: auto;
-    max-height: 58vh;
+    max-height: calc(58vh + 32px);
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
@@ -1242,9 +1283,28 @@ body {
 
 .chatbox-target-meta {
     min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+}
+
+/* Saved NPC->Player affinity stays visible when long names truncate. */
+.chatbox-target-affinity {
+    flex-shrink: 0;
+    font-size: 0.8em;
+    color: #c9c9d2;
+}
+
+.chatbox-target-affinity.positive {
+    color: #9fd49f;
+}
+
+.chatbox-target-affinity.negative {
+    color: #e39a8f;
 }
 
 .chatbox-target-name {
+    min-width: 0;
     font-size: 0.95em;
     font-weight: 600;
     color: #f2f2f2;

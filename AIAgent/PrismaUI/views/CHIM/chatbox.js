@@ -21,6 +21,7 @@
     const playerMoodCustomErrorElement = document.getElementById('chatbox-mood-custom-error');
     const currentTargetElement = document.getElementById('chatbox-current-target');
     const targetsListElement = document.getElementById('chatbox-targets-list');
+    const bglAddButton = document.getElementById('chatbox-bgl-add');
     const currentModeElement = document.getElementById('chatbox-current-mode');
     const modeMenuToggleButton = document.getElementById('chatbox-mode-menu-toggle');
     const modeOptionsElement = document.getElementById('chatbox-mode-options');
@@ -109,7 +110,30 @@
     const storyEntryKeys = new Set();
     const recentStoryContent = new Map();
     let narratorStoryName = 'The Narrator';
-    
+    // Background Life status and saved Player affinity for chat targets, keyed by RefID and
+    // name. The cache holds only the current bounded target set (current target first, at most
+    // 32) and belongs to bglScope, the server's playthrough/player token. bglGeneration changes
+    // with the server URL so responses from an earlier server or reset are ignored.
+    const bglTargetLimit = 32;
+    const bglConfirmDelaysMs = [400, 900, 1800, 3000];
+    const bglNativeTimeoutMs = 5000;
+    const bglFetchTimeoutMs = 6000;
+    const bglTargetCache = new Map();
+    let bglNativeAvailable = false;
+    let bglServerSupported = null;
+    let bglScope = '';
+    let bglScopeSequence = 0;
+    let bglFetchSequence = 0;
+    let bglGeneration = 0;
+    let bglVisibleTargets = [];
+    let bglVisibleKeys = new Set();
+    let bglRefreshKey = '';
+    let bglFetchInFlight = null;
+    let bglFetchQueued = null;
+    let bglCurrentTarget = null;
+    let bglEnrollment = null;
+    let bglEnrollSequence = 0;
+
     // Server URL
     let serverUrl = window.CHIM_SERVER_URL || 'http://192.168.169.218:8081/HerikaServer';
 
@@ -311,7 +335,10 @@
 
     window.setChatboxServerUrl = function(url) {
         const normalized = String(url || '').replace(/\/$/, '');
-        if (normalized) serverUrl = normalized;
+        if (normalized && normalized !== serverUrl) {
+            serverUrl = normalized;
+            resetBglTargetCache();
+        }
     };
 
     window.removeEventLogEntry = function(rowId) {
@@ -438,9 +465,16 @@
             );
 
             if (replaceExisting) resetStoryLog();
+            let relationshipChanged = false;
             normalized.forEach(function(entry) {
-                appendStoryEntry(entry, false);
+                if (appendStoryEntry(entry, false) && entry.speaker === 'Relationship') {
+                    relationshipChanged = true;
+                }
             });
+            // A newly recorded relationship change may move a visible target's saved affinity.
+            if (relationshipChanged && !replaceExisting) {
+                requestBglTargetStatuses(true);
+            }
 
             showStoryEmpty('No recent context.');
             if (replaceExisting) scrollStoryToBottom();
@@ -735,7 +769,10 @@
         row.__chimNameElement.className = 'chatbox-target-name';
         row.__chimDistanceElement = document.createElement('span');
         row.__chimDistanceElement.className = 'chatbox-target-distance';
+        row.__chimAffinityElement = document.createElement('span');
+        row.__chimAffinityElement.className = 'chatbox-target-affinity';
         row.__chimMetaElement.appendChild(row.__chimNameElement);
+        row.__chimMetaElement.appendChild(row.__chimAffinityElement);
         row.appendChild(row.__chimMetaElement);
         row.appendChild(row.__chimDistanceElement);
         return row;
@@ -755,7 +792,300 @@
         setDatasetValue(row, 'everyone', spec.everyone ? 'true' : null);
         setDatasetValue(row, 'formId', spec.formId);
         setDatasetValue(row, 'targetName', spec.targetName);
+        row.__chimBglKey = spec.bglKey || '';
+        renderTargetAffinity(row);
     }
+
+    // Saved NPC->Player affinity as "(+25)", "(-10)" or "(0)"; no value when none is saved.
+    function formatPlayerAffinity(value) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+        const score = Math.trunc(value);
+        return '(' + (score > 0 ? '+' + score : String(score)) + ')';
+    }
+
+    function renderTargetAffinity(row) {
+        const element = row && row.__chimAffinityElement;
+        if (!element) return;
+        const entry = row.__chimBglKey && bglServerSupported ? bglTargetCache.get(row.__chimBglKey) : null;
+        const affinity = entry ? entry.player_affinity : null;
+        const text = formatPlayerAffinity(affinity);
+        setTextIfChanged(element, text);
+        element.hidden = text === '';
+        element.classList.toggle('positive', text !== '' && affinity > 0);
+        element.classList.toggle('negative', text !== '' && affinity < 0);
+        element.title = text ? 'Saved relationship with you' : '';
+    }
+
+    function bglRefId(formId) {
+        return (Number(formId) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+    }
+
+    function bglTargetKey(target) {
+        return target.refid + '|' + target.name;
+    }
+
+    // A new server URL starts a new generation: in-flight reads and any add in progress are
+    // abandoned, and their late results, errors and cache writes are ignored.
+    function resetBglTargetCache() {
+        bglGeneration += 1;
+        bglTargetCache.clear();
+        bglScope = '';
+        bglScopeSequence = 0;
+        bglServerSupported = null;
+        if (bglFetchInFlight && bglFetchInFlight.abort) bglFetchInFlight.abort();
+        bglFetchInFlight = null;
+        bglFetchQueued = null;
+        bglRefreshKey = '';
+        if (bglEnrollment) {
+            finishBglEnrollment(bglEnrollment, false,
+                'The server address changed before it was confirmed. Check the Background Life page.');
+        }
+        targetRowsByKey.forEach(renderTargetAffinity);
+        renderBglAddButton();
+        requestBglTargetStatuses(true);
+    }
+
+    // Rejects after bglFetchTimeoutMs for both the network request and the JSON body, and
+    // aborts the request where AbortController is available.
+    function fetchBglJsonWithDeadline(url, onAbortable) {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        if (onAbortable) onAbortable(function() { if (controller) controller.abort(); });
+        let timerId = null;
+        const deadline = new Promise(function(_resolve, reject) {
+            timerId = window.setTimeout(function() {
+                if (controller) controller.abort();
+                reject(new Error('Background Life status timed out.'));
+            }, bglFetchTimeoutMs);
+        });
+        const request = fetch(url, controller ? { cache: 'no-store', signal: controller.signal } : { cache: 'no-store' })
+            .then(function(response) {
+                return response.json().then(function(result) { return { ok: response.ok, result }; });
+            });
+        return Promise.race([request, deadline]).finally(function() {
+            window.clearTimeout(timerId);
+        });
+    }
+
+    // One bounded GET for up to 32 targets. Throws on old or unreachable servers. Returns null
+    // when the response belongs to an earlier server generation or an older scope; otherwise
+    // { scope, statuses } with statuses keyed by RefID and name. Cache writes are limited to the
+    // current target set, and an older response never overwrites a newer entry.
+    async function fetchBglTargetStatuses(targets, onAbortable) {
+        const generation = bglGeneration;
+        const requestServerUrl = serverUrl;
+        const sequence = ++bglFetchSequence;
+        const requested = targets.slice(0, bglTargetLimit);
+        const params = new URLSearchParams({
+            operation: 'chat_targets',
+            targets: JSON.stringify(requested.map(function(target) {
+                return { refid: target.refid, name: target.name };
+            }))
+        });
+        let reply = null;
+        try {
+            reply = await fetchBglJsonWithDeadline(
+                `${requestServerUrl}/ui/api/background_life_npc.php?${params.toString()}`, onAbortable);
+        } catch (err) {
+            if (generation !== bglGeneration || requestServerUrl !== serverUrl) return null;
+            throw err;
+        }
+        if (generation !== bglGeneration || requestServerUrl !== serverUrl) return null;
+        const result = reply.result;
+        if (!reply.ok || !result || result.success !== true || !Array.isArray(result.targets)) {
+            throw new Error((result && result.error) || 'Background Life status is unavailable.');
+        }
+
+        const scope = typeof result.scope === 'string' ? result.scope : bglScope;
+        if (scope !== bglScope) {
+            // A response older than the one that set the current scope is stale.
+            if (sequence < bglScopeSequence) return null;
+            // Another playthrough or player: drop every cached entry and, after this request
+            // settles, refresh the whole target set once rather than only the requested ones.
+            if (bglScope) window.setTimeout(function() { requestBglTargetStatuses(true); }, 0);
+            bglTargetCache.clear();
+            bglScope = scope;
+        }
+        bglScopeSequence = Math.max(bglScopeSequence, sequence);
+        bglServerSupported = true;
+        const statuses = new Map();
+        result.targets.forEach(function(status) {
+            if (status && typeof status.refid === 'string' && typeof status.name === 'string') {
+                statuses.set(bglTargetKey(status), status);
+            }
+        });
+        // Targets the server skipped are cached as unknown so they are not requested again.
+        requested.forEach(function(target) {
+            const key = bglTargetKey(target);
+            const existing = bglTargetCache.get(key);
+            if (!bglVisibleKeys.has(key) || (existing && existing.sequence > sequence)) return;
+            const status = statuses.get(key) || { status: 'unknown', player_affinity: null };
+            bglTargetCache.set(key, Object.assign({}, status, { sequence }));
+        });
+        return { scope, statuses };
+    }
+
+    // Fetch statuses for the current target set: all of them when forced, else only uncached
+    // ones. One normal read runs at a time; later calls are coalesced into one follow-up.
+    async function requestBglTargetStatuses(force) {
+        if (!isChatFocused || bglServerSupported === false) return;
+        if (bglFetchInFlight) {
+            bglFetchQueued = { force: !!force || !!(bglFetchQueued && bglFetchQueued.force) };
+            return;
+        }
+        const targets = force
+            ? bglVisibleTargets
+            : bglVisibleTargets.filter(function(target) { return !bglTargetCache.has(bglTargetKey(target)); });
+        if (targets.length === 0) return;
+
+        const flight = { abort: null };
+        bglFetchInFlight = flight;
+        try {
+            await fetchBglTargetStatuses(targets, function(abort) { flight.abort = abort; });
+        } catch (_err) {
+            // Old or unreachable server: omit scores and keep the add button disabled until reopened.
+            if (bglFetchInFlight === flight) bglServerSupported = false;
+        } finally {
+            // A reset abandons this read; the new generation owns the queue and rendering.
+            if (bglFetchInFlight === flight) {
+                bglFetchInFlight = null;
+                targetRowsByKey.forEach(renderTargetAffinity);
+                renderBglAddButton();
+                const queued = bglFetchQueued;
+                bglFetchQueued = null;
+                if (queued) requestBglTargetStatuses(queued.force);
+            }
+        }
+    }
+
+    function renderBglAddButton() {
+        if (!bglAddButton) return;
+        const target = bglCurrentTarget;
+        const entry = target ? bglTargetCache.get(bglTargetKey(target)) : null;
+        const adding = !!(bglEnrollment && target && bglEnrollment.formId === target.formId);
+        const enrolled = !adding && !!(entry && entry.status === 'found' && entry.background_life_enabled);
+        let title = '';
+        if (!target) {
+            title = 'Select a single NPC target to add them to Background Life.';
+        } else if (!bglNativeAvailable || bglServerSupported === false) {
+            title = 'Adding from chat needs the current CHIM plugin and server.';
+        } else if (adding) {
+            title = `Adding ${target.name} to Background Life.`;
+        } else if (enrolled) {
+            title = `${target.name} is in Background Life.`;
+        } else if (!entry) {
+            title = 'Checking Background Life status.';
+        } else if (entry.status === 'ambiguous') {
+            title = 'Several saved NPCs share this name. Use the Background Life page.';
+        } else if (entry.status !== 'found') {
+            title = 'CHIM has not saved this NPC yet.';
+        } else if (bglEnrollment) {
+            title = 'Another Background Life add is in progress.';
+        } else {
+            title = `Add ${target.name} to Background Life.`;
+        }
+
+        const canAdd = !!target && bglNativeAvailable && bglServerSupported === true && !bglEnrollment &&
+            !!entry && entry.status === 'found' && !entry.background_life_enabled;
+        setTextIfChanged(bglAddButton, adding ? 'Adding…' : (enrolled ? 'In Background Life' : 'Add to Background Life'));
+        bglAddButton.disabled = !canAdd;
+        bglAddButton.classList.toggle('enrolled', enrolled);
+        bglAddButton.title = title;
+    }
+
+    function finishBglEnrollment(enrollment, added, message) {
+        if (bglEnrollment !== enrollment) return;
+        if (enrollment.timeoutId) window.clearTimeout(enrollment.timeoutId);
+        bglEnrollment = null;
+        renderBglAddButton();
+        if (added) {
+            pushChatboxSystemMessage(`Added ${enrollment.name} to Background Life.`);
+        } else {
+            pushChatboxSystemMessage(
+                `Could not add ${enrollment.name} to Background Life.` + (message ? ` ${message}` : '')
+            );
+            showInGameDebugNotification(`Could not add ${enrollment.name} to Background Life.`);
+        }
+    }
+
+    // Adds exactly the target captured at click time. The game sends enable_bg; success is
+    // reported only after the server's saved status shows the NPC enrolled.
+    function startBglEnrollment() {
+        const target = bglCurrentTarget;
+        if (!target || bglEnrollment || !window.chimChatboxCommand || bglAddButton.disabled) return;
+
+        const enrollment = {
+            requestId: String(++bglEnrollSequence),
+            formId: target.formId,
+            refid: target.refid,
+            name: target.name,
+            generation: bglGeneration,
+            scope: bglScope,
+            timeoutId: null
+        };
+        enrollment.timeoutId = window.setTimeout(function() {
+            finishBglEnrollment(enrollment, false, 'The game did not respond.');
+        }, bglNativeTimeoutMs);
+        bglEnrollment = enrollment;
+        renderBglAddButton();
+        sendControlCommand(`bgl_enroll|${enrollment.requestId}|${enrollment.formId}`);
+    }
+
+    // At most four bounded reads (each limited by bglFetchTimeoutMs), so an add always settles.
+    // Only this read's own response can confirm it; cached or stale results never do.
+    async function confirmBglEnrollment(enrollment) {
+        for (const delay of bglConfirmDelaysMs) {
+            await new Promise(function(resolve) { setTimeout(resolve, delay); });
+            if (bglEnrollment !== enrollment) return;
+            let reply = null;
+            try {
+                reply = await fetchBglTargetStatuses([{ refid: enrollment.refid, name: enrollment.name }]);
+            } catch (_err) {
+                reply = null;
+            }
+            if (bglEnrollment !== enrollment) return;
+            if (!reply) continue;
+            if (enrollment.scope && reply.scope !== enrollment.scope) {
+                finishBglEnrollment(enrollment, false,
+                    'The server playthrough or player changed. Check the Background Life page.');
+                return;
+            }
+            const saved = reply.statuses.get(bglTargetKey(enrollment));
+            if (saved && saved.status === 'found' && saved.background_life_enabled) {
+                targetRowsByKey.forEach(renderTargetAffinity);
+                finishBglEnrollment(enrollment, true, '');
+                return;
+            }
+        }
+        targetRowsByKey.forEach(renderTargetAffinity);
+        finishBglEnrollment(enrollment, false, 'The server has not saved it yet.');
+    }
+
+    window.setChatboxBackgroundLifeAvailable = function(available) {
+        bglNativeAvailable = !!available;
+        renderBglAddButton();
+    };
+
+    window.onChatboxBackgroundLifeEnroll = function(resultJson) {
+        let result = null;
+        try {
+            result = JSON.parse(resultJson);
+        } catch (_err) {
+            return;
+        }
+        const enrollment = bglEnrollment;
+        // Ignore results for an earlier request, a different actor or an earlier server.
+        if (!result || !enrollment || String(result.request_id) !== enrollment.requestId ||
+            Number(result.form_id) !== enrollment.formId || enrollment.generation !== bglGeneration) {
+            return;
+        }
+        window.clearTimeout(enrollment.timeoutId);
+        enrollment.timeoutId = null;
+        if (!result.accepted) {
+            finishBglEnrollment(enrollment, false, result.message || '');
+            return;
+        }
+        confirmBglEnrollment(enrollment);
+    };
 
     function syncTargetRows(specs) {
         if (!targetsListElement) return;
@@ -1317,6 +1647,9 @@
         isChatFocused = true;
         quickChatMode = !!quickChat;
         refreshProfileLlmMode(true);
+        // Each open retries the server once and refreshes the current target set.
+        bglServerSupported = bglServerSupported === false ? null : bglServerSupported;
+        requestBglTargetStatuses(true);
         setContextPlacement(true);
         window.openFocusChatbox();
     };
@@ -1398,6 +1731,7 @@
             if (target.override) return true;
             return target.targetable !== false;
         });
+        const bglTargets = [];
         visibleTargets.forEach(function(target) {
             const formId = Number(target.form_id || 0);
             const itemClasses = ['chatbox-target-item'];
@@ -1405,13 +1739,19 @@
             if (target.override) itemClasses.push('override');
             const statusLabel = target.narrator ? 'Narrator' : `${Number(target.distance || 0).toFixed(1)}m`;
             const name = target.name || 'Unknown Target';
+            // Only real NPC rows carry a Background Life identity; pseudo and Narrator rows do not.
+            const bglTarget = !target.narrator && formId > 0 && target.name
+                ? { formId, refid: bglRefId(formId), name: target.name }
+                : null;
+            if (bglTarget) bglTargets.push(bglTarget);
             specs.push({
                 key: formId ? `form:${formId}` : `name:${name}`,
                 className: itemClasses.join(' '),
                 name,
                 distance: statusLabel,
                 formId,
-                targetName: target.name || ''
+                targetName: target.name || '',
+                bglKey: bglTarget ? bglTargetKey(bglTarget) : ''
             });
         });
 
@@ -1435,6 +1775,36 @@
         currentTargetIsNarrator = !!(activeTarget && activeTarget.narrator);
         window.updateChatboxTarget(currentTargetName, Number(activeTarget ? activeTarget.distance || 0 : 0));
         refreshProfileLlmMode();
+
+        const activeFormId = activeTarget ? Number(activeTarget.form_id || 0) : 0;
+        bglCurrentTarget = activeFormId > 0 && !currentTargetIsNarrator && activeTarget.name
+            ? { formId: activeFormId, refid: bglRefId(activeFormId), name: activeTarget.name }
+            : null;
+        // The current target always leads, whatever the payload's active flags say, followed by
+        // the other rows in order. Only the first 32 are read or cached; later rows show no score
+        // until selected. Distance-only updates keep the same key and send no request.
+        const bglTargetSet = [];
+        const bglTargetSetKeys = new Set();
+        (bglCurrentTarget ? [bglCurrentTarget] : []).concat(bglTargets).forEach(function(target) {
+            const key = bglTargetKey(target);
+            if (bglTargetSet.length >= bglTargetLimit || bglTargetSetKeys.has(key)) return;
+            bglTargetSetKeys.add(key);
+            bglTargetSet.push(target);
+        });
+        bglVisibleTargets = bglTargetSet;
+        bglVisibleKeys = bglTargetSetKeys;
+        const refreshKey = (bglCurrentTarget ? bglTargetKey(bglCurrentTarget) : '') + '\n#\n' +
+            Array.from(bglTargetSetKeys).sort().join('\n');
+        if (refreshKey !== bglRefreshKey) {
+            bglRefreshKey = refreshKey;
+            // Keep the cache bounded to the current target set.
+            Array.from(bglTargetCache.keys()).forEach(function(key) {
+                if (!bglTargetSetKeys.has(key)) bglTargetCache.delete(key);
+            });
+            targetRowsByKey.forEach(renderTargetAffinity);
+            requestBglTargetStatuses(false);
+        }
+        renderBglAddButton();
     };
 
     window.updateChatboxMode = function(mode) {
@@ -2088,6 +2458,13 @@
         });
     }
 
+    if (bglAddButton) {
+        bglAddButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            startBglEnrollment();
+        });
+    }
+
     if (captureBackgroundChatButton) {
         captureBackgroundChatButton.addEventListener('click', function() {
             toggleCaptureBackgroundChat();
@@ -2137,6 +2514,7 @@
     }
 
     renderSoulgazeControl();
+    renderBglAddButton();
     renderCaptureBackgroundChatControl();
     requestCaptureBackgroundChatState();
     window.updateChatboxMode('STANDARD');
