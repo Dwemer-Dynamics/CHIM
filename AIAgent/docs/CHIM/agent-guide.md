@@ -79,16 +79,3 @@ Search `AIAgent.log` for `[SPEECH_TRACE]` and an `utterance_id` from HerikaServe
 The existing speech callback is not proof of audible output. Missing stages remain unknown rather than being classified as success. Trace records contain IDs and bounded metadata, not dialogue or audio. Existing log levels and support-log collection apply.
 
 Durations use the local monotonic clock. Do not compare its absolute value with the server's monotonic clock. No new network requests, protocol fields, settings, or game-state events are introduced.
-## Relationship history
-
-Recent Context and Context History display `relationship` Eventlog entries from
-HerikaServer. New relationships show a signed affinity; later affinity changes
-show a signed difference and explanation. Initial profile setup is omitted.
-These entries do not enter ordinary conversation prompts.
-
-Use the paired relationship update in HerikaServer when testing against a
-database previously used by the RefID feature. It accepts unique legacy NPC
-profile hashes without rewriting stored identity data. Ambiguous or unknown NPC
-targets are rejected rather than answered by the Narrator. This client change
-does not install the separate RefID feature; mixed-version RefID compatibility
-still needs its own validation before release.
