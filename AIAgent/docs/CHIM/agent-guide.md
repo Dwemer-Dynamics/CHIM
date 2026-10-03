@@ -60,6 +60,13 @@ See [building.md](building.md) and [custom-plugins.md](custom-plugins.md). Nativ
 
 `AIAgent/docs/CHIM/` is the single canonical copy. The FOMOD installs it for every option, and `AIAgent/AIAgent/README.md` points installed users here. A maintainer's packager may remove the payload-root README, so do not rely on that file alone. Keep the namespaced folder intact when copying or archiving the mod; do not install a generic `Data/AGENTS.md`.
 
+## Background Life automatic enrollment
+
+Automatic Enrollment is off by default. Turn it on and set Events Before Enrollment (1-5000, default 200) in the Background Life page settings, the HerikaServer map page or Global Settings. All three save the same server settings, `BGL_AUTO_ENROLL_ENABLED` and `BGL_AUTO_ENROLL_EVENT_THRESHOLD`.
+
+When on, HerikaServer checks only the NPC whose reply to the player was confirmed as spoken. The NPC is added when they have no stored enrollment choice, are alive, unique by name, not a known animal or summon, and have taken part in enough recorded events. Lines that were emitted but never confirmed, or were aborted, do not count. Automatic enrollment leaves Actions, Letters and combat off and waits a full trigger period before the first update. Removing an NPC by hand keeps them out until they are added again.
+
+On older servers the dashboard response has no automatic-enrollment settings, so those controls stay disabled and only the trigger time is saved. The in-game Settings hub needs no client change: `config_manager.js` renders Global Settings fields, types and `min`/`max` limits from the server catalog and uses the shared focus handlers for keyboard capture, while `chim_global_settings.php` validates and clamps saved values.
 
 ## NPC schedules
 
