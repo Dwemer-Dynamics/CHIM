@@ -626,3 +626,24 @@ test('applies the saved Prisma mood to both speech-to-text paths', () => {
     assert.match(voicerec, /routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?HTTPManager::streamPlayer/);
     assert.match(commands, /command\.contains\("ImpersonatePlayer"\)[\s\S]*?routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?sendMessageReal\(message, messageType, routingContext\)/);
 });
+
+test('shows saved Player affinity and adds or removes the captured chat target in Background Life', () => {
+    const formatPlayerAffinity = loadChatboxFunction('formatPlayerAffinity');
+    assert.equal(formatPlayerAffinity(25), '(+25)');
+    assert.equal(formatPlayerAffinity(-10), '(-10)');
+    assert.equal(formatPlayerAffinity(0), '(0)');
+    assert.equal(formatPlayerAffinity(null), '');
+    assert.equal(formatPlayerAffinity(undefined), '');
+
+    assert.match(html, /class="chatbox-current-target-row">\s*<div class="chatbox-control-value" id="chatbox-current-target">[\s\S]*?<\/div>\s*<button id="chatbox-bgl-add"[^>]*>Add BGL<\/button>\s*<\/div>\s*<div class="chatbox-profile-inline">/);
+    assert.doesNotMatch(css, /58vh \+ 32px/);
+    assert.match(script, /if \(bglLoading\) \{\s*label = 'Loading…';\s*\} else if \(adding\) \{\s*label = 'Adding…';\s*\} else if \(removing\) \{\s*label = 'Removing…';\s*\} else if \(removable\) \{\s*label = 'Remove BGL';\s*\} else if \(enrolled\) \{\s*label = 'In BGL';/);
+    assert.match(script, /const removable = enrolled && bglNativeRemoveAvailable && bglServerSupported === true;/);
+    assert.match(script, /bglAddButton\.disabled = !target \|\| bglLoading \|\| busy \|\| \(enrolled && !removable\);/);
+    assert.match(script, /\? `bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}`\s*: `bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}\|remove`/);
+    assert.match(script, /saved\.status === 'found' && saved\.background_life_enabled === enrollment\.enabled/);
+    assert.match(bridge, /setChatboxBackgroundLifeRemoveAvailable\(true\)/);
+    assert.match(bridge, /cmd\.starts_with\("bgl_enroll\|"\)\) \{\s*EnrollChatboxTargetInBackgroundLife\(cmd\.substr\(11\)\)/);
+    assert.equal('bgl_enroll|'.length, 11);
+    assert.match(bridge, /EnrollChatboxTargetInBackgroundLife[\s\S]*?if \(!ChatboxBackgroundLifeReady\(loadEpoch\)\)[\s\S]*?AddTask\(\[requestId, formId, enabled, loadEpoch\]\(\) \{\s*\/\/.*\s*if \(!ChatboxBackgroundLifeReady\(loadEpoch\)\)[\s\S]*?ApplyBackgroundLifeEnrollment\(actor, formId, target->name, enabled\)/);
+});

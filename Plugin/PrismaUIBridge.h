@@ -348,6 +348,11 @@ namespace PrismaUIBridge {
     void BumpDialogueStopGeneration();
     void UpdateChimInteractionState();
 
+    // Chat Background Life adds open only once this load's post-load setup has run.
+    // Marks the given playthrough load ready (ignored once a later load began) and
+    // republishes the chat's Loading… state; call with no epoch after a load begins.
+    void SetChatboxBackgroundLifeReady(std::uint64_t loadEpoch = 0);
+
     // Shared by the chatbox and voice hotkey; does not require a Prisma view.
     void StopAllDialogueNow(const char* sourceTag);
 

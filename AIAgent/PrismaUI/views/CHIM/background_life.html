@@ -74,7 +74,16 @@
                             <span>Trigger Time</span>
                             <input id="trigger-hours-input" type="number" min="1" step="1" value="24">
                         </label>
-                        <button id="save-trigger-hours" class="control-button" type="button">Save Trigger Time</button>
+                        <label class="toggle-row">
+                            <span>Automatic Enrollment</span>
+                            <input id="auto-enroll-toggle" type="checkbox" aria-describedby="auto-enroll-help">
+                        </label>
+                        <label class="compact-field">
+                            <span>Events Before Enrollment</span>
+                            <input id="auto-enroll-threshold-input" type="number" min="1" max="5000" step="1" value="200" aria-describedby="auto-enroll-help">
+                        </label>
+                        <div id="auto-enroll-help" class="field-help">Adds an NPC after they reply to you and have taken part in this many recorded events. NPCs you remove stay out.</div>
+                        <button id="save-trigger-hours" class="control-button" type="button">Save Settings</button>
                         <label class="toggle-row">
                             <span>Show all NPC coordinates</span>
                             <input id="show-all-coords-toggle" type="checkbox">
