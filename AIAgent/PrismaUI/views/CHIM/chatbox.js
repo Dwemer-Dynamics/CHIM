@@ -120,6 +120,8 @@
     const bglFetchTimeoutMs = 6000;
     const bglTargetCache = new Map();
     let bglNativeAvailable = false;
+    // Set only by plugins that can also remove from chat; older ones keep In BGL read-only.
+    let bglNativeRemoveAvailable = false;
     // True while the game loads a save and runs its Background Life setup. Only the current
     // plugin sends it (on DOM ready and on every load change); older plugins leave it false.
     let bglLoading = false;
@@ -995,30 +997,40 @@
         }, bglUnknownRetryDelaysMs[retry.attempt]);
     }
 
-    // Compact button beside the current target name: Loading…, Add BGL, Adding… or In BGL,
-    // with the full explanation in the tooltip. Hidden without a single NPC target. States
-    // that cannot add right now stay clickable but dimmed so a click can explain why or check
-    // the server again; Loading… stays disabled until the game reports the save is ready.
+    // Compact button beside the current target name: Loading…, Add BGL, Adding…, Remove BGL or
+    // Removing… (In BGL with plugins that cannot remove), with the full explanation in the
+    // tooltip. Hidden without a single NPC target. States that cannot add right now stay
+    // clickable but dimmed so a click can explain why or check the server again; Loading…
+    // stays disabled until the game reports the save is ready.
     function renderBglAddButton() {
         if (!bglAddButton) return;
         const target = bglCurrentTarget;
         const entry = target ? bglTargetCache.get(bglTargetKey(target)) : null;
-        const adding = !!(bglEnrollment && target && bglEnrollment.formId === target.formId);
-        const enrolled = !adding && !!(entry && entry.status === 'found' && entry.background_life_enabled);
+        const busy = !!(bglEnrollment && target && bglEnrollment.formId === target.formId);
+        const adding = busy && bglEnrollment.enabled;
+        const removing = busy && !bglEnrollment.enabled;
+        const enrolled = !busy && !!(entry && entry.status === 'found' && entry.background_life_enabled);
+        const removable = enrolled && bglNativeRemoveAvailable && bglServerSupported === true;
         let title = '';
         let unavailable = true;
         if (!target) {
             title = 'Select a single NPC target to add them to Background Life.';
         } else if (bglLoading) {
-            title = 'Waiting for CHIM to finish loading this save before adding to Background Life.';
+            title = 'Waiting for CHIM to finish loading this save before changing Background Life.';
         } else if (adding) {
             title = `Adding ${target.name} to Background Life.`;
-        } else if (enrolled) {
+        } else if (removing) {
+            title = `Removing ${target.name} from Background Life.`;
+        } else if (enrolled && !removable) {
             title = `${target.name} is in Background Life.`;
+        } else if (bglEnrollment) {
+            title = 'Another Background Life change is in progress.';
+        } else if (removable) {
+            title = `Remove ${target.name} from Background Life. Automatic enrolment skips them ` +
+                'until you add them again.';
+            unavailable = false;
         } else if (!bglNativeAvailable) {
             title = 'Adding from chat needs the current CHIM plugin.';
-        } else if (bglEnrollment) {
-            title = 'Another Background Life add is in progress.';
         } else if (bglServerSupported === false) {
             title = 'The CHIM server did not report Background Life status. Click to check again.';
         } else if (!entry) {
@@ -1038,45 +1050,54 @@
             label = 'Loading…';
         } else if (adding) {
             label = 'Adding…';
+        } else if (removing) {
+            label = 'Removing…';
+        } else if (removable) {
+            label = 'Remove BGL';
         } else if (enrolled) {
             label = 'In BGL';
         }
         bglAddButton.hidden = !target;
         setTextIfChanged(bglAddButton, label);
-        bglAddButton.disabled = !target || bglLoading || adding || enrolled;
+        bglAddButton.disabled = !target || bglLoading || busy || (enrolled && !removable);
         bglAddButton.classList.toggle('loading', bglLoading);
-        bglAddButton.classList.toggle('enrolled', !bglLoading && enrolled);
+        bglAddButton.classList.toggle('enrolled', !bglLoading && enrolled && !removable);
         bglAddButton.classList.toggle('unavailable',
-            !!target && !bglLoading && !adding && !enrolled && unavailable);
+            !!target && !bglLoading && !busy && !(enrolled && !removable) && unavailable);
         bglAddButton.title = title;
         bglAddButton.setAttribute('aria-label', title);
         scheduleBglUnknownRetry();
     }
 
-    function finishBglEnrollment(enrollment, added, message) {
+    function finishBglEnrollment(enrollment, changed, message) {
         if (bglEnrollment !== enrollment) return;
         if (enrollment.timeoutId) window.clearTimeout(enrollment.timeoutId);
         bglEnrollment = null;
         renderBglAddButton();
-        if (added) {
+        const failure = enrollment.enabled
+            ? `Could not add ${enrollment.name} to Background Life.`
+            : `Could not remove ${enrollment.name} from Background Life.`;
+        if (changed && enrollment.enabled) {
             pushChatboxSystemMessage(`Added ${enrollment.name} to Background Life.`);
+        } else if (changed) {
+            pushChatboxSystemMessage(`Removed ${enrollment.name} from Background Life. ` +
+                'Automatic enrolment skips them until you add them again.');
         } else {
-            pushChatboxSystemMessage(
-                `Could not add ${enrollment.name} to Background Life.` + (message ? ` ${message}` : '')
-            );
-            showInGameDebugNotification(`Could not add ${enrollment.name} to Background Life.`);
+            pushChatboxSystemMessage(failure + (message ? ` ${message}` : ''));
+            showInGameDebugNotification(failure);
         }
     }
 
-    // Adds exactly the target captured at click time. Unless the cached status already shows a
-    // saved, unenrolled NPC, one fresh read checks the server first, and every outcome is
-    // reported in the chat. The game then sends enable_bg; success is reported only after the
-    // server's saved status shows the NPC enrolled.
+    // Adds or removes exactly the target captured at click time. Remove is offered only when the
+    // cached status shows a saved, enrolled NPC and the plugin reported that it can remove. For
+    // an add, unless the cached status already shows a saved, unenrolled NPC, one fresh read
+    // checks the server first. Every outcome is reported in the chat. The game then sends
+    // enable_bg or disable_bg; success is reported only after the server's saved status shows it.
     function startBglEnrollment() {
         const target = bglCurrentTarget;
         if (!target || !bglAddButton || bglAddButton.disabled) return;
         if (bglEnrollment) {
-            pushChatboxSystemMessage(`Another Background Life add is in progress. Try ${target.name} again when it finishes.`);
+            pushChatboxSystemMessage(`Another Background Life change is in progress. Try ${target.name} again when it finishes.`);
             return;
         }
         if (!bglNativeAvailable || !window.chimChatboxCommand) {
@@ -1084,6 +1105,8 @@
             return;
         }
         const entry = bglTargetCache.get(bglTargetKey(target));
+        const remove = bglNativeRemoveAvailable && bglServerSupported === true &&
+            !!(entry && entry.status === 'found' && entry.background_life_enabled);
         if (entry && entry.status === 'ambiguous') {
             pushChatboxSystemMessage(`Several saved NPCs are named ${target.name}. Add them from the Background Life page.`);
             return;
@@ -1094,13 +1117,17 @@
             formId: target.formId,
             refid: target.refid,
             name: target.name,
+            // Requested saved state: true adds, false removes.
+            enabled: !remove,
             generation: bglGeneration,
             scope: bglScope,
             timeoutId: null
         };
         bglEnrollment = enrollment;
         renderBglAddButton();
-        if (bglServerSupported === true && entry && entry.status === 'found' && !entry.background_life_enabled) {
+        if (remove) {
+            sendBglEnrollCommand(enrollment);
+        } else if (bglServerSupported === true && entry && entry.status === 'found' && !entry.background_life_enabled) {
             sendBglEnrollCommand(enrollment);
         } else {
             verifyBglTargetBeforeEnroll(enrollment);
@@ -1111,7 +1138,10 @@
         enrollment.timeoutId = window.setTimeout(function() {
             finishBglEnrollment(enrollment, false, 'The game did not respond.');
         }, bglNativeTimeoutMs);
-        sendControlCommand(`bgl_enroll|${enrollment.requestId}|${enrollment.formId}`);
+        // Adds keep the original two-field command, which older plugins also accept.
+        sendControlCommand(enrollment.enabled
+            ? `bgl_enroll|${enrollment.requestId}|${enrollment.formId}`
+            : `bgl_enroll|${enrollment.requestId}|${enrollment.formId}|remove`);
     }
 
     // One bounded read of the clicked target. Only a saved, unenrolled NPC is sent to the game.
@@ -1145,9 +1175,11 @@
         }
     }
 
-    // At most four bounded reads (each limited by bglFetchTimeoutMs), so an add always settles.
-    // Only this read's own response can confirm it; cached or stale results never do.
+    // At most four bounded reads (each limited by bglFetchTimeoutMs), so a change always settles.
+    // Only this read's own response can confirm it; cached or stale results never do. A removal
+    // is confirmed only by a saved record that is not enrolled; a missing record cannot confirm it.
     async function confirmBglEnrollment(enrollment) {
+        let lastStatus = '';
         for (const delay of bglConfirmDelaysMs) {
             await new Promise(function(resolve) { setTimeout(resolve, delay); });
             if (bglEnrollment !== enrollment) return;
@@ -1165,18 +1197,31 @@
                 return;
             }
             const saved = reply.statuses.get(bglTargetKey(enrollment));
-            if (saved && saved.status === 'found' && saved.background_life_enabled) {
+            lastStatus = saved ? saved.status : 'unknown';
+            if (saved && saved.status === 'found' && saved.background_life_enabled === enrollment.enabled) {
                 targetRowsByKey.forEach(renderTargetAffinity);
                 finishBglEnrollment(enrollment, true, '');
                 return;
             }
         }
         targetRowsByKey.forEach(renderTargetAffinity);
+        if (!enrollment.enabled && (lastStatus === 'unknown' || lastStatus === 'ambiguous')) {
+            finishBglEnrollment(enrollment, false,
+                'The server has no single saved record for them, so the removal cannot be confirmed. ' +
+                'Check the Background Life page.');
+            return;
+        }
         finishBglEnrollment(enrollment, false, 'The server has not saved it yet.');
     }
 
     window.setChatboxBackgroundLifeAvailable = function(available) {
         bglNativeAvailable = !!available;
+        renderBglAddButton();
+    };
+
+    // Sent on DOM ready only by plugins that accept bgl_enroll removals.
+    window.setChatboxBackgroundLifeRemoveAvailable = function(available) {
+        bglNativeRemoveAvailable = !!available;
         renderBglAddButton();
     };
 
@@ -1196,9 +1241,12 @@
             return;
         }
         const enrollment = bglEnrollment;
-        // Ignore results for an earlier request, a different actor or an earlier server.
+        // Ignore results for an earlier request, a different actor or action, or an earlier
+        // server. Plugins without removal omit "enabled" and only ever add.
+        const resultEnabled = !result || result.enabled === undefined || result.enabled === true;
         if (!result || !enrollment || String(result.request_id) !== enrollment.requestId ||
-            Number(result.form_id) !== enrollment.formId || enrollment.generation !== bglGeneration) {
+            Number(result.form_id) !== enrollment.formId || resultEnabled !== enrollment.enabled ||
+            enrollment.generation !== bglGeneration) {
             return;
         }
         window.clearTimeout(enrollment.timeoutId);

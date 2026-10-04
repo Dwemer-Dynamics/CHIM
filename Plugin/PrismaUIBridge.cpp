@@ -7218,6 +7218,11 @@ R"CHIM(
             view,
             "window.setChatboxBackgroundLifeAvailable && window.setChatboxBackgroundLifeAvailable(true)",
             nullptr);
+        // Removal is a separate capability so a newer chat never offers Remove BGL to an older DLL.
+        g_prismaUI->Invoke(
+            view,
+            "window.setChatboxBackgroundLifeRemoveAvailable && window.setChatboxBackgroundLifeRemoveAvailable(true)",
+            nullptr);
         // Also sent when a load starts or finishes, so a view created mid-load still shows Loading….
         // Repeated on the game thread, which orders it after any load start that raced this callback.
         PublishChatboxBackgroundLifeLoading();
@@ -7230,7 +7235,7 @@ R"CHIM(
     }
 
     static void PublishChatboxBackgroundLifeEnrollResult(
-        const std::string& requestId, uint32_t formId, bool accepted,
+        const std::string& requestId, uint32_t formId, bool enabled, bool accepted,
         const std::string& name, const std::string& message) {
         if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
             !g_prismaUI->IsValid(g_chatboxView)) {
@@ -7240,6 +7245,7 @@ R"CHIM(
         const json result{
             {"request_id", requestId},
             {"form_id", formId},
+            {"enabled", enabled},
             {"accepted", accepted},
             {"name", name},
             {"message", message}
@@ -7250,21 +7256,28 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, call.c_str(), nullptr);
     }
 
-    // Chat "Add to Background Life" for the exact form ID captured when the button was
-    // clicked, not the Background Life page selection. The actor must still be a visible,
-    // non-narrator chat target. Acceptance means the request was sent; the chat confirms
-    // the saved server status before reporting success. Refused until this load's
-    // Background Life setup has finished, checked both when queued and when the game runs it.
+    // Chat Add/Remove BGL for the exact form ID captured when the button was clicked, not the
+    // Background Life page selection. Payload is <request>|<formId>, with |remove appended for
+    // a removal. The actor must still be a visible, non-narrator chat target. Acceptance means
+    // the request was sent; the chat confirms the saved server status before reporting success.
+    // Refused until this load's Background Life setup has finished, checked both when queued
+    // and when the game runs it.
     static void EnrollChatboxTargetInBackgroundLife(const std::string& payload) {
         const size_t separator = payload.find('|');
         const std::string requestId = payload.substr(0, separator);
-        const std::string formIdText =
+        std::string formIdText =
             separator == std::string::npos ? "" : payload.substr(separator + 1);
+        const size_t actionSeparator = formIdText.find('|');
+        const std::string action =
+            actionSeparator == std::string::npos ? "" : formIdText.substr(actionSeparator + 1);
+        formIdText = formIdText.substr(0, actionSeparator);
+        const bool enabled = action != "remove";
         const bool validRequestId =
             !requestId.empty() && requestId.size() <= 16 &&
             std::all_of(requestId.begin(), requestId.end(), [](unsigned char value) {
                 return std::isdigit(value) != 0;
-            });
+            }) &&
+            (action.empty() || !enabled);
 
         uint32_t formId = 0;
         bool validFormId = false;
@@ -7282,32 +7295,32 @@ R"CHIM(
             return;
         }
         if (!validFormId) {
-            PublishChatboxBackgroundLifeEnrollResult(requestId, 0, false, "", "Invalid chat target.");
+            PublishChatboxBackgroundLifeEnrollResult(requestId, 0, enabled, false, "", "Invalid chat target.");
             return;
         }
 
         static constexpr const char* loadingMessage =
-            "CHIM is still loading this save. Try again when the button shows Add BGL.";
+            "CHIM is still loading this save. Try again when the button no longer shows Loading….";
         const auto loadEpoch = PlaythroughSession::Generation();
         if (!ChatboxBackgroundLifeReady(loadEpoch)) {
-            PublishChatboxBackgroundLifeEnrollResult(requestId, formId, false, "", loadingMessage);
+            PublishChatboxBackgroundLifeEnrollResult(requestId, formId, enabled, false, "", loadingMessage);
             return;
         }
 
         auto* tasks = SKSE::GetTaskInterface();
         if (!tasks) {
             PublishChatboxBackgroundLifeEnrollResult(
-                requestId, formId, false, "", "Game task interface is unavailable.");
+                requestId, formId, enabled, false, "", "Game task interface is unavailable.");
             return;
         }
 
-        tasks->AddTask([requestId, formId, loadEpoch]() {
+        tasks->AddTask([requestId, formId, enabled, loadEpoch]() {
             // A load may have started after this was queued; load start also runs on this thread.
             if (!ChatboxBackgroundLifeReady(loadEpoch)) {
-                PublishChatboxBackgroundLifeEnrollResult(requestId, formId, false, "", loadingMessage);
+                PublishChatboxBackgroundLifeEnrollResult(requestId, formId, enabled, false, "", loadingMessage);
                 return;
             }
-            // Tag enable_bg with the load that accepted the add, not a later one.
+            // Tag enable_bg/disable_bg with the load that accepted the change, not a later one.
             const PlaythroughSession::Scope scope(loadEpoch);
             const auto nearbyAgents = CollectChatboxNearbyAgents();
             const auto target = std::find_if(nearbyAgents.begin(), nearbyAgents.end(),
@@ -7318,18 +7331,18 @@ R"CHIM(
             auto* actor = form ? form->As<RE::Actor>() : nullptr;
             if (target == nearbyAgents.end() || !actor || actor == RE::PlayerCharacter::GetSingleton()) {
                 PublishChatboxBackgroundLifeEnrollResult(
-                    requestId, formId, false, "", "That NPC is no longer an available chat target.");
+                    requestId, formId, enabled, false, "", "That NPC is no longer an available chat target.");
                 return;
             }
             if (!AIAgentRoleMasterFaction) {
-                logger::error("[Chatbox] Cannot add Background Life NPC - rolemaster faction unavailable");
+                logger::error("[Chatbox] Cannot change Background Life NPC - rolemaster faction unavailable");
                 PublishChatboxBackgroundLifeEnrollResult(
-                    requestId, formId, false, "", "Background Life faction is unavailable.");
+                    requestId, formId, enabled, false, "", "Background Life faction is unavailable.");
                 return;
             }
 
-            const std::string npcName = ApplyBackgroundLifeEnrollment(actor, formId, target->name, true);
-            PublishChatboxBackgroundLifeEnrollResult(requestId, formId, true, npcName, "");
+            const std::string npcName = ApplyBackgroundLifeEnrollment(actor, formId, target->name, enabled);
+            PublishChatboxBackgroundLifeEnrollResult(requestId, formId, enabled, true, npcName, "");
             UpdateBackgroundLifeTargetUI();
         });
     }
