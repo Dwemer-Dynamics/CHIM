@@ -7,6 +7,7 @@
 #include "ThreadPool.h"
 #include "Papyrus.h"
 #include "HTTPManager.h"
+#include "ItemInteraction.h"
 #include "AudioManager.h"
 #include "Globals.h"
 #include "SpeakManager.h"
@@ -47,6 +48,9 @@ namespace PrismaUIBridge {
     // Static state
     static PRISMA_UI_API::IVPrismaUI1* g_prismaUI = nullptr;
     static PRISMA_UI_API::IVPrismaUI2* g_prismaUI2 = nullptr;
+    static PrismaView g_itemInteractionView = 0;
+    static json g_itemInteractionPayload;
+    static bool g_itemInteractionReady = false;
     static PrismaView g_historyView = 0;
     static PrismaView g_overlayView = 0;
     static PrismaView g_diariesView = 0;
@@ -5708,6 +5712,12 @@ R"CHIM(
 
     void Shutdown() {
         logger::info("[PrismaUIBridge] Shutting down...");
+        ItemInteraction::Cancel();
+        if (g_prismaUI && g_itemInteractionView) {
+            g_prismaUI->Destroy(g_itemInteractionView);
+            g_itemInteractionView=0;
+            g_itemInteractionReady=false;
+        }
         SetChatboxGameplayInputSuppressed(false);
 
         if (g_prismaUI) {
@@ -7848,7 +7858,8 @@ R"CHIM(
             return created && view != 0 && g_prismaUI->IsValid(view) && g_prismaUI->HasFocus(view);
         };
 
-        return isFocused(g_historyView, g_panelCreated.load()) ||
+        return isFocused(g_itemInteractionView, g_itemInteractionView != 0) ||
+               isFocused(g_historyView, g_panelCreated.load()) ||
                isFocused(g_diariesView, g_diariesCreated.load()) ||
                isFocused(g_backgroundLifeView, g_backgroundLifeCreated.load()) ||
                isFocused(g_npcManagerView, g_npcManagerCreated.load()) ||
@@ -8841,4 +8852,43 @@ R"CHIM(
         return !g_prismaUI->IsHidden(g_masterMenuView);
     }
 
+    void UpdateItemInteraction(const json& payload) {
+        if (!g_prismaUI || !g_itemInteractionView || !g_prismaUI->IsValid(g_itemInteractionView)) return;
+        g_itemInteractionPayload.update(payload);
+        if (g_itemInteractionReady) {
+            auto js="window.setInteraction("+g_itemInteractionPayload.dump()+")";
+            g_prismaUI->Invoke(g_itemInteractionView,js.c_str(),nullptr);
+        }
+    }
+    void HideItemInteraction() {
+        if (!g_prismaUI || !g_itemInteractionView || !g_prismaUI->IsValid(g_itemInteractionView)) return;
+        SetChatboxGameplayInputSuppressed(false);
+        if (g_prismaUI->HasFocus(g_itemInteractionView)) g_prismaUI->Unfocus(g_itemInteractionView);
+        g_prismaUI->Hide(g_itemInteractionView);
+    }
+    void ShowItemInteraction(const json& payload) {
+        if (!g_prismaUI) { RE::DebugNotification("[CHIM] Interact requires Prisma UI."); ItemInteraction::Cancel(); return; }
+        if (g_itemInteractionView && !g_prismaUI->IsValid(g_itemInteractionView)) {
+            g_itemInteractionView=0; g_itemInteractionReady=false;
+        }
+        g_itemInteractionPayload=payload;
+        if (!g_itemInteractionView) {
+            g_itemInteractionView=g_prismaUI->CreateView("CHIM/item_interaction.html",[](PrismaView) {
+                g_itemInteractionReady=true;
+                UpdateItemInteraction(json::object());
+            });
+            if (!g_itemInteractionView) { ItemInteraction::Cancel(); return; }
+            g_prismaUI->SetOrder(g_itemInteractionView,250);
+            g_prismaUI->RegisterJSListener(g_itemInteractionView,"chimItemInteraction",[](const char* value) {
+                std::string command=value ? value:"";
+                if (command=="input_capture|on" || command=="input_capture|off") {
+                    SetChatboxGameplayInputSuppressed(command=="input_capture|on"); return;
+                }
+                ItemInteraction::Command(command);
+            });
+        }
+        g_prismaUI->Show(g_itemInteractionView);
+        g_prismaUI->Focus(g_itemInteractionView,true,false);
+        UpdateItemInteraction(json::object());
+    }
 }

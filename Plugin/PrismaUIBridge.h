@@ -1,4 +1,5 @@
 #pragma once
+#include "json.hpp"
 
 #include "Globals.h"
 #include "PrismaUI_API.h"
@@ -422,3 +423,5 @@ namespace PrismaUIBridge {
     std::string GetLastError();
 
 }
+
+namespace PrismaUIBridge { void ShowItemInteraction(const nlohmann::json& payload); void UpdateItemInteraction(const nlohmann::json& payload); void HideItemInteraction(); }

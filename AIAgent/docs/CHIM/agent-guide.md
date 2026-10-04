@@ -94,3 +94,30 @@ Search `AIAgent.log` for `[SPEECH_TRACE]` and an `utterance_id` from HerikaServe
 The existing speech callback is not proof of audible output. Missing stages remain unknown rather than being classified as success. Trace records contain IDs and bounded metadata, not dialogue or audio. Existing log levels and support-log collection apply.
 
 Durations use the local monotonic clock. Do not compare its absolute value with the server's monotonic clock. No new network requests, protocol fields, settings, or game-state events are introduced.
+
+## CHIM Interact
+
+The repeatable **CHIM Interact** lesser power is granted when CHIM connects after a new game or save load. Aim at a loaded actor or object within 512 game units, cast the power, select an exact inventory copy and quantity, and describe the attempt. Prisma UI is required. Quest inventory items can be shown or used without removal; transfer and consumption are excluded. Search filters the entire captured inventory; enchanted or tempered copies show their instance details.
+
+The paired HerikaServer uses the configured Director connector. It logs an attempt before asking the model, sends relevant item/target/player facts and up to ten recent target events, validates at most five conditional effects, then accepts an execution receipt. The configured Narrator describes confirmed effects after execution. Failed or uncertain steps never use their proposed success narration. Cancellation at a kill/disable confirmation performs no effects or generated follow-up dialogue.
+
+Supported operations are observation, actor/container transfer, real potion/food consumption, equipment, resolved health damage, confirmed killing, impulses, locks, activation/open/close, authored destruction or explicit reference disabling, bounded scaling, combat, and the selected vanilla Firebolt/Ice Spike/Lightning Bolt scroll. These scrolls use their authored magic; resistance or a missed projectile can leave application unconfirmed. Direct injury does not simulate a normal weapon hit. Scaling does not promise updated collision. Shared actor-base protections are not changed for nonunique actors; quest alias protections can prevent killing and are reported as failure.
+
+Transfers preserve the selected extra-data instance. If destination merging makes the exact instance ambiguous, the transfer is recorded but follow-up consumption/equipment is refused. Killing and disabling ask for explicit confirmation before any step. The client revalidates the captured target, distance, inventory and session; it never substitutes a nearby actor. A missing callback stops the sequence after 15 seconds, marks the result uncertain, and does not repeat effects. Outcome reporting may retry once without repeating game actions. Save/load invalidates pending work.
+
+Implementation: `Plugin/ItemInteraction.cpp`, `CHIMItemInteraction.psc`, `PrismaUI/views/CHIM/item_interaction.*`, and HerikaServer `item_interaction.php` / `lib/item_interaction.php`. `Plugin/tools/build_interact_records.py` documents and verifies the two source ESP records without modifying existing records. Compile the Papyrus script and deploy it together with the ESP, native DLL and Prisma files. Source PRs do not contain compiled DLL/PEX artifacts.
+
+### In-game checks
+
+1. Load a disposable save with the paired client/server. Confirm **CHIM Interact** appears under Powers and can be cast repeatedly.
+2. Aim at an NPC, select a food item, and describe showing it. Confirm one attempt and one outcome in Event Log, configured Narrator audio/subtitles, and no inventory change.
+3. Give one of two differently enchanted or tempered copies. Verify the intended copy moves, the other stays, and quantity is correct. Repeat with a container.
+4. Administer a real healing potion to an injured NPC. Verify inventory consumption and healing. Try equipping eligible equipment.
+5. Try injury followed by combat, a lock/unlock, a door open/close, and a physics impulse. Confirm only verified effects are narrated as successful.
+6. Try killing a protected unique NPC or disabling an object on a disposable save. Cancel first: no effects should occur. Approve a separate attempt and compare actual state with its outcome. Restore the save afterward.
+7. Try an ordinary apple as a shrinking tool: plausibility should reject it. Test a suitably justified scale operation separately and inspect collision manually.
+8. Use an eligible elemental scroll, including against a resistant target. Confirm the scroll is consumed once and uncertain application is not narrated as a hit.
+9. During resolution move away, drop the selected copy, unload the target, or load another save. No stale effects or speech may play in the new session.
+10. Check Escape, Tab/Shift+Tab, text typing, quantity limits, empty inventory, search, and repeated confirmation. Gameplay hotkeys must return immediately on close. Repeat relevant input and power tests in VR before claiming VR gameplay validation.
+
+Build, lint, local deployment, and in-game behavior are separate evidence. These checks require Skyrim; a successful build does not establish them.
