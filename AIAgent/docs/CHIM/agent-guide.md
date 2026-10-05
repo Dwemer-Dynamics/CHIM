@@ -97,6 +97,8 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
+Describe an action and press **Enter** to interact; **Shift+Enter** adds a line. **Choose…** opens the optional inventory picker, with exact-copy details and an amount for stacks. **Esc** closes the picker first, then the menu. Protected actions still require explicit confirmation.
+
 To eat or drink a world item, aim at a single loose food item or non-poison potion, leave **No item** selected, and describe eating/drinking it. CHIM transfers the actual reference and uses Skyrim's player consumption path, checking transfer and consumption counts. Owned items send the normal theft alarm. World stacks and references with enchantment/poison extras are excluded. Existing inventory-food-to-NPC consumption is unchanged; selecting inventory food does not silently make the player consume it.
 
 For actions on a living NPC active in CHIM, that exact NPC can respond after the Narrator finishes. The reply is generated alongside Narrator audio, then held until narration completes. It uses the recorded outcome, including failure or uncertainty. Interrupted narration, cancellation, save/load, CHIM Off or a removed/dead target suppresses the reply. An unmanaged target produces a notice to activate that exact actor in CHIM; another same-name actor is never substituted. Pending replies expire after two minutes.

@@ -1,6 +1,7 @@
 'use strict';
-let interactionId = '', submitted = false, items = [], acknowledgementTimer = null;
+let interactionId = '', submitted = false, items = [], selectedKey = null, acknowledgementTimer = null;
 const element = id => document.getElementById(id);
+const selectedItem = () => items.find(item => item.key === selectedKey) || null;
 function status(message, state) {
     element('status').textContent = message;
     element('status').setAttribute('data-state', state || '');
@@ -20,37 +21,55 @@ function send(value) {
 }
 function setBusy(busy) {
     submitted = busy;
-    Array.prototype.forEach.call(element('interaction').querySelectorAll('input,select,textarea,button'), field => {
+    Array.prototype.forEach.call(element('interaction').querySelectorAll('input,textarea,button'), field => {
         field.disabled = busy;
     });
-    element('submit').disabled = busy || element('items').options.length === 0;
-    element('quantity').disabled = busy || element('items').value === '';
+    element('quantity').disabled = busy || !selectedItem();
     element('interaction').setAttribute('aria-busy', busy ? 'true' : 'false');
 }
-function updateQuantity() {
-    const select = element('items');
-    const option = select.options[select.selectedIndex];
-    element('quantity').max = Math.min(100, Number(option ? option.getAttribute('data-count') : 1));
+function showPicker(open) {
+    element('picker').hidden = !open;
+    element('choose').setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { filterItems(); element('search').focus(); }
+    else if (!submitted) element('intent').focus();
+}
+function chooseItem(key) {
+    selectedKey = key;
+    const item = selectedItem();
+    element('selected-item').textContent = item ? item.name : 'No item';
+    element('selected-item').title = item ? (item.details || '') : '';
+    element('clear-item').hidden = !item;
+    element('amount-field').hidden = !item || item.count <= 1;
+    element('quantity').max = item ? Math.min(100, item.count) : 1;
     element('quantity').value = 1;
-    element('quantity').disabled = submitted || !option || option.value === '';
+    element('quantity').disabled = submitted || !item;
+    showPicker(false);
 }
 function filterItems() {
     const term = element('search').value.toLocaleLowerCase();
-    element('items').innerHTML = '';
-    const none = document.createElement('option');
-    none.value = '';
-    none.textContent = 'No item';
-    none.setAttribute('data-count', 1);
-    element('items').appendChild(none);
-    items.filter(item => item.name.toLocaleLowerCase().includes(term)).forEach(item => {
-        const option = document.createElement('option');
-        option.value = item.key;
-        option.textContent = item.name + ' (' + item.count + ')' + (item.details ? ' - ' + item.details : '');
-        option.setAttribute('data-count', item.count);
-        element('items').appendChild(option);
-    });
-    updateQuantity();
-    element('submit').disabled = submitted || element('items').options.length === 0;
+    const list = element('items');
+    list.innerHTML = '';
+    function addRow(item) {
+        const row = document.createElement('button');
+        row.type = 'button'; row.className = 'inventory-row';
+        row.setAttribute('aria-pressed', (item ? item.key === selectedKey : selectedKey === null) ? 'true' : 'false');
+        const name = document.createElement('span');
+        name.textContent = item ? item.name : 'No item'; row.appendChild(name);
+        if (item) {
+            const details = document.createElement('small');
+            details.textContent = item.count + ' available' + (item.details ? ' · ' + item.details : '');
+            row.appendChild(details);
+        }
+        row.onclick = () => { if (!submitted) chooseItem(item ? item.key : null); };
+        list.appendChild(row);
+    }
+    addRow(null);
+    const matches = items.filter(item => (item.name + ' ' + (item.details || '')).toLocaleLowerCase().includes(term));
+    matches.forEach(addRow);
+    if (!matches.length) {
+        const empty = document.createElement('p'); empty.className = 'empty-inventory';
+        empty.textContent = items.length ? 'No matching items.' : 'No inventory items.'; list.appendChild(empty);
+    }
 }
 window.setInteraction = data => {
     clearTimeout(acknowledgementTimer);
@@ -62,17 +81,21 @@ window.setInteraction = data => {
             element('intent').value = '';
             element('search').value = '';
             status('');
-            filterItems();
+            chooseItem(null);
         }
         element('approve').disabled = false;
         setBusy(false);
-        if (!data.preserveDraft) element('search').focus();
+        element('intent').focus();
     }
     if (data.state === 'error') setBusy(false);
-    if (data.state === 'busy') setBusy(true);
+    if (data.state === 'busy') { setBusy(true); showPicker(false); }
     element('confirmation').hidden = !data.confirm;
-    if (data.status) status(data.status, data.state);
-    if (data.confirm) element('approve').focus();
+    if (data.confirm) {
+        setBusy(true);
+        status(data.status || 'This action overrides target protections. Confirm to continue.', 'warning');
+        element('decline').focus();
+    } else if (data.state === 'busy') status('Working…', 'busy');
+    else if (data.status) status(data.status, data.state);
 };
 function cancel() {
     clearTimeout(acknowledgementTimer);
@@ -81,48 +104,56 @@ function cancel() {
 }
 function submitInteraction(event) {
     if (event) event.preventDefault();
-    if (submitted) return;
-    const select = element('items');
-    const option = select.options[select.selectedIndex];
-    const hasItem = option && option.value !== '';
-    const quantity = hasItem ? Number(element('quantity').value) : 0;
+    if (submitted || !element('confirmation').hidden) return;
+    const item = selectedItem();
+    const quantity = item ? Number(element('quantity').value) : 0;
     const intent = element('intent').value.trim();
-    if (!option) { status('Choose an inventory item.', 'error'); select.focus(); return; }
-    if (hasItem && (!Number.isInteger(quantity) || quantity < 1 || quantity > Math.min(100, Number(option.getAttribute('data-count'))))) {
-        status('Choose a whole quantity within the available amount.', 'error'); element('quantity').focus(); return;
+    if (item && (!Number.isInteger(quantity) || quantity < 1 || quantity > Math.min(100, item.count))) {
+        status('Choose a whole amount within the available quantity.', 'error'); element('quantity').focus(); return;
     }
     if (!intent || intent.length > 1000) {
-        status('Describe what you try to do, using up to 1000 characters.', 'error'); element('intent').focus(); return;
+        status(!intent ? 'Describe an action first.' : 'Use up to 1000 characters.', 'error'); element('intent').focus(); return;
     }
-    // Prisma menus use explicit click handlers; do not depend on embedded-browser form validation APIs.
-    const payload = {op: 'submit', key: hasItem ? Number(option.value) : null, quantity: quantity, intent: intent};
-    status('Sending interaction...', 'busy');
-    setBusy(true);
+    // Use the explicit Prisma bridge; embedded form-validation APIs are not required.
+    const payload = {op: 'submit', key: item ? Number(item.key) : null, quantity: quantity, intent: intent};
+    showPicker(false); status('Working…', 'busy'); setBusy(true);
     send('input_capture|off');
-    if (!send(payload)) { setBusy(false); return; }
+    if (!send(payload)) { setBusy(false); element('intent').focus(); return; }
     acknowledgementTimer = setTimeout(() => {
-        status('CHIM has not acknowledged this interaction. Close and reopen the menu before trying again. Your description is still here.', 'error');
+        status('CHIM has not acknowledged this interaction. Close and reopen before trying again.', 'error');
     }, 5000);
 }
 element('close').onclick = cancel;
 element('decline').onclick = cancel;
 element('approve').onclick = () => {
-    if (send({op: 'approve'})) { element('approve').disabled = true; status('Playing the interaction...', 'busy'); }
+    if (element('approve').disabled) return;
+    if (send({op: 'approve'})) { element('approve').disabled = true; status('Working…', 'busy'); }
 };
-element('items').onchange = updateQuantity;
+element('choose').onclick = () => showPicker(element('picker').hidden);
+element('clear-item').onclick = () => chooseItem(null);
 element('search').oninput = filterItems;
 element('submit').onclick = submitInteraction;
-element('interaction').onsubmit = submitInteraction;
+element('interaction').onsubmit = event => event.preventDefault();
 document.addEventListener('focusin', event => {
-    if (event.target.matches('input,textarea,select')) send('input_capture|on');
+    if (event.target.matches('input,textarea')) send('input_capture|on');
 });
 document.addEventListener('focusout', () => setTimeout(() => {
-    if (!document.activeElement || !document.activeElement.matches('input,textarea,select')) send('input_capture|off');
+    if (!document.activeElement || !document.activeElement.matches('input,textarea')) send('input_capture|off');
 }, 0));
 document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!element('picker').hidden) showPicker(false);
+        else cancel();
+    }
+    if (event.key === 'Enter') {
+        if (!element('confirmation').hidden) { event.preventDefault(); return; }
+        if (event.target === element('intent') && !event.shiftKey) submitInteraction(event);
+        else if (event.target === element('search') || event.target === element('quantity')) event.preventDefault();
+    }
     if (event.key === 'Tab') {
-        const fields = Array.prototype.filter.call(document.querySelectorAll('button,input,textarea,select'), field => !field.disabled && field.offsetParent !== null);
+        const fields = Array.prototype.filter.call(document.querySelectorAll('button,input,textarea'), field => !field.disabled && field.offsetParent !== null);
         const first = fields[0], last = fields[fields.length - 1];
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
