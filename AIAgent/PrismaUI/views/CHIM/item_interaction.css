@@ -1,5 +1,32 @@
-:root{color-scheme:dark;font-family:"Segoe UI",Tahoma,sans-serif;color:#e9e4db}*{box-sizing:border-box}body{margin:0;background:transparent;display:grid;place-items:center;min-height:100vh}main{width:min(620px,92vw);max-height:90vh;overflow:auto;padding:22px;background:rgba(22,23,25,.98);border:1px solid #bc9b58;border-radius:6px;box-shadow:0 8px 30px #0008}header{display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:23px;margin:0}p{line-height:1.4}form{display:grid;grid-template-columns:minmax(0,1fr) 100px;gap:10px}label[for=items]{grid-column:1}label[for=quantity]{grid-column:2;grid-row:3}select{grid-column:1;grid-row:4}#quantity{grid-column:2;grid-row:4}label[for=intent],textarea,#submit{grid-column:1/-1}button,input,select,textarea{font:inherit;border:1px solid #69635a;background:#303033;color:inherit;border-radius:3px;padding:10px;min-width:0}textarea{resize:vertical}button{cursor:pointer}button:hover{border-color:#d5b56f}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #e4bd64;outline-offset:2px}button:disabled{opacity:.55;cursor:wait}#submit,#approve{background:#6a522b}#close{font-size:24px;padding:2px 10px}#status:empty{display:none}#confirmation{display:flex;gap:10px;flex-wrap:wrap}#confirmation[hidden]{display:none}@media(max-width:420px){main{padding:14px}form{grid-template-columns:minmax(0,1fr) 80px}}
+/* Use the same chrome, typography and buttons as CHIM's existing confirmation menu. */
+.interaction-panel {
+    width: min(620px, calc(100vw - 48px));
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+}
+.interaction-body { padding: 16px; }
+.interaction-target { margin: 0 0 16px; color: #ddd; font-size: 16px; line-height: 1.45; }
+#target { color: #f2f2f2; overflow-wrap: anywhere; }
+#interaction { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 14px 12px; }
+#interaction label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: #ddd; font-size: 14px; }
+.search-field, .intent-field, .interaction-actions { grid-column: 1 / -1; }
+input, select, textarea {
+    width: 100%; min-width: 0; border: 1px solid rgba(255, 255, 255, .16); border-radius: 4px;
+    background: rgba(0, 0, 0, .28); color: #f2f2f2; padding: 9px 10px; font: 15px Arial, Helvetica, sans-serif;
+}
+select { color-scheme: dark; }
+textarea { resize: vertical; min-height: 100px; }
+input:focus, select:focus, textarea:focus { border-color: rgba(242, 124, 17, .65); outline: none; box-shadow: 0 0 0 2px rgba(242, 124, 17, .18); }
+.interaction-actions { display: flex; justify-content: flex-end; }
+button:disabled, input:disabled, select:disabled, textarea:disabled { opacity: .6; }
+button:disabled { cursor: default; }
+#status { margin: 14px 0 0; color: #ddd; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+#status:empty, #confirmation[hidden] { display: none; }
+#status[data-state="error"] { color: #ffaaa3; }
+@media (max-width: 420px) {
+    .confirmation-root { padding: 12px; }
+    .interaction-panel { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
+    #interaction { grid-template-columns: minmax(0, 1fr) 76px; }
+}
 
-label[for=search],#search{grid-column:1/-1}label[for=items]{grid-row:3}#search{grid-row:2}
-
-#target{overflow-wrap:anywhere}
+h1.confirmation-title { margin: 0; }

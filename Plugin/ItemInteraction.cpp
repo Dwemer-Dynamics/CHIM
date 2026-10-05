@@ -49,6 +49,21 @@ std::shared_ptr<Request> current;
 std::mutex currentMutex;
 constexpr RE::FormID powerLocalId = 0x05A0F1;
 
+std::string NewRequestId()
+{
+    std::random_device random;
+    std::ostringstream id;
+    for (int i = 0; i < 4; ++i)
+        id << std::format("{:08x}", random());
+    return id.str();
+}
+
+// Keep rejected input visible so the player can correct it without losing their description.
+void ShowInputError(const std::string &message)
+{
+    PrismaUIBridge::UpdateItemInteraction({{"state", "error"}, {"status", message}, {"confirm", false}});
+}
+
 std::shared_ptr<Request> Current()
 {
     std::lock_guard lock(currentMutex);
@@ -425,11 +440,7 @@ void Open()
     auto r = std::make_shared<Request>();
     r->epoch = PlaythroughSession::Generation();
     r->target = target->CreateRefHandle();
-    std::random_device random;
-    std::ostringstream id;
-    for (int i = 0; i < 4; ++i)
-        id << std::format("{:08x}", random());
-    r->id = id.str();
+    r->id = NewRequestId();
     json items = json::array();
     for (auto &[object, data] : player->GetInventory())
     {
@@ -475,6 +486,7 @@ void Open()
 
 void Command(const std::string &command)
 {
+    SKSE::log::info("[INTERACT] UI command queued for game thread");
     SKSE::GetTaskInterface()->AddTask([command] {
         try
         {
@@ -486,8 +498,15 @@ void Command(const std::string &command)
             }
             const auto input = json::parse(command);
             if (input.value("id", "") != r->id)
+            {
+                ShowInputError("This interaction is no longer current. Close this menu and cast Interact again.");
                 return;
+            }
             const auto op = input.value("op", "");
+            std::string commandType = "unknown";
+            if (op == "submit" || op == "approve" || op == "cancel")
+                commandType = op;
+            SKSE::log::info("[INTERACT] Game thread received {} command for {}", commandType, r->id);
             if (op == "cancel")
             {
                 Cancel();
@@ -504,20 +523,27 @@ void Command(const std::string &command)
                 return;
             const auto key = input.at("key").get<std::size_t>();
             if (key >= r->choices.size())
+            {
+                ShowInputError("Choose an inventory item before interacting.");
                 return;
+            }
             r->selected = r->choices[key];
             r->quantity = input.at("quantity").get<int>();
             const auto intent = input.at("intent").get<std::string>();
             if (r->quantity < 1 || r->quantity > 100 || r->quantity > r->selected.count || intent.empty() ||
                 intent.size() > 4000)
+            {
+                ShowInputError("Enter a description and a whole quantity within the available amount.");
                 return;
+            }
             auto target = r->target.get();
             auto player = RE::PlayerCharacter::GetSingleton();
             RE::TESBoundObject *item = nullptr;
             RE::ExtraDataList *extra = nullptr;
             if (!target || !InventoryChoice(player, r->selected, r->quantity, item, extra))
             {
-                Cancel();
+                ShowInputError(
+                    "The target or selected item has changed. Choose another item, or close and reopen Interact.");
                 return;
             }
             auto actor = target->As<RE::Actor>();
@@ -645,9 +671,19 @@ void Command(const std::string &command)
             json payload = {{"op", "resolve"},         {"id", r->id},
                             {"intent", intent},        {"gamets", GetGameTimeStamp()},
                             {"snapshot", r->snapshot}, {"capabilities", r->allowed}};
-            PrismaUIBridge::UpdateItemInteraction({{"status", "Resolving the attempt…"}});
+            PrismaUIBridge::UpdateItemInteraction(
+                {{"state", "busy"}, {"status", "Resolving interaction..."}, {"confirm", false}});
             ThreadPool::getInstance().enqueue("InteractResolve", [r, payload] {
-                auto result = HTTPManager::postGameDataJson("item_interaction.php", payload, 120000);
+                SKSE::log::info("[INTERACT] Resolution request started for {}", payload.at("id").get<std::string>());
+                json result = json::object();
+                try
+                {
+                    result = HTTPManager::postGameDataJson("item_interaction.php", payload, 120000);
+                }
+                catch (const std::exception &)
+                {
+                    SKSE::log::warn("[INTERACT] Resolution transport failed");
+                }
                 SKSE::GetTaskInterface()->AddTask([r, result] {
                     if (!Live(r))
                         return;
@@ -708,15 +744,30 @@ void Command(const std::string &command)
                     }
                     catch (const std::exception &)
                     {
-                        RE::DebugNotification("[CHIM] Interact could not resolve this attempt.");
-                        Cancel();
+                        SKSE::log::warn("[INTERACT] Resolution failed before execution for {}", r->id);
+                        const json cancel = {{"op", "cancel"}, {"id", r->id}};
+                        ThreadPool::getInstance().enqueue("InteractCancel", [cancel] {
+                            HTTPManager::postGameDataJson("item_interaction.php", cancel, 5000);
+                        });
+                        // No mechanical step has started. A deliberate retry gets a fresh server claim.
+                        r->id = NewRequestId();
+                        r->submitted = false;
+                        r->plan = nullptr;
+                        PrismaUIBridge::UpdateItemInteraction(
+                            {{"id", r->id},
+                             {"preserveDraft", true},
+                             {"state", "error"},
+                             {"confirm", false},
+                             {"status", "CHIM could not resolve this interaction. No effects were played. Your "
+                                        "description is kept; you can try again."}});
                     }
                 });
             });
         }
         catch (const std::exception &)
         {
-            RE::DebugNotification("[CHIM] Invalid Interact request.");
+            SKSE::log::warn("[INTERACT] UI command was rejected before execution");
+            ShowInputError("CHIM could not read this interaction. Your description has been kept.");
         }
     });
 }

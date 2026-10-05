@@ -1,4 +1,48 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHIM Interact</title><link rel="stylesheet" href="item_interaction.css"></head>
-<body data-chim-menu-scale-target="main"><main role="dialog" aria-modal="true" aria-labelledby="title"><header><h1 id="title">CHIM Interact</h1><button id="close" aria-label="Cancel interaction">×</button></header>
-<p>Use an item on <strong id="target"></strong>.</p><form id="interaction"><label for="search">Find an item</label><input id="search" type="search" placeholder="Search inventory"><label for="items">Inventory item</label><select id="items" required></select><label for="quantity">Quantity</label><input id="quantity" type="number" min="1" max="100" value="1" required><label for="intent">What do you try to do?</label><textarea id="intent" maxlength="1000" rows="4" required placeholder="Describe your attempt…"></textarea><button id="submit" type="submit">Attempt interaction</button></form><p id="status" role="status" aria-live="polite"></p><section id="confirmation" hidden><button id="approve">Continue with these consequences</button><button id="decline">Cancel</button></section></main><script src="ui_scale.js"></script><script src="item_interaction.js"></script></body></html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>CHIM Interact</title>
+    <link rel="stylesheet" href="confirmation.css">
+    <link rel="stylesheet" href="item_interaction.css">
+</head>
+<body data-chim-menu-scale-target=".interaction-panel">
+    <div class="confirmation-root">
+        <div class="confirmation-backdrop"></div>
+        <main class="confirmation-panel interaction-panel" role="dialog" aria-modal="true" aria-labelledby="title">
+            <header class="confirmation-header">
+                <h1 id="title" class="confirmation-title">CHIM Interact</h1>
+                <button id="close" class="confirmation-close" type="button" aria-label="Cancel interaction">&times;</button>
+            </header>
+            <div class="interaction-body">
+                <p class="interaction-target">Use an item on <strong id="target"></strong>.</p>
+                <form id="interaction" novalidate>
+                    <label class="search-field" for="search">Find an item
+                        <input id="search" type="search" placeholder="Search inventory">
+                    </label>
+                    <label class="item-field" for="items">Inventory item
+                        <select id="items"></select>
+                    </label>
+                    <label class="quantity-field" for="quantity">Quantity
+                        <input id="quantity" type="number" min="1" max="100" value="1">
+                    </label>
+                    <label class="intent-field" for="intent">What do you try to do?
+                        <textarea id="intent" maxlength="1000" rows="4" placeholder="Describe your attempt..."></textarea>
+                    </label>
+                    <div class="interaction-actions">
+                        <button id="submit" class="confirmation-button confirmation-button-accept" type="button">Interact</button>
+                    </div>
+                </form>
+                <p id="status" role="status" aria-live="polite"></p>
+            </div>
+            <section id="confirmation" class="confirmation-actions" hidden>
+                <button id="decline" class="confirmation-button confirmation-button-cancel" type="button">Cancel</button>
+                <button id="approve" class="confirmation-button confirmation-button-accept" type="button">Continue</button>
+            </section>
+        </main>
+    </div>
+    <script src="ui_scale.js"></script>
+    <script src="item_interaction.js"></script>
+</body>
+</html>
