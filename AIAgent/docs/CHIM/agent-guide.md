@@ -97,6 +97,8 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
+For loose food such as bread, the Director can request **pickup**: the engine takes one item from the captured world reference into the player inventory. CHIM checks the inventory increase and world-reference change before reporting success. Pickup is issued at most once; later effects on that world target are skipped. Other object categories still use their existing effects.
+
 The repeatable **CHIM Interact** lesser power is granted when CHIM connects after a new game or save load. Aim at a loaded actor or object, cast the power, describe the attempt, and optionally select an exact inventory copy and quantity. **No item** is selected by default, including with an empty inventory; quantity is disabled for itemless actions. Interact does not track distance or impose a range limit; the captured target must remain loaded and valid. Prisma UI is required. Quest inventory items can be shown or used without removal; transfer and consumption are excluded. Search filters the entire captured inventory; enchanted or tempered copies show their instance details.
 
 The paired HerikaServer uses the configured Director connector. It logs an attempt before asking the model, sends relevant item/target/player facts and up to ten recent target events, validates at most five conditional effects, then accepts an execution receipt. The configured Narrator describes confirmed effects after execution. Failed or uncertain steps never use their proposed success narration. Cancellation at a kill/disable confirmation performs no effects or generated follow-up dialogue.

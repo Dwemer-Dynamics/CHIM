@@ -77,6 +77,9 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
         If target.Activate(player)
             status = "succeeded"
             detail = "Activation accepted; scripted consequences are not inferred."
+        Else
+            status = "failed"
+            detail = "Default activation was refused or blocked; no pickup is confirmed."
         EndIf
     ElseIf effect == "disable" && approved
         target.Disable()

@@ -34,6 +34,7 @@ struct Request
     std::vector<Choice> choices;
     Choice selected{};
     bool hasItem = false;
+    bool pickupIssued = false;
     int quantity = 1;
     int step = -1;
     std::atomic<int> allowedStep{-1};
@@ -196,7 +197,7 @@ void RunStep(const std::shared_ptr<Request> &r)
     const auto &step = r->plan["steps"][r->step];
     const auto effect = step.at("effect").get<std::string>();
     auto actor = target ? target->As<RE::Actor>() : nullptr;
-    bool blocked = !target || target->IsDisabled() || !target->Is3DLoaded() || target->IsDeleted();
+    bool blocked = r->pickupIssued || !target || target->IsDisabled() || !target->Is3DLoaded() || target->IsDeleted();
     RE::TESBoundObject *held = nullptr;
     RE::ExtraDataList *heldExtra = nullptr;
     if (r->hasItem && !r->inventoryMoved &&
@@ -218,6 +219,29 @@ void RunStep(const std::shared_ptr<Request> &r)
     if (effect == "observe")
     {
         Complete(r->id, r->step, "succeeded", "No physical change.");
+        return;
+    }
+    if (effect == "pickup")
+    {
+        auto player = RE::PlayerCharacter::GetSingleton();
+        auto food = target->GetBaseObject()->As<RE::AlchemyItem>();
+        if (!player || !food || !food->IsFood())
+        {
+            Complete(r->id, r->step, "failed", "The target is no longer eligible loose food.");
+            return;
+        }
+        const auto before = player->GetInventoryCounts()[food];
+        const auto worldCount = target->extraList.GetCount();
+        // Use the engine pickup path on the exact reference, retaining engine ownership/crime handling.
+        r->pickupIssued = true;
+        player->PickUpObject(target.get(), 1);
+        const bool moved = target->IsDeleted() || target->IsDisabled() || !target->Is3DLoaded() ||
+                           target->extraList.GetCount() < worldCount;
+        if (player->GetInventoryCounts()[food] == before + 1 && moved)
+            Complete(r->id, r->step, "succeeded", "One target food item entered the player's inventory.");
+        else
+            Complete(r->id, r->step, "unknown",
+                     "Pickup was requested once; inventory and world-reference changes did not confirm it.");
         return;
     }
     if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" || effect == "magic")
@@ -371,7 +395,22 @@ void Complete(const std::string &id, int step, const std::string &status, const 
         auto r = Current();
         if (!CanExecute(id, step) || r->receipts.size() != static_cast<std::size_t>(step))
             return;
-        r->receipts.push_back({{"status", status}, {"detail", detail}});
+        // Papyrus strings can retain interned casing; canonicalize only the bounded wire enum.
+        std::string outcome = status;
+        for (auto &character : outcome)
+            if (character >= 'A' && character <= 'Z')
+                character += 'a' - 'A';
+        bool valid = outcome == "succeeded" || outcome == "failed" || outcome == "skipped" || outcome == "unknown";
+        if (!valid)
+            outcome = "unknown";
+        std::string diagnostic = status.substr(0, 24);
+        for (auto &character : diagnostic)
+            if (character < ' ' || character > '~')
+                character = '?';
+        SKSE::log::info("[INTERACT] Receipt {} step {} raw={} status={} valid={}", id, step, diagnostic, outcome, valid);
+        r->receipts.push_back(
+            {{"status", outcome},
+             {"detail", valid ? detail : "Execution returned an unrecognized outcome; result is uncertain."}});
         RunStep(r);
     });
 }
@@ -560,6 +599,9 @@ void Command(const std::string &command)
             auto inventory = player->GetInventory();
             bool questItem = item && inventory.at(item).second->IsQuestObject();
             r->allowed = json::array({"observe", "activate", "resize", "disable"});
+            auto targetFood = base->As<RE::AlchemyItem>();
+            if (targetFood && targetFood->IsFood())
+                r->allowed.push_back("pickup");
             if (actor)
             {
                 for (auto effect : {"injure", "kill", "push", "combat"})
@@ -710,6 +752,7 @@ void Command(const std::string &command)
                             throw std::runtime_error("Invalid sequence");
                         bool confirm = false;
                         int inventorySteps = 0;
+                        int pickupSteps = 0;
                         for (std::size_t index = 0; index < r->plan["steps"].size(); ++index)
                         {
                             const auto &s = r->plan["steps"][index];
@@ -718,12 +761,15 @@ void Command(const std::string &command)
                                 throw std::runtime_error("Unsupported effect");
                             const float value = s.at("value").get<float>();
                             static const std::map<std::string, std::pair<float, float>> limits = {
-                                {"observe", {0, 0}},    {"give", {1, 100}},    {"store", {1, 100}},
-                                {"consume", {1, 1}},    {"equip", {1, 1}},     {"injure", {1, 100}},
-                                {"kill", {0, 0}},       {"push", {1, 10}},     {"lock", {0, 100}},
-                                {"unlock", {0, 0}},     {"activate", {0, 0}},  {"open", {0, 0}},
-                                {"close", {0, 0}},      {"destroy", {1, 100}}, {"disable", {0, 0}},
-                                {"resize", {0.25f, 2}}, {"magic", {0, 0}},     {"combat", {0, 0}}};
+                                {"pickup", {0, 0}},   {"observe", {0, 0}},    {"give", {1, 100}},
+                                {"store", {1, 100}},  {"consume", {1, 1}},    {"equip", {1, 1}},
+                                {"injure", {1, 100}}, {"kill", {0, 0}},       {"push", {1, 10}},
+                                {"lock", {0, 100}},   {"unlock", {0, 0}},     {"activate", {0, 0}},
+                                {"open", {0, 0}},     {"close", {0, 0}},      {"destroy", {1, 100}},
+                                {"disable", {0, 0}},  {"resize", {0.25f, 2}}, {"magic", {0, 0}},
+                                {"combat", {0, 0}}};
+                            if (effect == "pickup" && ++pickupSteps > 1)
+                                throw std::runtime_error("Repeated pickup");
                             const auto bounds = limits.at(effect);
                             if (!std::isfinite(value) || value < bounds.first || value > bounds.second ||
                                 !s.at("alive").is_boolean())
