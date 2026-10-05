@@ -39,6 +39,19 @@ struct PlayerConversationRoutingContext
     std::string customPlayerMood;
     bool everyoneMode = false;
     bool narratorMode = false;
+    // Voice continuation after the automatic responder decision; 0 keeps the nearest-eligible fallback.
+    RE::FormID automaticResponderFormId = 0;
+    bool automaticDecisionResolved = false;
+};
+
+// Game-thread copy of an automatic fallback candidate that is safe to use off the game thread.
+struct PlayerConversationAutomaticCandidate
+{
+    RE::FormID formId = 0;
+    std::string name;
+    float distance = 0.0f;
+    bool inView = false;
+    bool follower = false;
 };
 
 struct PlayerConversationPresentActor
@@ -56,6 +69,8 @@ struct PlayerConversationRoutingResult
     RE::Actor* responderActor = nullptr;
     std::vector<RE::Actor*> presentPartyActors;
     std::vector<PlayerConversationPresentActor> presentActors;
+    // Filled only for nearest-eligible fallback, nearest first.
+    std::vector<PlayerConversationAutomaticCandidate> automaticCandidates;
     std::string responderName;
     std::vector<std::string> audience;
     std::string reason;
