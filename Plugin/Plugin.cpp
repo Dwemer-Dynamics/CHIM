@@ -7885,7 +7885,12 @@ OnLoadedGame {
 
         // setNewActionModeFromConfig();
 
-        if (GetGameTimeStamp() == 13333334) return;  // ??
+        if (GetGameTimeStamp() == 13333334) {  // ??
+            // New-game start time skips the rest of setup, including the enable_bg pass, so
+            // the chat has nothing to wait for.
+            PrismaUIBridge::SetChatboxBackgroundLifeReady(PlaythroughSession::Context());
+            return;
+        }
         // Queue cleaning
         BackGroundDialogueQueue.clear();
         SPGResponse::getInstance().clearAllQueues();
@@ -8123,6 +8128,9 @@ OnLoadedGame {
             HTTPManager::log(
                 std::format("enable_bg|{}|{}|{}/{:08X}", getCurrentTimeMillis(), GetGameTimeStamp(), name, formId));
         }
+        // The enable_bg requests above are dispatched, not yet saved by the server; the chat
+        // confirms an add from the server's saved status. Ignored if another load began.
+        PrismaUIBridge::SetChatboxBackgroundLifeReady(epoch);
     }).detach();
 
     auto now = std::chrono::high_resolution_clock::now();
@@ -8134,6 +8142,7 @@ OnLoadedGame {
 
 OnLoadingGame {
     PlaythroughSession::BeginLoad();
+    PrismaUIBridge::SetChatboxBackgroundLifeReady();
     logger::info("OnLoadingGame");
     SpatialAwareness::ResetDoorStates();
     SpatialAwareness::InvalidateCache();
@@ -8170,6 +8179,7 @@ OnLoadingGame {
 
 OnNewGame {
     PlaythroughSession::BeginLoad();
+    PrismaUIBridge::SetChatboxBackgroundLifeReady();
     PlaythroughSession::Character();
     PlaythroughSession::Connect([]() {
 
@@ -8260,6 +8270,9 @@ OnNewGame {
     //HTTPManager::log(std::format("newgame|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), playerinfo));
     logger::debug("OnNewGame End");
     //pluginInited = true;
+    // A new game has no saved Background Life NPCs to re-enable, so chat adds open once
+    // this connected new-game setup has run.
+    PrismaUIBridge::SetChatboxBackgroundLifeReady(PlaythroughSession::Context());
 
     }, true);
 }

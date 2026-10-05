@@ -348,10 +348,22 @@
         const game = data.game || {};
         byId('dashboard-game-date').textContent = game.tamrielic_date || 'No game time recorded yet.';
         byId('trigger-hours-input').value = settings.trigger_hours || 24;
+        renderAutoEnrollSettings(settings);
         byId('roster-count').textContent = String(npcs.length);
         setDashboardStatus(npcs.length === 1 ? '1 tracked NPC' : `${npcs.length} tracked NPCs`, false);
         renderMap(data.map || {}, npcs);
         renderNpcCards(npcs);
+    }
+
+    // Older servers omit these settings; keep the controls unavailable rather than guessing.
+    function renderAutoEnrollSettings(settings) {
+        const supported = typeof settings.auto_enroll_enabled === 'boolean';
+        const toggle = byId('auto-enroll-toggle');
+        const threshold = byId('auto-enroll-threshold-input');
+        toggle.disabled = !supported;
+        threshold.disabled = !supported;
+        toggle.checked = supported && settings.auto_enroll_enabled;
+        threshold.value = Number(settings.auto_enroll_threshold) || 200;
     }
 
     function renderMap(map, npcs) {
@@ -1688,20 +1700,33 @@
     byId('refresh-button').addEventListener('click', refreshActivePage);
     byId('show-all-coords-toggle').addEventListener('change', refreshDashboard);
 
-    byId('save-trigger-hours').addEventListener('click', async () => {
+    // Always send the trigger time: older servers save it from every settings request.
+    async function saveDashboardSettings() {
+        const values = {
+            operation: 'save_settings',
+            trigger_hours: byId('trigger-hours-input').value || '24'
+        };
+        if (!byId('auto-enroll-toggle').disabled) {
+            values.auto_enroll_enabled = byId('auto-enroll-toggle').checked ? '1' : '0';
+            values.auto_enroll_threshold = byId('auto-enroll-threshold-input').value || '200';
+        }
         try {
-            const payload = await postForm('/ui/api/background_life_dashboard.php', {
-                operation: 'save_settings',
-                trigger_hours: byId('trigger-hours-input').value || '24'
-            });
-            setDashboardStatus(payload.message || 'Trigger time saved.', false);
+            const payload = await postForm('/ui/api/background_life_dashboard.php', values);
+            if (payload.settings) {
+                byId('trigger-hours-input').value = payload.settings.trigger_hours || 24;
+                renderAutoEnrollSettings(payload.settings);
+            }
+            setDashboardStatus(payload.message || 'Settings saved.', false);
         } catch (error) {
             setDashboardStatus(
-                `Could not save trigger time: ${error.message || error}`,
+                `Could not save settings: ${error.message || error}`,
                 true
             );
         }
-    });
+    }
+
+    byId('save-trigger-hours').addEventListener('click', saveDashboardSettings);
+    byId('auto-enroll-toggle').addEventListener('change', saveDashboardSettings);
 
     byId('update-all-coords').addEventListener('click', async () => {
         const button = byId('update-all-coords');

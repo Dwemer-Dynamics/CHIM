@@ -247,6 +247,7 @@ button:disabled { opacity: 0.45; cursor: default; }
     color: #fff;
     padding: 7px 8px;
 }
+.field-help { margin-top: 5px; color: var(--muted); font-size: .66rem; line-height: 1.35; }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; color: #d5d5d8; font-size: .73rem; }
 input[type="checkbox"] { width: 17px; height: 17px; accent-color: #47a568; }
 

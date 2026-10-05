@@ -3243,6 +3243,41 @@ R"CHIM(
         g_prismaUI->Invoke(g_backgroundLifeView, call.c_str(), nullptr);
     }
 
+    // Shared enrollment boundary for the Background Life page and the chat: updates the
+    // rolemaster faction and sends enable_bg/disable_bg for this exact actor. The server
+    // saves the enrollment from that request. Returns the name sent to the server.
+    static std::string ApplyBackgroundLifeEnrollment(
+        RE::Actor* actor, uint32_t formId, const std::string& fallbackName, bool enabled) {
+        const std::string npcName =
+            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
+                ? actor->GetDisplayFullName()
+                : fallbackName;
+        if (enabled) {
+            actor->AddToFaction(AIAgentRoleMasterFaction, 1);
+        } else {
+            const json command = {
+                {"cmdID", 25},
+                {"targetObjectFormId", formId},
+                {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
+            };
+            ScriptProxyRun(command.dump());
+        }
+
+        HTTPManager::log(std::format(
+            "{}|{}|{}|{}/{:08X}",
+            enabled ? "enable_bg" : "disable_bg",
+            getCurrentTimeMillis(),
+            GetGameTimeStamp(),
+            npcName,
+            formId));
+        logger::info(
+            "[PrismaUIBridge] {} Background Life for {} ({:08X})",
+            enabled ? "Enabled" : "Disabled",
+            npcName,
+            formId);
+        return npcName;
+    }
+
     static bool SetBackgroundLifeEnrollment(bool enabled) {
         const auto target = ResolveBackgroundLifeTarget(CollectBackgroundLifeTargets());
         if (!target.hasTarget || target.formId == 0) {
@@ -3266,32 +3301,7 @@ R"CHIM(
         }
 
         const std::string npcName =
-            actor->GetDisplayFullName() && actor->GetDisplayFullName()[0] != '\0'
-                ? actor->GetDisplayFullName()
-                : target.name;
-        if (enabled) {
-            actor->AddToFaction(AIAgentRoleMasterFaction, 1);
-        } else {
-            const json command = {
-                {"cmdID", 25},
-                {"targetObjectFormId", target.formId},
-                {"akFaction", AIAgentRoleMasterFaction->GetFormID()}
-            };
-            ScriptProxyRun(command.dump());
-        }
-
-        HTTPManager::log(std::format(
-            "{}|{}|{}|{}/{:08X}",
-            enabled ? "enable_bg" : "disable_bg",
-            getCurrentTimeMillis(),
-            GetGameTimeStamp(),
-            npcName,
-            target.formId));
-        logger::info(
-            "[PrismaUIBridge] {} Background Life for {} ({:08X})",
-            enabled ? "Enabled" : "Disabled",
-            npcName,
-            target.formId);
+            ApplyBackgroundLifeEnrollment(actor, target.formId, target.name, enabled);
         RE::DebugNotification(std::format(
             "[CHIM] Background Life {} for {}.",
             enabled ? "enabled" : "disabled",
@@ -7143,6 +7153,45 @@ R"CHIM(
         g_prismaUI->Invoke(g_chatboxView, call.c_str(), nullptr);
     }
 
+    // Playthrough load whose Background Life setup finished. Every load bumps the playthrough
+    // generation, so an earlier load's value never matches and no explicit reset is needed.
+    static std::atomic<std::uint64_t> g_chatboxBackgroundLifeReadyEpoch{0};
+
+    static bool ChatboxBackgroundLifeReady(std::uint64_t loadEpoch) {
+        return loadEpoch == PlaythroughSession::Generation() &&
+            g_chatboxBackgroundLifeReadyEpoch.load() == loadEpoch;
+    }
+
+    // Sends the current state (not a caller's snapshot), so the last publication always wins.
+    static void PublishChatboxBackgroundLifeLoading() {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+            !g_prismaUI->IsValid(g_chatboxView)) {
+            return;
+        }
+        const std::string call = std::format(
+            "window.setChatboxBackgroundLifeLoading && window.setChatboxBackgroundLifeLoading({})",
+            ChatboxBackgroundLifeReady(PlaythroughSession::Generation()) ? "false" : "true");
+        g_prismaUI->Invoke(g_chatboxView, call.c_str(), nullptr);
+    }
+
+    void SetChatboxBackgroundLifeReady(std::uint64_t loadEpoch) {
+        if (loadEpoch == 0) {
+            // Load start runs on the game thread; show Loading… right away.
+            PublishChatboxBackgroundLifeLoading();
+            return;
+        }
+        // Only ever moves forward, so a stalled older load cannot replace a newer ready load.
+        auto current = g_chatboxBackgroundLifeReadyEpoch.load();
+        while (current < loadEpoch &&
+               !g_chatboxBackgroundLifeReadyEpoch.compare_exchange_weak(current, loadEpoch)) {
+        }
+        // Publish on the game thread, which also runs load start, so a late ready cannot
+        // overwrite the Loading… sent for a newer load.
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([]() { PublishChatboxBackgroundLifeLoading(); });
+        }
+    }
+
     static void OnChatboxDomReady(PrismaView view) {
         logger::info("[PrismaUIBridge] Chatbox panel DOM ready");
         g_chatboxDomReady.store(true);
@@ -7164,9 +7213,138 @@ R"CHIM(
         PushSystemLogEntry("info", welcomeMsg, std::string(timeDateString));
         PushCurrentModeToViews();
         PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
+        // Older DLLs never call this, so the chat keeps Add to Background Life disabled.
+        g_prismaUI->Invoke(
+            view,
+            "window.setChatboxBackgroundLifeAvailable && window.setChatboxBackgroundLifeAvailable(true)",
+            nullptr);
+        // Removal is a separate capability so a newer chat never offers Remove BGL to an older DLL.
+        g_prismaUI->Invoke(
+            view,
+            "window.setChatboxBackgroundLifeRemoveAvailable && window.setChatboxBackgroundLifeRemoveAvailable(true)",
+            nullptr);
+        // Also sent when a load starts or finishes, so a view created mid-load still shows Loading….
+        // Repeated on the game thread, which orders it after any load start that raced this callback.
+        PublishChatboxBackgroundLifeLoading();
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([]() { PublishChatboxBackgroundLifeLoading(); });
+        }
         SyncChatboxStatusFromServerAsync();
         FetchAndUpdateChatboxStory(true);
         logger::info("[PrismaUIBridge] Pushed welcome message to chatbox");
+    }
+
+    static void PublishChatboxBackgroundLifeEnrollResult(
+        const std::string& requestId, uint32_t formId, bool enabled, bool accepted,
+        const std::string& name, const std::string& message) {
+        if (!g_prismaUI || !g_chatboxCreated.load() || !g_chatboxDomReady.load() ||
+            !g_prismaUI->IsValid(g_chatboxView)) {
+            return;
+        }
+
+        const json result{
+            {"request_id", requestId},
+            {"form_id", formId},
+            {"enabled", enabled},
+            {"accepted", accepted},
+            {"name", name},
+            {"message", message}
+        };
+        const std::string call =
+            "window.onChatboxBackgroundLifeEnroll && window.onChatboxBackgroundLifeEnroll('" +
+            EscapeForJS(result.dump()) + "')";
+        g_prismaUI->Invoke(g_chatboxView, call.c_str(), nullptr);
+    }
+
+    // Chat Add/Remove BGL for the exact form ID captured when the button was clicked, not the
+    // Background Life page selection. Payload is <request>|<formId>, with |remove appended for
+    // a removal. The actor must still be a visible, non-narrator chat target. Acceptance means
+    // the request was sent; the chat confirms the saved server status before reporting success.
+    // Refused until this load's Background Life setup has finished, checked both when queued
+    // and when the game runs it.
+    static void EnrollChatboxTargetInBackgroundLife(const std::string& payload) {
+        const size_t separator = payload.find('|');
+        const std::string requestId = payload.substr(0, separator);
+        std::string formIdText =
+            separator == std::string::npos ? "" : payload.substr(separator + 1);
+        const size_t actionSeparator = formIdText.find('|');
+        const std::string action =
+            actionSeparator == std::string::npos ? "" : formIdText.substr(actionSeparator + 1);
+        formIdText = formIdText.substr(0, actionSeparator);
+        const bool enabled = action != "remove";
+        const bool validRequestId =
+            !requestId.empty() && requestId.size() <= 16 &&
+            std::all_of(requestId.begin(), requestId.end(), [](unsigned char value) {
+                return std::isdigit(value) != 0;
+            }) &&
+            (action.empty() || !enabled);
+
+        uint32_t formId = 0;
+        bool validFormId = false;
+        try {
+            std::size_t parsedLength = 0;
+            const unsigned long parsed = std::stoul(formIdText, &parsedLength, 10);
+            validFormId = parsedLength == formIdText.size() && parsed != 0 && parsed <= UINT32_MAX;
+            formId = validFormId ? static_cast<uint32_t>(parsed) : 0;
+        } catch (const std::exception&) {
+            validFormId = false;
+        }
+
+        if (!validRequestId) {
+            logger::warn("[Chatbox] Rejected malformed Background Life enrollment command");
+            return;
+        }
+        if (!validFormId) {
+            PublishChatboxBackgroundLifeEnrollResult(requestId, 0, enabled, false, "", "Invalid chat target.");
+            return;
+        }
+
+        static constexpr const char* loadingMessage =
+            "CHIM is still loading this save. Try again when the button no longer shows Loading….";
+        const auto loadEpoch = PlaythroughSession::Generation();
+        if (!ChatboxBackgroundLifeReady(loadEpoch)) {
+            PublishChatboxBackgroundLifeEnrollResult(requestId, formId, enabled, false, "", loadingMessage);
+            return;
+        }
+
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            PublishChatboxBackgroundLifeEnrollResult(
+                requestId, formId, enabled, false, "", "Game task interface is unavailable.");
+            return;
+        }
+
+        tasks->AddTask([requestId, formId, enabled, loadEpoch]() {
+            // A load may have started after this was queued; load start also runs on this thread.
+            if (!ChatboxBackgroundLifeReady(loadEpoch)) {
+                PublishChatboxBackgroundLifeEnrollResult(requestId, formId, enabled, false, "", loadingMessage);
+                return;
+            }
+            // Tag enable_bg/disable_bg with the load that accepted the change, not a later one.
+            const PlaythroughSession::Scope scope(loadEpoch);
+            const auto nearbyAgents = CollectChatboxNearbyAgents();
+            const auto target = std::find_if(nearbyAgents.begin(), nearbyAgents.end(),
+                [formId](const ChatboxNearbyAgent& nearbyAgent) {
+                    return nearbyAgent.formId == formId && !nearbyAgent.isNarrator && nearbyAgent.actor;
+                });
+            auto* form = RE::TESForm::LookupByID(formId);
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            if (target == nearbyAgents.end() || !actor || actor == RE::PlayerCharacter::GetSingleton()) {
+                PublishChatboxBackgroundLifeEnrollResult(
+                    requestId, formId, enabled, false, "", "That NPC is no longer an available chat target.");
+                return;
+            }
+            if (!AIAgentRoleMasterFaction) {
+                logger::error("[Chatbox] Cannot change Background Life NPC - rolemaster faction unavailable");
+                PublishChatboxBackgroundLifeEnrollResult(
+                    requestId, formId, enabled, false, "", "Background Life faction is unavailable.");
+                return;
+            }
+
+            const std::string npcName = ApplyBackgroundLifeEnrollment(actor, formId, target->name, enabled);
+            PublishChatboxBackgroundLifeEnrollResult(requestId, formId, enabled, true, npcName, "");
+            UpdateBackgroundLifeTargetUI();
+        });
     }
 
     static void OnChatboxCommand(const char* argument) {
@@ -7185,6 +7363,8 @@ R"CHIM(
             PublishCaptureBackgroundChatState(CaptureBackgroundChatEnabled);
         } else if (cmd == "capture_background_chat|toggle") {
             QueueChimMcmEvent("set|capture_background_chat", CaptureBackgroundChatEnabled ? 0.0f : 1.0f);
+        } else if (cmd.starts_with("bgl_enroll|")) {
+            EnrollChatboxTargetInBackgroundLife(cmd.substr(11));
         } else if (cmd == "story_refresh") {
             g_lastChatboxStorySync = std::chrono::steady_clock::now();
             FetchAndUpdateChatboxStory(true);
