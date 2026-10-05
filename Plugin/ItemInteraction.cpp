@@ -53,10 +53,14 @@ struct Request
     json allowed;
     json plan;
     json receipts = json::array();
+    bool reactionReleased = false;
+    std::vector<ScriptLine> reactionLines;
+    std::size_t reactionBytes = 0;
 };
 std::shared_ptr<Request> current;
 std::map<std::string, std::shared_ptr<Request>> pendingReactions;
 std::mutex currentMutex;
+thread_local bool releasingReaction = false;
 std::atomic<std::uint64_t> reactionCancellationGeneration{0};
 constexpr RE::FormID powerLocalId = 0x05A0F1;
 
@@ -85,6 +89,7 @@ bool Live(const std::shared_ptr<Request> &r)
     return r && r == Current() && PlaythroughSession::Allowed(r->epoch) && ChimInteraction::Enabled();
 }
 void RunStep(const std::shared_ptr<Request> &r);
+void StartReaction(const std::shared_ptr<Request> &r);
 
 // Detect changes or allocator reuse of an extra-list pointer while the model is resolving.
 std::string Fingerprint(RE::TESBoundObject *object, RE::ExtraDataList *extra)
@@ -157,6 +162,36 @@ json Effects(RE::MagicItem *item)
     return result;
 }
 
+// Start generation independently; the utterance gate holds every reply until narration completes.
+void StartReaction(const std::shared_ptr<Request> &r)
+{
+    SKSE::GetTaskInterface()->AddTask([r] {
+        if (!PlaythroughSession::Allowed(r->epoch) || !ChimInteraction::Enabled() ||
+            r->cancellationGeneration != reactionCancellationGeneration.load() ||
+            r->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration())
+            return;
+        auto ref = r->target.get();
+        auto actor = ref ? ref->As<RE::Actor>() : nullptr;
+        if (!actor || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded())
+            return;
+        const std::string expectedSpeaker = r->snapshot["target"].value("speaker", "");
+        bool exactAgent = false;
+        for (const auto &agent : AIAgentManager::getInstance().getAgents())
+            if (agent && !agent->isNarrator() && agent->getActor() == actor && agent->getActorName() == expectedSpeaker)
+                exactAgent = true;
+        if (!exactAgent)
+        {
+            RE::DebugNotification("[CHIM] NPC response needs this exact actor active in CHIM.");
+            return;
+        }
+        SKSE::log::info("[INTERACT] Reaction prefetch {}", r->id);
+        json context = {{"id", r->id}, {"target_ref", std::format("{:08X}", actor->GetFormID())}};
+        HTTPManager::streamForActor(std::format("chatnf_interact_reaction|{}|{}|{}", getCurrentTimeMillis(),
+                                                GetGameTimeStamp(), context.dump()),
+                                    actor, PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget);
+    });
+}
+
 // Receipts are retriable reports; mutations are never retried by this request.
 void Finish(const std::shared_ptr<Request> &r)
 {
@@ -164,7 +199,7 @@ void Finish(const std::shared_ptr<Request> &r)
         return;
     r->allowedStep = -2;
     PrismaUIBridge::HideItemInteraction();
-    json payload = {{"op", "receipt"}, {"id", r->id}, {"gamets", GetGameTimeStamp()}, {"receipts", r->receipts}};
+    json payload = {{"op", "receipt"}, {"id", r->id}, {"gamets", GetGameTimeStamp()}, {"receipts", r->receipts}, {"defer_audio", true}};
     ThreadPool::getInstance().enqueue("InteractReceipt", [r, payload] {
         auto result = HTTPManager::postGameDataJson("item_interaction.php", payload, 120000);
         if (!result.value("ok", false) && Live(r))
@@ -186,7 +221,30 @@ void Finish(const std::shared_ptr<Request> &r)
                     r->reactionExpires = std::chrono::steady_clock::now() + std::chrono::seconds(120);
                     pendingReactions[line.utteranceId] = r;
                 }
-                SpeakManager::getInstance().insertInQueue(line);
+                if (r->snapshot["target"].value("actor", false))
+                    StartReaction(r);
+                ThreadPool::getInstance().enqueue("InteractNarratorAudio", [r, line] {
+                    auto audio = HTTPManager::postGameDataJson("item_interaction.php",
+                        {{"op", "audio"}, {"id", r->id}}, 120000);
+                    if (!audio.value("ok", false) && PlaythroughSession::Allowed(r->epoch) &&
+                        r->cancellationGeneration == reactionCancellationGeneration.load() &&
+                        r->dialogueGeneration == PrismaUIBridge::GetDialogueStopGeneration())
+                        audio = HTTPManager::postGameDataJson("item_interaction.php",
+                            {{"op", "audio"}, {"id", r->id}}, 120000);
+                    SKSE::GetTaskInterface()->AddTask([r, line, audio] {
+                        if (!PlaythroughSession::Allowed(r->epoch) || !ChimInteraction::Enabled() ||
+                            r->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration() ||
+                            r->cancellationGeneration != reactionCancellationGeneration.load())
+                            return;
+                        if (audio.value("ok", false))
+                            SpeakManager::getInstance().insertInQueue(line);
+                        else
+                        {
+                            NarrationComplete(line.utteranceId, false);
+                            RE::DebugNotification("[CHIM] Effects finished; narration audio could not be prepared.");
+                        }
+                    });
+                });
             }
             else
                 RE::DebugNotification(
@@ -496,46 +554,69 @@ void Complete(const std::string &id, int step, const std::string &status, const 
         RunStep(r);
     });
 }
-// Playback completion, not queue insertion or the generic speech log, releases one exact NPC reaction.
+
+// Return true only for tagged reaction lines handled (held or discarded) by this gate.
+bool HoldReaction(const ScriptLine &line, bool playback, RE::FormID playbackActor)
+{
+    const std::string prefix = "interact-reply-";
+    if (!line.utteranceId.starts_with(prefix))
+        return false;
+    const auto id = line.utteranceId.substr(prefix.size(), 32);
+    std::lock_guard lock(currentMutex);
+    auto found = pendingReactions.find("interact-" + id);
+    if (found == pendingReactions.end())
+        return true;
+    const auto &r = found->second;
+    auto ref = r->target.get();
+    auto actor = ref ? ref->As<RE::Actor>() : nullptr;
+    if (!PlaythroughSession::Allowed(r->epoch) || !ChimInteraction::Enabled() ||
+        r->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration() ||
+        r->cancellationGeneration != reactionCancellationGeneration.load() ||
+        std::chrono::steady_clock::now() >= r->reactionExpires || !actor || actor->IsDead() ||
+        actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded() ||
+        line.actor != r->snapshot["target"].value("speaker", ""))
+    {
+        pendingReactions.erase(found);
+        return true;
+    }
+    if (playback && actor->GetFormID() != playbackActor)
+        return true;
+    bool exactAgent = false;
+    for (const auto &agent : AIAgentManager::getInstance().getAgents())
+        if (agent && !agent->isNarrator() && agent->getActor() == actor && agent->getActorName() == line.actor)
+            exactAgent = true;
+    if (!exactAgent)
+    {
+        pendingReactions.erase(found);
+        return true;
+    }
+    if (r->reactionReleased && (releasingReaction || playback))
+        return false;
+    if (playback)
+        return true;
+    if (r->reactionLines.size() >= 32 || r->reactionBytes + line.subtitle.size() > 32768)
+    {
+        pendingReactions.erase(found);
+        return true;
+    }
+    r->reactionBytes += line.subtitle.size();
+    r->reactionLines.push_back(line);
+    return true;
+}
+
+// Only the completion acknowledgement opens the gate; Tick drains chunks in arrival order.
 void NarrationComplete(const std::string &utteranceId, bool completed)
 {
-    if (!utteranceId.starts_with("interact-"))
+    std::lock_guard lock(currentMutex);
+    auto found = pendingReactions.find(utteranceId);
+    if (found == pendingReactions.end())
         return;
-    std::shared_ptr<Request> r;
-    {
-        std::lock_guard lock(currentMutex);
-        auto found = pendingReactions.find(utteranceId);
-        if (found == pendingReactions.end())
-            return;
-        r = found->second;
-        pendingReactions.erase(found);
-    }
+    SKSE::log::info("[INTERACT] Narration gate {} completed={} held={}", found->second->id, completed,
+                    found->second->reactionLines.size());
     if (!completed)
-        return;
-    SKSE::GetTaskInterface()->AddTask([r] {
-        if (!PlaythroughSession::Allowed(r->epoch) || !ChimInteraction::Enabled() ||
-            r->cancellationGeneration != reactionCancellationGeneration.load() ||
-            r->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration())
-            return;
-        auto ref = r->target.get();
-        auto actor = ref ? ref->As<RE::Actor>() : nullptr;
-        if (!actor || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded())
-            return;
-        const std::string expectedSpeaker = r->snapshot["target"].value("speaker", "");
-        bool exactAgent = false;
-        for (const auto &agent : AIAgentManager::getInstance().getAgents())
-            if (agent && !agent->isNarrator() && agent->getActor() == actor && agent->getActorName() == expectedSpeaker)
-                exactAgent = true;
-        if (!exactAgent)
-        {
-            RE::DebugNotification("[CHIM] NPC response needs this exact actor active in CHIM.");
-            return;
-        }
-        json context = {{"id", r->id}, {"target_ref", std::format("{:08X}", actor->GetFormID())}};
-        HTTPManager::streamForActor(std::format("chatnf_interact_reaction|{}|{}|{}", getCurrentTimeMillis(),
-                                                GetGameTimeStamp(), context.dump()),
-                                    actor, PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget);
-    });
+        pendingReactions.erase(found);
+    else
+        found->second->reactionReleased = true;
 }
 
 void Tick()
@@ -559,6 +640,21 @@ void Tick()
                     ++it;
             }
         }
+        std::vector<ScriptLine> ready;
+        {
+            std::lock_guard lock(currentMutex);
+            for (auto &[id, pending] : pendingReactions)
+                if (pending->reactionReleased)
+                {
+                    ready.insert(ready.end(), pending->reactionLines.begin(), pending->reactionLines.end());
+                    pending->reactionLines.clear();
+                }
+        }
+        // Incoming chunks keep buffering while this ordered batch is inserted without the state lock.
+        releasingReaction = true;
+        for (const auto &line : ready)
+            SpeakManager::getInstance().insertInQueue(line);
+        releasingReaction = false;
         auto r = Current();
         if (!r)
             return;

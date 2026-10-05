@@ -2375,12 +2375,16 @@ void SpeakManager::discardPendingInteraction() {
 }
 
 void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
+    if (ItemInteraction::HoldReaction(scriptLine))
+        return;
     // logger::debug("[SpeakManager] Attempting to acquire mutex for insertInQueue");
     std::lock_guard<std::mutex> lock(mtx);
     AIAgentManager& aiam = AIAgentManager::getInstance();
     // logger::debug("[SpeakManager] Mutex acquired for insertInQueue");
     // Trim whitespace from actor name before queueing
     ScriptLine trimmedLine = scriptLine;
+    if (trimmedLine.utteranceId.starts_with("interact-reply-"))
+        trimmedLine.rechatTargetHint = "explicit_disable_rechat";
     if (!trimmedLine.actor.empty()) {
         trimmedLine.actor.erase(0, trimmedLine.actor.find_first_not_of(" \t\n\r"));
         trimmedLine.actor.erase(trimmedLine.actor.find_last_not_of(" \t\n\r") + 1);
@@ -3202,6 +3206,11 @@ void SpeakManager::process(AIAgent *agent) {
                      tid,agent->getActorName());
         
         ScriptLine scriptLine = getFirstItem();
+        if (ItemInteraction::HoldReaction(scriptLine, true, npc->GetFormID())) {
+            dequeueFirstItem();
+            setProcessing(false);
+            return;
+        }
         if (!scriptLine.directorSceneId.empty() && !DirectorScene::ReadyToSpeak()) {
             setProcessing(false);
             return;
