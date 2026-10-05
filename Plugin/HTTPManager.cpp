@@ -1910,8 +1910,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     static constexpr std::size_t kAutomaticDecisionMaxResponseBytes = 16 * 1024;
     // Farther movement before the decision returns means the player left the conversation.
     static constexpr float kAutomaticDecisionMaxTravelUnits = 2048.0f;
-    // Load whose server has no endpoint (404) or reported no Jev Scene Classifier connector; later voice turns
-    // skip the round trip until the next load. Timeouts, errors and malformed replies are not remembered.
+    // Load whose server has no endpoint (404); later voice turns skip the round trip until the next load. An
+    // unset or disabled Decision Connector (not_configured), timeouts, errors and malformed replies are not
+    // remembered, so a settings change applies to the next voice turn.
     static std::atomic<std::uint64_t> automaticDecisionUnavailableEpoch{0};
 
     static RE::FormID PlayerParentCellId(RE::Actor* player)
@@ -2109,9 +2110,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         chosen = 0;
                         reason = "invalid_response";
                     }
-                    // Only a definite answer disables later requests in this load; any other failure is tried
-                    // again by the next voice turn.
-                    if (status == 404 || reason == "abstain_not_configured") {
+                    // Only a missing endpoint disables later requests in this load; not_configured and any other
+                    // failure are tried again by the next voice turn.
+                    if (status == 404) {
                         automaticDecisionUnavailableEpoch.store(epoch);
                     }
                     finish(chosen, std::move(reason));
