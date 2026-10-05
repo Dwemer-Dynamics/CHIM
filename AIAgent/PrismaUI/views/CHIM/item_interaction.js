@@ -24,6 +24,7 @@ function setBusy(busy) {
         field.disabled = busy;
     });
     element('submit').disabled = busy || element('items').options.length === 0;
+    element('quantity').disabled = busy || element('items').value === '';
     element('interaction').setAttribute('aria-busy', busy ? 'true' : 'false');
 }
 function updateQuantity() {
@@ -31,10 +32,16 @@ function updateQuantity() {
     const option = select.options[select.selectedIndex];
     element('quantity').max = Math.min(100, Number(option ? option.getAttribute('data-count') : 1));
     element('quantity').value = 1;
+    element('quantity').disabled = submitted || !option || option.value === '';
 }
 function filterItems() {
     const term = element('search').value.toLocaleLowerCase();
     element('items').innerHTML = '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No item';
+    none.setAttribute('data-count', 1);
+    element('items').appendChild(none);
     items.filter(item => item.name.toLocaleLowerCase().includes(term)).forEach(item => {
         const option = document.createElement('option');
         option.value = item.key;
@@ -44,7 +51,6 @@ function filterItems() {
     });
     updateQuantity();
     element('submit').disabled = submitted || element('items').options.length === 0;
-    if (!items.length) status('No eligible inventory items.');
 }
 window.setInteraction = data => {
     clearTimeout(acknowledgementTimer);
@@ -78,17 +84,18 @@ function submitInteraction(event) {
     if (submitted) return;
     const select = element('items');
     const option = select.options[select.selectedIndex];
-    const quantity = Number(element('quantity').value);
+    const hasItem = option && option.value !== '';
+    const quantity = hasItem ? Number(element('quantity').value) : 0;
     const intent = element('intent').value.trim();
     if (!option) { status('Choose an inventory item.', 'error'); select.focus(); return; }
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > Math.min(100, Number(option.getAttribute('data-count')))) {
+    if (hasItem && (!Number.isInteger(quantity) || quantity < 1 || quantity > Math.min(100, Number(option.getAttribute('data-count'))))) {
         status('Choose a whole quantity within the available amount.', 'error'); element('quantity').focus(); return;
     }
     if (!intent || intent.length > 1000) {
         status('Describe what you try to do, using up to 1000 characters.', 'error'); element('intent').focus(); return;
     }
     // Prisma menus use explicit click handlers; do not depend on embedded-browser form validation APIs.
-    const payload = {op: 'submit', key: Number(option.value), quantity: quantity, intent: intent};
+    const payload = {op: 'submit', key: hasItem ? Number(option.value) : null, quantity: quantity, intent: intent};
     status('Sending interaction...', 'busy');
     setBusy(true);
     send('input_capture|off');

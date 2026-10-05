@@ -97,7 +97,7 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
-The repeatable **CHIM Interact** lesser power is granted when CHIM connects after a new game or save load. Aim at a loaded actor or object within 512 game units, cast the power, select an exact inventory copy and quantity, and describe the attempt. Prisma UI is required. Quest inventory items can be shown or used without removal; transfer and consumption are excluded. Search filters the entire captured inventory; enchanted or tempered copies show their instance details.
+The repeatable **CHIM Interact** lesser power is granted when CHIM connects after a new game or save load. Aim at a loaded actor or object within 512 game units, cast the power, describe the attempt, and optionally select an exact inventory copy and quantity. **No item** is selected by default, including with an empty inventory; quantity is disabled for itemless actions. Prisma UI is required. Quest inventory items can be shown or used without removal; transfer and consumption are excluded. Search filters the entire captured inventory; enchanted or tempered copies show their instance details.
 
 The paired HerikaServer uses the configured Director connector. It logs an attempt before asking the model, sends relevant item/target/player facts and up to ten recent target events, validates at most five conditional effects, then accepts an execution receipt. The configured Narrator describes confirmed effects after execution. Failed or uncertain steps never use their proposed success narration. Cancellation at a kill/disable confirmation performs no effects or generated follow-up dialogue.
 

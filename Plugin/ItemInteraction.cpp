@@ -33,6 +33,7 @@ struct Request
     RE::ObjectRefHandle target;
     std::vector<Choice> choices;
     Choice selected{};
+    bool hasItem = false;
     int quantity = 1;
     int step = -1;
     std::atomic<int> allowedStep{-1};
@@ -199,7 +200,8 @@ void RunStep(const std::shared_ptr<Request> &r)
                    RE::PlayerCharacter::GetSingleton()->GetPosition().GetDistance(target->GetPosition()) > 512.0f;
     RE::TESBoundObject *held = nullptr;
     RE::ExtraDataList *heldExtra = nullptr;
-    if (!r->inventoryMoved && !InventoryChoice(RE::PlayerCharacter::GetSingleton(), r->selected, 1, held, heldExtra))
+    if (r->hasItem && !r->inventoryMoved &&
+        !InventoryChoice(RE::PlayerCharacter::GetSingleton(), r->selected, 1, held, heldExtra))
         blocked = true;
     for (const auto &dependency : step.at("requires"))
     {
@@ -225,7 +227,7 @@ void RunStep(const std::shared_ptr<Request> &r)
         RE::TESBoundObject *object = nullptr;
         RE::ExtraDataList *extra = nullptr;
         const int count = (effect == "give" || effect == "store") ? static_cast<int>(value) : 1;
-        if (count > r->quantity || !InventoryChoice(player, r->selected, count, object, extra))
+        if (!r->hasItem || count > r->quantity || !InventoryChoice(player, r->selected, count, object, extra))
         {
             Complete(r->id, r->step, "failed", "The exact selected inventory instance is no longer available.");
             return;
@@ -521,17 +523,18 @@ void Command(const std::string &command)
             }
             if (op != "submit" || r->submitted)
                 return;
-            const auto key = input.at("key").get<std::size_t>();
-            if (key >= r->choices.size())
+            r->hasItem = !input.at("key").is_null();
+            const auto key = r->hasItem ? input.at("key").get<std::size_t>() : 0;
+            if (r->hasItem && key >= r->choices.size())
             {
                 ShowInputError("Choose an inventory item before interacting.");
                 return;
             }
-            r->selected = r->choices[key];
-            r->quantity = input.at("quantity").get<int>();
+            r->selected = r->hasItem ? r->choices[key] : Choice{};
+            r->quantity = r->hasItem ? input.at("quantity").get<int>() : 0;
             const auto intent = input.at("intent").get<std::string>();
-            if (r->quantity < 1 || r->quantity > 100 || r->quantity > r->selected.count || intent.empty() ||
-                intent.size() > 4000)
+            if ((r->hasItem && (r->quantity < 1 || r->quantity > 100 || r->quantity > r->selected.count)) ||
+                intent.empty() || intent.size() > 4000)
             {
                 ShowInputError("Enter a description and a whole quantity within the available amount.");
                 return;
@@ -540,7 +543,7 @@ void Command(const std::string &command)
             auto player = RE::PlayerCharacter::GetSingleton();
             RE::TESBoundObject *item = nullptr;
             RE::ExtraDataList *extra = nullptr;
-            if (!player || !target || !InventoryChoice(player, r->selected, r->quantity, item, extra))
+            if (!player || !target || (r->hasItem && !InventoryChoice(player, r->selected, r->quantity, item, extra)))
             {
                 ShowInputError(
                     "The target or selected item has changed. Choose another item, or close and reopen Interact.");
@@ -557,14 +560,16 @@ void Command(const std::string &command)
             }
             auto base = target->GetBaseObject();
             auto inventory = player->GetInventory();
-            bool questItem = inventory.at(item).second->IsQuestObject();
+            bool questItem = item && inventory.at(item).second->IsQuestObject();
             r->allowed = json::array({"observe", "activate", "resize", "disable"});
             if (actor)
             {
-                for (auto effect : {"give", "injure", "kill", "push", "combat"})
+                for (auto effect : {"injure", "kill", "push", "combat"})
                     r->allowed.push_back(effect);
             }
-            if (base->GetFormType() == RE::FormType::Container)
+            if (actor && item)
+                r->allowed.push_back("give");
+            if (item && base->GetFormType() == RE::FormType::Container)
                 r->allowed.push_back("store");
             if (target->GetLock())
                 for (auto effect : {"lock", "unlock"})
@@ -576,13 +581,13 @@ void Command(const std::string &command)
                 r->allowed.push_back("destroy");
             if (!actor && base->GetFormType() == RE::FormType::Misc)
                 r->allowed.push_back("push");
-            auto potion = item->As<RE::AlchemyItem>();
+            auto potion = item ? item->As<RE::AlchemyItem>() : nullptr;
             if (actor && potion && !potion->IsPoison())
                 r->allowed.push_back("consume");
-            if (actor && (item->As<RE::TESObjectWEAP>() || item->As<RE::TESObjectARMO>()))
+            if (actor && item && (item->As<RE::TESObjectWEAP>() || item->As<RE::TESObjectARMO>()))
                 r->allowed.push_back("equip");
             // Scrolls carry authored spells; restrict to the small known vanilla elemental/paralysis family.
-            auto scroll = item->As<RE::ScrollItem>();
+            auto scroll = item ? item->As<RE::ScrollItem>() : nullptr;
             bool supportedMagic = actor && scroll &&
                                   (scroll->GetFormID() == 0x00096598 || scroll->GetFormID() == 0x00096599 ||
                                    scroll->GetFormID() == 0x0009659A);
@@ -609,31 +614,35 @@ void Command(const std::string &command)
                 }
                 r->allowed = filtered;
             }
-            json itemData = {{"name", r->selected.name},
-                             {"type", static_cast<int>(item->GetFormType())},
-                             {"quantity", r->quantity},
-                             {"quest_item", questItem},
-                             {"effects", Effects(potion ? static_cast<RE::MagicItem *>(potion)
-                                                        : static_cast<RE::MagicItem *>(scroll))}};
-            if (auto weapon = item->As<RE::TESObjectWEAP>())
-                itemData["base_damage"] = weapon->GetAttackDamage();
-            RE::EnchantmentItem *enchantment = nullptr;
-            if (auto enchanting = item->As<RE::TESEnchantableForm>())
-                enchantment = enchanting->formEnchanting;
-            if (extra)
+            json itemData = nullptr;
+            if (item)
             {
-                if (auto e = extra->GetByType<RE::ExtraEnchantment>())
-                    enchantment = e->enchantment;
-                if (auto health = extra->GetByType<RE::ExtraHealth>())
-                    itemData["tempering_factor"] = health->health;
-                if (auto charge = extra->GetByType<RE::ExtraCharge>())
-                    itemData["charge"] = charge->charge;
-                itemData["equipped"] =
-                    extra->HasType(RE::ExtraDataType::kWorn) || extra->HasType(RE::ExtraDataType::kWornLeft);
+                itemData = {{"name", r->selected.name},
+                            {"type", static_cast<int>(item->GetFormType())},
+                            {"quantity", r->quantity},
+                            {"quest_item", questItem},
+                            {"effects", Effects(potion ? static_cast<RE::MagicItem *>(potion)
+                                                       : static_cast<RE::MagicItem *>(scroll))}};
+                if (auto weapon = item->As<RE::TESObjectWEAP>())
+                    itemData["base_damage"] = weapon->GetAttackDamage();
+                RE::EnchantmentItem *enchantment = nullptr;
+                if (auto enchanting = item->As<RE::TESEnchantableForm>())
+                    enchantment = enchanting->formEnchanting;
+                if (extra)
+                {
+                    if (auto e = extra->GetByType<RE::ExtraEnchantment>())
+                        enchantment = e->enchantment;
+                    if (auto health = extra->GetByType<RE::ExtraHealth>())
+                        itemData["tempering_factor"] = health->health;
+                    if (auto charge = extra->GetByType<RE::ExtraCharge>())
+                        itemData["charge"] = charge->charge;
+                    itemData["equipped"] =
+                        extra->HasType(RE::ExtraDataType::kWorn) || extra->HasType(RE::ExtraDataType::kWornLeft);
+                }
+                else
+                    itemData["equipped"] = false;
+                itemData["enchantment_effects"] = Effects(enchantment);
             }
-            else
-                itemData["equipped"] = false;
-            itemData["enchantment_effects"] = Effects(enchantment);
             json targetData = {{"name", target->GetName()},
                                {"actor", actor != nullptr},
                                {"scale", target->GetScale()},
