@@ -1,6 +1,7 @@
 #include "ChimInteraction.h"
 #include "SpeakManager.h"
 #include "DirectorScene.h"
+#include "ItemInteraction.h"
 
 #include <Windows.h>
 #include <WinInet.h>
@@ -3939,6 +3940,8 @@ void SpeakManager::process(AIAgent *agent) {
             clearVisibleSubtitles();
             logger::info("Narrator cleanup: restored player name to '{}', subtitles cleared", originalName);
         }
+
+        ItemInteraction::NarrationComplete(scriptLine.utteranceId, hasTalked && (res == 0 || res == 5));
 
         if (hasItems()) {  // More items in queue, so keep processing.
             if (res != 2) {

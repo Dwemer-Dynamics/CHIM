@@ -97,6 +97,10 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
+To eat or drink a world item, aim at a single loose food item or non-poison potion, leave **No item** selected, and describe eating/drinking it. CHIM transfers the actual reference and uses Skyrim's player consumption path, checking transfer and consumption counts. Owned items send the normal theft alarm. World stacks and references with enchantment/poison extras are excluded. Existing inventory-food-to-NPC consumption is unchanged; selecting inventory food does not silently make the player consume it.
+
+For actions on a living NPC active in CHIM, that exact NPC can respond after the Narrator finishes. The reply uses the recorded outcome, including failure or uncertainty. Interrupted narration, cancellation, save/load, CHIM Off or a removed/dead target suppresses the reply. An unmanaged target produces a notice to activate that exact actor in CHIM; another same-name actor is never substituted. Pending replies expire after two minutes.
+
 For loose food such as bread, the Director can request **pickup**: the engine takes one item from the captured world reference into the player inventory. CHIM checks the inventory increase and world-reference change before reporting success. Pickup is issued at most once; later effects on that world target are skipped. Other object categories still use their existing effects.
 
 The repeatable **CHIM Interact** lesser power is granted when CHIM connects after a new game or save load. Aim at a loaded actor or object, cast the power, describe the attempt, and optionally select an exact inventory copy and quantity. **No item** is selected by default, including with an empty inventory; quantity is disabled for itemless actions. Interact does not track distance or impose a range limit; the captured target must remain loaded and valid. Prisma UI is required. Quest inventory items can be shown or used without removal; transfer and consumption are excluded. Search filters the entire captured inventory; enchanted or tempered copies show their instance details.

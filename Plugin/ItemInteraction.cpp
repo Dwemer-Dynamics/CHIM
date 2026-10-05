@@ -30,6 +30,9 @@ struct Request
 {
     std::string id;
     std::uint64_t epoch;
+    std::uint64_t dialogueGeneration = 0;
+    std::uint64_t cancellationGeneration = 0;
+    std::chrono::steady_clock::time_point reactionExpires{};
     RE::ObjectRefHandle target;
     std::vector<Choice> choices;
     Choice selected{};
@@ -52,7 +55,9 @@ struct Request
     json receipts = json::array();
 };
 std::shared_ptr<Request> current;
+std::map<std::string, std::shared_ptr<Request>> pendingReactions;
 std::mutex currentMutex;
+std::atomic<std::uint64_t> reactionCancellationGeneration{0};
 constexpr RE::FormID powerLocalId = 0x05A0F1;
 
 std::string NewRequestId()
@@ -173,6 +178,14 @@ void Finish(const std::shared_ptr<Request> &r)
                 ScriptLine line(n.value("text", ""), "", "", "", NARRATOR_NAME, "", 1.0f, -1, "explicit_disable_rechat",
                                 n.value("utterance_id", ""));
                 line.ttsCacheKey = n.value("tts_cache_key", "");
+                if (r->snapshot["target"].value("actor", false))
+                {
+                    std::lock_guard lock(currentMutex);
+                    if (pendingReactions.size() >= 8)
+                        pendingReactions.erase(pendingReactions.begin());
+                    r->reactionExpires = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+                    pendingReactions[line.utteranceId] = r;
+                }
                 SpeakManager::getInstance().insertInQueue(line);
             }
             else
@@ -395,6 +408,18 @@ void RunStep(const std::shared_ptr<Request> &r)
         }
         return;
     }
+    if (effect == "consume_world")
+    {
+        auto consumable = target->GetBaseObject()->As<RE::AlchemyItem>();
+        if (r->hasItem || !consumable || consumable->IsPoison() || target->extraList.GetCount() != 1 ||
+            target->extraList.HasType(RE::ExtraDataType::kEnchantment) ||
+            target->extraList.HasType(RE::ExtraDataType::kPoison))
+        {
+            Complete(r->id, r->step, "failed", "The world target is no longer one eligible consumable.");
+            return;
+        }
+        r->pickupIssued = true; // Later steps must not act on the reference moved into inventory.
+    }
     auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
     std::string id = r->id, operation = effect;
@@ -445,6 +470,48 @@ void Complete(const std::string &id, int step, const std::string &status, const 
         RunStep(r);
     });
 }
+// Playback completion, not queue insertion or the generic speech log, releases one exact NPC reaction.
+void NarrationComplete(const std::string &utteranceId, bool completed)
+{
+    if (!utteranceId.starts_with("interact-"))
+        return;
+    std::shared_ptr<Request> r;
+    {
+        std::lock_guard lock(currentMutex);
+        auto found = pendingReactions.find(utteranceId);
+        if (found == pendingReactions.end())
+            return;
+        r = found->second;
+        pendingReactions.erase(found);
+    }
+    if (!completed)
+        return;
+    SKSE::GetTaskInterface()->AddTask([r] {
+        if (!PlaythroughSession::Allowed(r->epoch) || !ChimInteraction::Enabled() ||
+            r->cancellationGeneration != reactionCancellationGeneration.load() ||
+            r->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration())
+            return;
+        auto ref = r->target.get();
+        auto actor = ref ? ref->As<RE::Actor>() : nullptr;
+        if (!actor || actor->IsDead() || actor->IsDisabled() || actor->IsDeleted() || !actor->Is3DLoaded())
+            return;
+        const std::string expectedSpeaker = r->snapshot["target"].value("speaker", "");
+        bool exactAgent = false;
+        for (const auto &agent : AIAgentManager::getInstance().getAgents())
+            if (agent && !agent->isNarrator() && agent->getActor() == actor && agent->getActorName() == expectedSpeaker)
+                exactAgent = true;
+        if (!exactAgent)
+        {
+            RE::DebugNotification("[CHIM] NPC response needs this exact actor active in CHIM.");
+            return;
+        }
+        json context = {{"id", r->id}, {"target_ref", std::format("{:08X}", actor->GetFormID())}};
+        HTTPManager::streamForActor(std::format("chatnf_interact_reaction|{}|{}|{}", getCurrentTimeMillis(),
+                                                GetGameTimeStamp(), context.dump()),
+                                    actor, PlayerConversationRoutingPolicy::RequestEligibility::ExplicitTarget);
+    });
+}
+
 void Tick()
 {
     static std::atomic<bool> queued = false;
@@ -452,6 +519,20 @@ void Tick()
         return;
     SKSE::GetTaskInterface()->AddTask([] {
         queued = false;
+        {
+            std::lock_guard lock(currentMutex);
+            for (auto it = pendingReactions.begin(); it != pendingReactions.end();)
+            {
+                const auto &pending = it->second;
+                if (!PlaythroughSession::Allowed(pending->epoch) || !ChimInteraction::Enabled() ||
+                    pending->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration() ||
+                    pending->cancellationGeneration != reactionCancellationGeneration.load() ||
+                    std::chrono::steady_clock::now() >= pending->reactionExpires)
+                    it = pendingReactions.erase(it);
+                else
+                    ++it;
+            }
+        }
         auto r = Current();
         if (!r)
             return;
@@ -498,6 +579,7 @@ void Tick()
 }
 void Cancel()
 {
+    ++reactionCancellationGeneration;
     auto old = Current();
     if (old && old->submitted && old->step < 0 && PlaythroughSession::Allowed(old->epoch))
     {
@@ -508,6 +590,7 @@ void Cancel()
     {
         std::lock_guard lock(currentMutex);
         current.reset();
+        pendingReactions.clear();
     }
     PrismaUIBridge::HideItemInteraction();
 }
@@ -533,6 +616,8 @@ void Open()
     }
     auto r = std::make_shared<Request>();
     r->epoch = PlaythroughSession::Generation();
+    r->dialogueGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+    r->cancellationGeneration = reactionCancellationGeneration.load();
     r->target = target->CreateRefHandle();
     r->id = NewRequestId();
     json items = json::array();
@@ -657,6 +742,10 @@ void Command(const std::string &command)
             auto targetFood = base->As<RE::AlchemyItem>();
             if (targetFood && targetFood->IsFood())
                 r->allowed.push_back("pickup");
+            if (!item && targetFood && !targetFood->IsPoison() && target->extraList.GetCount() == 1 &&
+                !target->extraList.HasType(RE::ExtraDataType::kEnchantment) &&
+                !target->extraList.HasType(RE::ExtraDataType::kPoison))
+                r->allowed.push_back("consume_world");
             if (actor)
             {
                 for (auto effect : {"injure", "kill", "push", "combat"})
@@ -742,8 +831,18 @@ void Command(const std::string &command)
                                {"actor", actor != nullptr},
                                {"scale", target->GetScale()},
                                {"awareness", "unknown"}};
+            targetData["ref_id"] = std::format("{:08X}", target->GetFormID());
+            targetData["speaker"] = "";
+            if (targetFood)
+                targetData["consumable_effects"] = Effects(targetFood);
             if (actor)
             {
+                for (const auto &agent : AIAgentManager::getInstance().getAgents())
+                    if (agent && !agent->isNarrator() && agent->getActor() == actor)
+                    {
+                        targetData["speaker"] = agent->getActorName();
+                        break;
+                    }
                 targetData["health"] = targetStats->GetActorValue(RE::ActorValue::kHealth);
                 targetData["dead"] = actor->IsDead();
                 targetData["combat"] = actor->IsInCombat();
@@ -816,14 +915,14 @@ void Command(const std::string &command)
                                 throw std::runtime_error("Unsupported effect");
                             const float value = s.at("value").get<float>();
                             static const std::map<std::string, std::pair<float, float>> limits = {
-                                {"pickup", {0, 0}},   {"observe", {0, 0}},    {"give", {1, 100}},
-                                {"store", {1, 100}},  {"consume", {1, 1}},    {"equip", {1, 1}},
-                                {"injure", {1, 100}}, {"kill", {0, 0}},       {"push", {1, 10}},
-                                {"lock", {0, 100}},   {"unlock", {0, 0}},     {"activate", {0, 0}},
-                                {"open", {0, 0}},     {"close", {0, 0}},      {"destroy", {1, 100}},
-                                {"disable", {0, 0}},  {"resize", {0.25f, 2}}, {"magic", {0, 0}},
-                                {"combat", {0, 0}}};
-                            if (effect == "pickup" && ++pickupSteps > 1)
+                                {"consume_world", {0, 0}}, {"pickup", {0, 0}},   {"observe", {0, 0}},
+                                {"give", {1, 100}},        {"store", {1, 100}},  {"consume", {1, 1}},
+                                {"equip", {1, 1}},         {"injure", {1, 100}}, {"kill", {0, 0}},
+                                {"push", {1, 10}},         {"lock", {0, 100}},   {"unlock", {0, 0}},
+                                {"activate", {0, 0}},      {"open", {0, 0}},     {"close", {0, 0}},
+                                {"destroy", {1, 100}},     {"disable", {0, 0}},  {"resize", {0.25f, 2}},
+                                {"magic", {0, 0}},         {"combat", {0, 0}}};
+                            if ((effect == "pickup" || effect == "consume_world") && ++pickupSteps > 1)
                                 throw std::runtime_error("Repeated pickup");
                             const auto bounds = limits.at(effect);
                             if (!std::isfinite(value) || value < bounds.first || value > bounds.second ||

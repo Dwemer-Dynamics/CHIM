@@ -20,7 +20,45 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
     Actor victim = target as Actor
     String status = "unknown"
     String detail = "Operation issued; its physical result is not verified."
-    If effect == "injure" && victim && !victim.IsDead()
+    If effect == "consume_world"
+        Potion food = target.GetBaseObject() as Potion
+        If !food || food.IsPoison()
+            Complete(requestId, step, "failed", "The target is not edible food or a drinkable potion.")
+            Return
+        EndIf
+        Int heldBefore = player.GetItemCount(food)
+        If target.IsOffLimits()
+            target.SendStealAlarm(player)
+        EndIf
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        ; Passing the actual reference transfers it; passing its base form would create a copy.
+        player.AddItem(target, 1, True)
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        If player.GetItemCount(food) != heldBefore + 1 || (!target.IsDeleted() && !target.IsDisabled() && target.Is3DLoaded())
+            Complete(requestId, step, "unknown", "World item transfer was requested; both inventory and reference changes were not confirmed.")
+            Return
+        EndIf
+        ; Skyrim's standard player equip path consumes food/potions and applies their authored effects.
+        player.EquipItem(food, False, True)
+        Int consumeChecks = 0
+        While CanExecute(requestId, step) && player.GetItemCount(food) == heldBefore + 1 && consumeChecks < 10
+            Utility.Wait(0.1)
+            consumeChecks += 1
+        EndWhile
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        If player.GetItemCount(food) == heldBefore
+            status = "succeeded"
+            detail = "World consumable transferred and player consumption confirmed by inventory decrease."
+        Else
+            detail = "World item transferred to the player, but consumption could not be confirmed."
+        EndIf
+    ElseIf effect == "injure" && victim && !victim.IsDead()
         Float before = victim.GetActorValue("Health")
         victim.DamageActorValue("Health", value)
         If victim.GetActorValue("Health") < before
