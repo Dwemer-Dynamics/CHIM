@@ -5,10 +5,18 @@ Bool Function CanExecute(String requestId, Int step) Global Native
 Function Complete(String requestId, Int step, String status, String detail) Global Native
 
 Function Execute(String requestId, Int step, ObjectReference target, String effect, Float value, Bool approved, Scroll sourceSpell = None) Global
-    If !CanExecute(requestId, step) || !target
+    If !CanExecute(requestId, step)
+        Return
+    EndIf
+    If !target || target.IsDeleted() || target.IsDisabled() || !target.Is3DLoaded()
+        Complete(requestId, step, "skipped", "The captured target is no longer available.")
         Return
     EndIf
     Actor player = Game.GetPlayer()
+    If !player
+        Complete(requestId, step, "skipped", "The player is unavailable.")
+        Return
+    EndIf
     Actor victim = target as Actor
     String status = "unknown"
     String detail = "Operation issued; its physical result is not verified."
@@ -49,7 +57,7 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
         If effect == "lock"
             target.SetLockLevel(value as Int)
             target.Lock(True)
-            If target.IsLocked()
+            If target.IsLocked() && target.GetLockLevel() == (value as Int)
                 status = "succeeded"
             EndIf
         Else
@@ -129,9 +137,19 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
         EndIf
     ElseIf effect == "combat" && victim && !victim.IsDead()
         victim.StartCombat(player)
-        If victim.IsInCombat()
+        Int combatChecks = 0
+        While CanExecute(requestId, step) && victim.GetCombatTarget() != player && combatChecks < 10
+            Utility.Wait(0.1)
+            combatChecks += 1
+        EndWhile
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        If victim.IsInCombat() && victim.GetCombatTarget() == player
             status = "succeeded"
-            detail = "Target entered combat."
+            detail = "Target entered combat with the player."
+        Else
+            detail = "Combat with the player could not be confirmed."
         EndIf
     Else
         status = "failed"

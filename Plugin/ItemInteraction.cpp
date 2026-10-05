@@ -240,6 +240,9 @@ void RunStep(const std::shared_ptr<Request> &r)
         r->pickupVerifyUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         // Use the engine pickup path on the exact reference, retaining engine ownership/crime handling.
         r->pickupIssued = true;
+        SKSE::log::info("[INTERACT] Pickup {} ref={:08X} base={:08X} inventoryBefore={} worldBefore={} offLimits={}",
+                        r->id, target->GetFormID(), food->GetFormID(), r->pickupInventoryBefore, r->pickupWorldBefore,
+                        target->IsOffLimits());
         player->PickUpObject(target.get(), 1);
         // Tick observes completion without ever repeating the mutation.
         return;
@@ -347,18 +350,45 @@ void RunStep(const std::shared_ptr<Request> &r)
         if (effect == "consume")
         {
             auto potion = object->As<RE::AlchemyItem>();
-            bool consumed = potion && actor->DrinkPotion(potion, transferred);
-            Complete(r->id, r->step, consumed ? "succeeded" : "failed",
-                     consumed ? "Item transferred and its real potion or food effects consumed."
-                              : "Item transferred but consumption failed.");
+            const auto beforeConsumption = actor->GetInventoryCounts()[object];
+            bool accepted = potion && actor->DrinkPotion(potion, transferred);
+            const auto afterConsumption = actor->GetInventoryCounts()[object];
+            bool consumed = accepted && afterConsumption == beforeConsumption - 1;
+            Complete(r->id, r->step, consumed ? "succeeded" : "unknown",
+                     consumed ? "Item transferred and consumption confirmed by inventory decrease."
+                              : "Item transferred but consumption could not be confirmed.");
         }
         else
         {
+            if (!transferred && beforeTarget != 0)
+            {
+                Complete(r->id, r->step, "unknown",
+                         "Item transferred, but existing copies make exact equipment verification ambiguous.");
+                return;
+            }
+            const auto expectedFingerprint = transferred ? Fingerprint(object, transferred) : std::string{};
             RE::ActorEquipManager::GetSingleton()->EquipObject(actor, object, transferred, 1, nullptr, false, false,
                                                                true, true);
-            bool equipped = actor->GetEquippedObject(false) == object || actor->GetEquippedObject(true) == object;
-            if (object->As<RE::TESObjectARMO>())
-                equipped = entry != targetInventory.end() && entry->second.second->IsWorn();
+            // Re-read extras: a matching base form already equipped is not proof this copy was equipped.
+            bool equipped = false;
+            auto afterInventory = actor->GetInventory();
+            auto afterEntry = afterInventory.find(object);
+            if (afterEntry != afterInventory.end() && afterEntry->second.second &&
+                afterEntry->second.second->extraLists)
+            {
+                for (auto list : *afterEntry->second.second->extraLists)
+                {
+                    if (!list ||
+                        (!list->HasType(RE::ExtraDataType::kWorn) && !list->HasType(RE::ExtraDataType::kWornLeft)))
+                        continue;
+                    if (transferred)
+                        equipped = list == transferred && Fingerprint(object, list) == expectedFingerprint;
+                    else
+                        equipped = beforeTarget == 0;
+                    if (equipped)
+                        break;
+                }
+            }
             Complete(r->id, r->step, equipped ? "succeeded" : "unknown",
                      equipped ? "Item transferred and equipped."
                               : "Item transferred; equipment state could not be confirmed.");
@@ -440,6 +470,12 @@ void Tick()
             const bool acquired = player && food && player->GetInventoryCounts()[food] == r->pickupInventoryBefore + 1;
             if ((acquired && moved) || std::chrono::steady_clock::now() >= r->pickupVerifyUntil)
             {
+                SKSE::log::info("[INTERACT] Pickup result {} inventoryBefore={} inventoryAfter={} worldBefore={} "
+                                "worldAfter={} refPresent={} deleted={} disabled={} loaded={} acquired={} moved={}",
+                                r->id, r->pickupInventoryBefore,
+                                player && food ? player->GetInventoryCounts()[food] : -1, r->pickupWorldBefore,
+                                target ? target->extraList.GetCount() : -1, bool(target), target && target->IsDeleted(),
+                                target && target->IsDisabled(), target && target->Is3DLoaded(), acquired, moved);
                 r->pickupForm = 0;
                 Complete(r->id, r->step, acquired && moved ? "succeeded" : "unknown",
                          acquired && moved
