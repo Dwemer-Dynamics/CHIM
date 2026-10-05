@@ -35,6 +35,10 @@ struct Request
     Choice selected{};
     bool hasItem = false;
     bool pickupIssued = false;
+    RE::FormID pickupForm = 0;
+    int pickupInventoryBefore = 0;
+    int pickupWorldBefore = 0;
+    std::chrono::steady_clock::time_point pickupVerifyUntil{};
     int quantity = 1;
     int step = -1;
     std::atomic<int> allowedStep{-1};
@@ -230,18 +234,14 @@ void RunStep(const std::shared_ptr<Request> &r)
             Complete(r->id, r->step, "failed", "The target is no longer eligible loose food.");
             return;
         }
-        const auto before = player->GetInventoryCounts()[food];
-        const auto worldCount = target->extraList.GetCount();
+        r->pickupInventoryBefore = player->GetInventoryCounts()[food];
+        r->pickupWorldBefore = target->extraList.GetCount();
+        r->pickupForm = food->GetFormID();
+        r->pickupVerifyUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         // Use the engine pickup path on the exact reference, retaining engine ownership/crime handling.
         r->pickupIssued = true;
         player->PickUpObject(target.get(), 1);
-        const bool moved = target->IsDeleted() || target->IsDisabled() || !target->Is3DLoaded() ||
-                           target->extraList.GetCount() < worldCount;
-        if (player->GetInventoryCounts()[food] == before + 1 && moved)
-            Complete(r->id, r->step, "succeeded", "One target food item entered the player's inventory.");
-        else
-            Complete(r->id, r->step, "unknown",
-                     "Pickup was requested once; inventory and world-reference changes did not confirm it.");
+        // Tick observes completion without ever repeating the mutation.
         return;
     }
     if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" || effect == "magic")
@@ -407,7 +407,8 @@ void Complete(const std::string &id, int step, const std::string &status, const 
         for (auto &character : diagnostic)
             if (character < ' ' || character > '~')
                 character = '?';
-        SKSE::log::info("[INTERACT] Receipt {} step {} raw={} status={} valid={}", id, step, diagnostic, outcome, valid);
+        SKSE::log::info("[INTERACT] Receipt {} step {} raw={} status={} valid={}", id, step, diagnostic, outcome,
+                        valid);
         r->receipts.push_back(
             {{"status", outcome},
              {"detail", valid ? detail : "Execution returned an unrecognized outcome; result is uncertain."}});
@@ -427,6 +428,24 @@ void Tick()
         if (!Live(r))
         {
             Cancel();
+            return;
+        }
+        if (r->pickupForm && CanExecute(r->id, r->step))
+        {
+            auto player = RE::PlayerCharacter::GetSingleton();
+            auto food = RE::TESForm::LookupByID<RE::AlchemyItem>(r->pickupForm);
+            auto target = r->target.get();
+            const bool moved = !target || target->IsDeleted() || target->IsDisabled() || !target->Is3DLoaded() ||
+                               target->extraList.GetCount() < r->pickupWorldBefore;
+            const bool acquired = player && food && player->GetInventoryCounts()[food] == r->pickupInventoryBefore + 1;
+            if ((acquired && moved) || std::chrono::steady_clock::now() >= r->pickupVerifyUntil)
+            {
+                r->pickupForm = 0;
+                Complete(r->id, r->step, acquired && moved ? "succeeded" : "unknown",
+                         acquired && moved
+                             ? "One target food item entered the player's inventory."
+                             : "Pickup was requested once; inventory and world-reference changes did not confirm it.");
+            }
             return;
         }
         if (r->step >= 0 && r->step < static_cast<int>(r->plan["steps"].size()) &&
