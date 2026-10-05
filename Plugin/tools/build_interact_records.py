@@ -72,8 +72,8 @@ else:
             # HEDR is the first subrecord in this maintained asset.
             assert block[24:28] == b'HEDR'
             count, next_id = struct.unpack_from('<II', block, 34)
-            assert next_id == 0x5A0F1, 'ESP allocation changed; rebase the authoring IDs'
-            struct.pack_into('<II', block, 34, count+2, 0x5A0F3)
+            # Preserve stable Interact IDs after rebases; never move the upstream allocation counter backwards.
+            struct.pack_into('<II', block, 34, count+2, max(next_id, (EFFECT & 0xFFFFFF)+1))
         elif tag == b'GRUP' and bytes(block[8:12]) in additions and struct.unpack_from('<I', block, 12)[0] == 0:
             block += additions.pop(bytes(block[8:12]))
             struct.pack_into('<I', block, 4, len(block))

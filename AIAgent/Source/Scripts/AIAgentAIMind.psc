@@ -4829,3 +4829,9 @@ int Function Sandbox(Actor npc,String taskid, ObjectReference nearHere = None) g
 	;AIAgentFunctions.logMessageForActor(npc.GetDisplayName()+" talks to "+(Game.GetPlayer().GetDisplayName())+" about the topic he/she knows","instruction",npc.GetDisplayName())
 endFunction
 
+function WaitLaunch() global
+	Debug.Trace("[CHIM] Simulating wait key press");
+	int waitKey=Input.getMappedKey("Wait")
+	Input.TapKey(waitKey)
+
+endfunction

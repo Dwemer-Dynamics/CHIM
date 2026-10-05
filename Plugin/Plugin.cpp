@@ -1666,6 +1666,7 @@ void MonitorAllSubtitlesForChatbox() {
     
     for (auto& s : sm->subtitles) {
         if (!s.speaker.get()) continue;
+        if (!s.speaker.get().get()) continue;
         RE::Actor* actor = s.speaker.get().get()->As<RE::Actor>();
         if (!actor) continue;
         
