@@ -540,13 +540,21 @@ void Command(const std::string &command)
             auto player = RE::PlayerCharacter::GetSingleton();
             RE::TESBoundObject *item = nullptr;
             RE::ExtraDataList *extra = nullptr;
-            if (!target || !InventoryChoice(player, r->selected, r->quantity, item, extra))
+            if (!player || !target || !InventoryChoice(player, r->selected, r->quantity, item, extra))
             {
                 ShowInputError(
                     "The target or selected item has changed. Choose another item, or close and reopen Interact.");
                 return;
             }
             auto actor = target->As<RE::Actor>();
+            // Actor's inherited subobjects move between Skyrim runtimes; use the runtime-aware accessors.
+            auto playerStats = player->AsActorValueOwner();
+            auto targetStats = actor ? actor->AsActorValueOwner() : nullptr;
+            if (!playerStats || (actor && !targetStats))
+            {
+                ShowInputError("Player or target statistics are unavailable. Close and reopen Interact.");
+                return;
+            }
             auto base = target->GetBaseObject();
             auto inventory = player->GetInventory();
             bool questItem = inventory.at(item).second->IsQuestObject();
@@ -633,17 +641,17 @@ void Command(const std::string &command)
                                {"awareness", "unknown"}};
             if (actor)
             {
-                targetData["health"] = actor->GetActorValue(RE::ActorValue::kHealth);
+                targetData["health"] = targetStats->GetActorValue(RE::ActorValue::kHealth);
                 targetData["dead"] = actor->IsDead();
                 targetData["combat"] = actor->IsInCombat();
                 targetData["essential"] = actor->IsEssential();
-                targetData["max_health"] = actor->GetPermanentActorValue(RE::ActorValue::kHealth);
+                targetData["max_health"] = targetStats->GetPermanentActorValue(RE::ActorValue::kHealth);
                 targetData["race"] = actor->GetRace() ? actor->GetRace()->GetName() : "unknown";
-                targetData["armor_rating"] = actor->GetActorValue(RE::ActorValue::kDamageResist);
-                targetData["magic_resistance"] = actor->GetActorValue(RE::ActorValue::kResistMagic);
-                targetData["fire_resistance"] = actor->GetActorValue(RE::ActorValue::kResistFire);
-                targetData["frost_resistance"] = actor->GetActorValue(RE::ActorValue::kResistFrost);
-                targetData["shock_resistance"] = actor->GetActorValue(RE::ActorValue::kResistShock);
+                targetData["armor_rating"] = targetStats->GetActorValue(RE::ActorValue::kDamageResist);
+                targetData["magic_resistance"] = targetStats->GetActorValue(RE::ActorValue::kResistMagic);
+                targetData["fire_resistance"] = targetStats->GetActorValue(RE::ActorValue::kResistFire);
+                targetData["frost_resistance"] = targetStats->GetActorValue(RE::ActorValue::kResistFrost);
+                targetData["shock_resistance"] = targetStats->GetActorValue(RE::ActorValue::kResistShock);
                 targetData["protected"] = actor->GetActorBase()->IsProtected();
                 targetData["unique"] = actor->GetActorBase()->IsUnique();
                 auto weapon = actor->GetEquippedObject(false);
@@ -661,9 +669,9 @@ void Command(const std::string &command)
                 {"item", itemData},
                 {"target", targetData},
                 {"player",
-                 {{"health", player->GetActorValue(RE::ActorValue::kHealth)},
-                  {"stamina", player->GetActorValue(RE::ActorValue::kStamina)},
-                  {"magicka", player->GetActorValue(RE::ActorValue::kMagicka)},
+                 {{"health", playerStats->GetActorValue(RE::ActorValue::kHealth)},
+                  {"stamina", playerStats->GetActorValue(RE::ActorValue::kStamina)},
+                  {"magicka", playerStats->GetActorValue(RE::ActorValue::kMagicka)},
                   {"combat", player->IsInCombat()},
                   {"sneaking", player->IsSneaking()}}},
                 {"location", player->GetCurrentLocation() ? player->GetCurrentLocation()->GetName() : "unknown"}};
