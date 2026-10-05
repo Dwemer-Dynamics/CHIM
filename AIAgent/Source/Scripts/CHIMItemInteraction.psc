@@ -20,7 +20,31 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
     Actor victim = target as Actor
     String status = "unknown"
     String detail = "Operation issued; its physical result is not verified."
-    If effect == "consume_world"
+    If effect == "pickup"
+        Form item = target.GetBaseObject()
+        Int countBefore = player.GetItemCount(item)
+        If target.IsOffLimits()
+            target.SendStealAlarm(player)
+        EndIf
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        player.AddItem(target, 1, True)
+        Int pickupChecks = 0
+        While CanExecute(requestId, step) && player.GetItemCount(item) == countBefore && pickupChecks < 10
+            Utility.Wait(0.1)
+            pickupChecks += 1
+        EndWhile
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        If player.GetItemCount(item) == countBefore + 1 && (target.IsDeleted() || target.IsDisabled() || !target.Is3DLoaded())
+            status = "succeeded"
+            detail = "The actual world item transferred to the player; inventory and reference changes confirmed."
+        Else
+            detail = "World item transfer requested once; inventory and reference changes did not confirm pickup."
+        EndIf
+    ElseIf effect == "consume_world"
         Potion food = target.GetBaseObject() as Potion
         If !food || food.IsPoison()
             Complete(requestId, step, "failed", "The target is not edible food or a drinkable potion.")
@@ -160,14 +184,29 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
             detail = "Impulse requested; displacement is not confirmed."
         EndIf
     ElseIf effect == "magic" && sourceSpell && victim
-        Float oldHealth = victim.GetActorValue("Health")
+        String statistic = ""
+        If Math.Abs(value) == 24
+            statistic = "Health"
+        ElseIf Math.Abs(value) == 25
+            statistic = "Magicka"
+        ElseIf Math.Abs(value) == 26
+            statistic = "Stamina"
+        EndIf
+        Float oldValue = 0.0
+        If statistic != ""
+            oldValue = victim.GetActorValue(statistic)
+        EndIf
         Bool hadEffect = victim.HasMagicEffect(sourceSpell.GetNthEffectMagicEffect(0))
         sourceSpell.Cast(player, target)
         Utility.Wait(1.0)
         If !CanExecute(requestId, step)
             Return
         EndIf
-        If victim.GetActorValue("Health") < oldHealth || (!hadEffect && victim.HasMagicEffect(sourceSpell.GetNthEffectMagicEffect(0)))
+        Bool statisticChanged = False
+        If statistic != ""
+            statisticChanged = (value < 0 && victim.GetActorValue(statistic) < oldValue) || (value > 0 && victim.GetActorValue(statistic) > oldValue)
+        EndIf
+        If statisticChanged || (!hadEffect && victim.HasMagicEffect(sourceSpell.GetNthEffectMagicEffect(0)))
             status = "succeeded"
             detail = "The selected scroll was consumed and its effect was observed on the target."
         Else
@@ -194,4 +233,21 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
         detail = "Effect is not applicable."
     EndIf
     Complete(requestId, step, status, detail)
+EndFunction
+
+; Poll only the consequence of the already-consumed item, never repeat consumption.
+Function VerifyRestoration(String requestId, Int step, Actor target, String actorValue, Float previous) Global
+    Int checks = 0
+    While CanExecute(requestId, step) && target && target.GetActorValue(actorValue) <= previous && checks < 10
+        Utility.Wait(0.1)
+        checks += 1
+    EndWhile
+    If !CanExecute(requestId, step)
+        Return
+    EndIf
+    If target && !target.IsDead() && target.GetActorValue(actorValue) > previous
+        Complete(requestId, step, "succeeded", "Item transferred, consumed, and the requested statistic increased.")
+    Else
+        Complete(requestId, step, "unknown", "Item transferred and consumed; the requested statistic increase was not confirmed.")
+    EndIf
 EndFunction

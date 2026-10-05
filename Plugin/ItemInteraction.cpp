@@ -13,6 +13,10 @@
 #include <random>
 #include <sstream>
 
+#ifdef GetObject
+#undef GetObject
+#endif
+
 namespace ItemInteraction
 {
 namespace
@@ -36,12 +40,9 @@ struct Request
     RE::ObjectRefHandle target;
     std::vector<Choice> choices;
     Choice selected{};
+    std::map<int, Choice> equipment;
     bool hasItem = false;
     bool pickupIssued = false;
-    RE::FormID pickupForm = 0;
-    int pickupInventoryBefore = 0;
-    int pickupWorldBefore = 0;
-    std::chrono::steady_clock::time_point pickupVerifyUntil{};
     int quantity = 1;
     int step = -1;
     std::atomic<int> allowedStep{-1};
@@ -88,6 +89,65 @@ bool Live(const std::shared_ptr<Request> &r)
 {
     return r && r == Current() && PlaythroughSession::Allowed(r->epoch) && ChimInteraction::Enabled();
 }
+RE::ActorValue RestorationValue(const std::string &effect)
+{
+    if (effect == "heal") return RE::ActorValue::kHealth;
+    if (effect == "restore_stamina") return RE::ActorValue::kStamina;
+    if (effect == "restore_magicka") return RE::ActorValue::kMagicka;
+    return RE::ActorValue::kNone;
+}
+
+// Restoration consumes the item's real authored effect; never add an independent actor-value adjustment.
+bool Restores(RE::AlchemyItem *potion, RE::ActorValue value)
+{
+    if (!potion || potion->IsPoison() || value == RE::ActorValue::kNone) return false;
+    for (auto effect : potion->effects)
+        if (effect && effect->baseEffect && !effect->baseEffect->IsDetrimental() &&
+            effect->baseEffect->GetArchetype() == RE::EffectArchetypes::ArchetypeID::kValueModifier &&
+            effect->baseEffect->data.primaryAV == value && effect->effectItem.magnitude > 0 &&
+            effect->effectItem.duration == 0 && !effect->conditions.head && !effect->baseEffect->conditions.head)
+            return true;
+    return false;
+}
+
+// Single-target, single-effect authored scroll families with observable postconditions only.
+bool SupportedScroll(RE::ScrollItem *scroll)
+{
+    if (!scroll || scroll->effects.size() != 1 || scroll->GetDelivery() == RE::MagicSystem::Delivery::kSelf ||
+        scroll->GetDelivery() == RE::MagicSystem::Delivery::kTargetLocation) return false;
+    auto effect = scroll->effects[0];
+    if (!effect || !effect->baseEffect || effect->effectItem.area || effect->conditions.head ||
+        effect->baseEffect->conditions.head || effect->baseEffect->data.explosion) return false;
+    auto base = effect->baseEffect;
+    auto archetype = base->GetArchetype();
+    if (archetype == RE::EffectArchetypes::ArchetypeID::kParalysis ||
+        archetype == RE::EffectArchetypes::ArchetypeID::kCalm ||
+        archetype == RE::EffectArchetypes::ArchetypeID::kDemoralize ||
+        archetype == RE::EffectArchetypes::ArchetypeID::kFrenzy) return true;
+    if (archetype != RE::EffectArchetypes::ArchetypeID::kValueModifier &&
+        archetype != RE::EffectArchetypes::ArchetypeID::kDualValueModifier) return false;
+    auto value = base->data.primaryAV;
+    return value == RE::ActorValue::kHealth || value == RE::ActorValue::kStamina || value == RE::ActorValue::kMagicka;
+}
+
+// Use the same conservative world-item eligibility at snapshot and execution time.
+bool CanPickUp(RE::TESObjectREFR *target)
+{
+    if (!target || target->HasQuestObject() || target->extraList.GetCount() != 1)
+        return false;
+    auto base = target->GetBaseObject();
+    if (!base || !base->GetPlayable())
+        return false;
+    switch (base->GetFormType())
+    {
+    case RE::FormType::Weapon: case RE::FormType::Armor: case RE::FormType::AlchemyItem:
+    case RE::FormType::Ingredient: case RE::FormType::Misc: case RE::FormType::Book:
+    case RE::FormType::Scroll: case RE::FormType::KeyMaster: case RE::FormType::SoulGem:
+        return true;
+    default: return false;
+    }
+}
+
 void RunStep(const std::shared_ptr<Request> &r);
 void StartReaction(const std::shared_ptr<Request> &r);
 
@@ -296,43 +356,126 @@ void RunStep(const std::shared_ptr<Request> &r)
         Complete(r->id, r->step, "succeeded", "No physical change.");
         return;
     }
-    if (effect == "pickup")
+    if (effect == "disarm" || effect == "unequip")
     {
-        auto player = RE::PlayerCharacter::GetSingleton();
-        auto food = target->GetBaseObject()->As<RE::AlchemyItem>();
-        if (!player || !food || !food->IsFood())
+        const int slot = static_cast<int>(value);
+        auto captured = r->equipment.find(slot);
+        RE::TESBoundObject *object = nullptr;
+        RE::ExtraDataList *extra = nullptr;
+        if (!actor || actor->IsDead() || captured == r->equipment.end() ||
+            (effect == "disarm") != (slot < 2) || !InventoryChoice(actor, captured->second, 1, object, extra) ||
+            !extra || (!extra->HasType(RE::ExtraDataType::kWorn) && !extra->HasType(RE::ExtraDataType::kWornLeft)) ||
+            actor->GetInventory().at(object).second->IsQuestObject())
         {
-            Complete(r->id, r->step, "failed", "The target is no longer eligible loose food.");
+            Complete(r->id, r->step, "failed", "The captured equipped instance or slot changed.");
             return;
         }
-        r->pickupInventoryBefore = player->GetInventoryCounts()[food];
-        r->pickupWorldBefore = target->extraList.GetCount();
-        r->pickupForm = food->GetFormID();
-        r->pickupVerifyUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-        // Use the engine pickup path on the exact reference, retaining engine ownership/crime handling.
-        r->pickupIssued = true;
-        SKSE::log::info("[INTERACT] Pickup {} ref={:08X} base={:08X} inventoryBefore={} worldBefore={} offLimits={}",
-                        r->id, target->GetFormID(), food->GetFormID(), r->pickupInventoryBefore, r->pickupWorldBefore,
-                        target->IsOffLimits());
-        player->PickUpObject(target.get(), 1);
-        // Tick observes completion without ever repeating the mutation.
+        RE::TESForm *currentSlot = slot < 2 ? actor->GetEquippedObject(slot == 1)
+            : actor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(1u << (slot - 30)));
+        if (currentSlot != object)
+        {
+            Complete(r->id, r->step, "failed", "The captured equipment slot changed.");
+            return;
+        }
+        RE::BGSEquipSlot *equipSlot = nullptr;
+        if (slot < 2)
+        {
+            auto defaults = RE::BGSDefaultObjectManager::GetSingleton();
+            auto weapon = object->As<RE::TESObjectWEAP>();
+            equipSlot = weapon ? weapon->GetEquipSlot() : nullptr;
+            auto either = defaults ? defaults->GetObject<RE::BGSEquipSlot>(RE::DEFAULT_OBJECT::kEitherHandEquip) : nullptr;
+            if (equipSlot && equipSlot == either)
+                equipSlot = defaults->GetObject<RE::BGSEquipSlot>(slot == 1 ? RE::DEFAULT_OBJECT::kLeftHandEquip
+                                                                                       : RE::DEFAULT_OBJECT::kRightHandEquip);
+            const auto wornType = slot == 1 ? RE::ExtraDataType::kWornLeft : RE::ExtraDataType::kWorn;
+            if (!extra->HasType(wornType))
+            {
+                Complete(r->id, r->step, "failed", "The captured weapon changed hands.");
+                return;
+            }
+            if (!equipSlot)
+            {
+                Complete(r->id, r->step, "failed", "The captured hand is unavailable.");
+                return;
+            }
+        }
+        RE::ActorEquipManager::GetSingleton()->UnequipObject(actor, object, extra, 1, equipSlot, false, false, true, true);
+        RE::TESBoundObject *remaining = nullptr;
+        RE::ExtraDataList *remainingExtra = nullptr;
+        if (!InventoryChoice(actor, captured->second, 1, remaining, remainingExtra) || !remainingExtra ||
+            remainingExtra->HasType(RE::ExtraDataType::kWorn) || remainingExtra->HasType(RE::ExtraDataType::kWornLeft))
+        {
+            Complete(r->id, r->step, "unknown", "Unequip requested; exact instance state could not be confirmed.");
+            return;
+        }
+        if (effect == "unequip")
+        {
+            Complete(r->id, r->step, "succeeded", "Captured armor unequipped and retained in the target inventory.");
+            return;
+        }
+        const int before = actor->GetInventoryCounts()[object];
+        auto dropped = actor->RemoveItem(object, 1, RE::ITEM_REMOVE_REASON::kDropping, remainingExtra, nullptr).get();
+        bool changed = dropped && dropped->GetBaseObject() == object && dropped->extraList.GetCount() == 1 &&
+                       actor->GetInventoryCounts()[object] == before - 1;
+        Complete(r->id, r->step, changed ? "succeeded" : "unknown",
+                 changed ? "Captured weapon unequipped and dropped as an actual world reference."
+                         : "Captured weapon unequipped; its drop could not be confirmed.");
         return;
     }
-    if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" || effect == "magic")
+    if (effect == "pickup")
+    {
+        if (!CanPickUp(target.get()))
+        {
+            Complete(r->id, r->step, "failed", "The target is no longer one eligible loose item.");
+            return;
+        }
+        r->pickupIssued = true;
+    }
+    const auto restoration = RestorationValue(effect);
+    if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" || effect == "magic" ||
+        effect == "drop" || effect == "place" || restoration != RE::ActorValue::kNone)
     {
         auto player = RE::PlayerCharacter::GetSingleton();
         RE::TESBoundObject *object = nullptr;
         RE::ExtraDataList *extra = nullptr;
-        const int count = (effect == "give" || effect == "store") ? static_cast<int>(value) : 1;
+        const int count = (effect == "give" || effect == "store" || effect == "drop" || effect == "place") ? static_cast<int>(value) : 1;
         if (!r->hasItem || count > r->quantity || !InventoryChoice(player, r->selected, count, object, extra))
         {
             Complete(r->id, r->step, "failed", "The exact selected inventory instance is no longer available.");
             return;
         }
+        if (restoration != RE::ActorValue::kNone && (!actor || actor->IsDead() || !actor->AsActorValueOwner() || !Restores(object->As<RE::AlchemyItem>(), restoration)))
+        {
+            Complete(r->id, r->step, "failed", "The selected item cannot restore the requested living target statistic.");
+            return;
+        }
+        if (effect == "drop" || effect == "place")
+        {
+            if (player->GetInventory().at(object).second->IsQuestObject() ||
+                (effect == "place" && player->GetParentCell() != target->GetParentCell()))
+            {
+                Complete(r->id, r->step, "failed", "The item or placement cell is no longer eligible.");
+                return;
+            }
+            const int before = player->GetInventoryCounts()[object];
+            auto position = target->GetPosition();
+            position.z += 20.0f;
+            auto dropped = player->RemoveItem(object, count, RE::ITEM_REMOVE_REASON::kDropping, extra, nullptr,
+                                              effect == "place" ? &position : nullptr).get();
+            bool removed = before - player->GetInventoryCounts()[object] == count;
+            r->inventoryMoved = removed;
+            bool placed = dropped && dropped->GetBaseObject() == object && dropped->extraList.GetCount() == count;
+            if (effect == "place" && placed)
+                placed = dropped->GetPosition().GetDistance(position) < 100.0f;
+            Complete(r->id, r->step, removed && placed ? "succeeded" : "unknown",
+                     removed && placed ? "Exact selected item dropped; world reference and inventory decrease confirmed."
+                                       : "Drop requested once; both inventory and world reference were not confirmed.");
+            return;
+        }
         if (effect == "magic")
         {
             auto scroll = object->As<RE::ScrollItem>();
-            if (!scroll || !actor)
+            if (!SupportedScroll(scroll) || !actor || actor->IsDead())
             {
                 Complete(r->id, r->step, "failed", "Selected spell is unavailable.");
                 return;
@@ -356,7 +499,9 @@ void RunStep(const std::shared_ptr<Request> &r)
             int index = r->step;
             auto ref = target.get();
             bool approved = false;
-            float amount = 0;
+            auto authored = scroll->effects[0]->baseEffect;
+            float amount = static_cast<float>(authored->data.primaryAV);
+            if (authored->IsDetrimental()) amount = -amount;
             RE::ScrollItem *spell = scroll;
             if (!vm ||
                 !vm->DispatchStaticCall("CHIMItemInteraction", "Execute",
@@ -418,13 +563,37 @@ void RunStep(const std::shared_ptr<Request> &r)
         }
         if (!r->selected.extra)
             transferred = nullptr;
-        if (effect == "consume")
+        if (effect == "consume" || restoration != RE::ActorValue::kNone)
         {
             auto potion = object->As<RE::AlchemyItem>();
             const auto beforeConsumption = actor->GetInventoryCounts()[object];
+            auto stats = actor->AsActorValueOwner();
+            const float previous = stats && restoration != RE::ActorValue::kNone ? stats->GetActorValue(restoration) : 0;
             bool accepted = potion && actor->DrinkPotion(potion, transferred);
             const auto afterConsumption = actor->GetInventoryCounts()[object];
             bool consumed = accepted && afterConsumption == beforeConsumption - 1;
+            if (restoration != RE::ActorValue::kNone && consumed)
+            {
+                if (!stats)
+                {
+                    Complete(r->id, r->step, "unknown", "Item transferred and consumed; statistic verification unavailable.");
+                    return;
+                }
+                auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+                RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+                std::string id = r->id;
+                int index = r->step;
+                std::string statistic = "Health";
+                if (restoration == RE::ActorValue::kStamina) statistic = "Stamina";
+                else if (restoration == RE::ActorValue::kMagicka) statistic = "Magicka";
+                auto recipient = actor;
+                float beforeValue = previous;
+                if (!vm || !vm->DispatchStaticCall("CHIMItemInteraction", "VerifyRestoration",
+                    RE::MakeFunctionArguments(std::move(id), std::move(index), std::move(recipient),
+                                              std::move(statistic), std::move(beforeValue)), callback))
+                    Complete(r->id, r->step, "unknown", "Item transferred and consumed; statistic verification unavailable.");
+                return;
+            }
             Complete(r->id, r->step, consumed ? "succeeded" : "unknown",
                      consumed ? "Item transferred and consumption confirmed by inventory decrease."
                               : "Item transferred but consumption could not be confirmed.");
@@ -534,13 +703,19 @@ void Complete(const std::string &id, int step, const std::string &status, const 
             {"push", "Push"}, {"lock", "Lock"}, {"unlock", "Unlock"}, {"activate", "Activate"},
             {"open", "Open"}, {"close", "Close"}, {"destroy", "Damage"}, {"disable", "Disable"},
             {"resize", "Resize"}, {"magic", "Cast"}, {"combat", "Start combat with"},
-            {"consume_world", "Consume"}};
+            {"consume_world", "Consume"}, {"heal", "Heal"}, {"restore_stamina", "Restore stamina of"},
+            {"restore_magicka", "Restore magicka of"}, {"drop", "Drop"}, {"place", "Place"},
+            {"disarm", "Disarm"}, {"unequip", "Unequip armor from"}};
         const auto label = labels.find(effect);
         std::string action = label != labels.end() ? label->second : "Interaction with";
         const auto targetName = r->snapshot["target"].value("name", "target");
         if (effect == "give" || effect == "store")
             action += std::format(" {} {} {} {}", completedStep.at("value").get<int>(), r->selected.name,
                                   effect == "store" ? "in" : "to", targetName);
+        else if (effect == "place")
+            action += std::format(" {} {} near {}", completedStep.at("value").get<int>(), r->selected.name, targetName);
+        else if (effect == "drop")
+            action += std::format(" {} {}", completedStep.at("value").get<int>(), r->selected.name);
         else if (effect == "consume" || effect == "equip" || effect == "magic")
             action += std::format(" {} on {}", r->selected.name, targetName);
         else
@@ -661,30 +836,6 @@ void Tick()
         if (!Live(r))
         {
             Cancel();
-            return;
-        }
-        if (r->pickupForm && CanExecute(r->id, r->step))
-        {
-            auto player = RE::PlayerCharacter::GetSingleton();
-            auto food = RE::TESForm::LookupByID<RE::AlchemyItem>(r->pickupForm);
-            auto target = r->target.get();
-            const bool moved = !target || target->IsDeleted() || target->IsDisabled() || !target->Is3DLoaded() ||
-                               target->extraList.GetCount() < r->pickupWorldBefore;
-            const bool acquired = player && food && player->GetInventoryCounts()[food] == r->pickupInventoryBefore + 1;
-            if ((acquired && moved) || std::chrono::steady_clock::now() >= r->pickupVerifyUntil)
-            {
-                SKSE::log::info("[INTERACT] Pickup result {} inventoryBefore={} inventoryAfter={} worldBefore={} "
-                                "worldAfter={} refPresent={} deleted={} disabled={} loaded={} acquired={} moved={}",
-                                r->id, r->pickupInventoryBefore,
-                                player && food ? player->GetInventoryCounts()[food] : -1, r->pickupWorldBefore,
-                                target ? target->extraList.GetCount() : -1, bool(target), target && target->IsDeleted(),
-                                target && target->IsDisabled(), target && target->Is3DLoaded(), acquired, moved);
-                r->pickupForm = 0;
-                Complete(r->id, r->step, acquired && moved ? "succeeded" : "unknown",
-                         acquired && moved
-                             ? "One target food item entered the player's inventory."
-                             : "Pickup was requested once; inventory and world-reference changes did not confirm it.");
-            }
             return;
         }
         if (r->step >= 0 && r->step < static_cast<int>(r->plan["steps"].size()) &&
@@ -863,7 +1014,7 @@ void Command(const std::string &command)
             bool questItem = item && inventory.at(item).second->IsQuestObject();
             r->allowed = json::array({"observe", "activate", "resize", "disable"});
             auto targetFood = base->As<RE::AlchemyItem>();
-            if (targetFood && targetFood->IsFood())
+            if (CanPickUp(target.get()))
                 r->allowed.push_back("pickup");
             if (!item && targetFood && !targetFood->IsPoison() && target->extraList.GetCount() == 1 &&
                 !target->extraList.HasType(RE::ExtraDataType::kEnchantment) &&
@@ -891,32 +1042,61 @@ void Command(const std::string &command)
             auto potion = item ? item->As<RE::AlchemyItem>() : nullptr;
             if (actor && potion && !potion->IsPoison())
                 r->allowed.push_back("consume");
+            if (actor && !actor->IsDead())
+                for (const auto &effect : {"heal", "restore_stamina", "restore_magicka"})
+                    if (Restores(potion, RestorationValue(effect))) r->allowed.push_back(effect);
+            if (item && !questItem)
+            {
+                r->allowed.push_back("drop");
+                if (player->GetParentCell() == target->GetParentCell()) r->allowed.push_back("place");
+            }
             if (actor && item && (item->As<RE::TESObjectWEAP>() || item->As<RE::TESObjectARMO>()))
                 r->allowed.push_back("equip");
-            // Scrolls carry authored spells; restrict to the small known vanilla elemental/paralysis family.
-            auto scroll = item ? item->As<RE::ScrollItem>() : nullptr;
-            bool supportedMagic = actor && scroll &&
-                                  (scroll->GetFormID() == 0x00096598 || scroll->GetFormID() == 0x00096599 ||
-                                   scroll->GetFormID() == 0x0009659A);
-            if (supportedMagic)
+            json equipmentData = json::array();
+            if (actor && !actor->IsDead())
             {
-                for (auto effect : scroll->effects)
+                auto wornInventory = actor->GetInventory();
+                for (int slot = 0; slot <= 61; ++slot)
                 {
-                    if (!effect || !effect->baseEffect || effect->effectItem.area != 0 ||
-                        (effect->baseEffect->GetArchetype() != RE::EffectArchetypes::ArchetypeID::kValueModifier &&
-                         effect->baseEffect->GetArchetype() != RE::EffectArchetypes::ArchetypeID::kDualValueModifier))
-                        supportedMagic = false;
+                    if (slot > 1 && slot < 30) continue;
+                    RE::TESBoundObject *worn = nullptr;
+                    if (slot < 2)
+                    {
+                        auto form = actor->GetEquippedObject(slot == 1);
+                        worn = form ? form->As<RE::TESObjectWEAP>() : nullptr;
+                    }
+                    else worn = actor->GetWornArmor(static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(1u << (slot - 30)));
+                    if (!worn) continue;
+                    auto found = wornInventory.find(worn);
+                    if (found == wornInventory.end() || !found->second.second || found->second.second->IsQuestObject() ||
+                        !found->second.second->extraLists) continue;
+                    RE::ExtraDataList *exact = nullptr;
+                    int copies = 0;
+                    for (auto list : *found->second.second->extraLists)
+                        if (list && (list->HasType(RE::ExtraDataType::kWorn) || list->HasType(RE::ExtraDataType::kWornLeft)))
+                        { exact = list; ++copies; }
+                    if (copies != 1) continue;
+                    r->equipment[slot] = {worn->GetFormID(), exact, 1, worn->GetName(), Fingerprint(worn, exact)};
+                    equipmentData.push_back({{"slot", slot}, {"name", worn->GetName()},
+                                             {"action", slot < 2 ? "disarm" : "unequip"}});
+                }
+                for (const auto &[slot, choice] : r->equipment)
+                {
+                    const std::string effect = slot < 2 ? "disarm" : "unequip";
+                    if (std::find(r->allowed.begin(), r->allowed.end(), effect) == r->allowed.end()) r->allowed.push_back(effect);
                 }
             }
-            if (supportedMagic)
-                r->allowed.push_back("magic");
+            // Scrolls retain authored effects; expose only the observable single-target families above.
+            auto scroll = item ? item->As<RE::ScrollItem>() : nullptr;
+            bool supportedMagic = actor && !actor->IsDead() && SupportedScroll(scroll);
+            if (supportedMagic) r->allowed.push_back("magic");
             if (questItem)
             {
                 json filtered = json::array();
                 for (const auto &effect : r->allowed)
                 {
                     if (effect != "give" && effect != "store" && effect != "consume" && effect != "equip" &&
-                        effect != "magic")
+                        effect != "magic" && effect != "heal" && effect != "restore_stamina" && effect != "restore_magicka")
                         filtered.push_back(effect);
                 }
                 r->allowed = filtered;
@@ -950,7 +1130,7 @@ void Command(const std::string &command)
                     itemData["equipped"] = false;
                 itemData["enchantment_effects"] = Effects(enchantment);
             }
-            json targetData = {{"name", target->GetName()},
+            json targetData = {{"equipment", equipmentData}, {"name", target->GetName()},
                                {"actor", actor != nullptr},
                                {"scale", target->GetScale()},
                                {"awareness", "unknown"}};
@@ -967,6 +1147,10 @@ void Command(const std::string &command)
                         break;
                     }
                 targetData["health"] = targetStats->GetActorValue(RE::ActorValue::kHealth);
+                targetData["stamina"] = targetStats->GetActorValue(RE::ActorValue::kStamina);
+                targetData["max_stamina"] = targetStats->GetPermanentActorValue(RE::ActorValue::kStamina);
+                targetData["magicka"] = targetStats->GetActorValue(RE::ActorValue::kMagicka);
+                targetData["max_magicka"] = targetStats->GetPermanentActorValue(RE::ActorValue::kMagicka);
                 targetData["dead"] = actor->IsDead();
                 targetData["combat"] = actor->IsInCombat();
                 targetData["essential"] = actor->IsEssential();
@@ -1044,7 +1228,9 @@ void Command(const std::string &command)
                                 {"push", {1, 10}},         {"lock", {0, 100}},   {"unlock", {0, 0}},
                                 {"activate", {0, 0}},      {"open", {0, 0}},     {"close", {0, 0}},
                                 {"destroy", {1, 100}},     {"disable", {0, 0}},  {"resize", {0.25f, 2}},
-                                {"magic", {0, 0}},         {"combat", {0, 0}}};
+                                {"magic", {0, 0}},         {"combat", {0, 0}}, {"heal", {1, 1}},
+                                {"restore_stamina", {1, 1}}, {"restore_magicka", {1, 1}},
+                                {"drop", {1, 100}}, {"place", {1, 100}}, {"disarm", {0, 1}}, {"unequip", {30, 61}}};
                             if ((effect == "pickup" || effect == "consume_world") && ++pickupSteps > 1)
                                 throw std::runtime_error("Repeated pickup");
                             const auto bounds = limits.at(effect);
@@ -1052,10 +1238,10 @@ void Command(const std::string &command)
                                 !s.at("alive").is_boolean())
                                 throw std::runtime_error("Invalid value");
                             if ((effect == "give" || effect == "store" || effect == "consume" || effect == "equip" ||
-                                 effect == "lock") &&
+                                 effect == "lock" || effect == "drop" || effect == "place" || effect == "disarm" || effect == "unequip") &&
                                 std::floor(value) != value)
                                 throw std::runtime_error("Fractional quantity");
-                            if (effect == "combat" && !s.at("alive").get<bool>())
+                            if ((effect == "combat" || effect == "disarm" || effect == "unequip" || RestorationValue(effect) != RE::ActorValue::kNone) && !s.at("alive").get<bool>())
                                 throw std::runtime_error("Combat requires living target");
                             for (auto dep : s.at("requires"))
                                 if (!dep.is_number_integer() || dep.get<int>() < 0 || dep.get<std::size_t>() >= index)
@@ -1063,7 +1249,7 @@ void Command(const std::string &command)
                             if (effect == "kill" || effect == "disable")
                                 confirm = true;
                             if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" ||
-                                effect == "magic")
+                                effect == "magic" || effect == "drop" || effect == "place" || RestorationValue(effect) != RE::ActorValue::kNone)
                                 ++inventorySteps;
                         }
                         if (inventorySteps > 1)
