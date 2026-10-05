@@ -196,8 +196,7 @@ void RunStep(const std::shared_ptr<Request> &r)
     const auto &step = r->plan["steps"][r->step];
     const auto effect = step.at("effect").get<std::string>();
     auto actor = target ? target->As<RE::Actor>() : nullptr;
-    bool blocked = !target || target->IsDisabled() || !target->Is3DLoaded() || target->IsDeleted() ||
-                   RE::PlayerCharacter::GetSingleton()->GetPosition().GetDistance(target->GetPosition()) > 512.0f;
+    bool blocked = !target || target->IsDisabled() || !target->Is3DLoaded() || target->IsDeleted();
     RE::TESBoundObject *held = nullptr;
     RE::ExtraDataList *heldExtra = nullptr;
     if (r->hasItem && !r->inventoryMoved &&
@@ -430,13 +429,12 @@ void Open()
     auto target = crosshair ? crosshair->GetActiveTarget().get() : RE::NiPointer<RE::TESObjectREFR>{};
     if (!player || !target || !ChimInteraction::Enabled() ||
         !PlaythroughSession::Allowed(PlaythroughSession::Generation()) || !target->Is3DLoaded() ||
-        target.get() == player || player->GetPosition().GetDistance(target->GetPosition()) > 512.0f ||
-        RE::UI::GetSingleton()->GameIsPaused() || PrismaUIBridge::IsAnyHotkeyPanelFocused() ||
+        target.get() == player || RE::UI::GetSingleton()->GameIsPaused() || PrismaUIBridge::IsAnyHotkeyPanelFocused() ||
         RE::UI::GetSingleton()->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
         RE::UI::GetSingleton()->IsMenuOpen(RE::Console::MENU_NAME) ||
         RE::UI::GetSingleton()->IsMenuOpen(RE::LoadingMenu::MENU_NAME))
     {
-        RE::DebugNotification("[CHIM] Aim at a nearby loaded target before using Interact.");
+        RE::DebugNotification("[CHIM] Aim at a loaded target before using Interact.");
         return;
     }
     auto r = std::make_shared<Request>();
@@ -646,7 +644,6 @@ void Command(const std::string &command)
             json targetData = {{"name", target->GetName()},
                                {"actor", actor != nullptr},
                                {"scale", target->GetScale()},
-                               {"distance", player->GetPosition().GetDistance(target->GetPosition())},
                                {"awareness", "unknown"}};
             if (actor)
             {
