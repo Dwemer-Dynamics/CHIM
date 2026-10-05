@@ -94,7 +94,7 @@ window.setInteraction = data => {
         setBusy(true);
         status(data.status || 'This action overrides target protections. Confirm to continue.', 'warning');
         element('decline').focus();
-    } else if (data.state === 'busy') status('Working…', 'busy');
+    } else if (data.state === 'busy') status('Calculating Result...', 'busy');
     else if (data.status) status(data.status, data.state);
 };
 function cancel() {
@@ -116,7 +116,7 @@ function submitInteraction(event) {
     }
     // Use the explicit Prisma bridge; embedded form-validation APIs are not required.
     const payload = {op: 'submit', key: item ? Number(item.key) : null, quantity: quantity, intent: intent};
-    showPicker(false); status('Working…', 'busy'); setBusy(true);
+    showPicker(false); status('Calculating Result...', 'busy'); setBusy(true);
     send('input_capture|off');
     if (!send(payload)) { setBusy(false); element('intent').focus(); return; }
     acknowledgementTimer = setTimeout(() => {
@@ -127,7 +127,7 @@ element('close').onclick = cancel;
 element('decline').onclick = cancel;
 element('approve').onclick = () => {
     if (element('approve').disabled) return;
-    if (send({op: 'approve'})) { element('approve').disabled = true; status('Working…', 'busy'); }
+    if (send({op: 'approve'})) { element('approve').disabled = true; status('Calculating Result...', 'busy'); }
 };
 element('choose').onclick = () => showPicker(element('picker').hidden);
 element('clear-item').onclick = () => chooseItem(null);
