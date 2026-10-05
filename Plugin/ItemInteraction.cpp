@@ -467,6 +467,32 @@ void Complete(const std::string &id, int step, const std::string &status, const 
         r->receipts.push_back(
             {{"status", outcome},
              {"detail", valid ? detail : "Execution returned an unrecognized outcome; result is uncertain."}});
+        // Only accepted receipts reach this point; duplicate or stale callbacks never notify.
+        const auto &completedStep = r->plan["steps"][step];
+        const auto effect = completedStep.at("effect").get<std::string>();
+        static const std::map<std::string, std::string> labels = {
+            {"observe", "Examine"}, {"pickup", "Pick up"}, {"give", "Give"}, {"store", "Store"},
+            {"consume", "Administer"}, {"equip", "Equip"}, {"injure", "Injure"}, {"kill", "Kill"},
+            {"push", "Push"}, {"lock", "Lock"}, {"unlock", "Unlock"}, {"activate", "Activate"},
+            {"open", "Open"}, {"close", "Close"}, {"destroy", "Damage"}, {"disable", "Disable"},
+            {"resize", "Resize"}, {"magic", "Cast"}, {"combat", "Start combat with"},
+            {"consume_world", "Consume"}};
+        const auto label = labels.find(effect);
+        std::string action = label != labels.end() ? label->second : "Interaction with";
+        const auto targetName = r->snapshot["target"].value("name", "target");
+        if (effect == "give" || effect == "store")
+            action += std::format(" {} {} {} {}", completedStep.at("value").get<int>(), r->selected.name,
+                                  effect == "store" ? "in" : "to", targetName);
+        else if (effect == "consume" || effect == "equip" || effect == "magic")
+            action += std::format(" {} on {}", r->selected.name, targetName);
+        else
+            action += " " + targetName;
+        std::string result = outcome;
+        if (outcome == "unknown")
+            result = "could not be confirmed";
+        else if (outcome == "skipped")
+            result = "not completed";
+        RE::DebugNotification(std::format("[CHIM] {}: {}.", action, result).c_str());
         RunStep(r);
     });
 }
@@ -572,6 +598,7 @@ void Tick()
                                    {"detail", "Execution did not report within 15 seconds; it will not be repeated."}});
             while (r->receipts.size() < r->plan["steps"].size())
                 r->receipts.push_back({{"status", "skipped"}, {"detail", "An earlier operation timed out."}});
+            RE::DebugNotification("[CHIM] Interaction result could not be confirmed.");
             r->step = static_cast<int>(r->plan["steps"].size());
             Finish(r);
         }
