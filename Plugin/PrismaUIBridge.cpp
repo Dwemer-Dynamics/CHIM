@@ -7515,6 +7515,20 @@ R"CHIM(
             }
 
             logger::info("[Chatbox] Queued global halt AI action");
+        } else if (cmd == "wait_here") {
+            // Capture the crosshair actor at click; Papyrus revalidates it before StartWait.
+            std::int32_t formId = 0;
+            if (auto crosshairData = RE::CrosshairPickData::GetSingleton(); crosshairData) {
+                RE::TESObjectREFRPtr crosshairTarget = crosshairData->GetActiveTarget().get();
+                if (auto actor = crosshairTarget ? crosshairTarget->As<RE::Actor>() : nullptr; actor) {
+                    formId = static_cast<std::int32_t>(actor->GetFormID());
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lock(g_settingsMenuMutex);
+                g_pendingSettingsAction = std::format("rp_wait_here|{}", formId);
+            }
+            logger::info("[Chatbox] Queued Wait Here for crosshair actor {:08X}", static_cast<std::uint32_t>(formId));
         } else if (cmd == "soulgaze_describe") {
             {
                 std::lock_guard<std::mutex> lock(g_settingsMenuMutex);

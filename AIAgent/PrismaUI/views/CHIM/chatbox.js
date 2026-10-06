@@ -1549,6 +1549,12 @@
         sendControlCommand('halt_ai_actions');
     };
 
+    // Same as holding the text hotkey: native captures the crosshair NPC; the draft stays put.
+    window.triggerWaitHere = function() {
+        sendControlCommand('wait_here');
+        if (focusInput) focusInput.focus();
+    };
+
     /**
      * Soulgaze the current view. The modal is dismissed immediately so the
      * delayed capture frames the scene rather than the chat UI.
