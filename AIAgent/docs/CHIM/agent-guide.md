@@ -105,7 +105,7 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 **Cheat Mode** starts off when the menu opens. Turning it on asks the Director to grant supported effects without plausibility refusals. Actual engine eligibility, execution failures and kill/disable confirmations still apply; it cannot fabricate success.
 
-In **Prompt Manager**, search `interact_` to edit normal-mode rules, cheat-mode rules, narration guidance or individual action descriptions. Clear a custom prompt to restore its default. Eligible actions, numeric limits and receipt validation remain enforced.
+In **Prompt Manager**, search `interact_` to edit normal-mode rules, cheat-mode rules or narration guidance. Action descriptions remain code-owned. Clear a custom prompt to restore its default. Eligible actions, numeric limits and receipt validation remain enforced.
 
 
 Describe an action and press **Enter** to interact; **Shift+Enter** adds a line. **Choose…** opens the optional inventory picker, with exact-copy details and an amount for stacks. **Esc** closes the picker first, then the menu. Protected actions still require explicit confirmation.
