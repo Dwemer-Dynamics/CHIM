@@ -52,6 +52,8 @@ struct Request
     bool submitted = false;
     bool inventoryMoved = false;
     std::chrono::steady_clock::time_point deadline{};
+    RE::FormID pendingSceneryShader = 0;
+    std::vector<RE::NiPointer<RE::ShaderReferenceEffect>> priorSceneryShaders;
     RE::FormID pendingStatusSpell = 0;
     std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
@@ -486,20 +488,24 @@ void RunStep(const std::shared_ptr<Request> &r)
             Complete(r->id, r->step, "failed", "Too many scenery fire effects are already active.");
             return;
         }
-        auto applied = target->ApplyEffectShader(shader, static_cast<float>(step.value("duration", 10)));
-        bool registered = false;
-        if (applied)
+        r->priorSceneryShaders.clear();
+        lists->ForEachShaderEffect([&](RE::ShaderReferenceEffect *effect) {
+            if (effect->effectData == shader && effect->target == r->target)
+                r->priorSceneryShaders.emplace_back(effect);
+            return r->priorSceneryShaders.size() >= 32 ? RE::BSContainer::ForEachResult::kStop
+                                                      : RE::BSContainer::ForEachResult::kContinue;
+        });
+        if (r->priorSceneryShaders.size() >= 32)
         {
-            sceneryFire[key] = RE::NiPointer<RE::ShaderReferenceEffect>(applied);
-            lists->ForEachShaderEffect([&](RE::ShaderReferenceEffect *effect) {
-                if (effect == applied && effect->effectData == shader && effect->target == r->target && !effect->finished)
-                    registered = true;
-                return RE::BSContainer::ForEachResult::kContinue;
-            });
+            r->priorSceneryShaders.clear();
+            Complete(r->id, r->step, "failed", "Too many existing fire shader instances to verify a new application.");
+            return;
         }
-        Complete(r->id, r->step, registered ? "succeeded" : "unknown",
-                 registered ? "Timed fire shader registered on the captured scenery. Visual effect only: no health damage, spread, destruction or rendered pixels verified."
-                            : "Fire shader requested once; its registration was not confirmed.");
+        // The observed AE call returned 0x1, not a usable effect pointer despite CommonLib's signature.
+        // Never dereference or retain its return; only ProcessLists supplies verified engine-owned instances.
+        target->ApplyEffectShader(shader, static_cast<float>(step.value("duration", 10)));
+        r->pendingSceneryShader = shader->GetFormID();
+        r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         return;
     }
     const int family = StatusFamily(effect);
@@ -1027,6 +1033,40 @@ void Tick()
             Cancel();
             return;
         }
+        if (r->pendingSceneryShader)
+        {
+            auto target = r->target.get();
+            auto shader = RE::TESForm::LookupByID<RE::TESEffectShader>(r->pendingSceneryShader);
+            auto lists = RE::ProcessLists::GetSingleton();
+            RE::NiPointer<RE::ShaderReferenceEffect> applied;
+            std::size_t candidates = 0;
+            const bool available = target && !target->IsDeleted() && !target->IsDisabled() && target->Is3DLoaded();
+            if (available && shader && lists)
+                lists->ForEachShaderEffect([&](RE::ShaderReferenceEffect *effect) {
+                    if (effect->effectData == shader && effect->target == r->target && !effect->finished &&
+                        effect->lifetime > 0.0f && effect->age < effect->lifetime &&
+                        std::none_of(r->priorSceneryShaders.begin(), r->priorSceneryShaders.end(),
+                                     [effect](const auto &prior) { return prior.get() == effect; }))
+                    {
+                        ++candidates;
+                        applied = RE::NiPointer<RE::ShaderReferenceEffect>(effect);
+                    }
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            const bool registered = candidates == 1;
+            if (registered || candidates > 1 || !available || std::chrono::steady_clock::now() >= r->statusCheckUntil)
+            {
+                if (registered) sceneryFire[target->GetFormID()] = applied;
+                SKSE::log::info("[INTERACT] Scenery shader result id={} step={} registered={} new_instances={}",
+                                r->id, r->step, registered, candidates);
+                r->pendingSceneryShader = 0;
+                r->priorSceneryShaders.clear();
+                Complete(r->id, r->step, registered ? "succeeded" : "unknown",
+                         registered ? "Timed fire shader registered on the captured scenery. Visual effect only: no health damage, spread, destruction or rendered pixels verified."
+                                    : "Fire shader requested once; a unique new registration was not confirmed.");
+            }
+            return;
+        }
         if (r->pendingStatusSpell)
         {
             auto target = r->target.get();
@@ -1075,6 +1115,11 @@ void Cancel()
 {
     ++reactionCancellationGeneration;
     auto old = Current();
+    if (old)
+        SKSE::GetTaskInterface()->AddTask([old] {
+            old->pendingSceneryShader = 0;
+            old->priorSceneryShaders.clear();
+        });
     if (old && old->submitted && old->step < 0 && PlaythroughSession::Allowed(old->epoch))
     {
         json payload = {{"op", "cancel"}, {"id", old->id}};
