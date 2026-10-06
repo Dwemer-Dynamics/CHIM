@@ -1113,13 +1113,28 @@ RE::NiPointer<RE::TESObjectREFR> SceneryTarget(RE::PlayerCharacter *player)
     return RE::NiPointer<RE::TESObjectREFR>(target);
 }
 
-std::string InteractionTargetName(RE::TESObjectREFR *target)
+std::string InteractionTargetName(RE::TESObjectREFR *target, bool logSource = false)
 {
+    const auto result = [target, logSource](std::string value, const char *source) {
+        if (logSource) SKSE::log::info("[INTERACT] Target label ref={:08X} source={} label={}",
+                                     target->GetFormID(), source, value);
+        return value;
+    };
     const auto name = target->GetName();
-    if (name && *name) return name;
+    if (name && *name) return result(name, "display_name");
     auto base = target->GetBaseObject();
-    const auto editor = base ? base->GetFormEditorID() : nullptr;
-    return editor && *editor ? editor : (base ? SemanticType(base) : "scenery");
+    if (!base) return result(std::format("scenery [{:08X}]", target->GetFormID()), "reference_id");
+    const auto editor = base->GetFormEditorID();
+    if (editor && *editor) return result(editor, "base_editor_id");
+    // Static forms discard their getter's EditorID; installed Tweaks retains the actual EDID separately.
+    using EditorIDGetter = const char *(__cdecl *)(std::uint32_t);
+    static const auto cachedEditorID = []() -> EditorIDGetter {
+        auto tweaks = GetModuleHandleW(L"po3_Tweaks.dll");
+        return tweaks ? reinterpret_cast<EditorIDGetter>(GetProcAddress(tweaks, "GetFormEditorID")) : nullptr;
+    }();
+    if (cachedEditorID)
+        if (const auto cached = cachedEditorID(base->GetFormID()); cached && *cached) return result(cached, "tweaks_editor_id");
+    return result(std::format("{} [{:08X}]", SemanticType(base), base->GetFormID()), "base_form_id");
 }
 
 void Open()
@@ -1191,7 +1206,7 @@ void Open()
         std::lock_guard lock(currentMutex);
         current = r;
     }
-    PrismaUIBridge::ShowItemInteraction({{"id", r->id}, {"target", InteractionTargetName(target.get())}, {"items", items}});
+    PrismaUIBridge::ShowItemInteraction({{"id", r->id}, {"target", InteractionTargetName(target.get(), true)}, {"items", items}});
 }
 
 void Command(const std::string &command)
