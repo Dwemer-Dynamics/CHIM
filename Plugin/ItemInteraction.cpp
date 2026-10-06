@@ -49,6 +49,8 @@ struct Request
     bool submitted = false;
     bool inventoryMoved = false;
     std::chrono::steady_clock::time_point deadline{};
+    RE::FormID pendingStatusSpell = 0;
+    std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
     json allowed;
     json plan;
@@ -96,16 +98,44 @@ RE::ActorValue RestorationValue(const std::string &effect)
     return RE::ActorValue::kNone;
 }
 
-// Restoration consumes the item's real authored effect; never add an independent actor-value adjustment.
-bool Restores(RE::AlchemyItem *potion, RE::ActorValue value)
+// Persistent authored spell variants let Skyrim own expiry and save/load persistence.
+int StatusFamily(const std::string &effect)
 {
-    if (!potion || potion->IsPoison() || value == RE::ActorValue::kNone) return false;
-    for (auto effect : potion->effects)
-        if (effect && effect->baseEffect && !effect->baseEffect->IsDetrimental() &&
-            effect->baseEffect->GetArchetype() == RE::EffectArchetypes::ArchetypeID::kValueModifier &&
-            effect->baseEffect->data.primaryAV == value && effect->effectItem.magnitude > 0 &&
-            effect->effectItem.duration == 0 && !effect->conditions.head && !effect->baseEffect->conditions.head)
+    static const std::vector<std::string> names = {"poison", "burning", "paralysis", "calm", "fear", "frenzy"};
+    auto it = std::find(names.begin(), names.end(), effect);
+    return it == names.end() ? -1 : static_cast<int>(it - names.begin());
+}
+RE::SpellItem *StatusSpell(int family, int duration)
+{
+    static const std::vector<int> durations = {5, 10, 20, 30};
+    auto it = std::find(durations.begin(), durations.end(), duration);
+    if (family < 0 || family >= 6 || it == durations.end()) return nullptr;
+    auto data = RE::TESDataHandler::GetSingleton();
+    auto spell = data ? data->LookupForm<RE::SpellItem>(0x60010 + family * 4 +
+        static_cast<int>(it - durations.begin()), "AIAgent.esp") : nullptr;
+    auto expected = data ? data->LookupForm<RE::EffectSetting>(0x60000 + family, "AIAgent.esp") : nullptr;
+    if (!spell || spell->effects.size() != 1 || !spell->effects[0] || !expected ||
+        spell->effects[0]->baseEffect != expected || spell->effects[0]->effectItem.area != 0 ||
+        spell->effects[0]->effectItem.duration != static_cast<std::uint32_t>(duration)) return nullptr;
+    return spell;
+}
+// Observe only a live application of this exact authored spell, never a dormant/dispelled entry.
+bool HasAppliedStatus(RE::Actor *actor, RE::SpellItem *spell, std::string &detail)
+{
+    auto magic = actor ? actor->AsMagicTarget() : nullptr;
+    auto effects = magic ? magic->GetActiveEffectList() : nullptr;
+    if (!effects || !spell) return false;
+    for (auto active : *effects)
+        if (active && active->spell == spell && active->duration > active->elapsedSeconds &&
+            (spell->effects[0]->baseEffect->GetArchetype() != RE::EffectArchetypes::ArchetypeID::kValueModifier ||
+             (std::isfinite(active->magnitude) && std::abs(active->magnitude) > 0.0f)) &&
+            active->conditionStatus != RE::ActiveEffect::ConditionStatus::kFalse &&
+            !active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled))
+        {
+            detail = std::format("Timed status active: magnitude {}, duration {} seconds, elapsed {} seconds. Engine owns expiry; later resistance or dispels may shorten it.",
+                                 active->magnitude, active->duration, active->elapsedSeconds);
             return true;
+        }
     return false;
 }
 
@@ -334,7 +364,8 @@ void RunStep(const std::shared_ptr<Request> &r)
     bool blocked = r->pickupIssued || !target || target->IsDisabled() || !target->Is3DLoaded() || target->IsDeleted();
     RE::TESBoundObject *held = nullptr;
     RE::ExtraDataList *heldExtra = nullptr;
-    if (r->hasItem && !r->inventoryMoved &&
+    if ((effect == "give" || effect == "store" || effect == "consume" || effect == "equip" ||
+         effect == "magic" || effect == "drop" || effect == "place") && r->hasItem && !r->inventoryMoved &&
         !InventoryChoice(RE::PlayerCharacter::GetSingleton(), r->selected, 1, held, heldExtra))
         blocked = true;
     for (const auto &dependency : step.at("requires"))
@@ -353,6 +384,49 @@ void RunStep(const std::shared_ptr<Request> &r)
     if (effect == "observe")
     {
         Complete(r->id, r->step, "succeeded", "No physical change.");
+        return;
+    }
+    const int family = StatusFamily(effect);
+    if (family >= 0)
+    {
+        const int duration = step.value("duration", 10);
+        auto spell = StatusSpell(family, duration);
+        auto player = RE::PlayerCharacter::GetSingleton();
+        auto caster = player ? player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant) : nullptr;
+        auto magic = actor ? actor->AsMagicTarget() : nullptr;
+        if (!actor || actor->IsDead() || !spell || !caster || !magic)
+        {
+            Complete(r->id, r->step, "failed", "Timed status is unavailable for this target.");
+            return;
+        }
+        // Refresh this CHIM family only. Do not alter vanilla or another mod's active effects.
+        std::vector<RE::ActiveEffect *> refresh;
+        if (auto effects = magic->GetActiveEffectList())
+            for (auto active : *effects)
+                if (active && (active->spell == StatusSpell(family, 5) || active->spell == StatusSpell(family, 10) ||
+                               active->spell == StatusSpell(family, 20) || active->spell == StatusSpell(family, 30)) &&
+                    active->GetBaseObject() == spell->effects[0]->baseEffect &&
+                    !active->flags.any(RE::ActiveEffect::Flag::kDispelled)) refresh.push_back(active);
+        for (auto active : refresh) active->Dispel(true);
+        caster->CastSpellImmediate(spell, false, actor, 1.0f, false, value, player);
+        r->pendingStatusSpell = spell->GetFormID();
+        r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        return;
+    }
+    const auto restoration = RestorationValue(effect);
+    if (restoration != RE::ActorValue::kNone)
+    {
+        auto stats = actor ? actor->AsActorValueOwner() : nullptr;
+        if (!actor || actor->IsDead() || !stats)
+        {
+            Complete(r->id, r->step, "failed", "Living actor statistics are unavailable.");
+            return;
+        }
+        const float before = stats->GetActorValue(restoration);
+        stats->RestoreActorValue(restoration, value);
+        const bool restored = stats->GetActorValue(restoration) > before;
+        Complete(r->id, r->step, restored ? "succeeded" : "failed",
+                 restored ? "The requested actor statistic increased." : "The actor statistic did not increase.");
         return;
     }
     if (effect == "disable")
@@ -443,9 +517,8 @@ void RunStep(const std::shared_ptr<Request> &r)
         }
         r->pickupIssued = true;
     }
-    const auto restoration = RestorationValue(effect);
     if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" || effect == "magic" ||
-        effect == "drop" || effect == "place" || restoration != RE::ActorValue::kNone)
+        effect == "drop" || effect == "place")
     {
         auto player = RE::PlayerCharacter::GetSingleton();
         RE::TESBoundObject *object = nullptr;
@@ -454,11 +527,6 @@ void RunStep(const std::shared_ptr<Request> &r)
         if (!r->hasItem || count > r->quantity || !InventoryChoice(player, r->selected, count, object, extra))
         {
             Complete(r->id, r->step, "failed", "The exact selected inventory instance is no longer available.");
-            return;
-        }
-        if (restoration != RE::ActorValue::kNone && (!actor || actor->IsDead() || !actor->AsActorValueOwner() || !Restores(object->As<RE::AlchemyItem>(), restoration)))
-        {
-            Complete(r->id, r->step, "failed", "The selected item cannot restore the requested living target statistic.");
             return;
         }
         if (effect == "drop" || effect == "place")
@@ -575,37 +643,13 @@ void RunStep(const std::shared_ptr<Request> &r)
         }
         if (!r->selected.extra)
             transferred = nullptr;
-        if (effect == "consume" || restoration != RE::ActorValue::kNone)
+        if (effect == "consume")
         {
             auto potion = object->As<RE::AlchemyItem>();
             const auto beforeConsumption = actor->GetInventoryCounts()[object];
-            auto stats = actor->AsActorValueOwner();
-            const float previous = stats && restoration != RE::ActorValue::kNone ? stats->GetActorValue(restoration) : 0;
             bool accepted = potion && actor->DrinkPotion(potion, transferred);
             const auto afterConsumption = actor->GetInventoryCounts()[object];
             bool consumed = accepted && afterConsumption == beforeConsumption - 1;
-            if (restoration != RE::ActorValue::kNone && consumed)
-            {
-                if (!stats)
-                {
-                    Complete(r->id, r->step, "unknown", "Item transferred and consumed; statistic verification unavailable.");
-                    return;
-                }
-                auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
-                RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
-                std::string id = r->id;
-                int index = r->step;
-                std::string statistic = "Health";
-                if (restoration == RE::ActorValue::kStamina) statistic = "Stamina";
-                else if (restoration == RE::ActorValue::kMagicka) statistic = "Magicka";
-                auto recipient = actor;
-                float beforeValue = previous;
-                if (!vm || !vm->DispatchStaticCall("CHIMItemInteraction", "VerifyRestoration",
-                    RE::MakeFunctionArguments(std::move(id), std::move(index), std::move(recipient),
-                                              std::move(statistic), std::move(beforeValue)), callback))
-                    Complete(r->id, r->step, "unknown", "Item transferred and consumed; statistic verification unavailable.");
-                return;
-            }
             Complete(r->id, r->step, consumed ? "succeeded" : "unknown",
                      consumed ? "Item transferred and consumption confirmed by inventory decrease."
                               : "Item transferred but consumption could not be confirmed.");
@@ -717,7 +761,9 @@ void Complete(const std::string &id, int step, const std::string &status, const 
             {"resize", "Resize"}, {"magic", "Cast"}, {"combat", "Start combat with"},
             {"consume_world", "Consume"}, {"heal", "Heal"}, {"restore_stamina", "Restore stamina of"},
             {"restore_magicka", "Restore magicka of"}, {"drop", "Drop"}, {"place", "Place"},
-            {"disarm", "Disarm"}, {"unequip", "Unequip armor from"}};
+            {"disarm", "Disarm"}, {"unequip", "Unequip armor from"},
+            {"poison", "Poison"}, {"burning", "Burn"}, {"paralysis", "Paralyze"},
+            {"calm", "Calm"}, {"fear", "Frighten"}, {"frenzy", "Enrage"}};
         const auto label = labels.find(effect);
         std::string action = label != labels.end() ? label->second : "Interaction with";
         const auto targetName = r->snapshot["target"].value("name", "target");
@@ -848,6 +894,22 @@ void Tick()
         if (!Live(r))
         {
             Cancel();
+            return;
+        }
+        if (r->pendingStatusSpell)
+        {
+            auto target = r->target.get();
+            auto actor = target ? target->As<RE::Actor>() : nullptr;
+            auto spell = RE::TESForm::LookupByID<RE::SpellItem>(r->pendingStatusSpell);
+            std::string statusDetail;
+            const bool applied = HasAppliedStatus(actor, spell, statusDetail);
+            if (applied || std::chrono::steady_clock::now() >= r->statusCheckUntil)
+            {
+                r->pendingStatusSpell = 0;
+                Complete(r->id, r->step, applied ? "succeeded" : "unknown",
+                         applied ? statusDetail
+                                 : "Status cast once; application was not confirmed. Resistance or eligibility may prevent it.");
+            }
             return;
         }
         if (r->step >= 0 && r->step < static_cast<int>(r->plan["steps"].size()) &&
@@ -1055,7 +1117,10 @@ void Command(const std::string &command)
                 r->allowed.push_back("consume");
             if (actor && !actor->IsDead())
                 for (const auto &effect : {"heal", "restore_stamina", "restore_magicka"})
-                    if (Restores(potion, RestorationValue(effect))) r->allowed.push_back(effect);
+                    r->allowed.push_back(effect);
+            if (actor && !actor->IsDead())
+                for (const auto &effect : {"poison", "burning", "paralysis", "calm", "fear", "frenzy"})
+                    if (StatusSpell(StatusFamily(effect), 10)) r->allowed.push_back(effect);
             if (item && !questItem)
             {
                 r->allowed.push_back("drop");
@@ -1107,7 +1172,7 @@ void Command(const std::string &command)
                 for (const auto &effect : r->allowed)
                 {
                     if (effect != "give" && effect != "store" && effect != "consume" && effect != "equip" &&
-                        effect != "magic" && effect != "heal" && effect != "restore_stamina" && effect != "restore_magicka")
+                        effect != "magic")
                         filtered.push_back(effect);
                 }
                 r->allowed = filtered;
@@ -1239,8 +1304,9 @@ void Command(const std::string &command)
                                 {"push", {1, 10}},         {"lock", {0, 100}},   {"unlock", {0, 0}},
                                 {"activate", {0, 0}},      {"open", {0, 0}},     {"close", {0, 0}},
                                 {"destroy", {1, 100}},     {"disable", {0, 0}},  {"resize", {0.25f, 2}},
-                                {"magic", {0, 0}},         {"combat", {0, 0}}, {"heal", {1, 1}},
-                                {"restore_stamina", {1, 1}}, {"restore_magicka", {1, 1}},
+                                {"magic", {0, 0}},         {"combat", {0, 0}}, {"heal", {1, 100}},
+                                {"restore_stamina", {1, 100}}, {"restore_magicka", {1, 100}}, {"poison", {1, 10}}, {"burning", {1, 10}},
+                                {"paralysis", {1, 1}}, {"calm", {1, 100}}, {"fear", {1, 100}}, {"frenzy", {1, 100}},
                                 {"drop", {1, 100}}, {"place", {1, 100}}, {"disarm", {0, 1}}, {"unequip", {30, 61}}};
                             if ((effect == "pickup" || effect == "consume_world") && ++pickupSteps > 1)
                                 throw std::runtime_error("Repeated pickup");
@@ -1252,13 +1318,17 @@ void Command(const std::string &command)
                                  effect == "lock" || effect == "drop" || effect == "place" || effect == "disarm" || effect == "unequip") &&
                                 std::floor(value) != value)
                                 throw std::runtime_error("Fractional quantity");
-                            if ((effect == "combat" || effect == "disarm" || effect == "unequip" || RestorationValue(effect) != RE::ActorValue::kNone) && !s.at("alive").get<bool>())
+                            if ((effect == "combat" || effect == "disarm" || effect == "unequip" || RestorationValue(effect) != RE::ActorValue::kNone || StatusFamily(effect) >= 0) && !s.at("alive").get<bool>())
                                 throw std::runtime_error("Combat requires living target");
+                            if (s.contains("duration") && (!s.at("duration").is_number_integer() ||
+                                (StatusFamily(effect) < 0 ? s.at("duration").get<int>() != 0 :
+                                 StatusSpell(StatusFamily(effect), s.at("duration").get<int>()) == nullptr)))
+                                throw std::runtime_error("Unsupported status duration");
                             for (auto dep : s.at("requires"))
                                 if (!dep.is_number_integer() || dep.get<int>() < 0 || dep.get<std::size_t>() >= index)
                                     throw std::runtime_error("Invalid dependency");
                             if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" ||
-                                effect == "magic" || effect == "drop" || effect == "place" || RestorationValue(effect) != RE::ActorValue::kNone)
+                                effect == "magic" || effect == "drop" || effect == "place")
                                 ++inventorySteps;
                         }
                         if (inventorySteps > 1)
