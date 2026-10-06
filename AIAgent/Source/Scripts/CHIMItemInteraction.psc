@@ -3,6 +3,7 @@ Scriptname CHIMItemInteraction Hidden
 ; Native session checks prevent queued Papyrus work from crossing a load or cancellation.
 Bool Function CanExecute(String requestId, Int step) Global Native
 Function Complete(String requestId, Int step, String status, String detail) Global Native
+Function FinishInjury(String requestId, Int step, Float healthBefore) Global Native
 
 Function Execute(String requestId, Int step, ObjectReference target, String effect, Float value, Bool approved, Scroll sourceSpell = None) Global
     If !CanExecute(requestId, step)
@@ -84,11 +85,17 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
         EndIf
     ElseIf effect == "injure" && victim && !victim.IsDead()
         Float before = victim.GetActorValue("Health")
-        victim.DamageActorValue("Health", value)
-        If victim.GetActorValue("Health") < before
-            status = "succeeded"
-            detail = "Health decreased."
+        ; Use Skyrim's assault response, without forcing civilians into combat or setting a bounty.
+        If !CanExecute(requestId, step)
+            Return
         EndIf
+        victim.SendAssaultAlarm()
+        If !CanExecute(requestId, step)
+            Return
+        EndIf
+        victim.DamageActorValue("Health", value)
+        FinishInjury(requestId, step, before)
+        Return
     ElseIf effect == "kill" && victim && approved
         ActorBase base = victim.GetActorBase()
         If !base.IsUnique() && (base.IsEssential() || base.IsProtected())

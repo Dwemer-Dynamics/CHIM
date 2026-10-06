@@ -103,6 +103,10 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
+Every injury applies health damage once, signals Skyrim’s assault response, and requests a moderate stagger if the target survives. Stagger acceptance is recorded separately from observed animation; some actors or animation states can reject it. This is not a full weapon hit and does not trigger weapon enchantments or manually set a bounty.
+
+Every injury applies health damage once, signals Skyrim’s assault response, and requests a moderate stagger if the target survives. Stagger acceptance is recorded separately from observed animation; some actors or animation states can reject it. This is not a full weapon hit and does not trigger weapon enchantments or manually set a bounty.
+
 Player context includes level, all 18 named current skills, armor rating, current and maximum health/stamina/magicka, combat/sneak state and up to eight active effects. Player maxima exclude accumulated damage while retaining temporary fortify modifiers; indefinite effect expiry is reported as unknown.
 
 Any selected item can be a narrative prop for supported synthetic effects; **No item** also works. Normal mode judges plausibility; Cheat Mode grants supported mechanics. Healing/stamina/magicka restore 1–100 points without consuming the prop. Real inventory consumption remains a separate action. Actor-only poison, burning, paralysis, calm, fear and frenzy last 5, 10, 20 or 30 seconds and refresh the same CHIM status instead of stacking. Skyrim owns active-effect expiry and save/load persistence; resisting or immune targets may prevent application. Up to five dependent outcomes can execute, each narrated only after its own receipt.

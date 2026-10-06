@@ -46,6 +46,7 @@ struct Request
     bool pickupIssued = false;
     int quantity = 1;
     int step = -1;
+    int finalizedInjuryStep = -1;
     std::atomic<int> allowedStep{-1};
     bool submitted = false;
     bool inventoryMoved = false;
@@ -1483,8 +1484,51 @@ void GrantPower()
     if (power && RE::PlayerCharacter::GetSingleton())
         RE::PlayerCharacter::GetSingleton()->AddSpell(power);
 }
+// Finish the Papyrus assault/damage operation on the game thread; never repeat its damage.
+void FinishInjury(const std::string &id, int step, float healthBefore)
+{
+    SKSE::GetTaskInterface()->AddTask([id, step, healthBefore] {
+        if (!CanExecute(id, step))
+            return;
+        auto r = Current();
+        if (r->finalizedInjuryStep == step || r->plan["steps"][step].value("effect", "") != "injure")
+            return;
+        r->finalizedInjuryStep = step;
+        auto target = r->target.get();
+        auto actor = target ? target->As<RE::Actor>() : nullptr;
+        if (!actor || actor->IsDeleted() || actor->IsDisabled() || !actor->Is3DLoaded())
+        {
+            Complete(id, step, "unknown", "Assault alarm and damage issued; target became unavailable.");
+            return;
+        }
+        auto stats = actor->AsActorValueOwner();
+        const bool damaged = stats && stats->GetActorValue(RE::ActorValue::kHealth) < healthBefore;
+        std::string detail = damaged ? "Health decreased; assault alarm sent. "
+                                     : "Assault alarm sent; health decrease was not confirmed. ";
+        if (actor->IsDead())
+            detail += "Target died; corpse stagger was skipped.";
+        else
+        {
+            const bool magnitude = actor->SetGraphVariableFloat("staggerMagnitude", 0.5f);
+            const bool direction = actor->SetGraphVariableFloat("staggerDirection", 0.0f);
+            const bool accepted = magnitude && direction && actor->NotifyAnimationGraph("staggerStart");
+            if (actor->IsStaggering())
+                detail += "Stagger state observed.";
+            else if (accepted)
+                detail += "Stagger request accepted; animation playback was not confirmed.";
+            else
+                detail += "Stagger request was not accepted by the animation graph.";
+        }
+        Complete(id, step, damaged ? "succeeded" : "unknown", detail);
+    });
+}
 void Register(RE::BSScript::IVirtualMachine *vm)
 {
+    vm->RegisterFunction(
+        "FinishInjury", "CHIMItemInteraction",
+        +[](RE::StaticFunctionTag *, std::string id, int step, float healthBefore) {
+            FinishInjury(id, step, healthBefore);
+        }, false);
     vm->RegisterFunction(
         "CanExecute", "CHIMItemInteraction",
         +[](RE::StaticFunctionTag *, std::string id, int step) { return CanExecute(id, step); }, false);
