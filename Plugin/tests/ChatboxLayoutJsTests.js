@@ -50,7 +50,8 @@ test('keeps a standalone recent-context viewer available outside the chat modal'
     assert.ok(viewerStart < contextStart);
     assert.ok(contextEnd < modalStart);
     assert.match(html, /data-chim-menu-scale-target="#chim-chatbox-viewer, \.focus-chatbox-shell"/);
-    assert.match(html, /placeholder="Enter message here, press Enter to send"/);
+    assert.doesNotMatch(html, /placeholder="Enter message here, press Enter to send"/);
+    assert.match(html, /<textarea\s+id="focus-chatbox-input"[^>]*aria-label="Message"/);
 });
 
 test('moves recent context between the bottom-left viewer and focused chat shell', () => {

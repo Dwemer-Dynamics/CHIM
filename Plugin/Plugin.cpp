@@ -1,3 +1,4 @@
+#include "ItemInteraction.h"
 #include "PlaythroughSession.h"
 #include "PlayerConversationRouter.h"
 #include <RE/O/ObjectiveState.h>
@@ -2463,6 +2464,7 @@ private:
 
                     SpeakManager::getInstance().refreshPendingPlayerSubtitle();
                     DirectorScene::ProcessActions();
+                    ItemInteraction::Tick();
 
                     ScriptLine l = SpeakManager::getInstance().getFirstItem();
 
@@ -7943,6 +7945,7 @@ OnLoadedGame {
         aiam.setPlayerName(player->GetName());
 
         NotifyConnectedOnce();
+        SKSE::GetTaskInterface()->AddTask([] { ItemInteraction::GrantPower(); });
 
         pendingLoadedPluginManifestSync = true;
         if (PostLoadedPluginManifest()) {
@@ -8253,6 +8256,7 @@ OnNewGame {
 
     */
     NotifyConnectedOnce();
+        SKSE::GetTaskInterface()->AddTask([] { ItemInteraction::GrantPower(); });
 
     pendingLoadedPluginManifestSync = true;
     if (PostLoadedPluginManifest()) {
@@ -8278,6 +8282,7 @@ OnNewGame {
 }
 
 OnDataLoaded {
+    ItemInteraction::Initialize();
     
     logger::info("OnDataLoaded");
     VRItemAwareness::Initialize();

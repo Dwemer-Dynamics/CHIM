@@ -1,3 +1,4 @@
+#include "ItemInteraction.h"
 #include "ChimInteraction.h"
 #include "Papyrus.h"
 
@@ -5537,6 +5538,7 @@ int Papyrus::updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE:
 }
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
+    ItemInteraction::Register(a_vm);
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
