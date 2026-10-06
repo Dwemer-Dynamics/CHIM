@@ -262,6 +262,21 @@ test('puts Vanilla Dialogue in the secondary action row as a real toggle button'
     assert.equal(html.split(helpCopy).length - 1, 1, 'help copy appears once, inside the tooltip');
 });
 
+test('places Wait Here beside Halt AI Actions and routes it to the captured crosshair NPC', () => {
+    const haltStart = html.indexOf('onclick="triggerHaltAIActions()"');
+    const waitStart = html.indexOf('onclick="triggerWaitHere()"');
+    const secondaryStart = html.indexOf('focus-chatbox-actions-row-secondary');
+    assert.ok(haltStart !== -1 && haltStart < waitStart && waitStart < secondaryStart, 'Wait Here follows Halt AI Actions in the primary row');
+    assert.match(html, /<button class="focus-btn" type="button" onclick="triggerWaitHere\(\)" title="[^"]*crosshair[^"]*"[^>]*>Wait Here<\/button>/);
+
+    const waitSource = script.slice(script.indexOf('window.triggerWaitHere'), script.indexOf('window.triggerSoulgazeDescribe'));
+    assert.match(waitSource, /sendControlCommand\('wait_here'\);[\s\S]*?focusInput\.focus\(\);/);
+    assert.doesNotMatch(waitSource, /closeFocusChatbox|focusInput\.value/, 'the draft and modal stay open');
+
+    const bridgeSource = bridge.slice(bridge.indexOf('cmd == "wait_here"'), bridge.indexOf('cmd == "soulgaze_describe"'));
+    assert.match(bridgeSource, /CrosshairPickData[\s\S]*?rp_wait_here\|\{\}/);
+});
+
 test('opens the bottom-row help upward and keeps the toggle focusable at a usable size', () => {
     const helpRule = css.match(/\.chatbox-mode-shortcuts\.capture-background-chat-help\s*\{([\s\S]*?)\}/);
     assert.ok(helpRule, 'capture help bubble rule not found');
