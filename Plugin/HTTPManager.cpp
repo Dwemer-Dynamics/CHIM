@@ -1774,13 +1774,26 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                         auto newline = fullResponse.find('\n', streamPosition);
                         while (newline != std::string::npos)
                         {
-                            auto line = json::parse(fullResponse.substr(streamPosition, newline - streamPosition), nullptr, false);
+                            const auto rawLine = fullResponse.substr(streamPosition, newline - streamPosition);
                             streamPosition = newline + 1;
+                            // PHP/proxy flushing may put blank CRLF lines before or between NDJSON records.
+                            if (rawLine.find_first_not_of(" \t\r") == std::string::npos)
+                            {
+                                newline = fullResponse.find('\n', streamPosition);
+                                continue;
+                            }
+                            auto line = json::parse(rawLine, nullptr, false);
                             bool accepted = false;
                             try {
                                 accepted = !line.is_discarded() && PlaythroughSession::Allowed(loadEpoch) && onLine(line);
                             } catch (const std::exception&) { accepted = false; }
-                            if (!accepted) { boundedFailure = true; break; }
+                            if (!accepted)
+                            {
+                                logger::warn("[postGameDataStream] Rejected record for {}: malformed_json={} bytes={} session_allowed={}",
+                                             endpoint, line.is_discarded(), rawLine.size(), PlaythroughSession::Allowed(loadEpoch));
+                                boundedFailure = true;
+                                break;
+                            }
                             newline = fullResponse.find('\n', streamPosition);
                         }
                         if (boundedFailure) break;

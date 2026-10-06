@@ -7,11 +7,9 @@
 .target-line, .item-summary { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .target-line { margin-bottom: 12px; }
 .field-caption { color: #999; width: 46px; flex: 0 0 46px; font-size: 13px; }
-#target, #selected-item { overflow-wrap: anywhere; min-width: 0; font-size: 14px; }
-#selected-item { flex: 1; }
+#target, #selected-item, #selected-magic { overflow-wrap: anywhere; min-width: 0; font-size: 14px; }
+#selected-item, #selected-magic { flex: 1; }
 .item-summary { flex-wrap: wrap; margin-bottom: 18px; }
-.magic-field { display: flex; align-items: center; gap: 10px; min-width: 0; margin-bottom: 18px; }
-#magic { flex: 1; min-width: 0; max-width: 100%; font-size: 14px; font-family: inherit; text-overflow: ellipsis; }
 #amount-field { display: flex; align-items: center; gap: 8px; margin-left: 56px; width: calc(100% - 56px); font-size: 13px; color: #bbb; }
 #quantity { width: 78px; }
 .interaction-panel input { min-width: 0; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.4); color: #eee; padding: 10px; font: inherit; }
@@ -21,9 +19,9 @@
 .interaction-panel :focus-visible { outline: 2px solid #f27c11; outline-offset: 2px; }
 .interaction-panel input:focus { outline: none; border-color: #f27c11; box-shadow: 0 0 0 1px rgba(242,124,17,.3); }
 .interaction-panel :disabled { opacity: .55; cursor: default; }
-#picker { padding: 10px; margin: -6px 0 18px; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.2); }
-#search { width: 100%; font-size: 14px; }
-#items { max-height: 190px; overflow-y: auto; margin-top: 8px; }
+.choice-picker { padding: 10px; margin: -6px 0 18px; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.2); }
+.choice-search { width: 100%; font-size: 14px; }
+.choice-list { max-height: 190px; overflow-y: auto; margin-top: 8px; }
 .inventory-row { display: block; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #eee; padding: 9px; cursor: pointer; overflow-wrap: anywhere; font-size: 14px; }
 .inventory-row:hover, .inventory-row[aria-pressed="true"] { background: rgba(242,124,17,.12); border-color: rgba(242,124,17,.3); }
 .inventory-row small { display: block; color: #aaa; font-size: 12px; margin-top: 3px; }
@@ -35,4 +33,4 @@
 @keyframes interact-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #status[data-state="busy"]::before { animation: none; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
-@media (max-width: 420px) { .interaction-body { padding: 12px; } .item-summary, .magic-field { gap: 7px; } }
+@media (max-width: 420px) { .interaction-body { padding: 12px; } .item-summary { gap: 7px; } }

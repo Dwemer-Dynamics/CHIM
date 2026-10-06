@@ -1,5 +1,5 @@
 'use strict';
-let interactionId = '', submitted = false, items = [], magic = [], selectedKey = null, acknowledgementTimer = null, nativeSignature = '';
+let interactionId = '', submitted = false, items = [], magic = [], selectedKey = null, magicKey = null, acknowledgementTimer = null, nativeSignature = '';
 const element = id => document.getElementById(id);
 const selectedItem = () => items.find(item => item.key === selectedKey) || null;
 function status(message, state) {
@@ -31,41 +31,74 @@ const validMagic = list => (Array.isArray(list) ? list : []).filter(entry => ent
 // Known spells, powers and shouts come from native; names are untrusted, so only textContent is used.
 // keepSelection retains the chosen key when a later same-request update still offers it.
 function setMagic(list, keepSelection) {
-    const previous = keepSelection ? selectedMagicKey() : null;
+    const previous = keepSelection ? magicKey : null;
     magic = validMagic(list);
-    const select = element('magic');
-    select.textContent = '';
-    const none = document.createElement('option');
-    none.value = ''; none.textContent = 'No magic'; select.appendChild(none);
-    const groups = new Map();
-    magic.forEach(entry => {
-        const kind = typeof entry.kind === 'string' ? entry.kind : '';
-        let parent = select;
-        if (kind) {
-            if (!groups.has(kind)) {
-                const group = document.createElement('optgroup');
-                group.label = kind; select.appendChild(group); groups.set(kind, group);
-            }
-            parent = groups.get(kind);
-        }
-        const option = document.createElement('option');
-        option.value = String(entry.key); option.textContent = entry.name;
-        if (entry.details) option.title = String(entry.details);
-        parent.appendChild(option);
-    });
-    select.value = previous !== null && magic.some(entry => entry.key === previous) ? String(previous) : '';
+    const kept = previous !== null && magic.some(entry => entry.key === previous) ? previous : null;
+    if (keepSelection && kept === null && document.activeElement === element('clear-magic')) element('choose-magic').focus();
+    showMagic(kept);
+    if (!element('magic-picker').hidden) filterMagic();
 }
 function selectedMagicKey() {
-    const value = element('magic').value;
-    if (value === '') return null;
-    const key = Number(value);
-    return magic.some(entry => entry.key === key) ? key : null;
+    return magic.some(entry => entry.key === magicKey) ? magicKey : null;
 }
-function showPicker(open) {
-    element('picker').hidden = !open;
-    element('choose').setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) { filterItems(); element('search').focus(); }
+const pickers = {item: ['picker', 'choose', 'search', () => filterItems()], magic: ['magic-picker', 'choose-magic', 'magic-search', () => filterMagic()]};
+// Only one choice list is open at a time; closing returns focus to the description.
+function showPicker(open, which) {
+    Object.keys(pickers).forEach(name => {
+        const shown = open && name === (which || 'item');
+        element(pickers[name][0]).hidden = !shown;
+        element(pickers[name][1]).setAttribute('aria-expanded', shown ? 'true' : 'false');
+    });
+    if (open) { pickers[which || 'item'][3](); element(pickers[which || 'item'][2]).focus(); }
     else if (!submitted) element('intent').focus();
+}
+const pickerOpen = () => Object.keys(pickers).some(name => !element(pickers[name][0]).hidden);
+function choiceRow(label, details, pressed, key, pick) {
+    const row = document.createElement('button');
+    row.type = 'button'; row.className = 'inventory-row'; row.disabled = submitted;
+    row.dataset.key = key === null ? '' : String(key);
+    row.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    const name = document.createElement('span');
+    name.textContent = label; row.appendChild(name);
+    if (details) {
+        const small = document.createElement('small');
+        small.textContent = details; row.appendChild(small);
+    }
+    row.onclick = () => { if (!submitted) pick(key); };
+    return row;
+}
+function emptyChoice(list, message) {
+    const empty = document.createElement('p'); empty.className = 'empty-inventory';
+    empty.textContent = message; list.appendChild(empty);
+}
+function showMagic(key) {
+    magicKey = key;
+    const entry = magic.find(spell => spell.key === key) || null;
+    element('selected-magic').textContent = entry ? entry.name : 'No magic';
+    element('selected-magic').title = entry && entry.details ? String(entry.details) : '';
+    element('clear-magic').hidden = !entry;
+}
+function chooseMagic(key) {
+    showMagic(key);
+    showPicker(false);
+}
+function filterMagic() {
+    const term = element('magic-search').value.toLocaleLowerCase();
+    const list = element('magic-list');
+    // Late native updates rebuild the rows; keep keyboard focus on the same choice when it survives.
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.key : undefined;
+    list.textContent = '';
+    list.appendChild(choiceRow('No magic', '', magicKey === null, null, chooseMagic));
+    const matches = magic.filter(entry => [entry.name, entry.kind, entry.details].filter(Boolean).join(' ').toLocaleLowerCase().includes(term));
+    matches.forEach(entry => {
+        const details = [typeof entry.kind === 'string' ? entry.kind : '', entry.details ? String(entry.details) : ''].filter(Boolean).join(' · ');
+        list.appendChild(choiceRow(entry.name, details, entry.key === magicKey, entry.key, chooseMagic));
+    });
+    if (!matches.length) emptyChoice(list, magic.length ? 'No matching magic.' : 'No known magic.');
+    if (focused !== undefined) {
+        const row = Array.prototype.find.call(list.querySelectorAll('.inventory-row'), button => button.dataset.key === focused);
+        (row || element('magic-search')).focus();
+    }
 }
 function chooseItem(key) {
     selectedKey = key;
@@ -82,28 +115,11 @@ function chooseItem(key) {
 function filterItems() {
     const term = element('search').value.toLocaleLowerCase();
     const list = element('items');
-    list.innerHTML = '';
-    function addRow(item) {
-        const row = document.createElement('button');
-        row.type = 'button'; row.className = 'inventory-row';
-        row.setAttribute('aria-pressed', (item ? item.key === selectedKey : selectedKey === null) ? 'true' : 'false');
-        const name = document.createElement('span');
-        name.textContent = item ? item.name : 'No item'; row.appendChild(name);
-        if (item) {
-            const details = document.createElement('small');
-            details.textContent = item.count + ' available' + (item.details ? ' · ' + item.details : '');
-            row.appendChild(details);
-        }
-        row.onclick = () => { if (!submitted) chooseItem(item ? item.key : null); };
-        list.appendChild(row);
-    }
-    addRow(null);
+    list.textContent = '';
+    list.appendChild(choiceRow('No item', '', selectedKey === null, null, chooseItem));
     const matches = items.filter(item => (item.name + ' ' + (item.details || '')).toLocaleLowerCase().includes(term));
-    matches.forEach(addRow);
-    if (!matches.length) {
-        const empty = document.createElement('p'); empty.className = 'empty-inventory';
-        empty.textContent = items.length ? 'No matching items.' : 'No inventory items.'; list.appendChild(empty);
-    }
+    matches.forEach(item => list.appendChild(choiceRow(item.name, item.count + ' available' + (item.details ? ' · ' + item.details : ''), item.key === selectedKey, item.key, chooseItem)));
+    if (!matches.length) emptyChoice(list, items.length ? 'No matching items.' : 'No inventory items.');
 }
 window.setInteraction = data => {
     // Native merges updates into one payload, so a delayed magic list repeats the last state and status.
@@ -123,6 +139,7 @@ window.setInteraction = data => {
             element('target').textContent = data.target;
             element('intent').value = '';
             element('search').value = '';
+            element('magic-search').value = '';
             status('');
             setMagic(data.magic);
             chooseItem(null);
@@ -162,9 +179,12 @@ function submitInteraction(event) {
     }, 5000);
 }
 element('close').onclick = cancel;
-element('choose').onclick = () => showPicker(element('picker').hidden);
+element('choose').onclick = () => showPicker(element('picker').hidden, 'item');
 element('clear-item').onclick = () => chooseItem(null);
 element('search').oninput = filterItems;
+element('choose-magic').onclick = () => showPicker(element('magic-picker').hidden, 'magic');
+element('clear-magic').onclick = () => chooseMagic(null);
+element('magic-search').oninput = filterMagic;
 element('submit').onclick = submitInteraction;
 element('interaction').onsubmit = event => event.preventDefault();
 document.addEventListener('focusin', event => {
@@ -177,12 +197,12 @@ document.addEventListener('keydown', event => {
     if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') {
         event.preventDefault();
-        if (!element('picker').hidden) showPicker(false);
+        if (pickerOpen()) showPicker(false);
         else cancel();
     }
     if (event.key === 'Enter') {
         if (event.target === element('intent') && !event.shiftKey) submitInteraction(event);
-        else if (event.target === element('search') || event.target === element('quantity') || event.target === element('magic')) event.preventDefault();
+        else if (event.target === element('search') || event.target === element('magic-search') || event.target === element('quantity')) event.preventDefault();
     }
     if (event.key === 'Tab') {
         const fields = Array.prototype.filter.call(document.querySelectorAll('button,input,textarea,select'), field => !field.disabled && field.offsetParent !== null);

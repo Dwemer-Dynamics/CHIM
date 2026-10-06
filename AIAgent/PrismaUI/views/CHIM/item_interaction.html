@@ -24,15 +24,21 @@
                         <button id="choose" class="focus-btn focus-btn-compact" type="button" aria-expanded="false" aria-controls="picker">Choose&hellip;</button>
                         <label id="amount-field" hidden>Amount <input id="quantity" type="number" min="1" max="100" value="1" disabled></label>
                     </div>
-                    <section id="picker" aria-label="Choose an inventory item" hidden>
+                    <section id="picker" class="choice-picker" aria-label="Choose an inventory item" hidden>
                         <label class="visually-hidden" for="search">Search inventory</label>
-                        <input id="search" type="search" placeholder="Search inventory">
-                        <div id="items" role="group" aria-label="Inventory items"></div>
+                        <input id="search" class="choice-search" type="search" placeholder="Search inventory">
+                        <div id="items" class="choice-list" role="group" aria-label="Inventory items"></div>
                     </section>
-                    <div class="magic-field">
-                        <label class="field-caption" for="magic">Magic</label>
-                        <select id="magic" class="chatbox-mode-select"><option value="">No magic</option></select>
+                    <div class="item-summary">
+                        <span class="field-caption">Magic</span><span id="selected-magic">No magic</span>
+                        <button id="clear-magic" class="focus-btn focus-btn-compact" type="button" aria-label="Clear selected magic" hidden>&times;</button>
+                        <button id="choose-magic" class="focus-btn focus-btn-compact" type="button" aria-expanded="false" aria-controls="magic-picker">Choose&hellip;</button>
                     </div>
+                    <section id="magic-picker" class="choice-picker" aria-label="Choose known magic" hidden>
+                        <label class="visually-hidden" for="magic-search">Search magic</label>
+                        <input id="magic-search" class="choice-search" type="search" placeholder="Search magic">
+                        <div id="magic-list" class="choice-list" role="group" aria-label="Known magic"></div>
+                    </section>
                     <label class="intent-label" for="intent">What do you want to do?</label>
                     <textarea class="focus-chatbox-input" id="intent" maxlength="1000" rows="4"></textarea>
                     <div class="interaction-actions">
