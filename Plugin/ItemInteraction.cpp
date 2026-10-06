@@ -51,6 +51,8 @@ struct Request
     std::vector<Choice> choices;
     std::vector<MagicChoice> magicChoices;
     std::optional<MagicChoice> selectedMagic;
+    std::vector<RE::FormID> dispellableSpells;
+    std::map<RE::FormID, std::set<std::pair<std::uintptr_t, std::uint16_t>>> dispelInstances;
     RE::ObjectRefHandle magicRecipient;
     float magicHealthBefore = 0;
     std::vector<std::uintptr_t> magicEffectsBefore;
@@ -69,6 +71,7 @@ struct Request
     RE::FormID pendingSceneryShader = 0;
     std::vector<RE::NiPointer<RE::ShaderReferenceEffect>> priorSceneryShaders;
     RE::FormID pendingStatusSpell = 0;
+    bool pendingStagger = false;
     std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
     json allowed;
@@ -86,7 +89,7 @@ struct Request
 std::shared_ptr<Request> current;
 std::map<std::string, std::shared_ptr<Request>> pendingReactions;
 // Retain only our short-lived scenery shaders so refresh never stops another mod's effect.
-std::map<RE::FormID, RE::NiPointer<RE::ShaderReferenceEffect>> sceneryFire;
+std::map<std::pair<RE::FormID, std::string>, RE::NiPointer<RE::ShaderReferenceEffect>> sceneryFire;
 std::uint64_t sceneryFireEpoch = 0;
 std::mutex currentMutex;
 thread_local bool releasingReaction = false;
@@ -128,7 +131,7 @@ RE::ActorValue RestorationValue(const std::string &effect)
 // Persistent authored spell variants let Skyrim own expiry and save/load persistence.
 int StatusFamily(const std::string &effect)
 {
-    static const std::vector<std::string> names = {"poison", "burning", "paralysis", "calm", "fear", "frenzy"};
+    static const std::vector<std::string> names = {"poison", "burning", "paralysis", "calm", "fear", "frenzy", "frost", "shock", "drain_stamina", "drain_magicka", "slow", "haste", "weaken_armor", "fortify_armor", "weaken_weapon", "fortify_weapon", "absorb_health", "absorb_stamina", "absorb_magicka", "ethereal", "soul_trap", "reanimate", "turn_undead", "banish"};
     auto it = std::find(names.begin(), names.end(), effect);
     return it == names.end() ? -1 : static_cast<int>(it - names.begin());
 }
@@ -136,24 +139,28 @@ RE::SpellItem *StatusSpell(int family, int duration)
 {
     static const std::vector<int> durations = {5, 10, 20, 30};
     auto it = std::find(durations.begin(), durations.end(), duration);
-    if (family < 0 || family >= 6 || it == durations.end()) return nullptr;
+    if (family < 0 || family >= 24 || it == durations.end()) return nullptr;
     auto data = RE::TESDataHandler::GetSingleton();
-    auto spell = data ? data->LookupForm<RE::SpellItem>(0x60010 + family * 4 +
-        static_cast<int>(it - durations.begin()), "AIAgent.esp") : nullptr;
-    auto expected = data ? data->LookupForm<RE::EffectSetting>(0x60000 + family, "AIAgent.esp") : nullptr;
-    if (!spell || spell->effects.size() != 1 || !spell->effects[0] || !expected ||
-        spell->effects[0]->baseEffect != expected ||
-        spell->GetDelivery() != RE::MagicSystem::Delivery::kTargetActor ||
-        expected->data.delivery != RE::MagicSystem::Delivery::kTargetActor ||
-        spell->GetCastingType() != RE::MagicSystem::CastingType::kFireAndForget ||
-        expected->data.castingType != RE::MagicSystem::CastingType::kFireAndForget ||
-        expected->data.projectileBase || spell->effects[0]->effectItem.area != 0 ||
-        spell->effects[0]->effectItem.duration != static_cast<std::uint32_t>(duration)) return nullptr;
+    const auto spellLocal = family < 6 ? 0x60010 + family * 4 : 0x60200 + (family - 6) * 4;
+    const auto effectLocal = family < 6 ? 0x60000 + family : 0x60100 + (family - 6) * 4;
+    auto spell = data ? data->LookupForm<RE::SpellItem>(spellLocal + static_cast<int>(it - durations.begin()), "AIAgent.esp") : nullptr;
+    const std::size_t count = family == 6 ? 2 : 1;
+    if (!spell || spell->effects.size() != count || spell->GetDelivery() != RE::MagicSystem::Delivery::kTargetActor ||
+        spell->GetCastingType() != RE::MagicSystem::CastingType::kFireAndForget) return nullptr;
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        auto expected = data->LookupForm<RE::EffectSetting>(effectLocal + index, "AIAgent.esp");
+        auto part = spell->effects[index];
+        if (!part || !expected || part->baseEffect != expected || expected->data.projectileBase ||
+            expected->data.delivery != RE::MagicSystem::Delivery::kTargetActor ||
+            expected->data.castingType != RE::MagicSystem::CastingType::kFireAndForget || part->effectItem.area != 0 ||
+            part->effectItem.duration != static_cast<std::uint32_t>(family == 23 ? 0 : duration)) return nullptr;
+    }
     return spell;
 }
-RE::TESEffectShader *SceneryFireShader()
+RE::TESEffectShader *SceneryFireShader(const std::string &effect = "burning_visual")
 {
-    auto spell = StatusSpell(1, 10);
+    auto spell = StatusSpell(effect == "frost_visual" ? 6 : ((effect == "shock_visual" || effect == "impact_burst") ? 7 : 1), 10);
     return spell ? spell->effects[0]->baseEffect->data.effectShader : nullptr;
 }
 
@@ -163,18 +170,22 @@ bool HasAppliedStatus(RE::Actor *actor, RE::SpellItem *spell, std::string &detai
     auto magic = actor ? actor->AsMagicTarget() : nullptr;
     auto effects = magic ? magic->GetActiveEffectList() : nullptr;
     if (!effects || !spell) return false;
-    for (auto active : *effects)
-        if (active && active->spell == spell && active->duration > active->elapsedSeconds &&
-            (spell->effects[0]->baseEffect->GetArchetype() != RE::EffectArchetypes::ArchetypeID::kValueModifier ||
-             (std::isfinite(active->magnitude) && std::abs(active->magnitude) > 0.0f)) &&
-            active->conditionStatus != RE::ActiveEffect::ConditionStatus::kFalse &&
-            !active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled))
-        {
-            detail = std::format("Timed status active: magnitude {}, duration {} seconds, elapsed {} seconds. Engine owns expiry; later resistance or dispels may shorten it.",
-                                 active->magnitude, active->duration, active->elapsedSeconds);
-            return true;
-        }
-    return false;
+    std::size_t confirmed = 0;
+    for (auto part : spell->effects)
+    {
+        bool found = false;
+        for (auto active : *effects)
+            if (active && active->spell == spell && active->GetCasterActor().get() == RE::PlayerCharacter::GetSingleton() && active->GetBaseObject() == part->baseEffect &&
+                active->duration > active->elapsedSeconds && active->conditionStatus != RE::ActiveEffect::ConditionStatus::kFalse &&
+                !active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled) &&
+                std::isfinite(active->magnitude) &&
+                (part->baseEffect->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kNoMagnitude) || std::abs(active->magnitude) > 0.0f))
+            { found = true; break; }
+        if (found) ++confirmed;
+    }
+    if (confirmed != spell->effects.size()) return false;
+    detail = std::format("All {} authored status components active. Engine owns expiry; future effects, resistance and rendered visuals are not guaranteed.", confirmed);
+    return true;
 }
 
 bool KnownMagic(RE::PlayerCharacter *player, const MagicChoice &choice)
@@ -519,6 +530,49 @@ void Finish(const std::shared_ptr<Request> &r)
     });
 }
 
+// Movement is limited to loose inventory objects, never actors, doors or static buildings.
+bool MovableObject(RE::TESObjectREFR *target)
+{
+    return target && !target->As<RE::Actor>() && !target->HasQuestObject() && CanPickUp(target);
+}
+
+bool ActorKeyword(RE::Actor *actor, const char *name)
+{
+    auto keyword = RE::TESForm::LookupByEditorID<RE::BGSKeyword>(name);
+    return actor && keyword && actor->HasKeyword(keyword);
+}
+bool UndeadActor(RE::Actor *actor) { return ActorKeyword(actor, "ActorTypeUndead"); }
+
+
+// Conservative point rays reject blocked paths and unsupported destinations; this is not a swept-volume test.
+bool CheckedMove(RE::TESObjectREFR *target, const RE::NiPoint3 &destination)
+{
+    auto cell = target ? target->GetParentCell() : nullptr;
+    auto world = cell ? cell->GetbhkWorld() : nullptr;
+    if (!world) return false;
+    const float scale = RE::bhkWorld::GetWorldScale();
+    const auto ray = [&](RE::NiPoint3 from, RE::NiPoint3 to, bool wantHit) {
+        RE::bhkPickData pick{};
+        pick.rayInput.from = RE::hkVector4(from * scale);
+        pick.rayInput.to = RE::hkVector4(to * scale);
+        pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
+        const bool hit = world->PickObject(pick) && pick.rayOutput.HasHit();
+        if (wantHit)
+        {
+            if (!hit || !pick.rayOutput.rootCollidable) return false;
+            auto ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+            const float floorZ = from.z + (to.z - from.z) * pick.rayOutput.hitFraction;
+            return floorZ <= destination.z + 2.0f && ref != target && (!ref || !ref->As<RE::Actor>());
+        }
+        return !hit;
+    };
+    const auto start = target->GetPosition();
+    for (const RE::NiPoint3 offset : {RE::NiPoint3(0,0,16), RE::NiPoint3(16,0,16), RE::NiPoint3(-16,0,16),
+                                      RE::NiPoint3(0,16,16), RE::NiPoint3(0,-16,16)})
+        if (!ray(start + offset, destination + offset, false)) return false;
+    return ray(destination + RE::NiPoint3(0,0,16), destination - RE::NiPoint3(0,0,256), true);
+}
+
 void RunStep(const std::shared_ptr<Request> &r)
 {
     if (!Live(r))
@@ -572,6 +626,126 @@ void RunStep(const std::shared_ptr<Request> &r)
         Complete(r->id, r->step, "succeeded", "No physical change.");
         return;
     }
+    if (effect == "move" || effect == "rotate" || effect == "directional_throw")
+    {
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!MovableObject(target.get()) || !player || target->GetParentCell() != player->GetParentCell())
+        { Complete(r->id, r->step, "failed", "The captured object is not a movable loose reference in the current cell."); return; }
+        auto position = target->GetPosition();
+        if (effect == "rotate")
+        {
+            auto angle = target->GetAngle();
+            const auto axis = step.value("axis", "");
+            const float radians = value * 0.01745329252f;
+            if (axis == "x") angle.x += radians; else if (axis == "y") angle.y += radians; else if (axis == "z") angle.z += radians;
+            else { Complete(r->id, r->step, "failed", "Invalid rotation axis."); return; }
+            target->SetAngle(angle);
+            const auto actual = target->GetAngle();
+            const bool changed = std::abs(std::remainder(actual.x-angle.x,6.283185307f)) < 0.02f &&
+                std::abs(std::remainder(actual.y-angle.y,6.283185307f)) < 0.02f && std::abs(std::remainder(actual.z-angle.z,6.283185307f)) < 0.02f;
+            Complete(r->id, r->step, changed ? "succeeded" : "unknown", changed ? "Captured reference orientation verified; collision settling is not guaranteed." : "Rotation requested once; orientation was not confirmed.");
+            return;
+        }
+        const auto direction = step.value("direction", "");
+        RE::NiPoint3 vector{};
+        if (effect == "directional_throw")
+        {
+            vector = position - player->GetPosition();
+            const auto length = vector.Length();
+            if (direction == "up") vector = RE::NiPoint3(0,0,1);
+            else if ((direction == "toward" || direction == "away") && length > 0.01f) vector = vector * ((direction == "toward" ? -1.0f : 1.0f) / length);
+            else { Complete(r->id, r->step, "failed", "Throw direction is undefined."); return; }
+            auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+            auto id=r->id;auto index=r->step;auto ref=target.get();float x=vector.x,y=vector.y,z=vector.z,amount=value;
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+            if (!vm || !vm->DispatchStaticCall("CHIMItemInteraction", "ThrowObject", RE::MakeFunctionArguments(std::move(id),std::move(index),std::move(ref),std::move(x),std::move(y),std::move(z),std::move(amount)),callback))
+                Complete(r->id,r->step,"failed","Object impulse could not be dispatched.");
+            return;
+        }
+        const float heading = player->GetAngleZ();
+        if (direction == "forward") vector=RE::NiPoint3(std::sin(heading),std::cos(heading),0);
+        else if (direction == "backward") vector=RE::NiPoint3(-std::sin(heading),-std::cos(heading),0);
+        else if (direction == "right") vector=RE::NiPoint3(std::cos(heading),-std::sin(heading),0);
+        else if (direction == "left") vector=RE::NiPoint3(-std::cos(heading),std::sin(heading),0);
+        else if (direction == "up") vector=RE::NiPoint3(0,0,1);
+        else if (direction == "down") vector=RE::NiPoint3(0,0,-1);
+        else { Complete(r->id,r->step,"failed","Invalid movement direction.");return; }
+        const auto destination = position + vector * value;
+        if (!CheckedMove(target.get(), destination)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
+        target->SetPosition(destination);
+        const bool moved=(target->GetPosition()-destination).Length()<2.0f;
+        Complete(r->id,r->step,moved?"succeeded":"unknown",moved?"Captured reference position verified after bounded path and floor checks; full collision clearance is not guaranteed.":"Movement requested once; destination was not confirmed.");
+        return;
+    }
+    if (effect == "stagger")
+    {
+        if (!actor || actor->IsDead()) { Complete(r->id, r->step, "failed", "A living actor is required."); return; }
+        const bool accepted = actor->SetGraphVariableFloat("staggerMagnitude", value) &&
+            actor->SetGraphVariableFloat("staggerDirection", 0.0f) && actor->NotifyAnimationGraph("staggerStart");
+        if (!accepted) { Complete(r->id,r->step,"unknown","Animation graph did not accept stagger."); return; }
+        r->pendingStagger = true;
+        r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        return;
+    }
+    if (effect == "extinguish" || effect == "neutralize_poison" || effect == "release_paralysis" || effect == "dispel")
+    {
+        const int family = effect == "extinguish" ? 1 : (effect == "neutralize_poison" ? 0 : 2);
+        RE::SpellItem *selectedSpell = nullptr;
+        if (effect == "dispel")
+        {
+            const auto index = static_cast<std::size_t>(value);
+            if (value != std::floor(value) || index >= r->dispellableSpells.size())
+            { Complete(r->id, r->step, "failed", "The captured spell selection is invalid."); return; }
+            selectedSpell = RE::TESForm::LookupByID<RE::SpellItem>(r->dispellableSpells[index]);
+            if (!selectedSpell || selectedSpell->GetSpellType() != RE::MagicSystem::SpellType::kSpell)
+            { Complete(r->id, r->step, "failed", "The captured spell is no longer eligible."); return; }
+        }
+        std::vector<RE::ActiveEffect *> matches;
+        if (actor)
+            if (auto list = actor->AsMagicTarget()->GetActiveEffectList())
+                for (auto active : *list)
+                    if (active && !active->flags.any(RE::ActiveEffect::Flag::kDispelled) &&
+                        (selectedSpell ? active->spell == selectedSpell :
+                         (active->spell == StatusSpell(family, 5) || active->spell == StatusSpell(family, 10) ||
+                          active->spell == StatusSpell(family, 20) || active->spell == StatusSpell(family, 30)))) matches.push_back(active);
+        if (selectedSpell)
+        {
+            std::set<std::pair<std::uintptr_t, std::uint16_t>> identities;
+            for (auto active : matches)
+            {
+                if (active->duration <= active->elapsedSeconds || active->duration <= 0 ||
+                    active->flags.any(RE::ActiveEffect::Flag::kInactive) || active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse)
+                { Complete(r->id,r->step,"skipped","The captured spell instance changed; nothing was dispelled."); return; }
+                identities.emplace(reinterpret_cast<std::uintptr_t>(active), active->usUniqueID);
+            }
+            if (identities != r->dispelInstances[selectedSpell->GetFormID()])
+            { Complete(r->id,r->step,"skipped","The captured spell instance changed; nothing was dispelled."); return; }
+        }
+        for (auto active : matches) active->Dispel(true);
+        bool cleared = true;
+        if (actor)
+            if (auto remaining = actor->AsMagicTarget()->GetActiveEffectList())
+                for (auto active : *remaining)
+                    if (active && !active->flags.any(RE::ActiveEffect::Flag::kDispelled) &&
+                        (selectedSpell ? active->spell == selectedSpell :
+                         (active->spell == StatusSpell(family,5) || active->spell == StatusSpell(family,10) ||
+                          active->spell == StatusSpell(family,20) || active->spell == StatusSpell(family,30)))) cleared = false;
+        bool shaderStopped = false;
+        if (effect == "extinguish" && sceneryFireEpoch == r->epoch)
+        {
+            const auto key = std::make_pair(target->GetFormID(), std::string("burning_visual"));
+            auto found = sceneryFire.find(key);
+            if (found != sceneryFire.end())
+            {
+                if (found->second) { found->second->finished = true; shaderStopped = true; }
+                sceneryFire.erase(found);
+            }
+        }
+        Complete(r->id, r->step, matches.empty() && !shaderStopped ? "skipped" : (cleared ? "succeeded" : "unknown"),
+                 cleared ? (matches.empty() && !shaderStopped ? "The selected effect is already absent; nothing changed." : "Only the selected captured spell or CHIM-owned effects were marked dispelled/stopped.") :
+                           "Dispel requested once; removal was not confirmed.");
+        return;
+    }
     if (effect == "cast_selected_magic")
     {
         auto player = RE::PlayerCharacter::GetSingleton();
@@ -602,9 +776,9 @@ void RunStep(const std::shared_ptr<Request> &r)
             Complete(r->id, r->step, "failed", "Selected magic could not be dispatched.");
         return;
     }
-    if (effect == "burning_visual")
+    if (effect == "burning_visual" || effect == "frost_visual" || effect == "shock_visual" || effect == "impact_burst")
     {
-        auto shader = SceneryFireShader();
+        auto shader = SceneryFireShader(effect);
         auto lists = RE::ProcessLists::GetSingleton();
         if (actor || !shader || !lists)
         {
@@ -621,7 +795,7 @@ void RunStep(const std::shared_ptr<Request> &r)
                 it = sceneryFire.erase(it);
             else
                 ++it;
-        const auto key = target->GetFormID();
+        const auto key = std::make_pair(target->GetFormID(), effect);
         if (sceneryFire.contains(key))
         {
             sceneryFire.at(key)->finished = true;
@@ -647,7 +821,7 @@ void RunStep(const std::shared_ptr<Request> &r)
         }
         // The observed AE call returned 0x1, not a usable effect pointer despite CommonLib's signature.
         // Never dereference or retain its return; only ProcessLists supplies verified engine-owned instances.
-        target->ApplyEffectShader(shader, static_cast<float>(step.value("duration", 10)));
+        target->ApplyEffectShader(shader, effect == "impact_burst" ? 1.0f : static_cast<float>(step.value("duration", 10)));
         r->pendingSceneryShader = shader->GetFormID();
         r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         return;
@@ -655,12 +829,13 @@ void RunStep(const std::shared_ptr<Request> &r)
     const int family = StatusFamily(effect);
     if (family >= 0)
     {
-        const int duration = step.value("duration", 10);
+        const int duration = effect == "banish" ? 5 : step.value("duration", 10);
         auto spell = StatusSpell(family, duration);
         auto player = RE::PlayerCharacter::GetSingleton();
         auto caster = player ? player->GetMagicCaster(RE::MagicSystem::CastingSource::kInstant) : nullptr;
         auto magic = actor ? actor->AsMagicTarget() : nullptr;
-        if (!actor || actor->IsDead() || !spell || !caster || !magic)
+        if (!actor || (effect == "reanimate" ? !actor->IsDead() : actor->IsDead()) || !spell || !caster || !magic ||
+            (effect == "banish" && (!actor->IsSummoned() || !ActorKeyword(actor, "ActorTypeDaedra"))) || (effect == "turn_undead" && !UndeadActor(actor)) || (effect == "reanimate" && ActorKeyword(actor, "MagicNoReanimate")))
         {
             Complete(r->id, r->step, "failed", "Timed status is unavailable for this target.");
             return;
@@ -671,14 +846,21 @@ void RunStep(const std::shared_ptr<Request> &r)
             for (auto active : *effects)
                 if (active && (active->spell == StatusSpell(family, 5) || active->spell == StatusSpell(family, 10) ||
                                active->spell == StatusSpell(family, 20) || active->spell == StatusSpell(family, 30)) &&
-                    active->GetBaseObject() == spell->effects[0]->baseEffect &&
                     !active->flags.any(RE::ActiveEffect::Flag::kDispelled)) refresh.push_back(active);
         for (auto active : refresh) active->Dispel(true);
         SKSE::log::info("[INTERACT] Status cast id={} step={} spell={:08X} target={:08X} magnitude={} duration={} refreshed={}",
                         r->id, r->step, spell->GetFormID(), actor->GetFormID(), value, duration, refresh.size());
-        caster->CastSpellImmediate(spell, false, actor, 1.0f, false, value, player);
+        float magnitude = value;
+        if (effect == "weaken_weapon" || effect == "fortify_weapon")
+            magnitude *= std::max(0.0f, actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult)) / 100.0f;
+        if (effect == "slow" || effect == "haste")
+            magnitude *= std::max(0.0f, actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kSpeedMult)) / 100.0f;
+        if (effect == "weaken_weapon")
+            magnitude = std::min(magnitude, std::max(0.0f, actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult)));
+        if (magnitude <= 0) { Complete(r->id, r->step, "failed", "No positive modifier can be applied."); return; }
+        caster->CastSpellImmediate(spell, false, actor, 1.0f, false, magnitude, player);
         r->pendingStatusSpell = spell->GetFormID();
-        r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(effect == "reanimate" ? 5 : 2);
         return;
     }
     const auto restoration = RestorationValue(effect);
@@ -1036,7 +1218,15 @@ void Complete(const std::string &id, int step, const std::string &status, const 
             {"restore_magicka", "Restore magicka of"}, {"drop", "Drop"}, {"place", "Place"},
             {"disarm", "Disarm"}, {"unequip", "Unequip armor from"},
             {"poison", "Poison"}, {"burning", "Burn"}, {"burning_visual", "Set alight"}, {"paralysis", "Paralyze"},
-            {"calm", "Calm"}, {"fear", "Frighten"}, {"frenzy", "Enrage"}};
+            {"calm", "Calm"}, {"fear", "Frighten"}, {"frenzy", "Enrage"},
+            {"frost","Freeze"},{"shock","Shock"},{"drain_stamina","Drain stamina from"},{"drain_magicka","Drain magicka from"},
+            {"slow","Slow"},{"haste","Hasten"},{"weaken_armor","Weaken armor on"},{"fortify_armor","Fortify armor on"},
+            {"weaken_weapon","Weaken weapon damage of"},{"fortify_weapon","Fortify weapon damage of"},
+            {"absorb_health","Absorb health from"},{"absorb_stamina","Absorb stamina from"},{"absorb_magicka","Absorb magicka from"},
+            {"ethereal","Make ethereal"},{"soul_trap","Soul trap"},{"reanimate","Reanimate"},{"turn_undead","Turn undead"},{"banish","Banish"},
+            {"stagger","Stagger"},{"extinguish","Extinguish"},{"neutralize_poison","Neutralize poison on"},{"release_paralysis","Release paralysis on"},
+            {"dispel","Dispel selected spell on"},{"directional_throw","Throw"},{"rotate","Rotate"},{"move","Move"},
+            {"frost_visual","Frost visual on"},{"shock_visual","Shock visual on"},{"impact_burst","Impact burst on"}};
         const auto label = labels.find(effect);
         std::string action = label != labels.end() ? label->second : "Interaction with";
         const auto targetName = r->snapshot["target"].value("name", "target");
@@ -1226,14 +1416,26 @@ void Tick()
             const bool registered = candidates == 1;
             if (registered || candidates > 1 || !available || std::chrono::steady_clock::now() >= r->statusCheckUntil)
             {
-                if (registered) sceneryFire[target->GetFormID()] = applied;
+                if (registered) sceneryFire[{target->GetFormID(), r->plan["steps"][r->step].value("effect", "")}] = applied;
                 SKSE::log::info("[INTERACT] Scenery shader result id={} step={} registered={} new_instances={}",
                                 r->id, r->step, registered, candidates);
                 r->pendingSceneryShader = 0;
                 r->priorSceneryShaders.clear();
                 Complete(r->id, r->step, registered ? "succeeded" : "unknown",
-                         registered ? "Timed fire shader registered on the captured scenery. Visual effect only: no health damage, spread, destruction or rendered pixels verified."
-                                    : "Fire shader requested once; a unique new registration was not confirmed.");
+                         registered ? "Requested shader registered on the captured scenery. Visual effect only: no health damage, spread, destruction or rendered pixels verified."
+                                    : "Visual shader requested once; a unique new registration was not confirmed.");
+            }
+            return;
+        }
+        if (r->pendingStagger)
+        {
+            auto target = r->target.get();
+            auto actor = target ? target->As<RE::Actor>() : nullptr;
+            const bool observed = actor && !actor->IsDead() && actor->IsStaggering();
+            if (observed || std::chrono::steady_clock::now() >= r->statusCheckUntil)
+            {
+                r->pendingStagger = false;
+                Complete(r->id,r->step,observed?"succeeded":"unknown",observed?"Stagger state observed after one graph request.":"One stagger request was accepted; stagger state was not observed.");
             }
             return;
         }
@@ -1243,7 +1445,19 @@ void Tick()
             auto actor = target ? target->As<RE::Actor>() : nullptr;
             auto spell = RE::TESForm::LookupByID<RE::SpellItem>(r->pendingStatusSpell);
             std::string statusDetail;
-            const bool applied = HasAppliedStatus(actor, spell, statusDetail);
+            bool applied = HasAppliedStatus(actor, spell, statusDetail);
+            const auto pendingEffect = r->plan["steps"][r->step].value("effect", "");
+            if (pendingEffect == "reanimate")
+            {
+                applied = applied && actor && !actor->IsDead() && actor->GetCommandingActor().get() == RE::PlayerCharacter::GetSingleton();
+                if (applied) statusDetail = "The captured corpse is reanimated and commanded by the player; the engine owns its expiry.";
+            }
+            if (pendingEffect == "banish")
+            {
+                applied = target && (target->IsDeleted() || target->IsDisabled() || (actor && actor->IsDead()));
+                if (applied) statusDetail = "The previously confirmed summoned target departed after the banishment cast.";
+            }
+            if (applied && pendingEffect == "soul_trap") statusDetail = "Soul trap is armed on the captured target; no death or filled soul gem is claimed.";
             if (applied || std::chrono::steady_clock::now() >= r->statusCheckUntil)
             {
                 std::size_t matching = 0;
@@ -1557,7 +1771,9 @@ void Command(const std::string &command)
                     r->allowed.push_back(effect);
             if (!actor || (base->As<RE::BGSDestructibleObjectForm>() && base->As<RE::BGSDestructibleObjectForm>()->data))
                 r->allowed.push_back("destroy");
-            if (!actor && SceneryFireShader()) r->allowed.push_back("burning_visual");
+            if (!actor)
+                for (const auto visual : {"burning_visual", "frost_visual", "shock_visual", "impact_burst"})
+                    if (SceneryFireShader(visual)) r->allowed.push_back(visual);
             if (!actor && base->GetFormType() == RE::FormType::Misc)
                 r->allowed.push_back("push");
             auto potion = item ? item->As<RE::AlchemyItem>() : nullptr;
@@ -1567,8 +1783,19 @@ void Command(const std::string &command)
                 for (const auto &effect : {"heal", "restore_stamina", "restore_magicka"})
                     r->allowed.push_back(effect);
             if (actor && !actor->IsDead())
-                for (const auto &effect : {"poison", "burning", "paralysis", "calm", "fear", "frenzy"})
-                    if (StatusSpell(StatusFamily(effect), 10)) r->allowed.push_back(effect);
+                for (const auto &effect : {"poison", "burning", "paralysis", "calm", "fear", "frenzy", "frost", "shock", "drain_stamina", "drain_magicka", "slow", "haste", "weaken_armor", "fortify_armor", "weaken_weapon", "fortify_weapon", "absorb_health", "absorb_stamina", "absorb_magicka", "ethereal", "soul_trap", "turn_undead"})
+                    if ((std::string_view(effect) != "turn_undead" || UndeadActor(actor)) &&
+                        (std::string_view(effect) != "soul_trap" || (!actor->IsEssential() && !actor->IsCommandedActor() && !ActorKeyword(actor,"MagicNoSoulTrap"))) &&
+                        (!std::string_view(effect).starts_with("absorb_") || !ActorKeyword(actor,"ActorTypeDwarven")) && StatusSpell(StatusFamily(effect), 10)) r->allowed.push_back(effect);
+            if (actor && actor->IsDead() && !ActorKeyword(actor, "MagicNoReanimate") && StatusSpell(StatusFamily("reanimate"), 10)) r->allowed.push_back("reanimate");
+            if (actor && !actor->IsDead())
+            {
+                for (const auto effect : {"stagger", "neutralize_poison", "release_paralysis"}) r->allowed.push_back(effect);
+                if (actor->IsSummoned() && ActorKeyword(actor, "ActorTypeDaedra") && StatusSpell(StatusFamily("banish"), 5)) r->allowed.push_back("banish");
+            }
+            r->allowed.push_back("extinguish");
+            if (MovableObject(target.get()) && target->GetParentCell() == player->GetParentCell())
+                for (const auto operation : {"directional_throw", "move", "rotate"}) r->allowed.push_back(operation);
             if (item && !questItem)
             {
                 r->allowed.push_back("drop");
@@ -1683,8 +1910,54 @@ void Command(const std::string &command)
                         break;
                     }
                 targetData["level"] = actor->GetLevel();
+                targetData["undead"] = UndeadActor(actor);
+                targetData["summoned"] = actor->IsSummoned();
+                targetData["daedra"] = ActorKeyword(actor,"ActorTypeDaedra");
+                targetData["no_reanimate"] = ActorKeyword(actor,"MagicNoReanimate");
+                targetData["no_soul_trap"] = ActorKeyword(actor,"MagicNoSoulTrap");
+                targetData["movement_speed_percent"] = targetStats->GetActorValue(RE::ActorValue::kSpeedMult);
+                targetData["weapon_damage_multiplier"] = targetStats->GetActorValue(RE::ActorValue::kAttackDamageMult);
                 targetData["poison_resistance"] = targetStats->GetActorValue(RE::ActorValue::kPoisonResist);
                 targetData["active_effects"] = ActiveEffectSnapshot(actor);
+                r->dispellableSpells.clear();
+                targetData["dispellable_spells"] = json::array();
+                if (!actor->IsDead())
+                    if (auto effects = actor->AsMagicTarget()->GetActiveEffectList())
+                        for (auto active : *effects)
+                        {
+                            auto spell = active && active->spell ? active->spell->As<RE::SpellItem>() : nullptr;
+                            if (!spell || spell->GetSpellType() != RE::MagicSystem::SpellType::kSpell || active->duration <= 0 ||
+                                active->duration <= active->elapsedSeconds || active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled) ||
+                                active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse ||
+                                std::find(r->dispellableSpells.begin(), r->dispellableSpells.end(), spell->GetFormID()) != r->dispellableSpells.end()) continue;
+                            bool scripted = std::any_of(spell->effects.begin(), spell->effects.end(), [](auto part) {
+                                return !part || !part->baseEffect || part->baseEffect->GetArchetype() == RE::EffectArchetypes::ArchetypeID::kScript;
+                            });
+                            if (scripted) continue;
+                            targetData["dispellable_spells"].push_back({{"index", r->dispellableSpells.size()}, {"name", spell->GetName()}});
+                            r->dispellableSpells.push_back(spell->GetFormID());
+                            if (r->dispellableSpells.size() == 8) break;
+                        }
+                r->dispelInstances.clear();
+                if (auto effects = actor->AsMagicTarget()->GetActiveEffectList())
+                    for (auto active : *effects)
+                        if (active && active->spell && !active->flags.any(RE::ActiveEffect::Flag::kDispelled) &&
+                            std::find(r->dispellableSpells.begin(),r->dispellableSpells.end(),active->spell->GetFormID()) != r->dispellableSpells.end())
+                            r->dispelInstances[active->spell->GetFormID()].emplace(reinterpret_cast<std::uintptr_t>(active),active->usUniqueID);
+                // Offer a spell only when every captured undispelled component can be removed together.
+                std::set<RE::FormID> ineligibleSpells;
+                if (auto effects = actor->AsMagicTarget()->GetActiveEffectList())
+                    for (auto active : *effects)
+                        if (active && active->spell && !active->flags.any(RE::ActiveEffect::Flag::kDispelled) &&
+                            (active->duration <= 0 || active->duration <= active->elapsedSeconds ||
+                             active->flags.any(RE::ActiveEffect::Flag::kInactive) || active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse))
+                            ineligibleSpells.insert(active->spell->GetFormID());
+                std::erase_if(r->dispellableSpells, [&](auto id) { return ineligibleSpells.contains(id); });
+                targetData["dispellable_spells"] = json::array();
+                for (std::size_t index = 0; index < r->dispellableSpells.size(); ++index)
+                    if (auto spell = RE::TESForm::LookupByID<RE::SpellItem>(r->dispellableSpells[index]))
+                        targetData["dispellable_spells"].push_back({{"index", index}, {"name", spell->GetName()}});
+                if (!r->dispellableSpells.empty()) r->allowed.push_back("dispel");
                 targetData["health"] = targetStats->GetActorValue(RE::ActorValue::kHealth);
                 targetData["stamina"] = targetStats->GetActorValue(RE::ActorValue::kStamina);
                 targetData["max_stamina"] = targetStats->GetPermanentActorValue(RE::ActorValue::kStamina);
@@ -1795,6 +2068,14 @@ void Command(const std::string &command)
                                 {"combat", {0, 0}}, {"heal", {1, 100}},
                                 {"restore_stamina", {1, 100}}, {"restore_magicka", {1, 100}}, {"poison", {1, 10}}, {"burning", {1, 10}}, {"burning_visual", {1, 1}},
                                 {"paralysis", {1, 1}}, {"calm", {1, 100}}, {"fear", {1, 100}}, {"frenzy", {1, 100}},
+                                {"frost", {1,10}}, {"shock", {1,10}}, {"drain_stamina", {1,10}}, {"drain_magicka", {1,10}},
+                                {"slow", {1,50}}, {"haste", {1,50}}, {"weaken_armor", {1,100}}, {"fortify_armor", {1,100}},
+                                {"weaken_weapon", {1,50}}, {"fortify_weapon", {1,50}}, {"absorb_health", {1,10}},
+                                {"absorb_stamina", {1,10}}, {"absorb_magicka", {1,10}}, {"ethereal", {1,1}}, {"soul_trap", {1,1}},
+                                {"reanimate", {1,100}}, {"turn_undead", {1,100}}, {"banish", {1,100}}, {"stagger", {0,1}},
+                                {"extinguish", {0,0}}, {"neutralize_poison", {0,0}}, {"release_paralysis", {0,0}}, {"dispel", {0,7}},
+                                {"directional_throw", {1,100}}, {"rotate", {-180,180}}, {"move", {1,256}},
+                                {"frost_visual", {1,1}}, {"shock_visual", {1,1}}, {"impact_burst", {1,1}},
                                 {"drop", {1, 100}}, {"place", {1, 100}}, {"disarm", {0, 1}}, {"unequip", {30, 61}}};
                             if ((effect == "pickup" || effect == "consume_world") && ++pickupSteps > 1)
                                 throw std::runtime_error("Repeated pickup");
@@ -1808,9 +2089,9 @@ void Command(const std::string &command)
                                  effect == "lock" || effect == "drop" || effect == "place" || effect == "disarm" || effect == "unequip") &&
                                 std::floor(value) != value)
                                 throw std::runtime_error("Fractional quantity");
-                            if ((effect == "combat" || effect == "disarm" || effect == "unequip" || RestorationValue(effect) != RE::ActorValue::kNone || StatusFamily(effect) >= 0) && !s.at("alive").get<bool>())
+                            if ((effect == "combat" || effect == "disarm" || effect == "unequip" || RestorationValue(effect) != RE::ActorValue::kNone || (StatusFamily(effect) >= 0 && effect != "reanimate") || effect == "stagger" || effect == "dispel" || effect == "neutralize_poison" || effect == "release_paralysis") && !s.at("alive").get<bool>())
                                 throw std::runtime_error("Combat requires living target");
-                            if (effect == "burning_visual" && s.at("alive").get<bool>())
+                            if ((effect == "burning_visual" || effect == "frost_visual" || effect == "shock_visual" || effect == "impact_burst" || effect == "move" || effect == "rotate" || effect == "directional_throw" || effect == "reanimate") && s.at("alive").get<bool>())
                                 throw std::runtime_error("Scenery fire requires a non-actor target");
                             if (s.contains("duration"))
                             {
@@ -1818,12 +2099,27 @@ void Command(const std::string &command)
                                     throw std::runtime_error("Invalid status duration");
                                 const int duration = s.at("duration").get<int>();
                                 bool validDuration = duration == 0;
-                                if (effect == "burning_visual")
+                                if (effect == "burning_visual" || effect == "frost_visual" || effect == "shock_visual")
                                     validDuration = duration == 5 || duration == 10 || duration == 20 || duration == 30;
-                                else if (StatusFamily(effect) >= 0)
+                                else if (StatusFamily(effect) >= 0 && effect != "banish")
                                     validDuration = StatusSpell(StatusFamily(effect), duration) != nullptr;
                                 if (!validDuration) throw std::runtime_error("Unsupported status duration");
                             }
+                            const auto direction = s.value("direction", "");
+                            const auto axis = s.value("axis", "");
+                            if (effect == "directional_throw")
+                            {
+                                if (direction != "toward" && direction != "away" && direction != "up") throw std::runtime_error("Invalid throw direction");
+                            }
+                            else if (effect == "move")
+                            {
+                                if (direction != "forward" && direction != "backward" && direction != "left" && direction != "right" && direction != "up" && direction != "down") throw std::runtime_error("Invalid move direction");
+                            }
+                            else if (!direction.empty()) throw std::runtime_error("Unexpected direction");
+                            if (effect == "rotate")
+                            { if (axis != "x" && axis != "y" && axis != "z") throw std::runtime_error("Invalid rotation axis"); }
+                            else if (!axis.empty()) throw std::runtime_error("Unexpected rotation axis");
+                            if (effect == "dispel" && (value != std::floor(value) || value >= r->dispellableSpells.size())) throw std::runtime_error("Invalid captured dispel selection");
                             for (auto dep : s.at("requires"))
                                 if (!dep.is_number_integer() || dep.get<int>() < 0 || dep.get<std::size_t>() >= index)
                                     throw std::runtime_error("Invalid dependency");

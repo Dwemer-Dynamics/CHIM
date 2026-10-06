@@ -319,3 +319,28 @@ Function CastSelectedMagic(String requestId, Int step, ObjectReference recipient
         FinishSelectedMagic(requestId, step)
     EndIf
 EndFunction
+
+; Issue one physics impulse on the captured reference, then observe displacement without replaying it.
+Function ThrowObject(String requestId, Int step, ObjectReference target, Float x, Float y, Float z, Float magnitude) Global
+    If !CanExecute(requestId, step) || !target || target.IsDeleted() || target.IsDisabled() || !target.Is3DLoaded()
+        Return
+    EndIf
+    Float beforeX = target.GetPositionX()
+    Float beforeY = target.GetPositionY()
+    Float beforeZ = target.GetPositionZ()
+    target.ApplyHavokImpulse(x, y, z, magnitude)
+    Utility.Wait(0.3)
+    If !CanExecute(requestId, step)
+        Return
+    EndIf
+    If target && !target.IsDeleted() && !target.IsDisabled() && target.Is3DLoaded()
+        Float dx = target.GetPositionX() - beforeX
+        Float dy = target.GetPositionY() - beforeY
+        Float dz = target.GetPositionZ() - beforeZ
+        If dx * x + dy * y + dz * z > 1.0
+            Complete(requestId, step, "succeeded", "Captured object moved in the requested impulse direction; later collision is not predicted.")
+            Return
+        EndIf
+    EndIf
+    Complete(requestId, step, "unknown", "One directional impulse was requested; matching displacement was not confirmed.")
+EndFunction
