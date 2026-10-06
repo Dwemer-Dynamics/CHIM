@@ -1,5 +1,5 @@
 'use strict';
-let interactionId = '', submitted = false, items = [], selectedKey = null, acknowledgementTimer = null;
+let interactionId = '', submitted = false, cheatMode = false, items = [], selectedKey = null, acknowledgementTimer = null;
 const element = id => document.getElementById(id);
 const selectedItem = () => items.find(item => item.key === selectedKey) || null;
 function status(message, state) {
@@ -26,6 +26,12 @@ function setBusy(busy) {
     });
     element('quantity').disabled = busy || !selectedItem();
     element('interaction').setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+function setCheatMode(on) {
+    cheatMode = on;
+    element('cheat-mode').setAttribute('aria-pressed', on ? 'true' : 'false');
+    element('cheat-mode').classList.toggle('is-on', on);
+    element('cheat-mode-state').textContent = on ? 'ON' : 'OFF';
 }
 function showPicker(open) {
     element('picker').hidden = !open;
@@ -81,6 +87,7 @@ window.setInteraction = data => {
             element('intent').value = '';
             element('search').value = '';
             status('');
+            setCheatMode(false);
             chooseItem(null);
         }
         element('approve').disabled = false;
@@ -115,7 +122,7 @@ function submitInteraction(event) {
         status(!intent ? 'Describe an action first.' : 'Use up to 1000 characters.', 'error'); element('intent').focus(); return;
     }
     // Use the explicit Prisma bridge; embedded form-validation APIs are not required.
-    const payload = {op: 'submit', key: item ? Number(item.key) : null, quantity: quantity, intent: intent};
+    const payload = {op: 'submit', key: item ? Number(item.key) : null, quantity: quantity, intent: intent, cheat_mode: cheatMode};
     showPicker(false); status('Calculating Result...', 'busy'); setBusy(true);
     send('input_capture|off');
     if (!send(payload)) { setBusy(false); element('intent').focus(); return; }
@@ -130,6 +137,7 @@ element('approve').onclick = () => {
     if (send({op: 'approve'})) { element('approve').disabled = true; status('Calculating Result...', 'busy'); }
 };
 element('choose').onclick = () => showPicker(element('picker').hidden);
+element('cheat-mode').onclick = () => { if (!submitted) setCheatMode(!cheatMode); };
 element('clear-item').onclick = () => chooseItem(null);
 element('search').oninput = filterItems;
 element('submit').onclick = submitInteraction;

@@ -15,6 +15,13 @@
 .interaction-panel input { min-width: 0; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.4); color: #eee; padding: 10px; font: inherit; }
 #intent { display: block; width: 100%; min-height: 110px; resize: vertical; max-height: 35vh; }
 .intent-label { display: block; font-size: 14px; margin-bottom: 8px; }
+/* Off is the normal state, so it stays neutral; only On is highlighted. ON/OFF text carries state without colour. */
+.cheat-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; min-width: 0; }
+.cheat-mode-help { color: #999; font-size: 12px; overflow-wrap: anywhere; min-width: 0; }
+#cheat-mode.is-on { border-color: rgba(46,204,113,.75); background: rgba(46,204,113,.28); color: #e7f9ef; }
+#cheat-mode.is-on:hover { border-color: rgba(46,204,113,.95); background: rgba(46,204,113,.42); }
+#cheat-mode.is-on .capture-background-chat-state { border-color: rgba(46,204,113,.75); color: #9be8bd; }
+#cheat-mode:disabled { cursor: default; }
 .interaction-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .keyboard-hint { color: #999; font-size: 12px; }
 .interaction-panel :focus-visible { outline: 2px solid #f27c11; outline-offset: 2px; }

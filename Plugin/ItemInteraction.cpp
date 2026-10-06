@@ -974,6 +974,12 @@ void Command(const std::string &command)
             }
             if (op != "submit" || r->submitted)
                 return;
+            if (input.contains("cheat_mode") && !input.at("cheat_mode").is_boolean())
+            {
+                ShowInputError("Cheat Mode must be on or off.");
+                return;
+            }
+            const bool cheatMode = input.value("cheat_mode", false);
             r->hasItem = !input.at("key").is_null();
             const auto key = r->hasItem ? input.at("key").get<std::size_t>() : 0;
             if (r->hasItem && key >= r->choices.size())
@@ -1187,6 +1193,7 @@ void Command(const std::string &command)
             r->submitted = true;
             json payload = {{"op", "resolve"},         {"id", r->id},
                             {"intent", intent},        {"gamets", GetGameTimeStamp()},
+                            {"cheat_mode", cheatMode},
                             {"snapshot", r->snapshot}, {"capabilities", r->allowed}};
             PrismaUIBridge::UpdateItemInteraction(
                 {{"state", "busy"}, {"status", "Resolving interaction..."}, {"confirm", false}});

@@ -31,6 +31,10 @@
                     </section>
                     <label class="intent-label" for="intent">What do you want to do?</label>
                     <textarea class="focus-chatbox-input" id="intent" maxlength="1000" rows="4" placeholder="Describe your action…"></textarea>
+                    <div class="cheat-mode">
+                        <button id="cheat-mode" class="focus-btn focus-btn-capture" type="button" aria-pressed="false" aria-describedby="cheat-mode-help">Cheat Mode <span id="cheat-mode-state" class="capture-background-chat-state" aria-hidden="true">OFF</span></button>
+                        <span id="cheat-mode-help" class="cheat-mode-help">Make the requested outcome happen.</span>
+                    </div>
                     <div class="interaction-actions">
                         <span class="keyboard-hint">Enter to interact &middot; Esc to close</span>
                         <button id="submit" class="focus-btn focus-btn-primary" type="button">Interact</button>

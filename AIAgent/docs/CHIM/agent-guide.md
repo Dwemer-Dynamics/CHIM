@@ -103,6 +103,11 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
+**Cheat Mode** starts off when the menu opens. Turning it on asks the Director to grant supported effects without plausibility refusals. Actual engine eligibility, execution failures and kill/disable confirmations still apply; it cannot fabricate success.
+
+In **Prompt Manager**, search `interact_` to edit normal-mode rules, cheat-mode rules, narration guidance or individual action descriptions. Clear a custom prompt to restore its default. Eligible actions, numeric limits and receipt validation remain enforced.
+
+
 Describe an action and press **Enter** to interact; **Shift+Enter** adds a line. **Choose…** opens the optional inventory picker, with exact-copy details and an amount for stacks. **Esc** closes the picker first, then the menu. Protected actions still require explicit confirmation.
 
 To eat or drink a world item, aim at a single loose food item or non-poison potion, leave **No item** selected, and describe eating/drinking it. CHIM transfers the actual reference and uses Skyrim's player consumption path, checking transfer and consumption counts. Owned items send the normal theft alarm. World stacks and references with enchantment/poison extras are excluded. Existing inventory-food-to-NPC consumption is unchanged; selecting inventory food does not silently make the player consume it.
