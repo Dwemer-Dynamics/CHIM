@@ -1221,7 +1221,7 @@ void Command(const std::string &command)
                         if (!result.value("ok", false) || result.value("id", "") != r->id)
                             throw std::runtime_error("Resolution failed");
                         r->plan = result.at("plan");
-                        if (!r->plan.at("steps").is_array() || r->plan["steps"].size() > 5)
+                        if (!r->plan.at("steps").is_array() || r->plan["steps"].empty() || r->plan["steps"].size() > 5)
                             throw std::runtime_error("Invalid sequence");
                         int inventorySteps = 0;
                         int pickupSteps = 0;
@@ -1282,8 +1282,10 @@ void Command(const std::string &command)
                              {"preserveDraft", true},
                              {"state", "error"},
                              {"confirm", false},
-                             {"status", "CHIM could not resolve this interaction. No effects were played. Your "
-                                        "description is kept; you can try again."}});
+                             {"status", result.value("code", "") == "no_action"
+                                            ? "No suitable action could be resolved. Nothing happened; your description is kept."
+                                            : "CHIM could not resolve this interaction. No effects were played. Your "
+                                              "description is kept; you can try again."}});
                     }
                 });
             });
