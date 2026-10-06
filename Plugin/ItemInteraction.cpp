@@ -33,6 +33,7 @@ struct Choice
 struct Request
 {
     std::string id;
+    std::string failureSceneToken;
     std::uint64_t epoch;
     std::uint64_t dialogueGeneration = 0;
     std::uint64_t cancellationGeneration = 0;
@@ -233,6 +234,30 @@ bool InventoryChoice(RE::TESObjectREFR *owner, const Choice &choice, int needed,
     return !choice.extra && found->second.first - special >= needed;
 }
 
+// Human-readable form categories keep the Director from guessing mechanics from item names.
+std::string SemanticType(RE::TESBoundObject *object)
+{
+    if (!object) return "unknown";
+    if (object->As<RE::TESObjectWEAP>()) return "weapon";
+    if (object->As<RE::TESObjectARMO>()) return "armor";
+    if (auto potion = object->As<RE::AlchemyItem>())
+    {
+        if (potion->IsPoison()) return "poison";
+        return potion->IsFood() ? "food" : "potion";
+    }
+    if (object->As<RE::ScrollItem>()) return "scroll";
+    if (object->GetFormType() == RE::FormType::Ingredient) return "ingredient";
+    if (object->GetFormType() == RE::FormType::Container) return "container";
+    if (object->GetFormType() == RE::FormType::Door) return "door";
+    if (object->GetFormType() == RE::FormType::Flora) return "harvestable plant";
+    if (object->GetFormType() == RE::FormType::Tree) return "tree";
+    if (object->GetFormType() == RE::FormType::Activator) return "activator";
+    if (object->GetFormType() == RE::FormType::Static) return "static scenery";
+    if (object->GetFormType() == RE::FormType::Book) return "book";
+    if (object->GetFormType() == RE::FormType::Misc) return "miscellaneous object";
+    return "other object";
+}
+
 json Effects(RE::MagicItem *item)
 {
     json result = json::array();
@@ -288,7 +313,7 @@ void Finish(const std::shared_ptr<Request> &r)
         return;
     r->allowedStep = -2;
     PrismaUIBridge::HideItemInteraction();
-    json payload = {{"op", "receipt"}, {"id", r->id}, {"gamets", GetGameTimeStamp()}, {"receipts", r->receipts}, {"defer_audio", true}};
+    json payload = {{"op", "receipt"}, {"id", r->id}, {"gamets", GetGameTimeStamp()}, {"receipts", r->receipts}, {"failure_scene_token", r->failureSceneToken}, {"defer_audio", true}};
     ThreadPool::getInstance().enqueue("InteractReceipt", [r, payload] {
         auto result = HTTPManager::postGameDataJson("item_interaction.php", payload, 120000);
         if (!result.value("ok", false) && Live(r))
@@ -354,6 +379,18 @@ void RunStep(const std::shared_ptr<Request> &r)
     r->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     if (r->step >= static_cast<int>(r->plan["steps"].size()))
     {
+        if (r->plan["steps"].empty())
+        {
+            auto target = r->target.get();
+            auto actor = target ? target->As<RE::Actor>() : nullptr;
+            const bool lifeChanged = actor && actor->IsDead() != r->snapshot["target"].value("dead", false);
+            if (r->failureSceneToken.empty() || !target || lifeChanged || target->IsDeleted() || target->IsDisabled() || !target->Is3DLoaded())
+            {
+                Cancel();
+                return;
+            }
+            RE::DebugNotification("[CHIM] Interaction failed.");
+        }
         Finish(r);
         return;
     }
@@ -1182,12 +1219,20 @@ void Command(const std::string &command)
             {
                 itemData = {{"name", r->selected.name},
                             {"type", static_cast<int>(item->GetFormType())},
+                            {"semantic_type", SemanticType(item)},
                             {"quantity", r->quantity},
                             {"quest_item", questItem},
                             {"effects", Effects(potion ? static_cast<RE::MagicItem *>(potion)
                                                        : static_cast<RE::MagicItem *>(scroll))}};
                 if (auto weapon = item->As<RE::TESObjectWEAP>())
-                    itemData["base_damage"] = weapon->GetAttackDamage();
+                {
+                    static const std::vector<std::string> classes = {"unarmed", "sword", "dagger", "war axe", "mace",
+                        "greatsword", "battleaxe or warhammer", "bow", "staff", "crossbow"};
+                    const auto kind = static_cast<std::size_t>(weapon->GetWeaponType());
+                    itemData["weapon_class"] = kind < classes.size() ? classes[kind] : "unknown weapon";
+                    itemData["base_damage_not_final_hit_damage"] = weapon->GetAttackDamage();
+                }
+                itemData["applied_poison"] = nullptr;
                 RE::EnchantmentItem *enchantment = nullptr;
                 if (auto enchanting = item->As<RE::TESEnchantableForm>())
                     enchantment = enchanting->formEnchanting;
@@ -1197,6 +1242,9 @@ void Command(const std::string &command)
                         enchantment = e->enchantment;
                     if (auto health = extra->GetByType<RE::ExtraHealth>())
                         itemData["tempering_factor"] = health->health;
+                    if (auto poison = extra->GetByType<RE::ExtraPoison>())
+                        itemData["applied_poison"] = {{"name", poison->poison ? poison->poison->GetName() : "unknown"},
+                            {"remaining_uses", poison->count}, {"effects", Effects(poison->poison)}};
                     if (auto charge = extra->GetByType<RE::ExtraCharge>())
                         itemData["charge"] = charge->charge;
                     itemData["equipped"] =
@@ -1205,6 +1253,7 @@ void Command(const std::string &command)
                 else
                     itemData["equipped"] = false;
                 itemData["enchantment_effects"] = Effects(enchantment);
+                itemData["enchantment_name"] = enchantment ? enchantment->GetName() : "none";
             }
             json targetData = {{"equipment", equipmentData}, {"name", target->GetName()},
                                {"actor", actor != nullptr},
@@ -1222,6 +1271,18 @@ void Command(const std::string &command)
                         targetData["speaker"] = agent->getActorName();
                         break;
                     }
+                targetData["level"] = actor->GetLevel();
+                targetData["poison_resistance"] = targetStats->GetActorValue(RE::ActorValue::kPoisonResist);
+                targetData["active_effects"] = json::array();
+                if (auto magic = actor->AsMagicTarget())
+                    if (auto effects = magic->GetActiveEffectList())
+                        for (auto active : *effects)
+                        {
+                            if (!active || !active->GetBaseObject() || active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse || active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled)) continue;
+                            targetData["active_effects"].push_back({{"name", active->GetBaseObject()->GetName()},
+                                {"magnitude", active->magnitude}, {"remaining_seconds", active->duration > 0 ? json(std::max(0.0f, active->duration - active->elapsedSeconds)) : json(nullptr)}});
+                            if (targetData["active_effects"].size() == 8) break;
+                        }
                 targetData["health"] = targetStats->GetActorValue(RE::ActorValue::kHealth);
                 targetData["stamina"] = targetStats->GetActorValue(RE::ActorValue::kStamina);
                 targetData["max_stamina"] = targetStats->GetPermanentActorValue(RE::ActorValue::kStamina);
@@ -1242,6 +1303,7 @@ void Command(const std::string &command)
                 auto weapon = actor->GetEquippedObject(false);
                 targetData["weapon"] = weapon ? weapon->GetName() : "none";
             }
+            targetData["semantic_type"] = actor ? "actor" : SemanticType(base);
             targetData["type"] = static_cast<int>(base->GetFormType());
             targetData["lock_level"] = static_cast<int>(target->GetLockLevel());
             auto owner = target->GetOwner();
@@ -1286,7 +1348,10 @@ void Command(const std::string &command)
                         if (!result.value("ok", false) || result.value("id", "") != r->id)
                             throw std::runtime_error("Resolution failed");
                         r->plan = result.at("plan");
-                        if (!r->plan.at("steps").is_array() || r->plan["steps"].empty() || r->plan["steps"].size() > 5)
+                        r->failureSceneToken = result.value("failure_scene_token", "");
+                        const bool failureScene = r->failureSceneToken.size() == 32 &&
+                            r->failureSceneToken.find_first_not_of("0123456789abcdef") == std::string::npos;
+                        if (!r->plan.at("steps").is_array() || (r->plan["steps"].empty() && !failureScene) || r->plan["steps"].size() > 5)
                             throw std::runtime_error("Invalid sequence");
                         int inventorySteps = 0;
                         int pickupSteps = 0;
@@ -1347,6 +1412,7 @@ void Command(const std::string &command)
                         r->id = NewRequestId();
                         r->submitted = false;
                         r->plan = nullptr;
+                        r->failureSceneToken.clear();
                         PrismaUIBridge::UpdateItemInteraction(
                             {{"id", r->id},
                              {"preserveDraft", true},
