@@ -103,6 +103,8 @@ Durations use the local monotonic clock. Do not compare its absolute value with 
 
 ## CHIM Interact
 
+Interact keeps a valid crosshair target first, then tries the first camera-ray scenery collision within 8192 game units. Terrain without an exact loaded reference remains unsupported; this adds no execution distance gate. Scenery can receive timed fire visuals (no health damage or spread), resize, or removal. Destroy uses authored destruction where available and otherwise disables the exact scenery reference without debris; minor injury and actor emotions are not substituted with destruction.
+
 Timed statuses use direct TargetActor delivery rather than projectile-based Aimed delivery. After updating this feature, restart Skyrim so the matching ESP records and DLL load together; stale delivery records are excluded from available actions.
 
 Every injury applies health damage once, signals Skyrim’s assault response, and requests a moderate stagger if the target survives. Stagger acceptance is recorded separately from observed animation; some actors or animation states can reject it. This is not a full weapon hit and does not trigger weapon enchantments or manually set a bounty.

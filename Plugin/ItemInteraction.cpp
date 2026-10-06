@@ -6,6 +6,7 @@
 #include "PlaythroughSession.h"
 #include "PrismaUIBridge.h"
 #include "SpeakManager.h"
+#include "SpatialAwareness.h"
 #include "ThreadPool.h"
 #include <atomic>
 #include <map>
@@ -63,6 +64,9 @@ struct Request
 };
 std::shared_ptr<Request> current;
 std::map<std::string, std::shared_ptr<Request>> pendingReactions;
+// Retain only our short-lived scenery shaders so refresh never stops another mod's effect.
+std::map<RE::FormID, RE::NiPointer<RE::ShaderReferenceEffect>> sceneryFire;
+std::uint64_t sceneryFireEpoch = 0;
 std::mutex currentMutex;
 thread_local bool releasingReaction = false;
 std::atomic<std::uint64_t> reactionCancellationGeneration{0};
@@ -126,6 +130,12 @@ RE::SpellItem *StatusSpell(int family, int duration)
         spell->effects[0]->effectItem.duration != static_cast<std::uint32_t>(duration)) return nullptr;
     return spell;
 }
+RE::TESEffectShader *SceneryFireShader()
+{
+    auto spell = StatusSpell(1, 10);
+    return spell ? spell->effects[0]->baseEffect->data.effectShader : nullptr;
+}
+
 // Observe only a live application of this exact authored spell, never a dormant/dispelled entry.
 bool HasAppliedStatus(RE::Actor *actor, RE::SpellItem *spell, std::string &detail)
 {
@@ -446,6 +456,52 @@ void RunStep(const std::shared_ptr<Request> &r)
         Complete(r->id, r->step, "succeeded", "No physical change.");
         return;
     }
+    if (effect == "burning_visual")
+    {
+        auto shader = SceneryFireShader();
+        auto lists = RE::ProcessLists::GetSingleton();
+        if (actor || !shader || !lists)
+        {
+            Complete(r->id, r->step, "failed", "Scenery fire visuals are unavailable.");
+            return;
+        }
+        if (sceneryFireEpoch != r->epoch)
+        {
+            sceneryFire.clear();
+            sceneryFireEpoch = r->epoch;
+        }
+        for (auto it = sceneryFire.begin(); it != sceneryFire.end();)
+            if (!it->second || it->second->finished || it->second->age >= it->second->lifetime)
+                it = sceneryFire.erase(it);
+            else
+                ++it;
+        const auto key = target->GetFormID();
+        if (sceneryFire.contains(key))
+        {
+            sceneryFire.at(key)->finished = true;
+            sceneryFire.erase(key);
+        }
+        if (sceneryFire.size() >= 32)
+        {
+            Complete(r->id, r->step, "failed", "Too many scenery fire effects are already active.");
+            return;
+        }
+        auto applied = target->ApplyEffectShader(shader, static_cast<float>(step.value("duration", 10)));
+        bool registered = false;
+        if (applied)
+        {
+            sceneryFire[key] = RE::NiPointer<RE::ShaderReferenceEffect>(applied);
+            lists->ForEachShaderEffect([&](RE::ShaderReferenceEffect *effect) {
+                if (effect == applied && effect->effectData == shader && effect->target == r->target && !effect->finished)
+                    registered = true;
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+        }
+        Complete(r->id, r->step, registered ? "succeeded" : "unknown",
+                 registered ? "Timed fire shader registered on the captured scenery. Visual effect only: no health damage, spread, destruction or rendered pixels verified."
+                            : "Fire shader requested once; its registration was not confirmed.");
+        return;
+    }
     const int family = StatusFamily(effect);
     if (family >= 0)
     {
@@ -491,7 +547,8 @@ void RunStep(const std::shared_ptr<Request> &r)
                  restored ? "The requested actor statistic increased." : "The actor statistic did not increase.");
         return;
     }
-    if (effect == "disable")
+    const auto destructible = target->GetBaseObject()->As<RE::BGSDestructibleObjectForm>();
+    if (effect == "disable" || (effect == "destroy" && !actor && (!destructible || !destructible->data)))
     {
         // Use the runtime-aware reference API, avoiding Papyrus's enable-parent rejection.
         // Do not unlink the enable parent or operate on any related reference.
@@ -500,7 +557,7 @@ void RunStep(const std::shared_ptr<Request> &r)
         SKSE::log::info("[INTERACT] Native disable {} target {:08X} disabled={}", r->id,
                         target->GetFormID(), disabled);
         Complete(r->id, r->step, disabled ? "succeeded" : "unknown",
-                 disabled ? "Captured reference disabled through the native engine API."
+                 disabled ? "Captured reference removed through native disable; no debris or destruction animation."
                           : "Native disable requested once; the captured reference disabled flag was not confirmed.");
         return;
     }
@@ -824,7 +881,7 @@ void Complete(const std::string &id, int step, const std::string &status, const 
             {"consume_world", "Consume"}, {"heal", "Heal"}, {"restore_stamina", "Restore stamina of"},
             {"restore_magicka", "Restore magicka of"}, {"drop", "Drop"}, {"place", "Place"},
             {"disarm", "Disarm"}, {"unequip", "Unequip armor from"},
-            {"poison", "Poison"}, {"burning", "Burn"}, {"paralysis", "Paralyze"},
+            {"poison", "Poison"}, {"burning", "Burn"}, {"burning_visual", "Set alight"}, {"paralysis", "Paralyze"},
             {"calm", "Calm"}, {"fear", "Frighten"}, {"frenzy", "Enrage"}};
         const auto label = labels.find(effect);
         std::string action = label != labels.end() ? label->second : "Interaction with";
@@ -921,6 +978,18 @@ void Tick()
         return;
     SKSE::GetTaskInterface()->AddTask([] {
         queued = false;
+        if (sceneryFireEpoch != PlaythroughSession::Generation())
+        {
+            sceneryFire.clear();
+            sceneryFireEpoch = PlaythroughSession::Generation();
+        }
+        for (auto it = sceneryFire.begin(); it != sceneryFire.end();)
+            if (!it->second || it->second->finished || it->second->age >= it->second->lifetime)
+                it = sceneryFire.erase(it);
+            else
+                ++it;
+
+
         {
             std::lock_guard lock(currentMutex);
             for (auto it = pendingReactions.begin(); it != pendingReactions.end();)
@@ -1019,6 +1088,40 @@ void Cancel()
     }
     PrismaUIBridge::HideItemInteraction();
 }
+// Pick the first camera-ray collision only; terrain or an unusable blocker never selects something behind it.
+RE::NiPointer<RE::TESObjectREFR> SceneryTarget(RE::PlayerCharacter *player)
+{
+    auto cell = player ? player->GetParentCell() : nullptr;
+    auto world = cell ? cell->GetbhkWorld() : nullptr;
+    RE::NiPoint3 origin{}, direction{};
+    if (!world || !SpatialAwareness::GetPlayerCameraGaze(origin, direction)) return {};
+    RE::bhkPickData pick{};
+    const float scale = RE::bhkWorld::GetWorldScale();
+    pick.rayInput.from = RE::hkVector4(origin * scale);
+    pick.rayInput.to = RE::hkVector4((origin + direction * 8192.0f) * scale);
+    pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
+    if (auto controller = player->GetCharController())
+    {
+        RE::CFilter playerFilter{};
+        controller->GetCollisionFilterInfo(playerFilter);
+        pick.rayInput.filterInfo.SetSystemGroup(playerFilter.GetSystemGroup());
+    }
+    if (!world->PickObject(pick) || !pick.rayOutput.HasHit() || !pick.rayOutput.rootCollidable) return {};
+    auto target = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+    if (!target || target == player || target->IsDisabled() || target->IsDeleted() ||
+        !target->Is3DLoaded() || !target->GetBaseObject() || target->As<RE::Actor>()) return {};
+    return RE::NiPointer<RE::TESObjectREFR>(target);
+}
+
+std::string InteractionTargetName(RE::TESObjectREFR *target)
+{
+    const auto name = target->GetName();
+    if (name && *name) return name;
+    auto base = target->GetBaseObject();
+    const auto editor = base ? base->GetFormEditorID() : nullptr;
+    return editor && *editor ? editor : (base ? SemanticType(base) : "scenery");
+}
+
 void Open()
 {
     if (Current())
@@ -1027,14 +1130,17 @@ void Open()
         return;
     }
     auto player = RE::PlayerCharacter::GetSingleton();
+    auto ui = RE::UI::GetSingleton();
+    if (!player || !ui || !ChimInteraction::Enabled() ||
+        !PlaythroughSession::Allowed(PlaythroughSession::Generation()) || ui->GameIsPaused() ||
+        PrismaUIBridge::IsAnyHotkeyPanelFocused() || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
+        ui->IsMenuOpen(RE::Console::MENU_NAME) || ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) return;
     auto crosshair = RE::CrosshairPickData::GetSingleton();
     auto target = crosshair ? crosshair->GetActiveTarget().get() : RE::NiPointer<RE::TESObjectREFR>{};
-    if (!player || !target || !ChimInteraction::Enabled() ||
-        !PlaythroughSession::Allowed(PlaythroughSession::Generation()) || !target->Is3DLoaded() ||
-        target.get() == player || RE::UI::GetSingleton()->GameIsPaused() || PrismaUIBridge::IsAnyHotkeyPanelFocused() ||
-        RE::UI::GetSingleton()->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
-        RE::UI::GetSingleton()->IsMenuOpen(RE::Console::MENU_NAME) ||
-        RE::UI::GetSingleton()->IsMenuOpen(RE::LoadingMenu::MENU_NAME))
+    if (player && (!target || target.get() == player || !target->GetBaseObject() || target->IsDisabled() || target->IsDeleted() || !target->Is3DLoaded()))
+        target = SceneryTarget(player);
+    if (!target || target.get() == player || !target->GetBaseObject() ||
+        target->IsDisabled() || target->IsDeleted() || !target->Is3DLoaded())
     {
         RE::DebugNotification("[CHIM] Aim at a loaded target before using Interact.");
         return;
@@ -1085,7 +1191,7 @@ void Open()
         std::lock_guard lock(currentMutex);
         current = r;
     }
-    PrismaUIBridge::ShowItemInteraction({{"id", r->id}, {"target", target->GetName()}, {"items", items}});
+    PrismaUIBridge::ShowItemInteraction({{"id", r->id}, {"target", InteractionTargetName(target.get())}, {"items", items}});
 }
 
 void Command(const std::string &command)
@@ -1185,8 +1291,9 @@ void Command(const std::string &command)
             if (base->GetFormType() == RE::FormType::Door || base->GetFormType() == RE::FormType::Container)
                 for (auto effect : {"open", "close"})
                     r->allowed.push_back(effect);
-            if (base->As<RE::BGSDestructibleObjectForm>() && base->As<RE::BGSDestructibleObjectForm>()->data)
+            if (!actor || (base->As<RE::BGSDestructibleObjectForm>() && base->As<RE::BGSDestructibleObjectForm>()->data))
                 r->allowed.push_back("destroy");
+            if (!actor && SceneryFireShader()) r->allowed.push_back("burning_visual");
             if (!actor && base->GetFormType() == RE::FormType::Misc)
                 r->allowed.push_back("push");
             auto potion = item ? item->As<RE::AlchemyItem>() : nullptr;
@@ -1295,7 +1402,7 @@ void Command(const std::string &command)
                 itemData["enchantment_effects"] = Effects(enchantment);
                 itemData["enchantment_name"] = enchantment ? enchantment->GetName() : "none";
             }
-            json targetData = {{"equipment", equipmentData}, {"name", target->GetName()},
+            json targetData = {{"equipment", equipmentData}, {"name", InteractionTargetName(target.get())},
                                {"actor", actor != nullptr},
                                {"scale", target->GetScale()},
                                {"awareness", "unknown"}};
@@ -1419,7 +1526,7 @@ void Command(const std::string &command)
                                 {"activate", {0, 0}},      {"open", {0, 0}},     {"close", {0, 0}},
                                 {"destroy", {1, 100}},     {"disable", {0, 0}},  {"resize", {0.25f, 2}},
                                 {"magic", {0, 0}},         {"combat", {0, 0}}, {"heal", {1, 100}},
-                                {"restore_stamina", {1, 100}}, {"restore_magicka", {1, 100}}, {"poison", {1, 10}}, {"burning", {1, 10}},
+                                {"restore_stamina", {1, 100}}, {"restore_magicka", {1, 100}}, {"poison", {1, 10}}, {"burning", {1, 10}}, {"burning_visual", {1, 1}},
                                 {"paralysis", {1, 1}}, {"calm", {1, 100}}, {"fear", {1, 100}}, {"frenzy", {1, 100}},
                                 {"drop", {1, 100}}, {"place", {1, 100}}, {"disarm", {0, 1}}, {"unequip", {30, 61}}};
                             if ((effect == "pickup" || effect == "consume_world") && ++pickupSteps > 1)
@@ -1434,10 +1541,20 @@ void Command(const std::string &command)
                                 throw std::runtime_error("Fractional quantity");
                             if ((effect == "combat" || effect == "disarm" || effect == "unequip" || RestorationValue(effect) != RE::ActorValue::kNone || StatusFamily(effect) >= 0) && !s.at("alive").get<bool>())
                                 throw std::runtime_error("Combat requires living target");
-                            if (s.contains("duration") && (!s.at("duration").is_number_integer() ||
-                                (StatusFamily(effect) < 0 ? s.at("duration").get<int>() != 0 :
-                                 StatusSpell(StatusFamily(effect), s.at("duration").get<int>()) == nullptr)))
-                                throw std::runtime_error("Unsupported status duration");
+                            if (effect == "burning_visual" && s.at("alive").get<bool>())
+                                throw std::runtime_error("Scenery fire requires a non-actor target");
+                            if (s.contains("duration"))
+                            {
+                                if (!s.at("duration").is_number_integer())
+                                    throw std::runtime_error("Invalid status duration");
+                                const int duration = s.at("duration").get<int>();
+                                bool validDuration = duration == 0;
+                                if (effect == "burning_visual")
+                                    validDuration = duration == 5 || duration == 10 || duration == 20 || duration == 30;
+                                else if (StatusFamily(effect) >= 0)
+                                    validDuration = StatusSpell(StatusFamily(effect), duration) != nullptr;
+                                if (!validDuration) throw std::runtime_error("Unsupported status duration");
+                            }
                             for (auto dep : s.at("requires"))
                                 if (!dep.is_number_integer() || dep.get<int>() < 0 || dep.get<std::size_t>() >= index)
                                     throw std::runtime_error("Invalid dependency");
