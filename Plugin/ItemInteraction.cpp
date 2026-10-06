@@ -117,7 +117,12 @@ RE::SpellItem *StatusSpell(int family, int duration)
         static_cast<int>(it - durations.begin()), "AIAgent.esp") : nullptr;
     auto expected = data ? data->LookupForm<RE::EffectSetting>(0x60000 + family, "AIAgent.esp") : nullptr;
     if (!spell || spell->effects.size() != 1 || !spell->effects[0] || !expected ||
-        spell->effects[0]->baseEffect != expected || spell->effects[0]->effectItem.area != 0 ||
+        spell->effects[0]->baseEffect != expected ||
+        spell->GetDelivery() != RE::MagicSystem::Delivery::kTargetActor ||
+        expected->data.delivery != RE::MagicSystem::Delivery::kTargetActor ||
+        spell->GetCastingType() != RE::MagicSystem::CastingType::kFireAndForget ||
+        expected->data.castingType != RE::MagicSystem::CastingType::kFireAndForget ||
+        expected->data.projectileBase || spell->effects[0]->effectItem.area != 0 ||
         spell->effects[0]->effectItem.duration != static_cast<std::uint32_t>(duration)) return nullptr;
     return spell;
 }
@@ -463,6 +468,8 @@ void RunStep(const std::shared_ptr<Request> &r)
                     active->GetBaseObject() == spell->effects[0]->baseEffect &&
                     !active->flags.any(RE::ActiveEffect::Flag::kDispelled)) refresh.push_back(active);
         for (auto active : refresh) active->Dispel(true);
+        SKSE::log::info("[INTERACT] Status cast id={} step={} spell={:08X} target={:08X} magnitude={} duration={} refreshed={}",
+                        r->id, r->step, spell->GetFormID(), actor->GetFormID(), value, duration, refresh.size());
         caster->CastSpellImmediate(spell, false, actor, 1.0f, false, value, player);
         r->pendingStatusSpell = spell->GetFormID();
         r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -960,6 +967,21 @@ void Tick()
             const bool applied = HasAppliedStatus(actor, spell, statusDetail);
             if (applied || std::chrono::steady_clock::now() >= r->statusCheckUntil)
             {
+                std::size_t matching = 0;
+                if (auto magic = actor ? actor->AsMagicTarget() : nullptr)
+                    if (auto effects = magic->GetActiveEffectList())
+                        for (auto active : *effects)
+                            if (active && active->spell == spell)
+                            {
+                                ++matching;
+                                if (matching <= 4)
+                                    SKSE::log::info("[INTERACT] Status verification id={} step={} magnitude={} duration={} elapsed={} condition_false={} inactive={} dispelled={}",
+                                        r->id, r->step, active->magnitude, active->duration, active->elapsedSeconds,
+                                        active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse,
+                                        active->flags.any(RE::ActiveEffect::Flag::kInactive), active->flags.any(RE::ActiveEffect::Flag::kDispelled));
+                            }
+                SKSE::log::info("[INTERACT] Status result id={} step={} applied={} matching_effects={}",
+                                r->id, r->step, applied, matching);
                 r->pendingStatusSpell = 0;
                 Complete(r->id, r->step, applied ? "succeeded" : "unknown",
                          applied ? statusDetail

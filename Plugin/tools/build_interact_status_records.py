@@ -29,7 +29,7 @@ for index,(name,source,archetype) in enumerate(sources):
  struct.pack_into('<I',data,0,flags)
  # No area, projectile, explosion, casting art, skill scaling, taper or secondary effects.
  for off in [24,28,40,44,48,52,56,60,72,76,92,104,108,112,120,124,128,132,136]:struct.pack_into('<I',data,off,0)
- struct.pack_into('<II',data,80,1,2) # FireAndForget, Aimed (direct exact-target native cast).
+ struct.pack_into('<II',data,80,1,3) # FireAndForget, TargetActor: direct application without a projectile.
  effect=0x05060000+index
  body=sub(b'EDID',f'CHIMInteract{name.title()}Effect\0'.encode())+sub(b'FULL',f'CHIM Interact {name}\0'.encode())+sub(b'DATA',data)
  # Retain authored keywords and target conditions, never vanilla attached scripts.
@@ -38,13 +38,41 @@ for index,(name,source,archetype) in enumerate(sources):
  expected[effect]=(b'MGEF',body);add[b'MGEF']+=record(b'MGEF',effect,body)
  for variant,duration in enumerate([5,10,20,30]):
   fid=0x05060010+index*4+variant
-  spit=struct.pack('<IIIfIIffI',0,1,0,0.0,1,2,0.0,0.0,0)
+  spit=struct.pack('<IIIfIIffI',0,1,0,0.0,1,3,0.0,0.0,0)
   body=sub(b'EDID',f'CHIMInteract{name.title()}{duration}\0'.encode())+sub(b'OBND',b'\0'*12)+sub(b'FULL',f'CHIM Interact {name}\0'.encode())+sub(b'SPIT',spit)+sub(b'EFID',struct.pack('<I',effect))+sub(b'EFIT',struct.pack('<fII',1.0,0,duration))
   expected[fid]=(b'SPEL',body);add[b'SPEL']+=record(b'SPEL',fid,body)
 known={fid:(tag,body) for tag,fid,body in existing}
 if any(fid in known for fid in expected):
- assert all(known.get(fid)==value for fid,value in expected.items()),'Collision or changed authored status records'
- print('Timed Interact records already present and identical');raise SystemExit
+ assert all(fid in known for fid in expected),'Partial status installation'
+ replacements={}
+ for fid,(tag,body) in expected.items():
+  oldtag,oldbody=known[fid]
+  assert oldtag==tag,'Status record type collision'
+  if oldbody==body:continue
+  # Accept only the prior authored Aimed variant; never overwrite unrelated edits.
+  legacy=bytearray(body);offset=0
+  for field,value in chunks(body):
+   if field==(b'DATA' if tag==b'MGEF' else b'SPIT'):
+    struct.pack_into('<I',legacy,offset+6+(84 if tag==b'MGEF' else 20),2)
+   offset+=6+len(value)
+  assert oldbody==bytes(legacy),'Collision or changed authored status records'
+  replacements[fid]=body
+ def upgrade(data,start=0,end=None):
+  end=len(data) if end is None else end;out=bytearray()
+  while start<end:
+   tag=data[start:start+4];size=struct.unpack_from('<I',data,start+4)[0]
+   if tag==b'GRUP':
+    out+=data[start:start+24]+upgrade(data,start+24,start+size);start+=size
+   else:
+    fid=struct.unpack_from('<I',data,start+12)[0]
+    out+=data[start:start+24]+replacements.get(fid,data[start+24:start+24+size]);start+=24+size
+  return out
+ updated=upgrade(original)
+ assert len(updated)==len(original)
+ assert all((tag,body)==expected.get(fid,known[fid]) for tag,fid,body in walk(updated))
+ if replacements:path.write_bytes(updated)
+ print(f'Timed Interact records verified; upgraded {len(replacements)} delivery fields to TargetActor; unrelated records preserved')
+ raise SystemExit
 out=bytearray();pos=0
 while pos<len(original):
  tag=original[pos:pos+4];n=struct.unpack_from('<I',original,pos+4)[0];total=n if tag==b'GRUP' else n+24;block=bytearray(original[pos:pos+total])
