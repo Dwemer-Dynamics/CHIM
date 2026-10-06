@@ -1855,13 +1855,34 @@ void Command(const std::string &command)
             json itemData = nullptr;
             if (item)
             {
+                // The temporary entry owns only its pointer-list nodes; the captured extra-data remains game-owned.
+                RE::InventoryEntryData selectedEntry(item, 1);
+                if (extra) selectedEntry.AddExtraList(extra);
+                const auto goldValue = selectedEntry.GetValue();
+                const auto weight = selectedEntry.GetWeight();
+                auto ingredient = item->As<RE::IngredientItem>();
+                RE::MagicItem *authoredMagic = potion ? static_cast<RE::MagicItem *>(potion) : static_cast<RE::MagicItem *>(scroll);
+                if (ingredient) authoredMagic = ingredient;
                 itemData = {{"name", r->selected.name},
                             {"type", static_cast<int>(item->GetFormType())},
                             {"semantic_type", SemanticType(item)},
                             {"quantity", r->quantity},
                             {"quest_item", questItem},
-                            {"effects", Effects(potion ? static_cast<RE::MagicItem *>(potion)
-                                                       : static_cast<RE::MagicItem *>(scroll))}};
+                            {"gold_value_per_item_not_barter_price", goldValue >= 0 ? json(goldValue) : json(nullptr)},
+                            {"weight_per_item", std::isfinite(weight) && weight >= 0 ? json(weight) : json(nullptr)},
+                            {"charge", nullptr}, {"max_charge", nullptr},
+                            {"effects", Effects(authoredMagic)}};
+                if (item->As<RE::TESObjectWEAP>() || item->As<RE::TESObjectARMO>()) itemData["tempering_factor"] = 1.0f;
+                if (ingredient) itemData["effects_scope"] = "authored ingredient properties; may be undiscovered, not currently active";
+                if (auto armor = item->As<RE::TESObjectARMO>())
+                {
+                    std::string armorClass = "unknown armor";
+                    if (armor->IsLightArmor()) armorClass = "light armor";
+                    else if (armor->IsHeavyArmor()) armorClass = "heavy armor";
+                    else if (armor->IsClothing()) armorClass = "clothing";
+                    itemData["armor_class"] = armorClass;
+                    itemData["base_armor_rating_not_final_protection"] = armor->GetArmorRating();
+                }
                 if (auto weapon = item->As<RE::TESObjectWEAP>())
                 {
                     static const std::vector<std::string> classes = {"unarmed", "sword", "dagger", "war axe", "mace",
@@ -1873,11 +1894,18 @@ void Command(const std::string &command)
                 itemData["applied_poison"] = nullptr;
                 RE::EnchantmentItem *enchantment = nullptr;
                 if (auto enchanting = item->As<RE::TESEnchantableForm>())
+                {
                     enchantment = enchanting->formEnchanting;
+                    if (item->As<RE::TESObjectWEAP>() && enchantment && enchanting->amountofEnchantment > 0)
+                        itemData["max_charge"] = enchanting->amountofEnchantment;
+                }
                 if (extra)
                 {
                     if (auto e = extra->GetByType<RE::ExtraEnchantment>())
+                    {
                         enchantment = e->enchantment;
+                        itemData["max_charge"] = item->As<RE::TESObjectWEAP>() && enchantment && e->charge > 0 ? json(e->charge) : json(nullptr);
+                    }
                     if (auto health = extra->GetByType<RE::ExtraHealth>())
                         itemData["tempering_factor"] = health->health;
                     if (auto poison = extra->GetByType<RE::ExtraPoison>())
@@ -1890,6 +1918,8 @@ void Command(const std::string &command)
                 }
                 else
                     itemData["equipped"] = false;
+                // Missing ExtraCharge means an otherwise charge-bearing instance is fully charged.
+                if (itemData["charge"].is_null() && !itemData["max_charge"].is_null()) itemData["charge"] = itemData["max_charge"];
                 itemData["enchantment_effects"] = Effects(enchantment);
                 itemData["enchantment_name"] = enchantment ? enchantment->GetName() : "none";
             }
