@@ -49,7 +49,6 @@ struct Request
     bool submitted = false;
     bool inventoryMoved = false;
     std::chrono::steady_clock::time_point deadline{};
-    bool approved = false;
     json snapshot;
     json allowed;
     json plan;
@@ -652,7 +651,7 @@ void RunStep(const std::shared_ptr<Request> &r)
     std::string id = r->id, operation = effect;
     int index = r->step;
     auto ref = target.get();
-    bool approved = r->approved;
+    bool approved = true; // Submitting the explicit action authorizes execution; retain the Papyrus ABI.
     float amount = value;
     if (!vm ||
         !vm->DispatchStaticCall("CHIMItemInteraction", "Execute",
@@ -957,19 +956,12 @@ void Command(const std::string &command)
             }
             const auto op = input.value("op", "");
             std::string commandType = "unknown";
-            if (op == "submit" || op == "approve" || op == "cancel")
+            if (op == "submit" || op == "cancel")
                 commandType = op;
             SKSE::log::info("[INTERACT] Game thread received {} command for {}", commandType, r->id);
             if (op == "cancel")
             {
                 Cancel();
-                return;
-            }
-            if (op == "approve" && r->submitted && r->step == -1 && !r->plan.is_null())
-            {
-                r->approved = true;
-                PrismaUIBridge::HideItemInteraction();
-                RunStep(r);
                 return;
             }
             if (op != "submit" || r->submitted)
@@ -1218,7 +1210,6 @@ void Command(const std::string &command)
                         r->plan = result.at("plan");
                         if (!r->plan.at("steps").is_array() || r->plan["steps"].size() > 5)
                             throw std::runtime_error("Invalid sequence");
-                        bool confirm = false;
                         int inventorySteps = 0;
                         int pickupSteps = 0;
                         for (std::size_t index = 0; index < r->plan["steps"].size(); ++index)
@@ -1253,24 +1244,14 @@ void Command(const std::string &command)
                             for (auto dep : s.at("requires"))
                                 if (!dep.is_number_integer() || dep.get<int>() < 0 || dep.get<std::size_t>() >= index)
                                     throw std::runtime_error("Invalid dependency");
-                            if (effect == "kill" || effect == "disable")
-                                confirm = true;
                             if (effect == "give" || effect == "store" || effect == "consume" || effect == "equip" ||
                                 effect == "magic" || effect == "drop" || effect == "place" || RestorationValue(effect) != RE::ActorValue::kNone)
                                 ++inventorySteps;
                         }
                         if (inventorySteps > 1)
                             throw std::runtime_error("Conflicting inventory steps");
-                        if (confirm)
-                            PrismaUIBridge::UpdateItemInteraction(
-                                {{"confirm", true},
-                                 {"status", "This interaction can kill the selected target or disable it, including "
-                                            "protected or quest-sensitive targets. Continue?"}});
-                        else
-                        {
-                            PrismaUIBridge::HideItemInteraction();
-                            RunStep(r);
-                        }
+                        PrismaUIBridge::HideItemInteraction();
+                        RunStep(r);
                     }
                     catch (const std::exception &)
                     {

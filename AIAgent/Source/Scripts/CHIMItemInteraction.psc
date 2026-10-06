@@ -152,6 +152,12 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
             detail = "Default activation was refused or blocked; no pickup is confirmed."
         EndIf
     ElseIf effect == "disable" && approved
+        ; Skyrim refuses independent disabling of references controlled by an enable-state parent.
+        ; Never disable the parent: that could also remove unrelated linked objects.
+        If target.GetEnableParent()
+            Complete(requestId, step, "failed", "The captured reference has an enable-state parent; Skyrim refuses to disable it independently.")
+            Return
+        EndIf
         target.Disable()
         If target.IsDisabled()
             status = "succeeded"

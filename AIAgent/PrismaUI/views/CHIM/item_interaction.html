@@ -32,8 +32,7 @@
                     <label class="intent-label" for="intent">What do you want to do?</label>
                     <textarea class="focus-chatbox-input" id="intent" maxlength="1000" rows="4" placeholder="Describe your action…"></textarea>
                     <div class="cheat-mode">
-                        <button id="cheat-mode" class="focus-btn focus-btn-capture" type="button" aria-pressed="false" aria-describedby="cheat-mode-help">Cheat Mode <span id="cheat-mode-state" class="capture-background-chat-state" aria-hidden="true">OFF</span></button>
-                        <span id="cheat-mode-help" class="cheat-mode-help">Make the requested outcome happen.</span>
+                        <button id="cheat-mode" class="focus-btn focus-btn-capture" type="button" aria-pressed="false">Cheat Mode <span id="cheat-mode-state" class="capture-background-chat-state" aria-hidden="true">OFF</span></button>
                     </div>
                     <div class="interaction-actions">
                         <span class="keyboard-hint">Enter to interact &middot; Esc to close</span>
@@ -41,13 +40,6 @@
                     </div>
                 </form>
                 <p id="status" role="status" aria-live="polite"></p>
-                <section id="confirmation" aria-label="Confirm protected action" hidden>
-                    <p>Confirm this protected action to continue.</p>
-                    <div class="confirmation-actions">
-                        <button id="decline" class="focus-btn" type="button">Cancel</button>
-                        <button id="approve" class="focus-btn focus-btn-danger" type="button">Confirm action</button>
-                    </div>
-                </section>
             </div>
         </main>
     </div>

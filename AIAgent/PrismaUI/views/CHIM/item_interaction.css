@@ -17,7 +17,6 @@
 .intent-label { display: block; font-size: 14px; margin-bottom: 8px; }
 /* Off is the normal state, so it stays neutral; only On is highlighted. ON/OFF text carries state without colour. */
 .cheat-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; min-width: 0; }
-.cheat-mode-help { color: #999; font-size: 12px; overflow-wrap: anywhere; min-width: 0; }
 #cheat-mode.is-on { border-color: rgba(46,204,113,.75); background: rgba(46,204,113,.28); color: #e7f9ef; }
 #cheat-mode.is-on:hover { border-color: rgba(46,204,113,.95); background: rgba(46,204,113,.42); }
 #cheat-mode.is-on .capture-background-chat-state { border-color: rgba(46,204,113,.75); color: #9be8bd; }
@@ -40,7 +39,5 @@
 #status[data-state="busy"]::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: -1px; border: 2px solid rgba(242,124,17,.2); border-top-color: #f27c11; border-radius: 50%; animation: interact-spin 1s linear infinite; }
 @keyframes interact-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #status[data-state="busy"]::before { animation: none; } }
-#confirmation { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(230,91,91,.45); font-size: 14px; }
-.confirmation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
 @media (max-width: 420px) { .interaction-body { padding: 12px; } .item-summary { gap: 7px; } .keyboard-hint { max-width: 170px; line-height: 1.5; } }

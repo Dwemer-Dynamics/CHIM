@@ -90,18 +90,12 @@ window.setInteraction = data => {
             setCheatMode(false);
             chooseItem(null);
         }
-        element('approve').disabled = false;
         setBusy(false);
         element('intent').focus();
     }
     if (data.state === 'error') setBusy(false);
     if (data.state === 'busy') { setBusy(true); showPicker(false); }
-    element('confirmation').hidden = !data.confirm;
-    if (data.confirm) {
-        setBusy(true);
-        status(data.status || 'This action overrides target protections. Confirm to continue.', 'warning');
-        element('decline').focus();
-    } else if (data.state === 'busy') status('Calculating Result...', 'busy');
+    if (data.state === 'busy') status('Calculating Result...', 'busy');
     else if (data.status) status(data.status, data.state);
 };
 function cancel() {
@@ -111,7 +105,7 @@ function cancel() {
 }
 function submitInteraction(event) {
     if (event) event.preventDefault();
-    if (submitted || !element('confirmation').hidden) return;
+    if (submitted) return;
     const item = selectedItem();
     const quantity = item ? Number(element('quantity').value) : 0;
     const intent = element('intent').value.trim();
@@ -131,11 +125,6 @@ function submitInteraction(event) {
     }, 5000);
 }
 element('close').onclick = cancel;
-element('decline').onclick = cancel;
-element('approve').onclick = () => {
-    if (element('approve').disabled) return;
-    if (send({op: 'approve'})) { element('approve').disabled = true; status('Calculating Result...', 'busy'); }
-};
 element('choose').onclick = () => showPicker(element('picker').hidden);
 element('cheat-mode').onclick = () => { if (!submitted) setCheatMode(!cheatMode); };
 element('clear-item').onclick = () => chooseItem(null);
@@ -156,7 +145,6 @@ document.addEventListener('keydown', event => {
         else cancel();
     }
     if (event.key === 'Enter') {
-        if (!element('confirmation').hidden) { event.preventDefault(); return; }
         if (event.target === element('intent') && !event.shiftKey) submitInteraction(event);
         else if (event.target === element('search') || event.target === element('quantity')) event.preventDefault();
     }
