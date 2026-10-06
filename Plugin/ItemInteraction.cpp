@@ -355,6 +355,19 @@ void RunStep(const std::shared_ptr<Request> &r)
         Complete(r->id, r->step, "succeeded", "No physical change.");
         return;
     }
+    if (effect == "disable")
+    {
+        // Use the runtime-aware reference API, avoiding Papyrus's enable-parent rejection.
+        // Do not unlink the enable parent or operate on any related reference.
+        target->Disable();
+        const bool disabled = target->IsDisabled();
+        SKSE::log::info("[INTERACT] Native disable {} target {:08X} disabled={}", r->id,
+                        target->GetFormID(), disabled);
+        Complete(r->id, r->step, disabled ? "succeeded" : "unknown",
+                 disabled ? "Captured reference disabled through the native engine API."
+                          : "Native disable requested once; the captured reference disabled flag was not confirmed.");
+        return;
+    }
     if (effect == "disarm" || effect == "unequip")
     {
         const int slot = static_cast<int>(value);
