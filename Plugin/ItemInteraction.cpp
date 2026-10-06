@@ -276,6 +276,23 @@ json Effects(RE::MagicItem *item)
     return result;
 }
 
+// Bound player and target context identically; indefinite effects have no claimed expiry time.
+json ActiveEffectSnapshot(RE::Actor *actor)
+{
+    json result = json::array();
+    auto magic = actor ? actor->AsMagicTarget() : nullptr;
+    if (auto effects = magic ? magic->GetActiveEffectList() : nullptr)
+        for (auto active : *effects)
+        {
+            if (!active || !active->GetBaseObject() || active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse ||
+                active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled)) continue;
+            result.push_back({{"name", active->GetBaseObject()->GetName()}, {"magnitude", active->magnitude},
+                {"remaining_seconds", active->duration > 0 ? json(std::max(0.0f, active->duration - active->elapsedSeconds)) : json(nullptr)}});
+            if (result.size() == 8) break;
+        }
+    return result;
+}
+
 // Start generation independently; the utterance gate holds every reply until narration completes.
 void StartReaction(const std::shared_ptr<Request> &r)
 {
@@ -1273,16 +1290,7 @@ void Command(const std::string &command)
                     }
                 targetData["level"] = actor->GetLevel();
                 targetData["poison_resistance"] = targetStats->GetActorValue(RE::ActorValue::kPoisonResist);
-                targetData["active_effects"] = json::array();
-                if (auto magic = actor->AsMagicTarget())
-                    if (auto effects = magic->GetActiveEffectList())
-                        for (auto active : *effects)
-                        {
-                            if (!active || !active->GetBaseObject() || active->conditionStatus == RE::ActiveEffect::ConditionStatus::kFalse || active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled)) continue;
-                            targetData["active_effects"].push_back({{"name", active->GetBaseObject()->GetName()},
-                                {"magnitude", active->magnitude}, {"remaining_seconds", active->duration > 0 ? json(std::max(0.0f, active->duration - active->elapsedSeconds)) : json(nullptr)}});
-                            if (targetData["active_effects"].size() == 8) break;
-                        }
+                targetData["active_effects"] = ActiveEffectSnapshot(actor);
                 targetData["health"] = targetStats->GetActorValue(RE::ActorValue::kHealth);
                 targetData["stamina"] = targetStats->GetActorValue(RE::ActorValue::kStamina);
                 targetData["max_stamina"] = targetStats->GetPermanentActorValue(RE::ActorValue::kStamina);
@@ -1312,11 +1320,29 @@ void Command(const std::string &command)
             targetData["quest_associations"] = "unknown";
             targetData["authored_destruction"] =
                 std::find(r->allowed.begin(), r->allowed.end(), "destroy") != r->allowed.end();
+            json skills = json::object();
+            static const std::vector<std::pair<std::string, RE::ActorValue>> skillValues = {
+                {"One-handed", RE::ActorValue::kOneHanded}, {"Two-handed", RE::ActorValue::kTwoHanded},
+                {"Archery", RE::ActorValue::kArchery}, {"Block", RE::ActorValue::kBlock},
+                {"Smithing", RE::ActorValue::kSmithing}, {"Heavy armor", RE::ActorValue::kHeavyArmor},
+                {"Light armor", RE::ActorValue::kLightArmor}, {"Pickpocket", RE::ActorValue::kPickpocket},
+                {"Lockpicking", RE::ActorValue::kLockpicking}, {"Sneak", RE::ActorValue::kSneak},
+                {"Alchemy", RE::ActorValue::kAlchemy}, {"Speech", RE::ActorValue::kSpeech},
+                {"Alteration", RE::ActorValue::kAlteration}, {"Conjuration", RE::ActorValue::kConjuration},
+                {"Destruction", RE::ActorValue::kDestruction}, {"Illusion", RE::ActorValue::kIllusion},
+                {"Restoration", RE::ActorValue::kRestoration}, {"Enchanting", RE::ActorValue::kEnchanting}};
+            for (const auto &[name, value] : skillValues) skills[name] = playerStats->GetActorValue(value);
             r->snapshot = {
                 {"item", itemData},
                 {"target", targetData},
                 {"player",
-                 {{"health", playerStats->GetActorValue(RE::ActorValue::kHealth)},
+                 {{"level", player->GetLevel()}, {"skills", skills},
+                  {"armor_rating", playerStats->GetActorValue(RE::ActorValue::kDamageResist)},
+                  {"active_effects", ActiveEffectSnapshot(player)},
+                  {"max_health", player->GetActorValueMax(RE::ActorValue::kHealth)},
+                  {"max_stamina", player->GetActorValueMax(RE::ActorValue::kStamina)},
+                  {"max_magicka", player->GetActorValueMax(RE::ActorValue::kMagicka)},
+                  {"health", playerStats->GetActorValue(RE::ActorValue::kHealth)},
                   {"stamina", playerStats->GetActorValue(RE::ActorValue::kStamina)},
                   {"magicka", playerStats->GetActorValue(RE::ActorValue::kMagicka)},
                   {"combat", player->IsInCombat()},
