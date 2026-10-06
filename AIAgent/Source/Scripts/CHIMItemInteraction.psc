@@ -264,3 +264,58 @@ Function VerifyRestoration(String requestId, Int step, Actor target, String acto
         Complete(requestId, step, "unknown", "Item transferred and consumed; the requested statistic increase was not confirmed.")
     EndIf
 EndFunction
+
+; Collect only already-unlocked ranks; do not learn, unlock or equip magic.
+Bool Function CanPrepareMagic(String requestId) Global Native
+Function AddUnlockedShout(String requestId, Shout selectedShout, Int rank) Global Native
+Function RefreshMagicChoices(String requestId) Global Native
+Function FinishSelectedMagic(String requestId, Int step) Global Native
+
+Function CollectUnlockedShouts(String requestId, Shout[] shouts) Global
+    Int index = 0
+    While index < shouts.Length && CanPrepareMagic(requestId)
+        Shout selected = shouts[index]
+        Int rank = 0
+        While rank < 3 && selected.GetNthWordOfPower(rank) && Game.IsWordUnlocked(selected.GetNthWordOfPower(rank))
+            rank += 1
+        EndWhile
+        If rank > 0
+            AddUnlockedShout(requestId, selected, rank)
+        EndIf
+        index += 1
+    EndWhile
+    RefreshMagicChoices(requestId)
+EndFunction
+
+Function CastSelectedMagic(String requestId, Int step, ObjectReference recipient, Spell selected, Shout selectedShout, Int rank) Global
+    If !CanExecute(requestId, step) || !recipient || !selected
+        Return
+    EndIf
+    Actor player = Game.GetPlayer()
+    If selectedShout
+        If rank < 1 || rank > 3 || selectedShout.GetNthSpell(rank - 1) != selected
+            Complete(requestId, step, "failed", "Selected shout is no longer known.")
+            Return
+        EndIf
+        Int index = 0
+        While index < rank
+            If !Game.IsWordUnlocked(selectedShout.GetNthWordOfPower(index))
+                Complete(requestId, step, "failed", "Selected shout rank is no longer unlocked.")
+                Return
+            EndIf
+            index += 1
+        EndWhile
+    ElseIf !player.HasSpell(selected)
+        Complete(requestId, step, "failed", "Selected spell is no longer known.")
+        Return
+    EndIf
+    If !CanExecute(requestId, step) || recipient.IsDeleted() || recipient.IsDisabled() || !recipient.Is3DLoaded()
+        Return
+    EndIf
+    ; One authored scripted application, without equipment, resource or cooldown edits.
+    selected.Cast(player, recipient)
+    Utility.Wait(0.5)
+    If CanExecute(requestId, step)
+        FinishSelectedMagic(requestId, step)
+    EndIf
+EndFunction

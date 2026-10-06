@@ -1616,7 +1616,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     static std::string postGameDataResponseInternal(const std::string& endpoint, const nlohmann::json& data,
                                                     int timeoutMs, int* outStatusCode,
                                                     const std::chrono::steady_clock::time_point* deadline = nullptr,
-                                                    std::size_t maxResponseBytes = 4 * 1024 * 1024)
+                                                    std::size_t maxResponseBytes = 4 * 1024 * 1024,
+                                                    const std::function<bool(const nlohmann::json&)>& onLine = {})
     {
         const auto loadEpoch = PlaythroughSession::Context();
         const bool controlRequest = endpoint == "playthrough_session.php" || endpoint == "chim_interaction.php";
@@ -1713,6 +1714,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             "{}",
             fullEndpoint, server, jsonBody.size(), jsonBody);
 
+        // HTTP/1.0 keeps incremental NDJSON unchunked while the ordinary request path stays unchanged.
+        if (onLine) httpRequest.replace(httpRequest.find("HTTP/1.1"), 8, "HTTP/1.0");
         httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         std::size_t totalSent = 0;
         while (totalSent < httpRequest.size()) {
@@ -1739,6 +1742,7 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         char buffer[4096];
         std::string fullResponse;
         bool boundedFailure = false;
+        std::size_t streamPosition = std::string::npos;
         while (true) {
             if (deadline && !waitReady(false)) {
                 logger::warn("[postGameDataResponse] Deadline reached while reading {}", endpoint);
@@ -1753,6 +1757,34 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                     logger::warn("[postGameDataResponse] Response too large for {}", endpoint);
                     boundedFailure = deadline != nullptr;
                     break;
+                }
+                if (onLine)
+                {
+                    if (streamPosition == std::string::npos)
+                    {
+                        const auto headerEnd = fullResponse.find("\r\n\r\n");
+                        if (headerEnd != std::string::npos)
+                        {
+                            if (parseHttpStatusCode(fullResponse) != 200) { boundedFailure = true; break; }
+                            streamPosition = headerEnd + 4;
+                        }
+                    }
+                    if (streamPosition != std::string::npos)
+                    {
+                        auto newline = fullResponse.find('\n', streamPosition);
+                        while (newline != std::string::npos)
+                        {
+                            auto line = json::parse(fullResponse.substr(streamPosition, newline - streamPosition), nullptr, false);
+                            streamPosition = newline + 1;
+                            bool accepted = false;
+                            try {
+                                accepted = !line.is_discarded() && PlaythroughSession::Allowed(loadEpoch) && onLine(line);
+                            } catch (const std::exception&) { accepted = false; }
+                            if (!accepted) { boundedFailure = true; break; }
+                            newline = fullResponse.find('\n', streamPosition);
+                        }
+                        if (boundedFailure) break;
+                    }
                 }
                 continue;
             }
@@ -1827,6 +1859,19 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             logger::error("[postGameDataResponse] Error for {}: {}", endpoint, e.what());
             return "";
         }
+    }
+
+    // Call onLine as complete NDJSON objects arrive; callers own per-request deduplication.
+    bool postGameDataStream(const std::string& endpoint, const nlohmann::json& data,
+                            const std::function<bool(const nlohmann::json&)>& onLine, int timeoutMs)
+    {
+        int status = 0;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        try {
+            const auto body = postGameDataResponseInternal(endpoint, data, timeoutMs, &status, &deadline,
+                                                           4 * 1024 * 1024, onLine);
+            return status == 200 && !body.empty();
+        } catch (const std::exception&) { return false; }
     }
 
     nlohmann::json postGameDataJson(const std::string& endpoint, const nlohmann::json& data, int timeoutMs)

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <random>
 #include <sstream>
+#include <set>
 
 #ifdef GetObject
 #undef GetObject
@@ -31,6 +32,13 @@ struct Choice
     std::string name;
     std::string fingerprint;
 };
+struct MagicChoice
+{
+    RE::FormID form = 0;
+    RE::FormID spell = 0;
+    int rank = 0;
+    std::string kind;
+};
 struct Request
 {
     std::string id;
@@ -41,6 +49,12 @@ struct Request
     std::chrono::steady_clock::time_point reactionExpires{};
     RE::ObjectRefHandle target;
     std::vector<Choice> choices;
+    std::vector<MagicChoice> magicChoices;
+    std::optional<MagicChoice> selectedMagic;
+    RE::ObjectRefHandle magicRecipient;
+    float magicHealthBefore = 0;
+    std::vector<std::uintptr_t> magicEffectsBefore;
+    bool magicIssued = false;
     Choice selected{};
     std::map<int, Choice> equipment;
     bool hasItem = false;
@@ -60,6 +74,11 @@ struct Request
     json allowed;
     json plan;
     json receipts = json::array();
+    std::vector<std::string> narrationChunks;
+    std::set<std::string> narrationCompleted;
+    std::string narrationText;
+    bool narrationStreamDone = false;
+    bool narrationAcknowledged = false;
     bool reactionReleased = false;
     std::vector<ScriptLine> reactionLines;
     std::size_t reactionBytes = 0;
@@ -158,6 +177,23 @@ bool HasAppliedStatus(RE::Actor *actor, RE::SpellItem *spell, std::string &detai
     return false;
 }
 
+bool KnownMagic(RE::PlayerCharacter *player, const MagicChoice &choice)
+{
+    if (!player) return false;
+    auto spell = RE::TESForm::LookupByID<RE::SpellItem>(choice.spell);
+    if (!spell) return false;
+    if (choice.kind == "shout")
+    {
+        auto shout = RE::TESForm::LookupByID<RE::TESShout>(choice.form);
+        return shout && player->HasShout(shout) && choice.rank >= 1 && choice.rank <= 3 &&
+               shout->variations[choice.rank - 1].spell == spell;
+    }
+    const auto type = spell->GetSpellType();
+    return player->HasSpell(spell) && spell->GetPlayable() &&
+           (type == RE::MagicSystem::SpellType::kSpell || type == RE::MagicSystem::SpellType::kPower ||
+            type == RE::MagicSystem::SpellType::kLesserPower);
+}
+
 // Single-target, single-effect authored scroll families with observable postconditions only.
 bool SupportedScroll(RE::ScrollItem *scroll)
 {
@@ -253,6 +289,35 @@ bool InventoryChoice(RE::TESObjectREFR *owner, const Choice &choice, int needed,
 }
 
 // Human-readable form categories keep the Director from guessing mechanics from item names.
+json Effects(RE::MagicItem *item);
+json MagicSnapshot(const MagicChoice &choice)
+{
+    auto spell = RE::TESForm::LookupByID<RE::SpellItem>(choice.spell);
+    auto form = RE::TESForm::LookupByID(choice.form);
+    if (!spell || !form) return nullptr;
+    static const std::vector<std::string> deliveries = {"self", "touch", "aimed", "target_actor", "target_location"};
+    const auto delivery = static_cast<std::size_t>(spell->GetDelivery());
+    return {{"name", form->GetName()}, {"kind", choice.kind}, {"rank", choice.rank},
+            {"delivery", delivery < deliveries.size() ? deliveries[delivery] : "unknown"},
+            {"casting_type", spell->GetCastingType() == RE::MagicSystem::CastingType::kConcentration ? "concentration_single_application" : "fire_and_forget"},
+            {"resource_cost_applied", false}, {"effect_verification", "new exact spell effect or matching health change; unobservable results remain unknown"}, {"effects", Effects(spell)}};
+}
+
+json MagicMenuChoices(const std::shared_ptr<Request> &r)
+{
+    json entries = json::array();
+    for (std::size_t i = 0; i < r->magicChoices.size(); ++i)
+    {
+        const auto metadata = MagicSnapshot(r->magicChoices[i]);
+        if (metadata.is_null()) continue;
+        entries.push_back({{"key", i}, {"name", metadata["name"]}, {"kind", metadata["kind"]},
+                           {"details", metadata["delivery"].get<std::string>() +
+                               (r->magicChoices[i].rank ? " - unlocked rank " + std::to_string(r->magicChoices[i].rank) : "")}});
+    }
+    return entries;
+}
+
+// Human-readable form categories, not guesses from names or lore.
 std::string SemanticType(RE::TESBoundObject *object)
 {
     if (!object) return "unknown";
@@ -359,39 +424,88 @@ void Finish(const std::shared_ptr<Request> &r)
             if (result.value("ok", false) && result.contains("narration"))
             {
                 auto n = result["narration"];
-                ScriptLine line(n.value("text", ""), "", "", "", NARRATOR_NAME, "", 1.0f, -1, "explicit_disable_rechat",
-                                n.value("utterance_id", ""));
-                line.ttsCacheKey = n.value("tts_cache_key", "");
-                if (r->snapshot["target"].value("actor", false))
+                if (!n.is_object()) n = json::object();
+                const auto parentId = n.contains("utterance_id") && n["utterance_id"].is_string() ? n["utterance_id"].get<std::string>() : std::string{};
+                const auto chunks = n.value("chunks", json::array());
+                bool validChunks = n.contains("text") && n["text"].is_string() && !n["text"].get<std::string>().empty() && chunks.is_array() && !chunks.empty() && chunks.size() <= 32 && parentId == "interact-" + r->id;
+                std::set<std::string> chunkIds;
+                if (validChunks)
+                    for (std::size_t index = 0; index < chunks.size(); ++index)
+                    {
+                        const auto &chunk = chunks[index];
+                        if (!chunk.is_object() || !chunk.contains("text") || !chunk["text"].is_string() ||
+                            chunk["text"].get_ref<const std::string &>().empty() ||
+                            !chunk.contains("utterance_id") || !chunk["utterance_id"].is_string() ||
+                            chunk["utterance_id"] != parentId + "-" + std::to_string(index) ||
+                            !chunk.contains("tts_cache_key") || !chunk["tts_cache_key"].is_string())
+                        { validChunks = false; break; }
+                        const auto cache = chunk["tts_cache_key"].get<std::string>();
+                        if (cache.size() != 32 || cache.find_first_not_of("0123456789abcdef") != std::string::npos ||
+                            !chunkIds.insert(chunk["utterance_id"].get<std::string>()).second)
+                        { validChunks = false; break; }
+                    }
+                if (!validChunks)
+                {
+                    RE::DebugNotification("[CHIM] Effects finished; narration chunks were unavailable.");
+                    std::lock_guard lock(currentMutex);
+                    if (current == r) current.reset();
+                    return;
+                }
+                for (const auto &chunk : chunks) r->narrationChunks.push_back(chunk.at("utterance_id").get<std::string>());
+                r->narrationText = n.value("text", "");
                 {
                     std::lock_guard lock(currentMutex);
-                    if (pendingReactions.size() >= 8)
-                        pendingReactions.erase(pendingReactions.begin());
+                    if (pendingReactions.size() >= 8) pendingReactions.erase(pendingReactions.begin());
                     r->reactionExpires = std::chrono::steady_clock::now() + std::chrono::seconds(120);
-                    pendingReactions[line.utteranceId] = r;
+                    pendingReactions[parentId] = r;
                 }
-                if (r->snapshot["target"].value("actor", false))
-                    StartReaction(r);
-                ThreadPool::getInstance().enqueue("InteractNarratorAudio", [r, line] {
-                    auto audio = HTTPManager::postGameDataJson("item_interaction.php",
-                        {{"op", "audio"}, {"id", r->id}}, 120000);
-                    if (!audio.value("ok", false) && PlaythroughSession::Allowed(r->epoch) &&
-                        r->cancellationGeneration == reactionCancellationGeneration.load() &&
-                        r->dialogueGeneration == PrismaUIBridge::GetDialogueStopGeneration())
-                        audio = HTTPManager::postGameDataJson("item_interaction.php",
-                            {{"op", "audio"}, {"id", r->id}}, 120000);
-                    SKSE::GetTaskInterface()->AddTask([r, line, audio] {
+                if (r->snapshot["target"].value("actor", false)) StartReaction(r);
+                ThreadPool::getInstance().enqueue("InteractNarratorAudio", [r, parentId, chunks] {
+                    std::size_t received = 0;
+                    bool done = false;
+                    const auto receive = [&](const json &message) {
                         if (!PlaythroughSession::Allowed(r->epoch) || !ChimInteraction::Enabled() ||
                             r->dialogueGeneration != PrismaUIBridge::GetDialogueStopGeneration() ||
-                            r->cancellationGeneration != reactionCancellationGeneration.load())
-                            return;
-                        if (audio.value("ok", false))
-                            SpeakManager::getInstance().insertInQueue(line);
-                        else
+                            r->cancellationGeneration != reactionCancellationGeneration.load() ||
+                            !message.value("ok", false) || message.value("id", "") != r->id) return false;
+                        if (message.value("done", false))
                         {
-                            NarrationComplete(line.utteranceId, false);
-                            RE::DebugNotification("[CHIM] Effects finished; narration audio could not be prepared.");
+                            done = received == chunks.size() && message.value("chunk_count", 0u) == chunks.size();
+                            return done;
                         }
+                        const auto index = message.at("chunk_index").get<std::size_t>();
+                        if (index >= chunks.size()) return false;
+                        const auto &chunk = message.at("narration");
+                        if (!chunk.value("audio_ready", false)) return false;
+                        if (chunk.at("utterance_id") != chunks[index].at("utterance_id") ||
+                            chunk.at("text") != chunks[index].at("text") ||
+                            chunk.at("tts_cache_key") != chunks[index].at("tts_cache_key")) return false;
+                        if (index < received) return true; // Cached replay after transport retry.
+                        if (index != received) return false;
+                        ++received;
+                        ScriptLine line(chunk.at("text").get<std::string>(), "", "", "", NARRATOR_NAME, "", 1.0f, -1,
+                                        "explicit_disable_rechat", chunk.at("utterance_id").get<std::string>());
+                        line.ttsCacheKey = chunk.at("tts_cache_key").get<std::string>();
+                        SKSE::GetTaskInterface()->AddTask([r, line] {
+                            if (PlaythroughSession::Allowed(r->epoch) && ChimInteraction::Enabled() &&
+                                r->dialogueGeneration == PrismaUIBridge::GetDialogueStopGeneration() &&
+                                r->cancellationGeneration == reactionCancellationGeneration.load())
+                                SpeakManager::getInstance().insertInQueue(line);
+                        });
+                        return true;
+                    };
+                    for (int attempt = 0; attempt < 2 && !done; ++attempt)
+                        HTTPManager::postGameDataStream("item_interaction.php",
+                            {{"op", "audio"}, {"id", r->id}, {"stream", true}}, receive, 120000);
+                    if (done) SKSE::GetTaskInterface()->AddTask([r, parentId] {
+                        std::lock_guard lock(currentMutex);
+                        const auto found = pendingReactions.find(parentId);
+                        if (found != pendingReactions.end() && found->second == r) r->narrationStreamDone = true;
+                    });
+                    else SKSE::GetTaskInterface()->AddTask([r, parentId] {
+                        NarrationComplete(parentId, false);
+                        if (PlaythroughSession::Allowed(r->epoch) && r->cancellationGeneration == reactionCancellationGeneration.load())
+                            RE::DebugNotification("[CHIM] Effects finished; some narration audio could not be prepared.");
                     });
                 });
             }
@@ -456,6 +570,36 @@ void RunStep(const std::shared_ptr<Request> &r)
     if (effect == "observe")
     {
         Complete(r->id, r->step, "succeeded", "No physical change.");
+        return;
+    }
+    if (effect == "cast_selected_magic")
+    {
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!r->selectedMagic || !KnownMagic(player, *r->selectedMagic) || r->magicIssued)
+        {
+            Complete(r->id, r->step, "failed", "Selected known magic is no longer available or was already cast.");
+            return;
+        }
+        auto spell = RE::TESForm::LookupByID<RE::SpellItem>(r->selectedMagic->spell);
+        auto recipient = spell->GetDelivery() == RE::MagicSystem::Delivery::kSelf ? player : target.get();
+        r->magicRecipient = recipient->CreateRefHandle();
+        if (auto victim = recipient->As<RE::Actor>())
+        {
+            r->magicHealthBefore = victim->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
+            if (auto effects = victim->AsMagicTarget()->GetActiveEffectList())
+                for (auto active : *effects)
+                    if (active && active->spell == spell) r->magicEffectsBefore.push_back(reinterpret_cast<std::uintptr_t>(active));
+        }
+        r->magicIssued = true;
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        auto id = r->id;
+        auto index = r->step;
+        auto shout = r->selectedMagic->kind == "shout" ? RE::TESForm::LookupByID<RE::TESShout>(r->selectedMagic->form) : nullptr;
+        auto rank = r->selectedMagic->rank;
+        if (!vm || !vm->DispatchStaticCall("CHIMItemInteraction", "CastSelectedMagic",
+            RE::MakeFunctionArguments(std::move(id), std::move(index), std::move(recipient), std::move(spell), std::move(shout), std::move(rank)), callback))
+            Complete(r->id, r->step, "failed", "Selected magic could not be dispatched.");
         return;
     }
     if (effect == "burning_visual")
@@ -850,7 +994,11 @@ void RunStep(const std::shared_ptr<Request> &r)
 bool CanExecute(const std::string &id, int step)
 {
     auto r = Current();
-    return Live(r) && r->id == id && r->allowedStep.load() == step;
+    if (!Live(r) || r->id != id || r->allowedStep.load() != step) return false;
+    if (r->selectedMagic && step >= 0 && step < static_cast<int>(r->plan["steps"].size()) &&
+        r->plan["steps"][step].value("effect", "") == "cast_selected_magic")
+        return KnownMagic(RE::PlayerCharacter::GetSingleton(), *r->selectedMagic);
+    return true;
 }
 void Complete(const std::string &id, int step, const std::string &status, const std::string &detail)
 {
@@ -883,7 +1031,7 @@ void Complete(const std::string &id, int step, const std::string &status, const 
             {"consume", "Administer"}, {"equip", "Equip"}, {"injure", "Injure"}, {"kill", "Kill"},
             {"push", "Push"}, {"lock", "Lock"}, {"unlock", "Unlock"}, {"activate", "Activate"},
             {"open", "Open"}, {"close", "Close"}, {"destroy", "Damage"}, {"disable", "Disable"},
-            {"resize", "Resize"}, {"magic", "Cast"}, {"combat", "Start combat with"},
+            {"resize", "Resize"}, {"magic", "Cast"}, {"cast_selected_magic", "Cast selected magic"}, {"combat", "Start combat with"},
             {"consume_world", "Consume"}, {"heal", "Heal"}, {"restore_stamina", "Restore stamina of"},
             {"restore_magicka", "Restore magicka of"}, {"drop", "Drop"}, {"place", "Place"},
             {"disarm", "Disarm"}, {"unequip", "Unequip armor from"},
@@ -966,7 +1114,10 @@ bool HoldReaction(const ScriptLine &line, bool playback, RE::FormID playbackActo
 void NarrationComplete(const std::string &utteranceId, bool completed)
 {
     std::lock_guard lock(currentMutex);
-    auto found = pendingReactions.find(utteranceId);
+    constexpr auto parentLength = std::string_view("interact-").size() + 32;
+    const auto parentId = utteranceId.starts_with("interact-") && utteranceId.size() > parentLength
+                              ? utteranceId.substr(0, parentLength) : utteranceId;
+    auto found = pendingReactions.find(parentId);
     if (found == pendingReactions.end())
         return;
     SKSE::log::info("[INTERACT] Narration gate {} completed={} held={}", found->second->id, completed,
@@ -974,7 +1125,13 @@ void NarrationComplete(const std::string &utteranceId, bool completed)
     if (!completed)
         pendingReactions.erase(found);
     else
-        found->second->reactionReleased = true;
+    {
+        const auto &r = found->second;
+        if (std::find(r->narrationChunks.begin(), r->narrationChunks.end(), utteranceId) == r->narrationChunks.end()) return;
+        r->narrationCompleted.insert(utteranceId);
+        r->reactionExpires = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        // Tick releases only after transport completion as well as every playback acknowledgement.
+    }
 }
 
 void Tick()
@@ -1011,15 +1168,28 @@ void Tick()
             }
         }
         std::vector<ScriptLine> ready;
+        std::vector<json> narrationAcknowledgements;
         {
             std::lock_guard lock(currentMutex);
             for (auto &[id, pending] : pendingReactions)
+            {
+                if (!pending->narrationAcknowledged && pending->narrationStreamDone &&
+                    !pending->narrationChunks.empty() && pending->narrationCompleted.size() == pending->narrationChunks.size())
+                {
+                    pending->narrationAcknowledged = true;
+                    pending->reactionReleased = true;
+                    narrationAcknowledgements.push_back({{"speaker", "The Narrator"}, {"speech", pending->narrationText},
+                                                         {"utterance_id", id}, {"location", GetPlayerLocation()}});
+                }
                 if (pending->reactionReleased)
                 {
                     ready.insert(ready.end(), pending->reactionLines.begin(), pending->reactionLines.end());
                     pending->reactionLines.clear();
                 }
+            }
         }
+        for (const auto &ack : narrationAcknowledgements)
+            HTTPManager::log(std::format("_speech|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), ack.dump()));
         // Incoming chunks keep buffering while this ordered batch is inserted without the state lock.
         releasingReaction = true;
         for (const auto &line : ready)
@@ -1251,7 +1421,36 @@ void Open()
         std::lock_guard lock(currentMutex);
         current = r;
     }
-    PrismaUIBridge::ShowItemInteraction({{"id", r->id}, {"target", InteractionTargetName(target.get(), true)}, {"items", items}});
+    auto addSpell = [&](RE::SpellItem *spell) {
+        if (!spell || !spell->GetName() || !*spell->GetName() || spell->GetFormID() ==
+            (RE::TESDataHandler::GetSingleton()->LookupForm<RE::SpellItem>(powerLocalId, "AIAgent.esp") ?
+             RE::TESDataHandler::GetSingleton()->LookupForm<RE::SpellItem>(powerLocalId, "AIAgent.esp")->GetFormID() : 0)) return;
+        MagicChoice choice{spell->GetFormID(), spell->GetFormID(), 0, "spell"};
+        if (spell->GetSpellType() == RE::MagicSystem::SpellType::kPower) choice.kind = "power";
+        else if (spell->GetSpellType() == RE::MagicSystem::SpellType::kLesserPower) choice.kind = "power";
+        if (!KnownMagic(player, choice) || std::any_of(r->magicChoices.begin(), r->magicChoices.end(),
+            [&](const auto &known) { return known.form == choice.form; })) return;
+        r->magicChoices.push_back(choice);
+    };
+    if (auto base = player->GetActorBase())
+        if (auto list = base->GetSpellList())
+            for (std::uint32_t i = 0; i < list->numSpells; ++i) addSpell(list->spells[i]);
+    if (auto race = player->GetRace())
+        if (auto list = race->actorEffects)
+            for (std::uint32_t i = 0; i < list->numSpells; ++i) addSpell(list->spells[i]);
+    for (auto spell : player->GetActorRuntimeData().addedSpells) addSpell(spell);
+    PrismaUIBridge::ShowItemInteraction({{"id", r->id}, {"target", InteractionTargetName(target.get(), true)}, {"items", items}, {"magic", MagicMenuChoices(r)}});
+    std::vector<RE::TESShout *> shouts;
+    for (auto shout : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::TESShout>())
+        if (shout && player->HasShout(shout) && shout->GetName() && *shout->GetName()) shouts.push_back(shout);
+    if (!shouts.empty())
+    {
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        auto id = r->id;
+        if (vm) vm->DispatchStaticCall("CHIMItemInteraction", "CollectUnlockedShouts",
+            RE::MakeFunctionArguments(std::move(id), std::move(shouts)), callback);
+    }
 }
 
 void Command(const std::string &command)
@@ -1284,12 +1483,6 @@ void Command(const std::string &command)
             }
             if (op != "submit" || r->submitted)
                 return;
-            if (input.contains("cheat_mode") && !input.at("cheat_mode").is_boolean())
-            {
-                ShowInputError("Cheat Mode must be on or off.");
-                return;
-            }
-            const bool cheatMode = input.value("cheat_mode", false);
             r->hasItem = !input.at("key").is_null();
             const auto key = r->hasItem ? input.at("key").get<std::size_t>() : 0;
             if (r->hasItem && key >= r->choices.size())
@@ -1316,6 +1509,16 @@ void Command(const std::string &command)
                     "The target or selected item has changed. Choose another item, or close and reopen Interact.");
                 return;
             }
+            r->selectedMagic.reset();
+            if (input.contains("magic_key") && !input.at("magic_key").is_null())
+            {
+                if (!input.at("magic_key").is_number_unsigned() && !input.at("magic_key").is_number_integer())
+                    throw std::runtime_error("Invalid magic selection");
+                const auto key = input.at("magic_key").get<std::size_t>();
+                if (key >= r->magicChoices.size() || !KnownMagic(player, r->magicChoices[key]))
+                    throw std::runtime_error("Selected magic is no longer known");
+                r->selectedMagic = r->magicChoices[key];
+            }
             auto actor = target->As<RE::Actor>();
             // Actor's inherited subobjects move between Skyrim runtimes; use the runtime-aware accessors.
             auto playerStats = player->AsActorValueOwner();
@@ -1329,6 +1532,7 @@ void Command(const std::string &command)
             auto inventory = player->GetInventory();
             bool questItem = item && inventory.at(item).second->IsQuestObject();
             r->allowed = json::array({"observe", "activate", "resize", "disable"});
+            if (r->selectedMagic) r->allowed.push_back("cast_selected_magic");
             auto targetFood = base->As<RE::AlchemyItem>();
             if (CanPickUp(target.get()))
                 r->allowed.push_back("pickup");
@@ -1538,10 +1742,11 @@ void Command(const std::string &command)
                   {"combat", player->IsInCombat()},
                   {"sneaking", player->IsSneaking()}}},
                 {"location", player->GetCurrentLocation() ? player->GetCurrentLocation()->GetName() : "unknown"}};
+            r->snapshot["selected_magic"] = r->selectedMagic ? MagicSnapshot(*r->selectedMagic) : json(nullptr);
             r->submitted = true;
             json payload = {{"op", "resolve"},         {"id", r->id},
                             {"intent", intent},        {"gamets", GetGameTimeStamp()},
-                            {"cheat_mode", cheatMode},
+
                             {"snapshot", r->snapshot}, {"capabilities", r->allowed}};
             PrismaUIBridge::UpdateItemInteraction(
                 {{"state", "busy"}, {"status", "Resolving interaction..."}, {"confirm", false}});
@@ -1571,6 +1776,7 @@ void Command(const std::string &command)
                             throw std::runtime_error("Invalid sequence");
                         int inventorySteps = 0;
                         int pickupSteps = 0;
+                        int selectedMagicSteps = 0;
                         for (std::size_t index = 0; index < r->plan["steps"].size(); ++index)
                         {
                             const auto &s = r->plan["steps"][index];
@@ -1585,12 +1791,15 @@ void Command(const std::string &command)
                                 {"push", {1, 10}},         {"lock", {0, 100}},   {"unlock", {0, 0}},
                                 {"activate", {0, 0}},      {"open", {0, 0}},     {"close", {0, 0}},
                                 {"destroy", {1, 100}},     {"disable", {0, 0}},  {"resize", {0.25f, 2}},
-                                {"magic", {0, 0}},         {"combat", {0, 0}}, {"heal", {1, 100}},
+                                {"magic", {0, 0}}, {"cast_selected_magic", {0, 0}},
+                                {"combat", {0, 0}}, {"heal", {1, 100}},
                                 {"restore_stamina", {1, 100}}, {"restore_magicka", {1, 100}}, {"poison", {1, 10}}, {"burning", {1, 10}}, {"burning_visual", {1, 1}},
                                 {"paralysis", {1, 1}}, {"calm", {1, 100}}, {"fear", {1, 100}}, {"frenzy", {1, 100}},
                                 {"drop", {1, 100}}, {"place", {1, 100}}, {"disarm", {0, 1}}, {"unequip", {30, 61}}};
                             if ((effect == "pickup" || effect == "consume_world") && ++pickupSteps > 1)
                                 throw std::runtime_error("Repeated pickup");
+                            if (effect == "cast_selected_magic" && ++selectedMagicSteps > 1)
+                                throw std::runtime_error("Selected magic can be cast only once");
                             const auto bounds = limits.at(effect);
                             if (!std::isfinite(value) || value < bounds.first || value > bounds.second ||
                                 !s.at("alive").is_boolean())
@@ -1721,8 +1930,77 @@ void FinishInjury(const std::string &id, int step, float healthBefore)
         Complete(id, step, damaged ? "succeeded" : "unknown", detail);
     });
 }
+// Papyrus supplies the official unlocked-word check; callbacks only append to this live menu's stable keys.
+bool CanPrepareMagic(const std::string &id)
+{
+    auto r = Current();
+    return Live(r) && r->id == id && !r->submitted;
+}
+void AddUnlockedShout(const std::string &id, RE::TESShout *shout, int rank)
+{
+    SKSE::GetTaskInterface()->AddTask([id, shout, rank] {
+        if (!CanPrepareMagic(id) || !shout || rank < 1 || rank > 3) return;
+        auto r = Current();
+        auto spell = shout->variations[rank - 1].spell;
+        MagicChoice choice{shout->GetFormID(), spell ? spell->GetFormID() : 0, rank, "shout"};
+        if (KnownMagic(RE::PlayerCharacter::GetSingleton(), choice)) r->magicChoices.push_back(choice);
+    });
+}
+void RefreshMagicChoices(const std::string &id)
+{
+    SKSE::GetTaskInterface()->AddTask([id] {
+        if (!CanPrepareMagic(id)) return;
+        auto r = Current();
+        if (std::any_of(r->magicChoices.begin(), r->magicChoices.end(), [](const auto &choice) { return choice.kind == "shout"; }))
+            PrismaUIBridge::UpdateItemInteraction({{"id", id}, {"preserveDraft", true}, {"magic", MagicMenuChoices(r)}});
+    });
+}
+// A cast command is not proof of its authored consequences; observe actual recipient state once.
+void FinishSelectedMagic(const std::string &id, int step)
+{
+    SKSE::GetTaskInterface()->AddTask([id, step] {
+        if (!CanExecute(id, step)) return;
+        auto r = Current();
+        if (!r->selectedMagic || r->plan["steps"][step].value("effect", "") != "cast_selected_magic") return;
+        auto recipient = r->magicRecipient.get();
+        auto spell = RE::TESForm::LookupByID<RE::SpellItem>(r->selectedMagic->spell);
+        bool observed = false;
+        if (recipient && spell && !recipient->IsDeleted() && !recipient->IsDisabled())
+        {
+            if (auto actor = recipient->As<RE::Actor>())
+            {
+                const auto health = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kHealth);
+                for (const auto effect : spell->effects)
+                    if (effect && effect->baseEffect && effect->baseEffect->data.primaryAV == RE::ActorValue::kHealth &&
+                        effect->baseEffect->GetArchetype() == RE::EffectArchetypes::ArchetypeID::kValueModifier)
+                    {
+                        const bool hostile = effect->baseEffect->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kHostile);
+                        observed = observed || (hostile ? health < r->magicHealthBefore : health > r->magicHealthBefore);
+                    }
+                if (auto effects = actor->AsMagicTarget()->GetActiveEffectList())
+                    for (auto active : *effects)
+                        if (active && active->spell == spell && active->conditionStatus != RE::ActiveEffect::ConditionStatus::kFalse &&
+                            !active->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled) &&
+                            std::find(r->magicEffectsBefore.begin(), r->magicEffectsBefore.end(), reinterpret_cast<std::uintptr_t>(active)) == r->magicEffectsBefore.end())
+                            observed = true;
+            }
+        }
+        Complete(id, step, observed ? "succeeded" : "unknown",
+                 observed ? "Selected authored magic cast once; recipient health changed in the authored direction or a new exact spell effect appeared. Other authored consequences are not verified."
+                          : "Selected authored magic cast once; its physical result could not be confirmed. No resources, cooldown, equipment or learned magic were changed.");
+    });
+}
+
 void Register(RE::BSScript::IVirtualMachine *vm)
 {
+    vm->RegisterFunction("CanPrepareMagic", "CHIMItemInteraction",
+        +[](RE::StaticFunctionTag *, std::string id) { return CanPrepareMagic(id); }, false);
+    vm->RegisterFunction("AddUnlockedShout", "CHIMItemInteraction",
+        +[](RE::StaticFunctionTag *, std::string id, RE::TESShout *shout, int rank) { AddUnlockedShout(id, shout, rank); }, false);
+    vm->RegisterFunction("RefreshMagicChoices", "CHIMItemInteraction",
+        +[](RE::StaticFunctionTag *, std::string id) { RefreshMagicChoices(id); }, false);
+    vm->RegisterFunction("FinishSelectedMagic", "CHIMItemInteraction",
+        +[](RE::StaticFunctionTag *, std::string id, int step) { FinishSelectedMagic(id, step); }, false);
     vm->RegisterFunction(
         "FinishInjury", "CHIMItemInteraction",
         +[](RE::StaticFunctionTag *, std::string id, int step, float healthBefore) {

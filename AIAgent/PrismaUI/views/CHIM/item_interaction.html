@@ -29,13 +29,13 @@
                         <input id="search" type="search" placeholder="Search inventory">
                         <div id="items" role="group" aria-label="Inventory items"></div>
                     </section>
-                    <label class="intent-label" for="intent">What do you want to do?</label>
-                    <textarea class="focus-chatbox-input" id="intent" maxlength="1000" rows="4" placeholder="Describe your action…"></textarea>
-                    <div class="cheat-mode">
-                        <button id="cheat-mode" class="focus-btn focus-btn-capture" type="button" aria-pressed="false">Cheat Mode <span id="cheat-mode-state" class="capture-background-chat-state" aria-hidden="true">OFF</span></button>
+                    <div class="magic-field">
+                        <label class="field-caption" for="magic">Magic</label>
+                        <select id="magic" class="chatbox-mode-select"><option value="">No magic</option></select>
                     </div>
+                    <label class="intent-label" for="intent">What do you want to do?</label>
+                    <textarea class="focus-chatbox-input" id="intent" maxlength="1000" rows="4"></textarea>
                     <div class="interaction-actions">
-                        <span class="keyboard-hint">Enter to interact &middot; Esc to close</span>
                         <button id="submit" class="focus-btn focus-btn-primary" type="button">Interact</button>
                     </div>
                 </form>

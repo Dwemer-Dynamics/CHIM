@@ -10,19 +10,14 @@
 #target, #selected-item { overflow-wrap: anywhere; min-width: 0; font-size: 14px; }
 #selected-item { flex: 1; }
 .item-summary { flex-wrap: wrap; margin-bottom: 18px; }
+.magic-field { display: flex; align-items: center; gap: 10px; min-width: 0; margin-bottom: 18px; }
+#magic { flex: 1; min-width: 0; max-width: 100%; font-size: 14px; font-family: inherit; text-overflow: ellipsis; }
 #amount-field { display: flex; align-items: center; gap: 8px; margin-left: 56px; width: calc(100% - 56px); font-size: 13px; color: #bbb; }
 #quantity { width: 78px; }
 .interaction-panel input { min-width: 0; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.4); color: #eee; padding: 10px; font: inherit; }
 #intent { display: block; width: 100%; min-height: 110px; resize: vertical; max-height: 35vh; }
 .intent-label { display: block; font-size: 14px; margin-bottom: 8px; }
-/* Off is the normal state, so it stays neutral; only On is highlighted. ON/OFF text carries state without colour. */
-.cheat-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; min-width: 0; }
-#cheat-mode.is-on { border-color: rgba(46,204,113,.75); background: rgba(46,204,113,.28); color: #e7f9ef; }
-#cheat-mode.is-on:hover { border-color: rgba(46,204,113,.95); background: rgba(46,204,113,.42); }
-#cheat-mode.is-on .capture-background-chat-state { border-color: rgba(46,204,113,.75); color: #9be8bd; }
-#cheat-mode:disabled { cursor: default; }
-.interaction-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
-.keyboard-hint { color: #999; font-size: 12px; }
+.interaction-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
 .interaction-panel :focus-visible { outline: 2px solid #f27c11; outline-offset: 2px; }
 .interaction-panel input:focus { outline: none; border-color: #f27c11; box-shadow: 0 0 0 1px rgba(242,124,17,.3); }
 .interaction-panel :disabled { opacity: .55; cursor: default; }
@@ -40,4 +35,4 @@
 @keyframes interact-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #status[data-state="busy"]::before { animation: none; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
-@media (max-width: 420px) { .interaction-body { padding: 12px; } .item-summary { gap: 7px; } .keyboard-hint { max-width: 170px; line-height: 1.5; } }
+@media (max-width: 420px) { .interaction-body { padding: 12px; } .item-summary, .magic-field { gap: 7px; } }
