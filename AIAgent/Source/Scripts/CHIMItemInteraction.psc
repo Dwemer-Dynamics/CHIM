@@ -4,6 +4,20 @@ Scriptname CHIMItemInteraction Hidden
 Bool Function CanExecute(String requestId, Int step) Global Native
 Function Complete(String requestId, Int step, String status, String detail) Global Native
 Function FinishInjury(String requestId, Int step, Float healthBefore) Global Native
+Bool Function ClaimAssaultAlarm(String requestId, Int step, ObjectReference target) Global Native
+
+; Raises Skyrim's normal assault alarm once for a confirmed hostile result on the captured actor, then completes the same open step.
+Function AlarmAndComplete(String requestId, Int step, ObjectReference target, String detail) Global
+    If !CanExecute(requestId, step)
+        Return
+    EndIf
+    Actor victim = target as Actor
+    If victim && !victim.IsDead() && ClaimAssaultAlarm(requestId, step, target)
+        victim.SendAssaultAlarm()
+        detail += " Skyrim's assault alarm was issued; witness response and any bounty are engine-owned and not verified."
+    EndIf
+    Complete(requestId, step, "succeeded", detail)
+EndFunction
 
 Function Execute(String requestId, Int step, ObjectReference target, String effect, Float value, Bool approved, Scroll sourceSpell = None) Global
     If !CanExecute(requestId, step)
@@ -89,7 +103,9 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
         If !CanExecute(requestId, step)
             Return
         EndIf
-        victim.SendAssaultAlarm()
+        If ClaimAssaultAlarm(requestId, step, target)
+            victim.SendAssaultAlarm()
+        EndIf
         If !CanExecute(requestId, step)
             Return
         EndIf
@@ -244,6 +260,10 @@ Function Execute(String requestId, Int step, ObjectReference target, String effe
     Else
         status = "failed"
         detail = "Effect is not applicable."
+    EndIf
+    If effect == "push" && status == "succeeded" && victim
+        AlarmAndComplete(requestId, step, target, detail)
+        Return
     EndIf
     Complete(requestId, step, status, detail)
 EndFunction
