@@ -2,6 +2,7 @@
 #include "ChimInteraction.h"
 #include "Globals.h"
 #include "HTTPManager.h"
+#include "InteractExtensions.h"
 #include "Misc.h"
 #include "PlaythroughSession.h"
 #include "PrismaUIBridge.h"
@@ -65,9 +66,11 @@ struct Request
     int step = -1;
     int finalizedInjuryStep = -1;
     std::atomic<int> allowedStep{-1};
+    // The plugin step whose single completion has been claimed by its handler or by the timeout.
+    std::atomic<int> claimedStep{-1};
     bool submitted = false;
     bool inventoryMoved = false;
-    std::chrono::steady_clock::time_point deadline{};
+    std::atomic<std::chrono::steady_clock::time_point> deadline{};
     RE::FormID pendingSceneryShader = 0;
     std::vector<RE::NiPointer<RE::ShaderReferenceEffect>> priorSceneryShaders;
     RE::FormID pendingStatusSpell = 0;
@@ -75,6 +78,8 @@ struct Request
     std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
     json allowed;
+    // Plugin descriptors captured at submission; re-registration cannot change an in-flight request.
+    std::map<std::string, InteractExtensions::Descriptor> extensions;
     json plan;
     json receipts = json::array();
     std::vector<std::string> narrationChunks;
@@ -119,6 +124,23 @@ std::shared_ptr<Request> Current()
 bool Live(const std::shared_ptr<Request> &r)
 {
     return r && r == Current() && PlaythroughSession::Allowed(r->epoch) && ChimInteraction::Enabled();
+}
+// The captured plugin descriptor for a plan step, or null for a built-in effect.
+const InteractExtensions::Descriptor *PluginStep(const std::shared_ptr<Request> &r, int step)
+{
+    if (!r || r->extensions.empty() || step < 0 || !r->plan.is_object() || !r->plan.contains("steps") ||
+        step >= static_cast<int>(r->plan["steps"].size()))
+        return nullptr;
+    const auto found = r->extensions.find(r->plan["steps"][step].value("effect", ""));
+    return found == r->extensions.end() ? nullptr : &found->second;
+}
+// Steps only advance, so the first claim for a step wins and each later step starts unclaimed.
+bool ClaimStep(std::atomic<int> &claimed, int step)
+{
+    int seen = claimed.load();
+    while (seen < step)
+        if (claimed.compare_exchange_weak(seen, step)) return true;
+    return false;
 }
 RE::ActorValue RestorationValue(const std::string &effect)
 {
@@ -245,6 +267,8 @@ bool CanPickUp(RE::TESObjectREFR *target)
 
 void RunStep(const std::shared_ptr<Request> &r);
 void StartReaction(const std::shared_ptr<Request> &r);
+void Accept(const std::string &id, int step, const std::string &status, const std::string &detail, RE::FormID pluginOwner,
+            bool nativeAuthority);
 
 // Detect changes or allocator reuse of an extra-list pointer while the model is resolving.
 std::string Fingerprint(RE::TESBoundObject *object, RE::ExtraDataList *extra)
@@ -578,8 +602,9 @@ void RunStep(const std::shared_ptr<Request> &r)
     if (!Live(r))
         return;
     ++r->step;
-    r->allowedStep = r->step;
+    // Publish the deadline before the step so off-thread plugin checks never see the previous one.
     r->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    r->allowedStep = r->step;
     if (r->step >= static_cast<int>(r->plan["steps"].size()))
     {
         if (r->plan["steps"].empty())
@@ -615,12 +640,33 @@ void RunStep(const std::shared_ptr<Request> &r)
     }
     if (step.value("alive", false) && (!actor || actor->IsDead()))
         blocked = true;
+    const auto plugin = PluginStep(r, r->step);
     if (blocked)
     {
-        Complete(r->id, r->step, "skipped", "Target unavailable or prerequisite did not succeed.");
+        Accept(r->id, r->step, "skipped", "Target unavailable or prerequisite did not succeed.", 0, true);
         return;
     }
     const float value = step.at("value").get<float>();
+    if (plugin)
+    {
+        // Ownership is the captured handler; a newer registration by another form never receives it.
+        if (!InteractExtensions::OwnedBy(plugin->id, plugin->owner))
+        {
+            Accept(r->id, r->step, "skipped", "The plugin handler is no longer registered; nothing was dispatched.", 0, true);
+            return;
+        }
+        if (!InteractExtensions::TargetEligible(*plugin, target.get()))
+        {
+            Accept(r->id, r->step, "skipped", "The captured target no longer matches this plugin action.", 0, true);
+            return;
+        }
+        // Base form is read-only context: it does not identify the selected enchanted/tempered instance.
+        auto itemBase = r->hasItem && plugin->item != InteractExtensions::ItemForbidden
+                            ? RE::TESForm::LookupByID(r->selected.form) : nullptr;
+        if (!InteractExtensions::Dispatch(*plugin, r->id, r->step, target.get(), itemBase, value))
+            Accept(r->id, r->step, "failed", "The plugin handler could not be reached; nothing was dispatched.", 0, true);
+        return;
+    }
     if (effect == "observe")
     {
         Complete(r->id, r->step, "succeeded", "No physical change.");
@@ -1173,10 +1219,11 @@ void RunStep(const std::shared_ptr<Request> &r)
 }
 } // namespace
 
+// Generic Papyrus execution never authorizes a plugin step; only its captured handler can complete it.
 bool CanExecute(const std::string &id, int step)
 {
     auto r = Current();
-    if (!Live(r) || r->id != id || r->allowedStep.load() != step) return false;
+    if (!Live(r) || r->id != id || r->allowedStep.load() != step || PluginStep(r, step)) return false;
     if (r->selectedMagic && step >= 0 && step < static_cast<int>(r->plan["steps"].size()) &&
         r->plan["steps"][step].value("effect", "") == "cast_selected_magic")
         return KnownMagic(RE::PlayerCharacter::GetSingleton(), *r->selectedMagic);
@@ -1184,19 +1231,73 @@ bool CanExecute(const std::string &id, int step)
 }
 void Complete(const std::string &id, int step, const std::string &status, const std::string &detail)
 {
-    SKSE::GetTaskInterface()->AddTask([id, step, status, detail] {
+    Accept(id, step, status, detail, 0, false);
+}
+namespace
+{
+// Papyrus may call from a VM thread: check request state, deadline, claim and registration before the
+// engine target lookup.
+std::shared_ptr<Request> OpenPluginStep(const std::string &id, int step, RE::FormID owner)
+{
+    auto r = Current();
+    if (owner == 0 || !Live(r) || r->id != id || r->allowedStep.load() != step || r->claimedStep.load() >= step ||
+        std::chrono::steady_clock::now() > r->deadline.load())
+        return nullptr;
+    const auto plugin = PluginStep(r, step);
+    if (!plugin || plugin->owner != owner || !InteractExtensions::OwnedBy(plugin->id, owner) ||
+        !InteractExtensions::TargetEligible(*plugin, r->target.get().get()))
+        return nullptr;
+    return r;
+}
+} // namespace
+bool PluginStepPending(const std::string &id, int step, RE::FormID owner)
+{
+    return OpenPluginStep(id, step, owner) != nullptr;
+}
+bool CompletePluginStep(const std::string &id, int step, RE::FormID owner, const std::string &status,
+                        const std::string &detail)
+{
+    auto r = OpenPluginStep(id, step, owner);
+    if (!r || !ClaimStep(r->claimedStep, step)) return false;
+    Accept(id, step, status, detail, owner, false);
+    return true;
+}
+namespace
+{
+// Record at most one receipt for the pending step. Built-in steps retain CanExecute semantics. Plugin steps
+// accept their captured handler, or CHIM itself when it skips or fails the step instead of dispatching it.
+void Accept(const std::string &id, int step, const std::string &status, const std::string &detail, RE::FormID pluginOwner,
+            bool nativeAuthority)
+{
+    SKSE::GetTaskInterface()->AddTask([id, step, status, detail, pluginOwner, nativeAuthority] {
         auto r = Current();
-        if (!CanExecute(id, step) || r->receipts.size() != static_cast<std::size_t>(step))
+        if (!Live(r) || r->id != id || r->allowedStep.load() != step || r->receipts.size() != static_cast<std::size_t>(step))
             return;
+        const auto plugin = PluginStep(r, step);
+        if (plugin ? (!nativeAuthority && (pluginOwner != plugin->owner || r->claimedStep.load() != step))
+                   : (pluginOwner != 0 || !CanExecute(id, step)))
+            return;
+        bool pluginReported = plugin && !nativeAuthority;
+        std::string reported = status;
+        std::string reportedDetail = detail;
+        // The claim already stopped the timeout; if the target or registration lapsed since, the action was
+        // dispatched but its effect can no longer be attributed, so CHIM records uncertainty instead.
+        if (pluginReported && (!InteractExtensions::OwnedBy(plugin->id, plugin->owner) ||
+                               !InteractExtensions::TargetEligible(*plugin, r->target.get().get())))
+        {
+            pluginReported = false;
+            reported = "unknown";
+            reportedDetail = "The plugin reported after its target or registration became unavailable; the outcome is uncertain.";
+        }
         // Papyrus strings can retain interned casing; canonicalize only the bounded wire enum.
-        std::string outcome = status;
+        std::string outcome = reported;
         for (auto &character : outcome)
             if (character >= 'A' && character <= 'Z')
                 character += 'a' - 'A';
         bool valid = outcome == "succeeded" || outcome == "failed" || outcome == "skipped" || outcome == "unknown";
         if (!valid)
             outcome = "unknown";
-        std::string diagnostic = status.substr(0, 24);
+        std::string diagnostic = reported.substr(0, 24);
         for (auto &character : diagnostic)
             if (character < ' ' || character > '~')
                 character = '?';
@@ -1204,7 +1305,9 @@ void Complete(const std::string &id, int step, const std::string &status, const 
                         valid);
         r->receipts.push_back(
             {{"status", outcome},
-             {"detail", valid ? detail : "Execution returned an unrecognized outcome; result is uncertain."}});
+             {"detail", valid ? reportedDetail : "Execution returned an unrecognized outcome; result is uncertain."}});
+        // Label provenance; plugin reports are never presented as CHIM-verified engine evidence.
+        if (plugin) r->receipts.back()["source"] = pluginReported ? "plugin_reported" : "native";
         // Only accepted receipts reach this point; duplicate or stale callbacks never notify.
         const auto &completedStep = r->plan["steps"][step];
         const auto effect = completedStep.at("effect").get<std::string>();
@@ -1230,7 +1333,9 @@ void Complete(const std::string &id, int step, const std::string &status, const 
         const auto label = labels.find(effect);
         std::string action = label != labels.end() ? label->second : "Interaction with";
         const auto targetName = r->snapshot["target"].value("name", "target");
-        if (effect == "give" || effect == "store")
+        if (plugin)
+            action = std::format("Plugin action {} on {}", plugin->id, targetName);
+        else if (effect == "give" || effect == "store")
             action += std::format(" {} {} {} {}", completedStep.at("value").get<int>(), r->selected.name,
                                   effect == "store" ? "in" : "to", targetName);
         else if (effect == "place")
@@ -1246,10 +1351,13 @@ void Complete(const std::string &id, int step, const std::string &status, const 
             result = "could not be confirmed";
         else if (outcome == "skipped")
             result = "not completed";
+        if (pluginReported)
+            result += " (reported by plugin)";
         RE::DebugNotification(std::format("[CHIM] {}: {}.", action, result).c_str());
         RunStep(r);
     });
 }
+} // namespace
 
 // Return true only for tagged reaction lines handled (held or discarded) by this gate.
 bool HoldReaction(const ScriptLine &line, bool playback, RE::FormID playbackActor)
@@ -1385,6 +1493,7 @@ void Tick()
         for (const auto &line : ready)
             SpeakManager::getInstance().insertInQueue(line);
         releasingReaction = false;
+        InteractExtensions::NotifyReady();
         auto r = Current();
         if (!r)
             return;
@@ -1483,10 +1592,18 @@ void Tick()
             return;
         }
         if (r->step >= 0 && r->step < static_cast<int>(r->plan["steps"].size()) &&
-            std::chrono::steady_clock::now() > r->deadline)
+            std::chrono::steady_clock::now() > r->deadline.load())
         {
-            r->receipts.push_back({{"status", "unknown"},
-                                   {"detail", "Execution did not report within 15 seconds; it will not be repeated."}});
+            const auto plugin = PluginStep(r, r->step);
+            // A handler that claimed completion first has a queued receipt; otherwise the timeout claims it.
+            if (plugin && !ClaimStep(r->claimedStep, r->step))
+                return;
+            if (plugin)
+                r->receipts.push_back({{"status", "unknown"}, {"source", "native"},
+                                       {"detail", "The plugin handler did not report within 15 seconds; it will not be repeated."}});
+            else
+                r->receipts.push_back({{"status", "unknown"},
+                                       {"detail", "Execution did not report within 15 seconds; it will not be repeated."}});
             while (r->receipts.size() < r->plan["steps"].size())
                 r->receipts.push_back({{"status", "skipped"}, {"detail", "An earlier operation timed out."}});
             RE::DebugNotification("[CHIM] Interaction result could not be confirmed.");
@@ -2046,11 +2163,20 @@ void Command(const std::string &command)
                   {"sneaking", player->IsSneaking()}}},
                 {"location", player->GetCurrentLocation() ? player->GetCurrentLocation()->GetName() : "unknown"}};
             r->snapshot["selected_magic"] = r->selectedMagic ? MagicSnapshot(*r->selectedMagic) : json(nullptr);
+            // Advertise only plugin actions eligible for this captured target and item choice.
+            const auto plugins = InteractExtensions::Eligible(target.get(), item != nullptr);
+            r->extensions.clear();
+            for (const auto &descriptor : plugins)
+            {
+                r->extensions[descriptor.id] = descriptor;
+                r->allowed.push_back(descriptor.id);
+            }
             r->submitted = true;
             json payload = {{"op", "resolve"},         {"id", r->id},
                             {"intent", intent},        {"gamets", GetGameTimeStamp()},
 
                             {"snapshot", r->snapshot}, {"capabilities", r->allowed}};
+            if (!plugins.empty()) payload["extensions"] = InteractExtensions::Payload(plugins);
             PrismaUIBridge::UpdateItemInteraction(
                 {{"state", "busy"}, {"status", "Resolving interaction..."}, {"confirm", false}});
             ThreadPool::getInstance().enqueue("InteractResolve", [r, payload] {
@@ -2087,6 +2213,20 @@ void Command(const std::string &command)
                             if (std::find(r->allowed.begin(), r->allowed.end(), effect) == r->allowed.end())
                                 throw std::runtime_error("Unsupported effect");
                             const float value = s.at("value").get<float>();
+                            if (const auto plugin = r->extensions.find(effect); plugin != r->extensions.end())
+                            {
+                                // Plugin steps use only their captured bounds and carry no built-in selectors.
+                                const auto &descriptor = plugin->second;
+                                if (!s.at("value").is_number() || !std::isfinite(value) || value < descriptor.minValue ||
+                                    value > descriptor.maxValue || (descriptor.wholeNumber && std::floor(value) != value) ||
+                                    !s.at("alive").is_boolean() || s.value("direction", "") != "" || s.value("axis", "") != "" ||
+                                    (s.contains("duration") && (!s.at("duration").is_number_integer() || s.at("duration").get<int>() != 0)))
+                                    throw std::runtime_error("Invalid plugin step");
+                                for (auto dep : s.at("requires"))
+                                    if (!dep.is_number_integer() || dep.get<int>() < 0 || dep.get<std::size_t>() >= index)
+                                        throw std::runtime_error("Invalid dependency");
+                                continue;
+                            }
                             static const std::map<std::string, std::pair<float, float>> limits = {
                                 {"consume_world", {0, 0}}, {"pickup", {0, 0}},   {"observe", {0, 0}},
                                 {"give", {1, 100}},        {"store", {1, 100}},  {"consume", {1, 1}},
@@ -2319,6 +2459,7 @@ void FinishSelectedMagic(const std::string &id, int step)
 
 void Register(RE::BSScript::IVirtualMachine *vm)
 {
+    InteractExtensions::Register(vm);
     vm->RegisterFunction("CanPrepareMagic", "CHIMItemInteraction",
         +[](RE::StaticFunctionTag *, std::string id) { return CanPrepareMagic(id); }, false);
     vm->RegisterFunction("AddUnlockedShout", "CHIMItemInteraction",

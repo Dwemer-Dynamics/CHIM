@@ -156,6 +156,103 @@ Transfers preserve the selected extra-data instance. If destination merging make
 
 Implementation: `Plugin/ItemInteraction.cpp`, `CHIMItemInteraction.psc`, `PrismaUI/views/CHIM/item_interaction.*`, and HerikaServer `item_interaction.php` / `lib/item_interaction.php`. `Plugin/tools/build_interact_records.py` documents and verifies the two source ESP records without modifying existing records. Compile the Papyrus script and deploy it together with the ESP, native DLL and Prisma files. Source PRs do not contain compiled DLL/PEX artifacts.
 
+### Plugin actions
+
+Other mods can add actions to the same Interact intent, plan, execution, receipt and narration flow without changing CHIM. There are two kinds:
+
+- **Game plugin actions** run a new mechanic in the mod's own Papyrus handler. Register them with `CHIMInteractExtensions` (`Plugin/InteractExtensions.cpp`).
+- **Server plugin actions** combine existing built-in effects. They are declared in HerikaServer `ext/<package>/interact_actions.php`; see the HerikaServer [agent guide](https://github.com/Dwemer-Dynamics/HerikaServer/blob/unstable/docs/agent-guide.md#interact-plugin-actions). They need no game script.
+
+A descriptor (API version 1) contains:
+
+| Field | Contract |
+|---|---|
+| ID | `namespace:action`. Each part has 1–31 lowercase letters, digits or underscores and starts with a letter. `chim` is reserved. IDs always contain `:`, so they cannot replace a built-in effect. |
+| Description | 1–240 bytes of UTF-8 with no control characters. The Director sees it as data, not instructions. |
+| Targets | Any of a living actor, a dead actor or a non-actor reference (Papyrus flags 1, 2 and 4). |
+| Item | Optional, required, or forbidden (Papyrus 0, 1 and 2). |
+| Value | Finite inclusive bounds within ±1,000,000, optionally whole numbers only. |
+
+The plan step uses the ID as `effect`, a value within those bounds, `duration` 0, and empty `direction` and `axis`. Plugin steps count toward the five-step limit and use the normal dependencies and `alive` checks.
+
+Registration lasts only for the current game load. CHIM does not save registrations, and loading a save or starting a new game invalidates them. On a new game, a quest's `OnInit` can run before that load begins, so its registration would be discarded and `OnPlayerLoadGame` does not fire. CHIM therefore sends the SKSE mod event `CHIM_InteractActionsReady` once per load, on the game thread, when that load is ready. It is sent even when no interaction is open, and is not repeated for the same load. In `OnInit`, and in a player alias's `OnPlayerLoadGame`, subscribe with `RegisterForModEvent` and register immediately. Register again whenever the event arrives. A handler initialized after the event has already been sent is covered by its immediate registration. One handler form owns each ID. Registering the same ID with the same form updates it. Another form receives `-7`, and only the owner can unregister it. At most 32 actions can be registered, with 16 per handler.
+
+When the player submits, CHIM copies the descriptors that suit the captured target and item. Only these appear in the request's capabilities and its bounded `extensions` payload (at most 16). That copy stays fixed while the request runs. When its step starts, CHIM checks that the same form still owns the ID and that the target is still valid and eligible. It then sends `OnCHIMInteractAction` to that form only. A step that fails these checks is skipped without dispatch.
+
+`itemBase` is read-only context. It is the base form of the selected item, or `None`, and does not identify an enchanted, tempered or otherwise unique copy. Do not move or remove inventory through it. Use built-in steps such as `give`, which keep the exact selected copy.
+
+Only the handler that owns that pending step can complete it. A step is pending only before its 15-second deadline, while that form still owns the registration and the captured target is still valid and eligible. `CompleteAction` accepts `succeeded`, `failed`, `skipped` or `unknown` and keeps up to 200 bytes of detail. It claims the step's single completion before returning, so exactly one call returns `True`, even when several arrive in the same frame. `IsActionPending` is `False` after that claim. Duplicates, calls from another form, for a different step, for an ineligible target or unregistered action, or after cancellation, a load or a timeout return `False` and change nothing. If the target or registration lapses after a `True` return but before the receipt is recorded, CHIM records `unknown` instead of the report: the action was dispatched, but its outcome is uncertain. It is not repeated. `CHIMItemInteraction.Complete` and `CanExecute` refuse plugin steps. Without a report within 15 seconds, the step is recorded as `unknown` and later steps are skipped. CHIM never repeats it. The receipt is marked `plugin_reported`, and its notification says it was reported by the plugin. CHIM's own skipped, failed or timed-out receipts for a plugin step are marked `native`; they record the lifecycle only and do not verify any game effect. CHIM does not verify plugin results; it labels them in the Event Log and narration.
+
+CHIM does not poll handlers. The ready event is the only subscription. Keep handler waits short and stop when `IsActionPending` becomes `False`.
+
+The example below is a complete pair of scripts. Your mod supplies the quest, the player alias and `MarkSpell`; CHIM supplies only `CHIMInteractExtensions`.
+
+```papyrus
+Scriptname MyModInteractHandler extends Quest
+{Example CHIM Interact handler. Attach to a start-game-enabled quest.}
+
+Spell Property MarkSpell Auto
+{Your mod's own single-target spell. CHIM does not supply it.}
+
+String Property MarkActionId = "mymod:mark_target" AutoReadOnly
+
+Event OnInit()
+    Subscribe()
+EndEvent
+
+; Registrations are not saved. Also call this from a player alias's OnPlayerLoadGame.
+Function Subscribe()
+    RegisterForModEvent("CHIM_InteractActionsReady", "OnCHIMInteractActionsReady")
+    RegisterActions()
+EndFunction
+
+; CHIM sends this once per load when it is ready, including a new game whose OnInit ran earlier.
+Event OnCHIMInteractActionsReady(String eventName, String strArg, Float numArg, Form sender)
+    RegisterActions()
+EndEvent
+
+Function RegisterActions()
+    Int result = CHIMInteractExtensions.RegisterAction(Self, MarkActionId, "Place the mod's marking spell on a living target.", 1, 0, 0.0, 0.0, True)
+    If result < 0
+        Debug.Trace("[MyMod] CHIM Interact registration failed with code " + result)
+    EndIf
+EndFunction
+
+Event OnCHIMInteractAction(String requestId, Int step, String actionId, ObjectReference target, Form itemBase, Float value)
+    If actionId != MarkActionId || !CHIMInteractExtensions.IsActionPending(Self, requestId, step)
+        Return
+    EndIf
+    Actor victim = target as Actor
+    If !victim || victim.IsDead() || !MarkSpell
+        CHIMInteractExtensions.CompleteAction(Self, requestId, step, "failed", "A living target and the mark spell are required.")
+        Return
+    EndIf
+    MagicEffect mark = MarkSpell.GetNthEffectMagicEffect(0)
+    Bool hadMark = victim.HasMagicEffect(mark)
+    MarkSpell.Cast(Game.GetPlayer(), victim)
+    Utility.Wait(0.5)
+    If !CHIMInteractExtensions.IsActionPending(Self, requestId, step)
+        Return
+    EndIf
+    If !hadMark && victim.HasMagicEffect(mark)
+        CHIMInteractExtensions.CompleteAction(Self, requestId, step, "succeeded", "The mark effect appeared on the target.")
+    Else
+        CHIMInteractExtensions.CompleteAction(Self, requestId, step, "unknown", "The mark spell was cast once; a new mark effect was not observed.")
+    EndIf
+EndEvent
+```
+
+```papyrus
+Scriptname MyModInteractPlayerAlias extends ReferenceAlias
+{Example player alias on the same quest, filled with the player.}
+
+Event OnPlayerLoadGame()
+    (GetOwningQuest() as MyModInteractHandler).Subscribe()
+EndEvent
+```
+
+Compile your scripts with CHIM's `CHIMInteractExtensions.psc` and the SKSE script sources (for `RegisterForModEvent`) in the import path. `RegisterAction` returns 1 when it registers an action and 2 when it updates one. Its errors are: -1 invalid handler (it needs a persistent form), -2 ID, -3 description, -4 target flags, -5 item requirement, -6 bounds, -7 owned by another handler and -8 registry full. The handler reports its own result. Only report `succeeded` for a change it actually observed.
+
 ### In-game checks
 
 1. Load a disposable save with the paired client/server. Confirm **CHIM Interact** appears under Powers and can be cast repeatedly.
@@ -168,5 +265,6 @@ Implementation: `Plugin/ItemInteraction.cpp`, `CHIMItemInteraction.psc`, `Prisma
 8. Use an eligible elemental scroll, including against a resistant target. Confirm the scroll is consumed once and uncertain application is not narrated as a hit.
 9. During resolution move away, drop the selected copy, unload the target, or load another save. No stale effects or speech may play in the new session.
 10. Check Escape, Tab/Shift+Tab, text typing, quantity limits, empty inventory, search, and repeated submission. Gameplay hotkeys must return immediately on close. Repeat relevant input and power tests in VR before claiming VR gameplay validation.
+11. With a test handler registered, confirm its action is offered only for eligible targets and items. It must receive one event, accept one completion and time out as `unknown` when it stays silent. A second form must not be able to register or complete the action. Confirm a load clears the registration until the handler registers again. On a new game, confirm `CHIM_InteractActionsReady` arrives once and the action is offered without loading a save. Have two scripts complete the same step together and confirm exactly one call returns `True`.
 
 Build, lint, local deployment, and in-game behavior are separate evidence. These checks require Skyrim; a successful build does not establish them.
