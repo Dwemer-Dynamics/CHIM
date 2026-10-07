@@ -74,6 +74,8 @@ struct Request
     RE::FormID pendingSceneryShader = 0;
     std::vector<RE::NiPointer<RE::ShaderReferenceEffect>> priorSceneryShaders;
     RE::FormID pendingStatusSpell = 0;
+    // Identity-only snapshot of reanimate effects that existed before our cast; never dereferenced.
+    std::vector<const RE::ActiveEffect *> priorReanimateEffects;
     // One Skyrim assault alarm per interaction; each request captures exactly one target.
     std::atomic<bool> assaultAlarmClaimed{false};
     bool pendingStagger = false;
@@ -210,6 +212,42 @@ bool HasAppliedStatus(RE::Actor *actor, RE::SpellItem *spell, std::string &detai
     if (confirmed != spell->effects.size()) return false;
     detail = std::format("All {} authored status components active. Engine owns expiry; future effects, resistance and rendered visuals are not guaranteed.", confirmed);
     return true;
+}
+
+// Reanimate is a CommandEffect. Two current engine-owned sources are combined (deduplicated):
+// - inference: the player's active-effect list (where the caster-side effect is expected to live, not runtime-proven);
+// - ownership proof: the player's middleHigh->commandedActors registry entry naming this exact actor and its effect.
+// Every candidate must be a live player-cast ReanimateEffect of this exact spell/authored effect commanding exactly this actor.
+std::vector<RE::ReanimateEffect *> PlayerReanimateEffects(RE::Actor *actor, RE::SpellItem *spell, std::size_t *fromRegistry = nullptr)
+{
+    std::vector<RE::ReanimateEffect *> found;
+    if (fromRegistry) *fromRegistry = 0;
+    auto player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !actor || !spell) return found;
+    auto accept = [&](RE::ActiveEffect *active) {
+        auto reanimate = active ? skyrim_cast<RE::ReanimateEffect *>(active) : nullptr;
+        if (reanimate && reanimate->spell == spell && reanimate->GetCasterActor().get() == player &&
+            reanimate->commandedActor.get().get() == actor && reanimate->duration > reanimate->elapsedSeconds &&
+            reanimate->conditionStatus != RE::ActiveEffect::ConditionStatus::kFalse &&
+            !reanimate->flags.any(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled) &&
+            std::any_of(spell->effects.begin(), spell->effects.end(), [&](auto part) { return part && part->baseEffect == reanimate->GetBaseObject(); }))
+            return reanimate;
+        return static_cast<RE::ReanimateEffect *>(nullptr);
+    };
+    if (auto magic = player->AsMagicTarget())
+        if (auto effects = magic->GetActiveEffectList())
+            for (auto active : *effects)
+                if (auto reanimate = accept(active)) found.push_back(reanimate);
+    auto process = player->GetActorRuntimeData().currentProcess;
+    if (process && process->middleHigh)
+        for (auto &commanded : process->middleHigh->commandedActors)
+            if (commanded.commandedActor.get().get() == actor)
+                if (auto reanimate = accept(commanded.activeEffect))
+                {
+                    if (fromRegistry) ++*fromRegistry;
+                    if (std::find(found.begin(), found.end(), reanimate) == found.end()) found.push_back(reanimate);
+                }
+    return found;
 }
 
 bool KnownMagic(RE::PlayerCharacter *player, const MagicChoice &choice)
@@ -929,6 +967,9 @@ void RunStep(const std::shared_ptr<Request> &r)
         if (effect == "weaken_weapon")
             magnitude = std::min(magnitude, std::max(0.0f, actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kAttackDamageMult)));
         if (magnitude <= 0) { Complete(r->id, r->step, "failed", "No positive modifier can be applied."); return; }
+        r->priorReanimateEffects.clear();
+        if (effect == "reanimate")
+            for (auto prior : PlayerReanimateEffects(actor, spell)) r->priorReanimateEffects.push_back(prior);
         caster->CastSpellImmediate(spell, false, actor, 1.0f, false, magnitude, player);
         r->pendingStatusSpell = spell->GetFormID();
         r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(effect == "reanimate" ? 5 : 2);
@@ -1592,11 +1633,21 @@ void Tick()
             auto actor = target ? target->As<RE::Actor>() : nullptr;
             auto spell = RE::TESForm::LookupByID<RE::SpellItem>(r->pendingStatusSpell);
             std::string statusDetail;
-            bool applied = HasAppliedStatus(actor, spell, statusDetail);
             const auto pendingEffect = r->plan["steps"][r->step].value("effect", "");
+            bool applied = pendingEffect != "reanimate" && HasAppliedStatus(actor, spell, statusDetail);
+            std::size_t reanimateLive = 0;
+            std::size_t reanimateRegistry = 0;
+            const RE::ReanimateEffect *reanimateFresh = nullptr;
             if (pendingEffect == "reanimate")
             {
-                applied = applied && actor && !actor->IsDead() && actor->GetCommandingActor().get() == RE::PlayerCharacter::GetSingleton();
+                // Proof: a ReanimateEffect created by this cast (caster-list inference or exact commandedActors ownership
+                // registry), plus the engine's command link back to the player.
+                const auto live = PlayerReanimateEffects(actor, spell, &reanimateRegistry);
+                reanimateLive = live.size();
+                for (auto active : live)
+                    if (std::find(r->priorReanimateEffects.begin(), r->priorReanimateEffects.end(), active) == r->priorReanimateEffects.end())
+                    { reanimateFresh = active; break; }
+                applied = reanimateFresh && actor->GetCommandingActor().get() == RE::PlayerCharacter::GetSingleton();
                 if (applied) statusDetail = "The captured corpse is reanimated and commanded by the player; the engine owns its expiry.";
             }
             if (pendingEffect == "banish")
@@ -1622,6 +1673,22 @@ void Tick()
                             }
                 SKSE::log::info("[INTERACT] Status result id={} step={} applied={} matching_effects={}",
                                 r->id, r->step, applied, matching);
+                if (pendingEffect == "reanimate")
+                {
+                    auto player = RE::PlayerCharacter::GetSingleton();
+                    auto process = player ? player->GetActorRuntimeData().currentProcess : nullptr;
+                    bool registered = false;
+                    if (process && process->middleHigh && actor)
+                        for (auto &commanded : process->middleHigh->commandedActors)
+                            registered = registered || (commanded.commandedActor.get().get() == actor &&
+                                                        (!reanimateFresh || commanded.activeEffect == reanimateFresh));
+                    auto commander = actor ? actor->GetCommandingActor() : nullptr;
+                    SKSE::log::info("[INTERACT] Reanimate verification id={} step={} combined_live={} from_registry={} prior={} fresh={} commander={:08X} registry={} dead={} life_reanimate={}",
+                                    r->id, r->step, reanimateLive, reanimateRegistry, r->priorReanimateEffects.size(), reanimateFresh != nullptr,
+                                    commander ? commander->GetFormID() : 0, registered, actor && actor->IsDead(),
+                                    actor && actor->AsActorState()->IsReanimated());
+                }
+                r->priorReanimateEffects.clear();
                 r->pendingStatusSpell = 0;
                 // A confirmed authored-hostile status on a living actor is an assault.
                 bool hostile = false;
