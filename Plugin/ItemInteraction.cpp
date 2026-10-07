@@ -600,6 +600,33 @@ bool MovableObject(RE::TESObjectREFR *target)
     return target && !target->As<RE::Actor>() && !target->HasQuestObject() && CanPickUp(target);
 }
 
+// Placed Static/MovableStatic references may only be translated by "move": no Havok push, throw or rotation.
+// Markers and sky objects are Static forms with no physical presence; doors, furniture, activators, lights,
+// trees and landscape are other form types and never match.
+bool TranslatableStatic(RE::TESObjectREFR *target)
+{
+    if (!target || target->As<RE::Actor>() || target->HasQuestObject() || target->IsDisabled() ||
+        target->IsDeleted() || !target->Is3DLoaded() || !target->GetParentCell())
+        return false;
+    // As<T> matches T::FORMTYPE exactly, so STAT and MSTT bases are resolved separately.
+    auto base = target->GetBaseObject();
+    if (!base) return false;
+    if (base->Is(RE::FormType::Static))
+    {
+        auto stat = base->As<RE::TESObjectSTAT>();
+        if (!stat || stat->IsMarker() || stat->IsHeadingMarker() || stat->IsSkyObject() ||
+            (stat->GetFormFlags() & RE::TESObjectSTAT::RecordFlags::kIsMarker))
+            return false;
+    }
+    else if (!base->Is(RE::FormType::MovableStatic) || !base->As<RE::BGSMovableStatic>())
+        return false;
+    const auto position = target->GetPosition();
+    const auto low = target->GetBoundMin(), high = target->GetBoundMax();
+    for (const float v : {position.x, position.y, position.z, low.x, low.y, low.z, high.x, high.y, high.z})
+        if (!std::isfinite(v)) return false;
+    return low.x <= high.x && low.y <= high.y && low.z <= high.z;
+}
+
 bool ActorKeyword(RE::Actor *actor, const char *name)
 {
     auto keyword = RE::TESForm::LookupByEditorID<RE::BGSKeyword>(name);
@@ -609,26 +636,57 @@ bool UndeadActor(RE::Actor *actor) { return ActorKeyword(actor, "ActorTypeUndead
 
 
 // Conservative point rays reject blocked paths and unsupported destinations; this is not a swept-volume test.
-bool CheckedMove(RE::TESObjectREFR *target, const RE::NiPoint3 &destination)
+// skipSelf re-casts past closest hits whose collidable resolves to the captured target itself (a static's origin
+// rays start inside its own collision); any other or unresolved hit on the remaining segment still counts.
+// Each re-cast restarts kSelfSkipStep units past the self hit, so another collidable thinner than that step and
+// touching the target's surface along the ray can be missed; this is a numerical point-ray limit, not a sweep.
+// Invalid hit fractions, non-shrinking remainders or exhausting kMaxSelfSkips fail closed.
+bool CheckedMove(RE::TESObjectREFR *target, const RE::NiPoint3 &destination, bool skipSelf = false)
 {
+    constexpr int kMaxSelfSkips = 32;
+    constexpr float kSelfSkipStep = 0.05f;
     auto cell = target ? target->GetParentCell() : nullptr;
     auto world = cell ? cell->GetbhkWorld() : nullptr;
     if (!world) return false;
     const float scale = RE::bhkWorld::GetWorldScale();
     const auto ray = [&](RE::NiPoint3 from, RE::NiPoint3 to, bool wantHit) {
-        RE::bhkPickData pick{};
-        pick.rayInput.from = RE::hkVector4(from * scale);
-        pick.rayInput.to = RE::hkVector4(to * scale);
-        pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
-        const bool hit = world->PickObject(pick) && pick.rayOutput.HasHit();
-        if (wantHit)
+        float remaining = (to - from).Length();
+        if (!std::isfinite(remaining)) return false;
+        for (int pass = 0; pass <= kMaxSelfSkips; ++pass)
         {
-            if (!hit || !pick.rayOutput.rootCollidable) return false;
-            auto ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
-            const float floorZ = from.z + (to.z - from.z) * pick.rayOutput.hitFraction;
-            return floorZ <= destination.z + 2.0f && ref != target && (!ref || !ref->As<RE::Actor>());
+            RE::bhkPickData pick{};
+            pick.rayInput.from = RE::hkVector4(from * scale);
+            pick.rayInput.to = RE::hkVector4(to * scale);
+            pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
+            const bool hit = world->PickObject(pick) && pick.rayOutput.HasHit();
+            auto ref = hit && pick.rayOutput.rootCollidable
+                           ? RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable) : nullptr;
+            const float fraction = pick.rayOutput.hitFraction;
+            if (hit && (!std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f)) return false;
+            const auto at = from + (to - from) * fraction;
+            if (hit && skipSelf && ref == target)
+            {
+                if (pass == kMaxSelfSkips) return false;
+                // Step kSelfSkipStep past the self hit; a remainder within the step has no room left.
+                const auto rest = to - at;
+                const float length = rest.Length();
+                if (!std::isfinite(length)) return false;
+                if (length <= kSelfSkipStep) return !wantHit;
+                const auto next = at + rest * (kSelfSkipStep / length);
+                const float left = (to - next).Length();
+                if (!std::isfinite(left) || !(left < remaining)) return false;
+                from = next;
+                remaining = left;
+                continue;
+            }
+            if (wantHit)
+            {
+                if (!hit || !pick.rayOutput.rootCollidable) return false;
+                return at.z <= destination.z + 2.0f && ref != target && (!ref || !ref->As<RE::Actor>());
+            }
+            return !hit;
         }
-        return !hit;
+        return false;
     };
     const auto start = target->GetPosition();
     for (const RE::NiPoint3 offset : {RE::NiPoint3(0,0,16), RE::NiPoint3(16,0,16), RE::NiPoint3(-16,0,16),
@@ -738,8 +796,9 @@ void RunStep(const std::shared_ptr<Request> &r)
     if (effect == "move" || effect == "rotate" || effect == "directional_throw")
     {
         auto player = RE::PlayerCharacter::GetSingleton();
-        if (!MovableObject(target.get()) || !player || target->GetParentCell() != player->GetParentCell())
-        { Complete(r->id, r->step, "failed", "The captured object is not a movable loose reference in the current cell."); return; }
+        const bool translateOnly = effect == "move" && !MovableObject(target.get()) && TranslatableStatic(target.get());
+        if ((!MovableObject(target.get()) && !translateOnly) || !player || target->GetParentCell() != player->GetParentCell())
+        { Complete(r->id, r->step, "failed", "The captured object is not a movable reference in the current cell."); return; }
         auto position = target->GetPosition();
         if (effect == "rotate")
         {
@@ -780,9 +839,18 @@ void RunStep(const std::shared_ptr<Request> &r)
         else if (direction == "down") vector=RE::NiPoint3(0,0,-1);
         else { Complete(r->id,r->step,"failed","Invalid movement direction.");return; }
         const auto destination = position + vector * value;
-        if (!CheckedMove(target.get(), destination)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
+        const auto cell = target->GetParentCell();
+        auto tes = RE::TES::GetSingleton();
+        if (translateOnly && cell->IsExteriorCell() && (!tes || tes->GetCell(destination) != cell))
+        { Complete(r->id,r->step,"failed","The destination leaves the captured reference's cell.");return; }
+        if (!CheckedMove(target.get(), destination, translateOnly)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
         target->SetPosition(destination);
-        const bool moved=(target->GetPosition()-destination).Length()<2.0f;
+        const auto actual = target->GetPosition();
+        bool moved=(actual-destination).Length()<2.0f;
+        // A static has no physics to drift it, so also confirm the exact delta and that it stayed in its cell.
+        if (translateOnly)
+            moved = moved && std::isfinite(actual.x) && std::isfinite(actual.y) && std::isfinite(actual.z) &&
+                    std::abs((actual-position).Length()-value)<2.0f && target->GetParentCell()==cell;
         Complete(r->id,r->step,moved?"succeeded":"unknown",moved?"Captured reference position verified after bounded path and floor checks; full collision clearance is not guaranteed.":"Movement requested once; destination was not confirmed.");
         return;
     }
@@ -2029,6 +2097,8 @@ void Command(const std::string &command)
             r->allowed.push_back("extinguish");
             if (MovableObject(target.get()) && target->GetParentCell() == player->GetParentCell())
                 for (const auto operation : {"directional_throw", "move", "rotate"}) r->allowed.push_back(operation);
+            else if (TranslatableStatic(target.get()) && target->GetParentCell() == player->GetParentCell())
+                r->allowed.push_back("move");
             if (item && !questItem)
             {
                 r->allowed.push_back("drop");
