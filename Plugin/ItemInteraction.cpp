@@ -79,6 +79,11 @@ struct Request
     // One Skyrim assault alarm per interaction; each request captures exactly one target.
     std::atomic<bool> assaultAlarmClaimed{false};
     bool pendingStagger = false;
+    // Static move: loaded root world translation before the move and the requested translation.
+    bool pendingStaticMove = false;
+    RE::NiPoint3 staticMoveWorldStart{};
+    RE::NiPoint3 staticMoveDelta{};
+    RE::NiPoint3 staticMoveDestination{};
     std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
     json allowed;
@@ -840,13 +845,27 @@ void RunStep(const std::shared_ptr<Request> &r)
         else { Complete(r->id,r->step,"failed","Invalid movement direction.");return; }
         const auto destination = position + vector * value;
         if (!CheckedMove(target.get(), destination, translateOnly)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
+        auto root = translateOnly ? target->Get3D() : nullptr;
+        if (translateOnly && !root) { Complete(r->id,r->step,"failed","The captured static has no loaded 3D to move.");return; }
+        const auto worldStart = root ? root->world.translate : RE::NiPoint3{};
+        const float requestedLength = (destination - position).Length();
+        if (translateOnly && (!std::isfinite(worldStart.x) || !std::isfinite(worldStart.y) || !std::isfinite(worldStart.z) ||
+                              !std::isfinite(requestedLength) || requestedLength <= 0.0f))
+        { Complete(r->id,r->step,"failed","The captured static's loaded 3D position or requested movement is invalid.");return; }
         target->SetPosition(destination);
-        const auto actual = target->GetPosition();
-        bool moved=(actual-destination).Length()<2.0f;
-        // A static has no physics to drift it, so also confirm the exact delta.
         if (translateOnly)
-            moved = moved && std::isfinite(actual.x) && std::isfinite(actual.y) && std::isfinite(actual.z) &&
-                    std::abs((actual-position).Length()-value)<2.0f;
+        {
+            // CommonLib declares Update3DPosition as a TESObjectREFR virtual; engine behavior and collision are not guaranteed.
+            target->Update3DPosition(true);
+            r->pendingStaticMove = true;
+            r->staticMoveWorldStart = worldStart;
+            r->staticMoveDelta = destination - position;
+            r->staticMoveDestination = destination;
+            r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            return;
+        }
+        const auto actual = target->GetPosition();
+        const bool moved=(actual-destination).Length()<2.0f;
         Complete(r->id,r->step,moved?"succeeded":"unknown",moved?"Captured reference position verified after bounded path and floor checks; full collision clearance is not guaranteed.":"Movement requested once; destination was not confirmed.");
         return;
     }
@@ -1675,6 +1694,30 @@ void Tick()
                 Complete(r->id, r->step, registered ? "succeeded" : "unknown",
                          registered ? "Requested shader registered on the captured scenery. Visual effect only: no health damage, spread, destruction or rendered pixels verified."
                                     : "Visual shader requested once; a unique new registration was not confirmed.");
+            }
+            return;
+        }
+        if (r->pendingStaticMove)
+        {
+            // Success requires the loaded root's world transform to carry the requested delta, not coordinates alone.
+            auto target = r->target.get();
+            auto root = target && !target->IsDeleted() && !target->IsDisabled() && target->Is3DLoaded() ? target->Get3D() : nullptr;
+            const auto actual = target ? target->GetPosition() : RE::NiPoint3{};
+            const auto world = root ? root->world.translate : RE::NiPoint3{};
+            // Tolerance stays below the requested distance, so an unmoved root cannot pass even a 1-unit move.
+            const float tolerance = (std::min)(2.0f, r->staticMoveDelta.Length() * 0.25f);
+            const bool rendered = root && std::isfinite(tolerance) && tolerance > 0.0f &&
+                std::isfinite(actual.x) && std::isfinite(actual.y) && std::isfinite(actual.z) &&
+                std::isfinite(world.x) && std::isfinite(world.y) && std::isfinite(world.z) &&
+                (actual - r->staticMoveDestination).Length() < tolerance &&
+                (world - r->staticMoveWorldStart - r->staticMoveDelta).Length() < tolerance;
+            if (rendered || std::chrono::steady_clock::now() >= r->statusCheckUntil)
+            {
+                r->pendingStaticMove = false;
+                SKSE::log::info("[INTERACT] Static move result id={} step={} rendered={}", r->id, r->step, rendered);
+                Complete(r->id, r->step, rendered ? "succeeded" : "unknown",
+                         rendered ? "Captured static's loaded 3D world position moved by the requested amount after bounded path and floor checks; full collision clearance is not guaranteed."
+                                  : "Movement requested once; the loaded 3D position change was not confirmed.");
             }
             return;
         }
