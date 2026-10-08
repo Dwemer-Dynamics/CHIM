@@ -839,18 +839,14 @@ void RunStep(const std::shared_ptr<Request> &r)
         else if (direction == "down") vector=RE::NiPoint3(0,0,-1);
         else { Complete(r->id,r->step,"failed","Invalid movement direction.");return; }
         const auto destination = position + vector * value;
-        const auto cell = target->GetParentCell();
-        auto tes = RE::TES::GetSingleton();
-        if (translateOnly && cell->IsExteriorCell() && (!tes || tes->GetCell(destination) != cell))
-        { Complete(r->id,r->step,"failed","The destination leaves the captured reference's cell.");return; }
         if (!CheckedMove(target.get(), destination, translateOnly)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
         target->SetPosition(destination);
         const auto actual = target->GetPosition();
         bool moved=(actual-destination).Length()<2.0f;
-        // A static has no physics to drift it, so also confirm the exact delta and that it stayed in its cell.
+        // A static has no physics to drift it, so also confirm the exact delta.
         if (translateOnly)
             moved = moved && std::isfinite(actual.x) && std::isfinite(actual.y) && std::isfinite(actual.z) &&
-                    std::abs((actual-position).Length()-value)<2.0f && target->GetParentCell()==cell;
+                    std::abs((actual-position).Length()-value)<2.0f;
         Complete(r->id,r->step,moved?"succeeded":"unknown",moved?"Captured reference position verified after bounded path and floor checks; full collision clearance is not guaranteed.":"Movement requested once; destination was not confirmed.");
         return;
     }
