@@ -1,3 +1,18 @@
+3.5.0 - 2026-10-08
+* Added CHIM Interact: describe what you want to do with an NPC, item, or object and let CHIM resolve the result. Supports inventory items, known magic, physical effects, Cheat Mode, and actions supplied by plugins.
+* Added automatic voice targeting through Jev, with crosshair targets taking priority. Added optional Jev matching for Traditional Quest dialogue.
+* Expanded Background Life with NPC schedules, travel, combat and loot, persistent tasks, and automatic enrolment. Add or remove NPCs from Background Life directly in chat.
+* Added two-way letters with Background Life NPCs, replies in Prisma and the web interface, and improved courier delivery and departure. Thanks @segarega!
+* Added optional private NPC thoughts in conversation history and relationship changes in Recent Context.
+* Improved memory summaries and recalled-memory age labels. Added controls to clear an NPC's memories.
+* Added editable Inworld speech directions and sound tags, with separate support for TTS-2 and Flash. Thanks @Marcius3d!
+* Improved automatic voice effects, remote PocketTTS and Higgs voice syncing, Higgs playback caching, and streamed sentence handling.
+* Added provider recovery, request diagnostics, connector capability checks, and DwemerDistro LLM Studio setup.
+* Added CHIM plugin discovery through GitHub topics and release downloads.
+* Added a crosshair Wait Here button, refreshed NPC actions, and improved quest comments and quest-item recovery.
+* Improved Oghma editing and multilingual topic matching, configurable Skyrim start dates, and playthrough exports.
+* Fixed combat barks during searches, labelled item IDs, numeric server addresses, late server startup recovery, and crash protection.
+
 3.4.2 - 2026-09-23
 * Release version and date update.
 
