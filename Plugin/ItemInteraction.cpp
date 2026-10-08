@@ -74,6 +74,8 @@ struct Request
     RE::FormID pendingSceneryShader = 0;
     std::vector<RE::NiPointer<RE::ShaderReferenceEffect>> priorSceneryShaders;
     RE::FormID pendingStatusSpell = 0;
+    // One Skyrim assault alarm per interaction; each request captures exactly one target.
+    std::atomic<bool> assaultAlarmClaimed{false};
     bool pendingStagger = false;
     std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
@@ -597,6 +599,29 @@ bool CheckedMove(RE::TESObjectREFR *target, const RE::NiPoint3 &destination)
     return ray(destination + RE::NiPoint3(0,0,16), destination - RE::NiPoint3(0,0,256), true);
 }
 
+// A confirmed assault on the living captured actor: Papyrus raises Skyrim's normal alarm, then completes the
+// still-open step so the alarm cannot outlive the request. Falls back to plain success once claimed or dead.
+void CompleteAssault(const std::shared_ptr<Request> &r, RE::Actor *actor, std::string detail)
+{
+    if (actor && !actor->IsDead() && !r->assaultAlarmClaimed.load())
+    {
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+        std::string id = r->id, args = detail;
+        int index = r->step;
+        auto ref = r->target.get().get();
+        if (vm && vm->DispatchStaticCall("CHIMItemInteraction", "AlarmAndComplete",
+                                         RE::MakeFunctionArguments(std::move(id), std::move(index), std::move(ref), std::move(args)),
+                                         callback))
+        {
+            SKSE::log::info("[INTERACT] Assault alarm queued id={} step={} target={:08X}", r->id, r->step, actor->GetFormID());
+            return;
+        }
+        SKSE::log::warn("[INTERACT] Assault alarm dispatch failed id={} step={} target={:08X}", r->id, r->step, actor->GetFormID());
+        detail += " Skyrim's assault alarm could not be requested.";
+    }
+    Complete(r->id, r->step, "succeeded", detail);
+}
 void RunStep(const std::shared_ptr<Request> &r)
 {
     if (!Live(r))
@@ -1000,9 +1025,10 @@ void RunStep(const std::shared_ptr<Request> &r)
         auto dropped = actor->RemoveItem(object, 1, RE::ITEM_REMOVE_REASON::kDropping, remainingExtra, nullptr).get();
         bool changed = dropped && dropped->GetBaseObject() == object && dropped->extraList.GetCount() == 1 &&
                        actor->GetInventoryCounts()[object] == before - 1;
-        Complete(r->id, r->step, changed ? "succeeded" : "unknown",
-                 changed ? "Captured weapon unequipped and dropped as an actual world reference."
-                         : "Captured weapon unequipped; its drop could not be confirmed.");
+        if (changed)
+            CompleteAssault(r, actor, "Captured weapon unequipped and dropped as an actual world reference.");
+        else
+            Complete(r->id, r->step, "unknown", "Captured weapon unequipped; its drop could not be confirmed.");
         return;
     }
     if (effect == "pickup")
@@ -1228,6 +1254,17 @@ bool CanExecute(const std::string &id, int step)
         r->plan["steps"][step].value("effect", "") == "cast_selected_magic")
         return KnownMagic(RE::PlayerCharacter::GetSingleton(), *r->selectedMagic);
     return true;
+}
+// Grants the request's single assault alarm to the open built-in step that asks first.
+// Only the exact living captured actor qualifies; CanExecute keeps the cancellation, load and deadline checks.
+bool ClaimAssaultAlarm(const std::string &id, int step, RE::TESObjectREFR *target)
+{
+    auto r = Current();
+    if (!r || !target || r->id != id || r->allowedStep.load() != step || !CanExecute(id, step) || !Live(r))
+        return false;
+    auto captured = r->target.get();
+    auto actor = captured ? captured->As<RE::Actor>() : nullptr;
+    return captured.get() == target && actor && !actor->IsDead() && !r->assaultAlarmClaimed.exchange(true);
 }
 void Complete(const std::string &id, int step, const std::string &status, const std::string &detail)
 {
@@ -1544,7 +1581,8 @@ void Tick()
             if (observed || std::chrono::steady_clock::now() >= r->statusCheckUntil)
             {
                 r->pendingStagger = false;
-                Complete(r->id,r->step,observed?"succeeded":"unknown",observed?"Stagger state observed after one graph request.":"One stagger request was accepted; stagger state was not observed.");
+                if (observed) CompleteAssault(r, actor, "Stagger state observed after one graph request.");
+                else Complete(r->id,r->step,"unknown","One stagger request was accepted; stagger state was not observed.");
             }
             return;
         }
@@ -1585,6 +1623,17 @@ void Tick()
                 SKSE::log::info("[INTERACT] Status result id={} step={} applied={} matching_effects={}",
                                 r->id, r->step, applied, matching);
                 r->pendingStatusSpell = 0;
+                // A confirmed authored-hostile status on a living actor is an assault.
+                bool hostile = false;
+                if (spell)
+                    for (auto part : spell->effects)
+                        hostile = hostile || (part && part->baseEffect &&
+                                              part->baseEffect->data.flags.any(RE::EffectSetting::EffectSettingData::Flag::kHostile));
+                if (applied && hostile)
+                {
+                    CompleteAssault(r, actor, statusDetail);
+                    return;
+                }
                 Complete(r->id, r->step, applied ? "succeeded" : "unknown",
                          applied ? statusDetail
                                  : "Status cast once; application was not confirmed. Resistance or eligibility may prevent it.");
@@ -2476,6 +2525,13 @@ void Register(RE::BSScript::IVirtualMachine *vm)
     vm->RegisterFunction(
         "CanExecute", "CHIMItemInteraction",
         +[](RE::StaticFunctionTag *, std::string id, int step) { return CanExecute(id, step); }, false);
+    vm->RegisterFunction(
+        "ClaimAssaultAlarm", "CHIMItemInteraction",
+        +[](RE::StaticFunctionTag *, std::string id, int step, RE::TESObjectREFR *target) {
+            const bool claimed = ClaimAssaultAlarm(id, step, target);
+            SKSE::log::info("[INTERACT] Assault alarm claim id={} step={} granted={}", id, step, claimed);
+            return claimed;
+        }, false);
     vm->RegisterFunction(
         "Complete", "CHIMItemInteraction",
         +[](RE::StaticFunctionTag *, std::string id, int step, std::string status, std::string detail) {
