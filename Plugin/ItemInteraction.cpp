@@ -632,6 +632,42 @@ bool TranslatableStatic(RE::TESObjectREFR *target)
     return low.x <= high.x && low.y <= high.y && low.z <= high.z;
 }
 
+// Static forms discard their getter's EditorID; installed Tweaks retains the actual EDID separately.
+const char *TweaksEditorID(RE::FormID form)
+{
+    using EditorIDGetter = const char *(__cdecl *)(std::uint32_t);
+    static const auto getter = []() -> EditorIDGetter {
+        auto tweaks = GetModuleHandleW(L"po3_Tweaks.dll");
+        return tweaks ? reinterpret_cast<EditorIDGetter>(GetProcAddress(tweaks, "GetFormEditorID")) : nullptr;
+    }();
+    return getter ? getter(form) : nullptr;
+}
+
+// Scenery capture casts the camera ray this far; nothing farther can be captured.
+constexpr float kSceneryCaptureDistance = 8192.0f;
+
+// Translate-only statics stay in the player's cell, except the rowboat: a move can carry it over an exterior
+// cell edge, so it remains eligible from an adjacent exterior cell of the same worldspace within capture range.
+bool StaticMoveInRange(RE::TESObjectREFR *target, RE::PlayerCharacter *player)
+{
+    auto targetCell = target ? target->GetParentCell() : nullptr;
+    auto playerCell = player ? player->GetParentCell() : nullptr;
+    if (!targetCell || !playerCell) return false;
+    if (targetCell == playerCell) return true;
+    auto base = target->GetBaseObject();
+    const auto editor = base ? base->GetFormEditorID() : nullptr;
+    const auto id = editor && *editor ? editor : base ? TweaksEditorID(base->GetFormID()) : nullptr;
+    if (!base || (RE::TESForm::LookupByEditorID("ShipRowBoat01") != base && (!id || _stricmp(id, "ShipRowBoat01") != 0)))
+        return false;
+    const auto from = targetCell->GetCoordinates(), to = playerCell->GetCoordinates();
+    if (!from || !to || !targetCell->GetRuntimeData().worldSpace ||
+        targetCell->GetRuntimeData().worldSpace != playerCell->GetRuntimeData().worldSpace ||
+        std::abs(from->cellX - to->cellX) > 1 || std::abs(from->cellY - to->cellY) > 1)
+        return false;
+    const float distance = target->GetPosition().GetDistance(player->GetPosition());
+    return std::isfinite(distance) && distance <= kSceneryCaptureDistance;
+}
+
 bool ActorKeyword(RE::Actor *actor, const char *name)
 {
     auto keyword = RE::TESForm::LookupByEditorID<RE::BGSKeyword>(name);
@@ -802,7 +838,8 @@ void RunStep(const std::shared_ptr<Request> &r)
     {
         auto player = RE::PlayerCharacter::GetSingleton();
         const bool translateOnly = effect == "move" && !MovableObject(target.get()) && TranslatableStatic(target.get());
-        if ((!MovableObject(target.get()) && !translateOnly) || !player || target->GetParentCell() != player->GetParentCell())
+        if (!player || (MovableObject(target.get()) ? target->GetParentCell() != player->GetParentCell()
+                                                    : !translateOnly || !StaticMoveInRange(target.get(), player)))
         { Complete(r->id, r->step, "failed", "The captured object is not a movable reference in the current cell."); return; }
         auto position = target->GetPosition();
         if (effect == "rotate")
@@ -1867,7 +1904,7 @@ RE::NiPointer<RE::TESObjectREFR> SceneryTarget(RE::PlayerCharacter *player)
     RE::bhkPickData pick{};
     const float scale = RE::bhkWorld::GetWorldScale();
     pick.rayInput.from = RE::hkVector4(origin * scale);
-    pick.rayInput.to = RE::hkVector4((origin + direction * 8192.0f) * scale);
+    pick.rayInput.to = RE::hkVector4((origin + direction * kSceneryCaptureDistance) * scale);
     pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
     if (auto controller = player->GetCharController())
     {
@@ -1895,14 +1932,7 @@ std::string InteractionTargetName(RE::TESObjectREFR *target, bool logSource = fa
     if (!base) return result(std::format("scenery [{:08X}]", target->GetFormID()), "reference_id");
     const auto editor = base->GetFormEditorID();
     if (editor && *editor) return result(editor, "base_editor_id");
-    // Static forms discard their getter's EditorID; installed Tweaks retains the actual EDID separately.
-    using EditorIDGetter = const char *(__cdecl *)(std::uint32_t);
-    static const auto cachedEditorID = []() -> EditorIDGetter {
-        auto tweaks = GetModuleHandleW(L"po3_Tweaks.dll");
-        return tweaks ? reinterpret_cast<EditorIDGetter>(GetProcAddress(tweaks, "GetFormEditorID")) : nullptr;
-    }();
-    if (cachedEditorID)
-        if (const auto cached = cachedEditorID(base->GetFormID()); cached && *cached) return result(cached, "tweaks_editor_id");
+    if (const auto cached = TweaksEditorID(base->GetFormID()); cached && *cached) return result(cached, "tweaks_editor_id");
     return result(std::format("{} [{:08X}]", SemanticType(base), base->GetFormID()), "base_form_id");
 }
 
@@ -2136,7 +2166,7 @@ void Command(const std::string &command)
             r->allowed.push_back("extinguish");
             if (MovableObject(target.get()) && target->GetParentCell() == player->GetParentCell())
                 for (const auto operation : {"directional_throw", "move", "rotate"}) r->allowed.push_back(operation);
-            else if (TranslatableStatic(target.get()) && target->GetParentCell() == player->GetParentCell())
+            else if (!MovableObject(target.get()) && TranslatableStatic(target.get()) && StaticMoveInRange(target.get(), player))
                 r->allowed.push_back("move");
             if (item && !questItem)
             {
