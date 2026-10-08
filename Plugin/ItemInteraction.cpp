@@ -79,11 +79,6 @@ struct Request
     // One Skyrim assault alarm per interaction; each request captures exactly one target.
     std::atomic<bool> assaultAlarmClaimed{false};
     bool pendingStagger = false;
-    // Static move: loaded root world translation before the move and the requested translation.
-    bool pendingStaticMove = false;
-    RE::NiPoint3 staticMoveWorldStart{};
-    RE::NiPoint3 staticMoveDelta{};
-    RE::NiPoint3 staticMoveDestination{};
     std::chrono::steady_clock::time_point statusCheckUntil{};
     json snapshot;
     json allowed;
@@ -605,69 +600,6 @@ bool MovableObject(RE::TESObjectREFR *target)
     return target && !target->As<RE::Actor>() && !target->HasQuestObject() && CanPickUp(target);
 }
 
-// Placed Static/MovableStatic references may only be translated by "move": no Havok push, throw or rotation.
-// Markers and sky objects are Static forms with no physical presence; doors, furniture, activators, lights,
-// trees and landscape are other form types and never match.
-bool TranslatableStatic(RE::TESObjectREFR *target)
-{
-    if (!target || target->As<RE::Actor>() || target->HasQuestObject() || target->IsDisabled() ||
-        target->IsDeleted() || !target->Is3DLoaded() || !target->GetParentCell())
-        return false;
-    // As<T> matches T::FORMTYPE exactly, so STAT and MSTT bases are resolved separately.
-    auto base = target->GetBaseObject();
-    if (!base) return false;
-    if (base->Is(RE::FormType::Static))
-    {
-        auto stat = base->As<RE::TESObjectSTAT>();
-        if (!stat || stat->IsMarker() || stat->IsHeadingMarker() || stat->IsSkyObject() ||
-            (stat->GetFormFlags() & RE::TESObjectSTAT::RecordFlags::kIsMarker))
-            return false;
-    }
-    else if (!base->Is(RE::FormType::MovableStatic) || !base->As<RE::BGSMovableStatic>())
-        return false;
-    const auto position = target->GetPosition();
-    const auto low = target->GetBoundMin(), high = target->GetBoundMax();
-    for (const float v : {position.x, position.y, position.z, low.x, low.y, low.z, high.x, high.y, high.z})
-        if (!std::isfinite(v)) return false;
-    return low.x <= high.x && low.y <= high.y && low.z <= high.z;
-}
-
-// Static forms discard their getter's EditorID; installed Tweaks retains the actual EDID separately.
-const char *TweaksEditorID(RE::FormID form)
-{
-    using EditorIDGetter = const char *(__cdecl *)(std::uint32_t);
-    static const auto getter = []() -> EditorIDGetter {
-        auto tweaks = GetModuleHandleW(L"po3_Tweaks.dll");
-        return tweaks ? reinterpret_cast<EditorIDGetter>(GetProcAddress(tweaks, "GetFormEditorID")) : nullptr;
-    }();
-    return getter ? getter(form) : nullptr;
-}
-
-// Scenery capture casts the camera ray this far; nothing farther can be captured.
-constexpr float kSceneryCaptureDistance = 8192.0f;
-
-// Translate-only statics stay in the player's cell, except the rowboat: a move can carry it over an exterior
-// cell edge, so it remains eligible from an adjacent exterior cell of the same worldspace within capture range.
-bool StaticMoveInRange(RE::TESObjectREFR *target, RE::PlayerCharacter *player)
-{
-    auto targetCell = target ? target->GetParentCell() : nullptr;
-    auto playerCell = player ? player->GetParentCell() : nullptr;
-    if (!targetCell || !playerCell) return false;
-    if (targetCell == playerCell) return true;
-    auto base = target->GetBaseObject();
-    const auto editor = base ? base->GetFormEditorID() : nullptr;
-    const auto id = editor && *editor ? editor : base ? TweaksEditorID(base->GetFormID()) : nullptr;
-    if (!base || (RE::TESForm::LookupByEditorID("ShipRowBoat01") != base && (!id || _stricmp(id, "ShipRowBoat01") != 0)))
-        return false;
-    const auto from = targetCell->GetCoordinates(), to = playerCell->GetCoordinates();
-    if (!from || !to || !targetCell->GetRuntimeData().worldSpace ||
-        targetCell->GetRuntimeData().worldSpace != playerCell->GetRuntimeData().worldSpace ||
-        std::abs(from->cellX - to->cellX) > 1 || std::abs(from->cellY - to->cellY) > 1)
-        return false;
-    const float distance = target->GetPosition().GetDistance(player->GetPosition());
-    return std::isfinite(distance) && distance <= kSceneryCaptureDistance;
-}
-
 bool ActorKeyword(RE::Actor *actor, const char *name)
 {
     auto keyword = RE::TESForm::LookupByEditorID<RE::BGSKeyword>(name);
@@ -677,57 +609,26 @@ bool UndeadActor(RE::Actor *actor) { return ActorKeyword(actor, "ActorTypeUndead
 
 
 // Conservative point rays reject blocked paths and unsupported destinations; this is not a swept-volume test.
-// skipSelf re-casts past closest hits whose collidable resolves to the captured target itself (a static's origin
-// rays start inside its own collision); any other or unresolved hit on the remaining segment still counts.
-// Each re-cast restarts kSelfSkipStep units past the self hit, so another collidable thinner than that step and
-// touching the target's surface along the ray can be missed; this is a numerical point-ray limit, not a sweep.
-// Invalid hit fractions, non-shrinking remainders or exhausting kMaxSelfSkips fail closed.
-bool CheckedMove(RE::TESObjectREFR *target, const RE::NiPoint3 &destination, bool skipSelf = false)
+bool CheckedMove(RE::TESObjectREFR *target, const RE::NiPoint3 &destination)
 {
-    constexpr int kMaxSelfSkips = 32;
-    constexpr float kSelfSkipStep = 0.05f;
     auto cell = target ? target->GetParentCell() : nullptr;
     auto world = cell ? cell->GetbhkWorld() : nullptr;
     if (!world) return false;
     const float scale = RE::bhkWorld::GetWorldScale();
     const auto ray = [&](RE::NiPoint3 from, RE::NiPoint3 to, bool wantHit) {
-        float remaining = (to - from).Length();
-        if (!std::isfinite(remaining)) return false;
-        for (int pass = 0; pass <= kMaxSelfSkips; ++pass)
+        RE::bhkPickData pick{};
+        pick.rayInput.from = RE::hkVector4(from * scale);
+        pick.rayInput.to = RE::hkVector4(to * scale);
+        pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
+        const bool hit = world->PickObject(pick) && pick.rayOutput.HasHit();
+        if (wantHit)
         {
-            RE::bhkPickData pick{};
-            pick.rayInput.from = RE::hkVector4(from * scale);
-            pick.rayInput.to = RE::hkVector4(to * scale);
-            pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
-            const bool hit = world->PickObject(pick) && pick.rayOutput.HasHit();
-            auto ref = hit && pick.rayOutput.rootCollidable
-                           ? RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable) : nullptr;
-            const float fraction = pick.rayOutput.hitFraction;
-            if (hit && (!std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f)) return false;
-            const auto at = from + (to - from) * fraction;
-            if (hit && skipSelf && ref == target)
-            {
-                if (pass == kMaxSelfSkips) return false;
-                // Step kSelfSkipStep past the self hit; a remainder within the step has no room left.
-                const auto rest = to - at;
-                const float length = rest.Length();
-                if (!std::isfinite(length)) return false;
-                if (length <= kSelfSkipStep) return !wantHit;
-                const auto next = at + rest * (kSelfSkipStep / length);
-                const float left = (to - next).Length();
-                if (!std::isfinite(left) || !(left < remaining)) return false;
-                from = next;
-                remaining = left;
-                continue;
-            }
-            if (wantHit)
-            {
-                if (!hit || !pick.rayOutput.rootCollidable) return false;
-                return at.z <= destination.z + 2.0f && ref != target && (!ref || !ref->As<RE::Actor>());
-            }
-            return !hit;
+            if (!hit || !pick.rayOutput.rootCollidable) return false;
+            auto ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+            const float floorZ = from.z + (to.z - from.z) * pick.rayOutput.hitFraction;
+            return floorZ <= destination.z + 2.0f && ref != target && (!ref || !ref->As<RE::Actor>());
         }
-        return false;
+        return !hit;
     };
     const auto start = target->GetPosition();
     for (const RE::NiPoint3 offset : {RE::NiPoint3(0,0,16), RE::NiPoint3(16,0,16), RE::NiPoint3(-16,0,16),
@@ -837,10 +738,8 @@ void RunStep(const std::shared_ptr<Request> &r)
     if (effect == "move" || effect == "rotate" || effect == "directional_throw")
     {
         auto player = RE::PlayerCharacter::GetSingleton();
-        const bool translateOnly = effect == "move" && !MovableObject(target.get()) && TranslatableStatic(target.get());
-        if (!player || (MovableObject(target.get()) ? target->GetParentCell() != player->GetParentCell()
-                                                    : !translateOnly || !StaticMoveInRange(target.get(), player)))
-        { Complete(r->id, r->step, "failed", "The captured object is not a movable reference in the current cell."); return; }
+        if (!MovableObject(target.get()) || !player || target->GetParentCell() != player->GetParentCell())
+        { Complete(r->id, r->step, "failed", "The captured object is not a movable loose reference in the current cell."); return; }
         auto position = target->GetPosition();
         if (effect == "rotate")
         {
@@ -881,28 +780,9 @@ void RunStep(const std::shared_ptr<Request> &r)
         else if (direction == "down") vector=RE::NiPoint3(0,0,-1);
         else { Complete(r->id,r->step,"failed","Invalid movement direction.");return; }
         const auto destination = position + vector * value;
-        if (!CheckedMove(target.get(), destination, translateOnly)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
-        auto root = translateOnly ? target->Get3D() : nullptr;
-        if (translateOnly && !root) { Complete(r->id,r->step,"failed","The captured static has no loaded 3D to move.");return; }
-        const auto worldStart = root ? root->world.translate : RE::NiPoint3{};
-        const float requestedLength = (destination - position).Length();
-        if (translateOnly && (!std::isfinite(worldStart.x) || !std::isfinite(worldStart.y) || !std::isfinite(worldStart.z) ||
-                              !std::isfinite(requestedLength) || requestedLength <= 0.0f))
-        { Complete(r->id,r->step,"failed","The captured static's loaded 3D position or requested movement is invalid.");return; }
+        if (!CheckedMove(target.get(), destination)) { Complete(r->id,r->step,"failed","Path or floor checks rejected the nearby destination.");return; }
         target->SetPosition(destination);
-        if (translateOnly)
-        {
-            // CommonLib declares Update3DPosition as a TESObjectREFR virtual; engine behavior and collision are not guaranteed.
-            target->Update3DPosition(true);
-            r->pendingStaticMove = true;
-            r->staticMoveWorldStart = worldStart;
-            r->staticMoveDelta = destination - position;
-            r->staticMoveDestination = destination;
-            r->statusCheckUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-            return;
-        }
-        const auto actual = target->GetPosition();
-        const bool moved=(actual-destination).Length()<2.0f;
+        const bool moved=(target->GetPosition()-destination).Length()<2.0f;
         Complete(r->id,r->step,moved?"succeeded":"unknown",moved?"Captured reference position verified after bounded path and floor checks; full collision clearance is not guaranteed.":"Movement requested once; destination was not confirmed.");
         return;
     }
@@ -1734,30 +1614,6 @@ void Tick()
             }
             return;
         }
-        if (r->pendingStaticMove)
-        {
-            // Success requires the loaded root's world transform to carry the requested delta, not coordinates alone.
-            auto target = r->target.get();
-            auto root = target && !target->IsDeleted() && !target->IsDisabled() && target->Is3DLoaded() ? target->Get3D() : nullptr;
-            const auto actual = target ? target->GetPosition() : RE::NiPoint3{};
-            const auto world = root ? root->world.translate : RE::NiPoint3{};
-            // Tolerance stays below the requested distance, so an unmoved root cannot pass even a 1-unit move.
-            const float tolerance = (std::min)(2.0f, r->staticMoveDelta.Length() * 0.25f);
-            const bool rendered = root && std::isfinite(tolerance) && tolerance > 0.0f &&
-                std::isfinite(actual.x) && std::isfinite(actual.y) && std::isfinite(actual.z) &&
-                std::isfinite(world.x) && std::isfinite(world.y) && std::isfinite(world.z) &&
-                (actual - r->staticMoveDestination).Length() < tolerance &&
-                (world - r->staticMoveWorldStart - r->staticMoveDelta).Length() < tolerance;
-            if (rendered || std::chrono::steady_clock::now() >= r->statusCheckUntil)
-            {
-                r->pendingStaticMove = false;
-                SKSE::log::info("[INTERACT] Static move result id={} step={} rendered={}", r->id, r->step, rendered);
-                Complete(r->id, r->step, rendered ? "succeeded" : "unknown",
-                         rendered ? "Captured static's loaded 3D world position moved by the requested amount after bounded path and floor checks; full collision clearance is not guaranteed."
-                                  : "Movement requested once; the loaded 3D position change was not confirmed.");
-            }
-            return;
-        }
         if (r->pendingStagger)
         {
             auto target = r->target.get();
@@ -1904,7 +1760,7 @@ RE::NiPointer<RE::TESObjectREFR> SceneryTarget(RE::PlayerCharacter *player)
     RE::bhkPickData pick{};
     const float scale = RE::bhkWorld::GetWorldScale();
     pick.rayInput.from = RE::hkVector4(origin * scale);
-    pick.rayInput.to = RE::hkVector4((origin + direction * kSceneryCaptureDistance) * scale);
+    pick.rayInput.to = RE::hkVector4((origin + direction * 8192.0f) * scale);
     pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
     if (auto controller = player->GetCharController())
     {
@@ -1932,7 +1788,14 @@ std::string InteractionTargetName(RE::TESObjectREFR *target, bool logSource = fa
     if (!base) return result(std::format("scenery [{:08X}]", target->GetFormID()), "reference_id");
     const auto editor = base->GetFormEditorID();
     if (editor && *editor) return result(editor, "base_editor_id");
-    if (const auto cached = TweaksEditorID(base->GetFormID()); cached && *cached) return result(cached, "tweaks_editor_id");
+    // Static forms discard their getter's EditorID; installed Tweaks retains the actual EDID separately.
+    using EditorIDGetter = const char *(__cdecl *)(std::uint32_t);
+    static const auto cachedEditorID = []() -> EditorIDGetter {
+        auto tweaks = GetModuleHandleW(L"po3_Tweaks.dll");
+        return tweaks ? reinterpret_cast<EditorIDGetter>(GetProcAddress(tweaks, "GetFormEditorID")) : nullptr;
+    }();
+    if (cachedEditorID)
+        if (const auto cached = cachedEditorID(base->GetFormID()); cached && *cached) return result(cached, "tweaks_editor_id");
     return result(std::format("{} [{:08X}]", SemanticType(base), base->GetFormID()), "base_form_id");
 }
 
@@ -2166,8 +2029,6 @@ void Command(const std::string &command)
             r->allowed.push_back("extinguish");
             if (MovableObject(target.get()) && target->GetParentCell() == player->GetParentCell())
                 for (const auto operation : {"directional_throw", "move", "rotate"}) r->allowed.push_back(operation);
-            else if (!MovableObject(target.get()) && TranslatableStatic(target.get()) && StaticMoveInRange(target.get(), player))
-                r->allowed.push_back("move");
             if (item && !questItem)
             {
                 r->allowed.push_back("drop");
