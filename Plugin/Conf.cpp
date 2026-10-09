@@ -28,6 +28,22 @@ std::vector<std::string> splitString(const std::string& input, char delimiter) {
     return tokens;
 }
 
+int ResolveTcpAddress(const std::string& hostname, const std::string& port, addrinfo** result) {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    IN_ADDR ipv4Address = {};
+    IN6_ADDR ipv6Address = {};
+    if (InetPtonA(AF_INET, hostname.c_str(), &ipv4Address) == 1 ||
+        InetPtonA(AF_INET6, hostname.c_str(), &ipv6Address) == 1) {
+        hints.ai_flags = AI_NUMERICHOST;
+    }
+
+    return getaddrinfo(hostname.c_str(), port.c_str(), &hints, result);
+}
+
 
 bool readIniFile(const std::string& filename, std::string& server, std::string& path, std::string& port,
                  std::string& polint)  {
@@ -248,12 +264,9 @@ bool Conf::ping() {
     }
 #endif
 
-    struct addrinfo hints = {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
     struct addrinfo* result = nullptr;
 
-    int res = getaddrinfo(hostname, port, &hints, &result);
+    int res = ResolveTcpAddress(hostname, port, &result);
     if (res != 0) {
 #ifdef _WIN32
         WSACleanup();

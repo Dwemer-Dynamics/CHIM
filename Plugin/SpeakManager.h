@@ -30,6 +30,7 @@ struct ScriptLine {
     std::string phonetic;  // text in the Latin alphabet to use with lip sync when using non-Latin languages
     std::string rechatTargetHint;
     std::string utteranceId;
+    std::chrono::steady_clock::time_point traceQueuedAt = std::chrono::steady_clock::now();
     std::string directorSceneId;
     std::string ttsCacheKey;
     std::uint64_t directorGeneration = 0;

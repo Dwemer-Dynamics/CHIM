@@ -8,9 +8,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -279,7 +282,30 @@ bool IsInPlayerFOV(RE::Actor* npc, float detectionRadius) {
 
 
 
+static std::atomic<std::uint64_t> combatBarkGeneration{0};
+// The eligibility snapshot is taken just before the bark joins the HTTP queue. A bark that waits longer than
+// this behind other requests may no longer suit the fight, so it is dropped instead of rechecked; the periodic
+// timer schedules the next one.
+static constexpr auto COMBAT_BARK_ELIGIBILITY_MAX_AGE = std::chrono::seconds(5);
+
 namespace HTTPManager {
+
+    bool CombatBarkSpeakerInCombat(RE::Actor* actor) {
+        return actor && !actor->IsDead() && actor->Is3DLoaded() && actor->IsInCombat() &&
+               !actor->GetActorRuntimeData().boolBits.any(RE::Actor::BOOL_BITS::kSearchingInCombat);
+    }
+
+    CombatBarkTicket CurrentCombatBarkTicket() {
+        return {PrismaUIBridge::GetDialogueStopGeneration(), combatBarkGeneration.load(), {}};
+    }
+
+    bool CombatBarkTicketCurrent(const CombatBarkTicket& ticket) {
+        return ChimInteraction::Enabled() &&
+               ticket.dialogueStopGeneration == PrismaUIBridge::GetDialogueStopGeneration() &&
+               ticket.combatGeneration == combatBarkGeneration.load();
+    }
+
+    void RetireCombatBarks() { ++combatBarkGeneration; }
 
     std::string EscapeJson(const std::string& input) {
         std::string out;
@@ -505,17 +531,10 @@ namespace HTTPManager {
             return "";
         }
 
-        struct addrinfo hints;
         struct addrinfo* result = NULL;
         struct addrinfo* ptr = NULL;
 
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-
-        int adHres = getaddrinfo(Conf::getInstance().getServer().c_str(), Conf::getInstance().getPort().c_str(), &hints,
-                                 &result);
+        int adHres = ResolveTcpAddress(Conf::getInstance().getServer(), Conf::getInstance().getPort(), &result);
 
         if (adHres != 0) {
             logger::error("getaddrinfo failed error:{} server:'{}' port:'{}'", adHres,
@@ -800,17 +819,10 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             return 3;
         }
 
-        struct addrinfo hints;
         struct addrinfo* result = NULL;
         struct addrinfo* ptr = NULL;
 
-        ZeroMemory(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-
-        int adHres = getaddrinfo(Conf::getInstance().getServer().c_str(), Conf::getInstance().getPort().c_str(), &hints,
-                                 &result);
+        int adHres = ResolveTcpAddress(Conf::getInstance().getServer(), Conf::getInstance().getPort(), &result);
 
         if (adHres != 0) {
             logger::error("getaddrinfo failed: {}", adHres);
@@ -1376,13 +1388,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 return "";
             }
 
-            struct addrinfo hints {};
-            hints.ai_family = AF_UNSPEC;
-            hints.ai_socktype = SOCK_STREAM;
-            hints.ai_protocol = IPPROTO_TCP;
-
             struct addrinfo* result = nullptr;
-            int addrRes = getaddrinfo(server.c_str(), port.c_str(), &hints, &result);
+            int addrRes = ResolveTcpAddress(server, port, &result);
             if (addrRes != 0 || !result) {
                 logger::error("[VersionCheck] getaddrinfo failed for {}:{} ({})", server, port, addrRes);
                 WSACleanup();
@@ -1604,14 +1611,22 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         return response.substr(bodyStart + 4);
     }
 
+    // With a deadline, connect, send and receive share that absolute bound through non-blocking waits, and a
+    // reply over maxResponseBytes or past the deadline fails with an empty body and status 0 (timeoutMs unused).
     static std::string postGameDataResponseInternal(const std::string& endpoint, const nlohmann::json& data,
-                                                    int timeoutMs, int* outStatusCode)
+                                                    int timeoutMs, int* outStatusCode,
+                                                    const std::chrono::steady_clock::time_point* deadline = nullptr,
+                                                    std::size_t maxResponseBytes = 4 * 1024 * 1024,
+                                                    const std::function<bool(const nlohmann::json&)>& onLine = {})
     {
         const auto loadEpoch = PlaythroughSession::Context();
         const bool controlRequest = endpoint == "playthrough_session.php" || endpoint == "chim_interaction.php";
         if (!controlRequest && !PlaythroughSession::Allowed(loadEpoch)) return {};
         if (outStatusCode) {
             *outStatusCode = 0;
+        }
+        if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+            return "";
         }
 
         WSADATA wsaData;
@@ -1645,11 +1660,42 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         serverAddr.sin_port = htons(static_cast<u_short>(port));
         inet_pton(AF_INET, server.c_str(), &serverAddr.sin_addr);
 
-        DWORD timeout = static_cast<DWORD>(std::max(timeoutMs, 1000));
-        setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-        setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+        // Bounded mode: wait until the socket can be written or read, or the deadline passes.
+        const auto waitReady = [&](bool forWrite) {
+            const auto left = std::chrono::duration_cast<std::chrono::microseconds>(
+                *deadline - std::chrono::steady_clock::now()).count();
+            if (left <= 0) {
+                return false;
+            }
+            fd_set ready;
+            fd_set failed;
+            FD_ZERO(&ready);
+            FD_ZERO(&failed);
+            FD_SET(rawSocket, &ready);
+            FD_SET(rawSocket, &failed);
+            timeval wait{ static_cast<long>(left / 1000000), static_cast<long>(left % 1000000) };
+            return select(0, forWrite ? nullptr : &ready, forWrite ? &ready : nullptr, &failed, &wait) > 0 &&
+                   FD_ISSET(rawSocket, &ready);
+        };
 
-        iResult = connect(rawSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
+        if (deadline) {
+            u_long nonBlocking = 1;
+            if (ioctlsocket(rawSocket, FIONBIO, &nonBlocking) == SOCKET_ERROR) {
+                logger::error("[postGameDataResponse] Failed to set nonblocking: {}", WSAGetLastError());
+                closesocket(rawSocket);
+                WSACleanup();
+                return "";
+            }
+            iResult = connect(rawSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
+            if (iResult == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK && waitReady(true)) {
+                iResult = 0;
+            }
+        } else {
+            DWORD timeout = static_cast<DWORD>(std::max(timeoutMs, 1000));
+            setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+            setsockopt(rawSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+            iResult = connect(rawSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
+        }
         if (iResult == SOCKET_ERROR) {
             logger::error("[postGameDataResponse] Failed to connect: {}", WSAGetLastError());
             closesocket(rawSocket);
@@ -1668,13 +1714,24 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             "{}",
             fullEndpoint, server, jsonBody.size(), jsonBody);
 
+        // HTTP/1.0 keeps incremental NDJSON unchunked while the ordinary request path stays unchanged.
+        if (onLine) httpRequest.replace(httpRequest.find("HTTP/1.1"), 8, "HTTP/1.0");
         httpRequest.insert(httpRequest.find("\r\n") + 2, PlaythroughSession::Header(loadEpoch));
         std::size_t totalSent = 0;
         while (totalSent < httpRequest.size()) {
+            if (deadline && !waitReady(true)) {
+                logger::warn("[postGameDataResponse] Deadline reached while sending {}", endpoint);
+                closesocket(rawSocket);
+                WSACleanup();
+                return "";
+            }
             const int sent = send(rawSocket, httpRequest.c_str() + totalSent,
                                   static_cast<int>(httpRequest.size() - totalSent), 0);
-            if (sent == SOCKET_ERROR) {
-                logger::error("[postGameDataResponse] Failed to send: {}", WSAGetLastError());
+            if (sent == SOCKET_ERROR && deadline && WSAGetLastError() == WSAEWOULDBLOCK) {
+                continue;
+            }
+            if (sent == SOCKET_ERROR || sent == 0) {
+                logger::error("[postGameDataResponse] Failed to send: {}", sent == 0 ? 0 : WSAGetLastError());
                 closesocket(rawSocket);
                 WSACleanup();
                 return "";
@@ -1684,26 +1741,82 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         char buffer[4096];
         std::string fullResponse;
+        bool boundedFailure = false;
+        std::size_t streamPosition = std::string::npos;
         while (true) {
+            if (deadline && !waitReady(false)) {
+                logger::warn("[postGameDataResponse] Deadline reached while reading {}", endpoint);
+                boundedFailure = true;
+                break;
+            }
             iResult = recv(rawSocket, buffer, sizeof(buffer) - 1, 0);
             if (iResult > 0) {
                 buffer[iResult] = '\0';
                 fullResponse.append(buffer, static_cast<std::size_t>(iResult));
-                if (fullResponse.size() > 4 * 1024 * 1024) {
+                if (fullResponse.size() > maxResponseBytes) {
                     logger::warn("[postGameDataResponse] Response too large for {}", endpoint);
+                    boundedFailure = deadline != nullptr;
                     break;
+                }
+                if (onLine)
+                {
+                    if (streamPosition == std::string::npos)
+                    {
+                        const auto headerEnd = fullResponse.find("\r\n\r\n");
+                        if (headerEnd != std::string::npos)
+                        {
+                            if (parseHttpStatusCode(fullResponse) != 200) { boundedFailure = true; break; }
+                            streamPosition = headerEnd + 4;
+                        }
+                    }
+                    if (streamPosition != std::string::npos)
+                    {
+                        auto newline = fullResponse.find('\n', streamPosition);
+                        while (newline != std::string::npos)
+                        {
+                            const auto rawLine = fullResponse.substr(streamPosition, newline - streamPosition);
+                            streamPosition = newline + 1;
+                            // PHP/proxy flushing may put blank CRLF lines before or between NDJSON records.
+                            if (rawLine.find_first_not_of(" \t\r") == std::string::npos)
+                            {
+                                newline = fullResponse.find('\n', streamPosition);
+                                continue;
+                            }
+                            auto line = json::parse(rawLine, nullptr, false);
+                            bool accepted = false;
+                            try {
+                                accepted = !line.is_discarded() && PlaythroughSession::Allowed(loadEpoch) && onLine(line);
+                            } catch (const std::exception&) { accepted = false; }
+                            if (!accepted)
+                            {
+                                logger::warn("[postGameDataStream] Rejected record for {}: malformed_json={} bytes={} session_allowed={}",
+                                             endpoint, line.is_discarded(), rawLine.size(), PlaythroughSession::Allowed(loadEpoch));
+                                boundedFailure = true;
+                                break;
+                            }
+                            newline = fullResponse.find('\n', streamPosition);
+                        }
+                        if (boundedFailure) break;
+                    }
                 }
                 continue;
             }
             if (iResult == 0) {
                 break;
             }
+            if (deadline && WSAGetLastError() == WSAEWOULDBLOCK) {
+                continue;
+            }
             logger::error("[postGameDataResponse] recv failed for {}: {}", endpoint, WSAGetLastError());
+            boundedFailure = deadline != nullptr;
             break;
         }
 
         closesocket(rawSocket);
         WSACleanup();
+        if (boundedFailure) {
+            return "";
+        }
 
         if (outStatusCode) {
             *outStatusCode = parseHttpStatusCode(fullResponse);
@@ -1759,6 +1872,19 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             logger::error("[postGameDataResponse] Error for {}: {}", endpoint, e.what());
             return "";
         }
+    }
+
+    // Call onLine as complete NDJSON objects arrive; callers own per-request deduplication.
+    bool postGameDataStream(const std::string& endpoint, const nlohmann::json& data,
+                            const std::function<bool(const nlohmann::json&)>& onLine, int timeoutMs)
+    {
+        int status = 0;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        try {
+            const auto body = postGameDataResponseInternal(endpoint, data, timeoutMs, &status, &deadline,
+                                                           4 * 1024 * 1024, onLine);
+            return status == 200 && !body.empty();
+        } catch (const std::exception&) { return false; }
     }
 
     nlohmann::json postGameDataJson(const std::string& endpoint, const nlohmann::json& data, int timeoutMs)
@@ -1835,7 +1961,234 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         streamInternal(std::move(msg), rechatDepth, nullptr);
     }
 
+    // Each player request supersedes a pending automatic responder decision.
+    static std::atomic<std::uint64_t> playerRoutingRequest{0};
+    // Total bound for connect, send and reply; the server bounds its provider call at 1500 ms.
+    static constexpr std::chrono::milliseconds kAutomaticDecisionBound{2000};
+    static constexpr std::size_t kAutomaticDecisionMaxResponseBytes = 16 * 1024;
+    // Farther movement before the decision returns means the player left the conversation.
+    static constexpr float kAutomaticDecisionMaxTravelUnits = 2048.0f;
+    // Load whose server has no endpoint (404); later voice turns skip the round trip until the next load. An
+    // unset or disabled Decision Connector (not_configured), timeouts, errors and malformed replies are not
+    // remembered, so a settings change applies to the next voice turn.
+    static std::atomic<std::uint64_t> automaticDecisionUnavailableEpoch{0};
+
+    static RE::FormID PlayerParentCellId(RE::Actor* player)
+    {
+        auto* cell = player ? player->GetParentCell() : nullptr;
+        return cell ? cell->GetFormID() : 0;
+    }
+
+    // Voice input only: before the nearest-eligible fallback is used, ask HerikaServer for one bounded
+    // automatic responder decision. Actor data is copied here on the game thread; the request runs on the
+    // thread pool and the turn resumes on the game thread with either the decision or the live fallback.
+    // Returns false, without side effects, when the current route must be used immediately.
+    static bool DeferForAutomaticDecision(const std::string& msg, const PlayerConversationRoutingContext& context,
+                                          const PlayerConversationRoutingResult& route)
+    {
+        constexpr std::size_t kCandidateLimit = 8;
+        constexpr std::size_t kNameBytes = 96;
+        constexpr std::size_t kTranscriptBytes = 600;
+
+        const auto& mode = context.executionMode;
+        if (context.source != PlayerConversationInputSource::Voice || context.automaticDecisionResolved ||
+            context.everyoneMode || context.narratorMode || GodMode || route.reason != "nearest_eligible" ||
+            route.narrator || route.broadcast || route.direct || route.rejected ||
+            route.automaticCandidates.size() < 2 ||
+            (mode != "STANDARD" && mode != "WHISPER" && mode != "SHOUT" && mode != "CLOSE")) {
+            return false;
+        }
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        const auto epoch = PlaythroughSession::Context();
+        auto* taskInterface = SKSE::GetTaskInterface();
+        if (!player || !taskInterface || !PlaythroughSession::Allowed(epoch) ||
+            automaticDecisionUnavailableEpoch.load() == epoch) {
+            return false;
+        }
+
+        // Wire format: type|ts|gamets|Speaker:transcript
+        std::size_t fieldStart = 0;
+        for (int field = 0; field < 3 && fieldStart != std::string::npos; ++field) {
+            fieldStart = msg.find('|', fieldStart);
+            if (fieldStart != std::string::npos) {
+                ++fieldStart;
+            }
+        }
+        const auto speakerEnd = fieldStart == std::string::npos ? fieldStart : msg.find(':', fieldStart);
+        std::string transcript = speakerEnd == std::string::npos ? "" : trim(msg.substr(speakerEnd + 1));
+        if (transcript.size() > kTranscriptBytes) {
+            std::size_t cut = kTranscriptBytes;
+            while (cut > 0 && (static_cast<unsigned char>(transcript[cut]) & 0xC0) == 0x80) {
+                --cut;
+            }
+            transcript.resize(cut);
+        }
+        if (transcript.empty()) {
+            return false;
+        }
+
+        json candidates = json::array();
+        std::vector<std::uint32_t> offered;
+        const auto count = std::min(route.automaticCandidates.size(), kCandidateLimit);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto& candidate = route.automaticCandidates[index];
+            if (candidate.formId == 0 || candidate.name.empty() || candidate.name.size() > kNameBytes) {
+                return false;
+            }
+            candidates.push_back({
+                { "id", candidate.formId },
+                { "name", candidate.name },
+                { "distance_m", std::round(candidate.distance / SpatialAwareness::kSkyrimUnitsPerMeter * 10.0f) / 10.0f },
+                { "in_view", candidate.inView },
+                { "follower", candidate.follower },
+            });
+            offered.push_back(candidate.formId);
+        }
+        const json body = {
+            { "transcript", transcript },
+            { "baseline_id", offered.front() },
+            { "candidates", candidates },
+        };
+
+        const auto requestId = playerRoutingRequest.load();
+        const auto stopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+        const auto cellId = PlayerParentCellId(player);
+        const auto startPosition = SpatialAwareness::GetEffectiveActorPosition(player);
+        const auto started = std::chrono::steady_clock::now();
+        const auto deadline = started + kAutomaticDecisionBound;
+        auto settled = std::make_shared<std::atomic<bool>>(false);
+        if (cellId == 0) {
+            return false;
+        }
+
+        // Thread-safe reasons the turn is already obsolete; cell and position are checked on the game thread.
+        const auto obsoleteReason = [requestId, epoch, stopGeneration]() -> const char* {
+            if (requestId != playerRoutingRequest.load()) {
+                return "superseded";
+            }
+            if (!PlaythroughSession::Allowed(epoch)) {
+                return "session_changed";
+            }
+            if (stopGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
+                return "dialogue_stopped";
+            }
+            return nullptr;
+        };
+
+        // Whichever of the response and the deadline arrives first resumes the turn exactly once.
+        auto finish = [settled, msg, context, epoch, cellId, startPosition, started, obsoleteReason,
+                       taskInterface](RE::FormID chosen, std::string reason) {
+            if (settled->exchange(true)) {
+                return;
+            }
+            const auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            taskInterface->AddTask([msg, context, epoch, cellId, startPosition, obsoleteReason, chosen,
+                                    reason = std::move(reason), latencyMs]() {
+                auto* currentPlayer = RE::PlayerCharacter::GetSingleton();
+                const char* discard = obsoleteReason();
+                if (!discard && (!currentPlayer || PlayerParentCellId(currentPlayer) != cellId ||
+                                 SpatialAwareness::GetEffectiveActorPosition(currentPlayer).GetDistance(startPosition) >
+                                     kAutomaticDecisionMaxTravelUnits)) {
+                    discard = "area_changed";
+                }
+                if (discard) {
+                    logger::info("[PLAYER-ROUTING] Automatic decision discarded with its turn: reason={} latency_ms={}",
+                                 discard, latencyMs);
+                    return;
+                }
+
+                logger::info("[PLAYER-ROUTING] Automatic decision source={} reason={} id={:08X} latency_ms={}",
+                             chosen != 0 ? "jev" : "live_router", reason, chosen, latencyMs);
+                const PlaythroughSession::Scope scope(epoch);
+                auto resumed = context;
+                resumed.automaticDecisionResolved = true;
+                resumed.automaticResponderFormId = chosen;
+                streamInternal(msg, 0, &resumed);
+            });
+        };
+
+        // The deadline timer starts first: if it cannot start, nothing has been queued and the caller falls back.
+        try {
+            std::thread([finish]() {
+                std::this_thread::sleep_for(kAutomaticDecisionBound);
+                finish(0, "timeout");
+            }).detach();
+        } catch (const std::exception& e) {
+            logger::warn("[PLAYER-ROUTING] Automatic decision unavailable: {}", e.what());
+            return false;
+        }
+
+        try {
+            ThreadPool::getInstance().enqueue(
+                "HTTPAutomaticTarget",
+                [body, offered, finish, epoch, settled, obsoleteReason, deadline]() {
+                    // A queued task that starts after the deadline, a newer input, Stop or a load sends nothing.
+                    if (settled->load() || obsoleteReason() || std::chrono::steady_clock::now() >= deadline) {
+                        finish(0, "not_sent");
+                        return;
+                    }
+                    RE::FormID chosen = 0;
+                    std::string reason = "unavailable";
+                    int status = 0;
+                    try {
+                        const PlaythroughSession::Scope scope(epoch);
+                        const auto reply = postGameDataResponseInternal("stt_target.php", body, 0, &status, &deadline,
+                                                                        kAutomaticDecisionMaxResponseBytes);
+                        if (status != 0 && status != 200) {
+                            reason = "http_" + std::to_string(status);
+                        } else if (!reply.empty()) {
+                            reason = "invalid_response";
+                        }
+                        const auto response = status == 200 ? json::parse(reply, nullptr, false) : json::object();
+                        const auto decision = response.find("decision");
+                        if (response.is_object() && response.value("ok", false) && decision != response.end() &&
+                            decision->is_string()) {
+                            if (*decision == "select" && response.contains("form_id") &&
+                                response["form_id"].is_number_unsigned() &&
+                                response["form_id"].get<std::uint64_t>() <= 0xFFFFFFFFull) {
+                                chosen = PlayerConversationRoutingPolicy::AcceptOfferedAutomaticDecision(
+                                    offered, response["form_id"].get<std::uint32_t>());
+                                reason = chosen != 0 ? "selected" : "not_offered";
+                            } else if (*decision == "abstain") {
+                                reason = "abstain";
+                                const auto detail = response.find("reason");
+                                if (detail != response.end() && detail->is_string()) {
+                                    const auto& text = detail->get_ref<const std::string&>();
+                                    if (!text.empty() && text.size() <= 32 &&
+                                        std::all_of(text.begin(), text.end(), [](unsigned char c) {
+                                            return std::islower(c) || std::isdigit(c) || c == '_';
+                                        })) {
+                                        reason += "_" + text;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (const std::exception&) {
+                        chosen = 0;
+                        reason = "invalid_response";
+                    }
+                    // Only a missing endpoint disables later requests in this load; not_configured and any other
+                    // failure are tried again by the next voice turn.
+                    if (status == 404) {
+                        automaticDecisionUnavailableEpoch.store(epoch);
+                    }
+                    finish(chosen, std::move(reason));
+                },
+                "", std::chrono::seconds(5));
+        } catch (const std::exception& e) {
+            // The timer is still pending; claiming the turn here stops its later callback from resuming it.
+            if (settled->exchange(true)) {
+                return true;
+            }
+            logger::warn("[PLAYER-ROUTING] Automatic decision unavailable: {}", e.what());
+            return false;
+        }
+        return true;
+    }
+
     void streamPlayer(std::string msg, const PlayerConversationRoutingContext& context) {
+        playerRoutingRequest.fetch_add(1);
         auto requestContext = context;
         if (requestContext.executionMode.empty()) {
             requestContext.executionMode = requestContext.symbolRoutingMode.empty()
@@ -1895,6 +2248,9 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 std::string rejectedMsg = std::format("[CHIM] {} is asleep. Use Shout mode to reach them.",
                                                       playerRoute.rejectedTargetName);
                 RE::DebugNotification(rejectedMsg.c_str());
+                return;
+            }
+            if (DeferForAutomaticDecision(msg, *routingContext, playerRoute)) {
                 return;
             }
         }
@@ -2523,9 +2879,17 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
     }
 
     bool streamForActor(std::string msg, RE::Actor* actor,
-                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth) {
+                        PlayerConversationRoutingPolicy::RequestEligibility eligibility, int rechatDepth,
+                        const CombatBarkTicket* combatBark) {
         if (!ChimInteraction::Enabled()) {
             if (!ChimInteraction::IsTrigger(msg)) log(std::move(msg));
+            return false;
+        }
+        const bool isCombatBark = msg.starts_with("combatbark|");
+        // An untagged combat bark is treated as scheduled now.
+        const auto combatBarkTicket = combatBark ? *combatBark : CurrentCombatBarkTicket();
+        if (isCombatBark && !CombatBarkTicketCurrent(combatBarkTicket)) {
+            logger::info("[HTTPStream] Dropping combat bark scheduled before the last stop, load or combat end");
             return false;
         }
         // Determine speaker
@@ -2540,7 +2904,6 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
 
         const bool enforceAutomaticEligibility =
             PlayerConversationRoutingPolicy::ShouldCheckAutomaticEligibility(msg, eligibility, true);
-        const bool isCombatBark = msg.starts_with("combatbark|");
         AIAgentManager& aiam = AIAgentManager::getInstance();
         
         // First try to find agent by FormID (works for all agents including narrator)
@@ -2582,16 +2945,32 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
         }
         logger::info("Stream Called for {}", listener);
 
-        const auto dialogueStopGeneration = PrismaUIBridge::GetDialogueStopGeneration();
+        // Combat barks keep the stop generation of their scheduling pass, so a Stop All, load or player turn
+        // after selection cannot be mistaken for a fresh request.
+        const auto dialogueStopGeneration =
+            isCombatBark ? combatBarkTicket.dialogueStopGeneration : PrismaUIBridge::GetDialogueStopGeneration();
         const auto actorHandle = actor->GetHandle();
-        auto queueStreamRequest = [msg, listener, rechatDepth, dialogueStopGeneration, eligibility,
-                                   actorFormID, actorHandle, agent](bool inventoryDelivered) {
-            if (!inventoryDelivered) {
-                logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
-            }
+        auto enqueueStream = [listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle,
+                              agent, isCombatBark, combatBarkTicket](
+                                 std::string msg, std::chrono::steady_clock::time_point eligibilitySampledAt) {
             ThreadPool::getInstance().enqueue(
                 rechatDepth == 0 ? "HTTPStream" : "HTTPStreamRechat",
-                [msg, listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID, actorHandle, agent]() {
+                [msg = std::move(msg), listener, rechatDepth, dialogueStopGeneration, eligibility, actorFormID,
+                 actorHandle, agent, isCombatBark, combatBarkTicket, eligibilitySampledAt]() {
+                    if (isCombatBark) {
+                        if (!CombatBarkTicketCurrent(combatBarkTicket)) {
+                            logger::info("[HTTPStream] Dropping queued combat bark for {}; combat or interaction ended",
+                                         listener);
+                            return;
+                        }
+                        // Queue backlog is preventable staleness; changes during the HTTP and LLM round trip are not.
+                        const auto eligibilityAge = std::chrono::steady_clock::now() - eligibilitySampledAt;
+                        if (eligibilityAge > COMBAT_BARK_ELIGIBILITY_MAX_AGE) {
+                            logger::info("[HTTPStream] Dropping combat bark for {}; speaker check is {} ms old", listener,
+                                         std::chrono::duration_cast<std::chrono::milliseconds>(eligibilityAge).count());
+                            return;
+                        }
+                    }
                     // Recheck the target after inventory refresh and queue delay without retaining a raw pointer.
                     auto target = actorHandle.get();
                     const auto blockReason = AutomaticResponseBlockReason(msg, agent, target.get(), eligibility, actorFormID);
@@ -2604,6 +2983,37 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                                   0, eligibility, actorFormID);
                 },
                 listener, std::chrono::seconds(90));
+        };
+        auto queueStreamRequest = [msg, listener, isCombatBark, combatBarkTicket, actorHandle,
+                                   enqueueStream](bool inventoryDelivered) {
+            if (!inventoryDelivered) {
+                logger::warn("[HTTPStream] Continuing request for {} after inventory refresh failed", listener);
+            }
+            if (!isCombatBark) {
+                enqueueStream(msg, {});
+                return;
+            }
+
+            // Combat can change during the inventory round trip, so recheck the speaker on the game thread as
+            // late as practical and let the worker keep the network call.
+            auto* taskInterface = SKSE::GetTaskInterface();
+            if (!taskInterface) {
+                logger::warn("[HTTPStream] Dropping combat bark for {}; task interface unavailable", listener);
+                return;
+            }
+            taskInterface->AddTask([msg, listener, combatBarkTicket, actorHandle, enqueueStream]() {
+                if (!CombatBarkTicketCurrent(combatBarkTicket)) {
+                    logger::info("[HTTPStream] Dropping combat bark for {}; combat or interaction ended", listener);
+                    return;
+                }
+                auto target = actorHandle.get();
+                if (!CombatBarkSpeakerInCombat(target.get()) ||
+                    (combatBarkTicket.speakerEligible && !combatBarkTicket.speakerEligible(target.get()))) {
+                    logger::info("[HTTPStream] Dropping combat bark for {}; speaker is no longer eligible", listener);
+                    return;
+                }
+                enqueueStream(msg, std::chrono::steady_clock::now());
+            });
         };
 
         if (actor && agent && listener != NARRATOR_NAME) {

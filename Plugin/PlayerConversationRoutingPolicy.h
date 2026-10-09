@@ -141,6 +141,8 @@ namespace PlayerConversationRoutingPolicy
         bool narratorGesture = false;
         // Optional caller policy; ordinary direct address permits sleeping targets.
         bool blockSleepingDirectTarget = false;
+        // Externally decided automatic responder; it can only replace the nearest-eligible fallback.
+        std::uint32_t automaticResponderFormId = 0;
     };
 
     struct Result
@@ -231,6 +233,23 @@ namespace PlayerConversationRoutingPolicy
     inline bool IsSleepingDirectTarget(const Request& request, const Candidate& candidate)
     {
         return request.blockSleepingDirectTarget && candidate.sleeping;
+    }
+
+    // The nearest-eligible fallback chooses among these candidates; an automatic decision may not widen them.
+    inline bool IsAutomaticFallbackCandidate(const Request& request, const Candidate& candidate)
+    {
+        return candidate.autoEligible && candidate.audible &&
+               WithinRadius(candidate.distance, request.interactionRadius);
+    }
+
+    // Accept an asynchronous decision only for an actor that was offered when it was requested.
+    inline std::uint32_t AcceptOfferedAutomaticDecision(const std::vector<std::uint32_t>& offered,
+                                                        std::uint32_t chosen)
+    {
+        if (chosen == 0 || std::find(offered.begin(), offered.end(), chosen) == offered.end()) {
+            return 0;
+        }
+        return chosen;
     }
 
     inline bool IsCloserDirectMatch(const std::vector<Candidate>& candidates, std::size_t index,
@@ -467,11 +486,24 @@ namespace PlayerConversationRoutingPolicy
             }
         }
 
+        // A decided responder must still be automatically eligible now; otherwise use the live fallback.
+        if (request.automaticResponderFormId != 0) {
+            for (std::size_t index = 0; index < candidates.size(); ++index) {
+                const auto& candidate = candidates[index];
+                if (candidate.formId == request.automaticResponderFormId &&
+                    IsAutomaticFallbackCandidate(request, candidate)) {
+                    result.kind = SelectionKind::Candidate;
+                    result.candidateIndex = index;
+                    result.reason = "automatic_decision";
+                    return result;
+                }
+            }
+        }
+
         std::size_t nearest = (std::numeric_limits<std::size_t>::max)();
         for (std::size_t index = 0; index < candidates.size(); ++index) {
             const auto& candidate = candidates[index];
-            if (!candidate.autoEligible || !candidate.audible ||
-                !WithinRadius(candidate.distance, request.interactionRadius)) {
+            if (!IsAutomaticFallbackCandidate(request, candidate)) {
                 continue;
             }
             if (nearest == (std::numeric_limits<std::size_t>::max)() ||

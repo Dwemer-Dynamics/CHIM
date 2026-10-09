@@ -1,3 +1,4 @@
+#include "ItemInteraction.h"
 #include "ChimInteraction.h"
 #include "Papyrus.h"
 
@@ -26,6 +27,7 @@
 #include "Globals.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "SpeakManager.h"
 #include "SpatialAwareness.h"
@@ -46,6 +48,8 @@
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
 
+extern void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
+extern void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
 extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
                                         bool synchronous, std::function<void(bool)> completion = {});
 
@@ -3900,16 +3904,17 @@ RE::FormID Papyrus::getForm(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VM
                 return static_cast<RE::FormID>(j.at(key).get<uint32_t>());
             } else if (j.at(key).is_string()) {
                 std::string val = j.at(key).get<std::string>();
-                try {
-                    uint32_t intval = 0;
-                    intval = std::stoul(val, nullptr, 0);
-                    RE::TESForm* form = RE::TESForm::LookupByID(intval);
-                    if (form)
-                        return static_cast<RE::FormID>(std::stoul(val, nullptr, 0));
-                    else
-                        logger::warn("[getForm] No form found for FormID '{}'", val);
-                } catch (...) {
+                const auto formId = ItemIdentifierUtils::ParseFormId(val);
+                if (!formId.has_value()) {
+                    logger::warn("[getForm] Invalid FormID '{}'", val);
+                    return 0;
                 }
+
+                RE::TESForm* form = RE::TESForm::LookupByID(*formId);
+                if (form)
+                    return static_cast<RE::FormID>(*formId);
+                else
+                    logger::warn("[getForm] No form found for FormID '{}'", val);
             }
         }
     } catch (const std::exception& e) {
@@ -5421,8 +5426,24 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     if (target->GetHandle()) {
         addBasicProfileReal(target->GetHandle());
         RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, true);
+        RefreshAIAgentStats(target, target->GetDisplayFullName(), true);
     } else {
         logger::warn("[addBasicProfile] Target actor has no valid handle.");
+    }
+    return 0;
+}
+
+int Papyrus::updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                        RE::StaticFunctionTag*, RE::Actor* target) {
+    ScopedPapyrusLock lock("updateRemoteCombatSnapshot");
+
+    if (target && target->GetHandle()) {
+        const std::string actorName = target->GetDisplayFullName();
+        RefreshAIAgentEquipment(target, actorName, true);
+        RefreshAIAgentInventoryImpl(target, actorName, true, true);
+        RefreshAIAgentStats(target, actorName, true);
+    } else {
+        logger::warn("[updateRemoteCombatSnapshot] Target actor has no valid handle.");
     }
     return 0;
 }
@@ -5517,6 +5538,7 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
 }
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
+    ItemInteraction::Register(a_vm);
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
@@ -5652,6 +5674,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
 
     a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
+    a_vm->RegisterFunction("updateRemoteCombatSnapshot", "AIAgentFunctions", updateRemoteCombatSnapshot, false);
     a_vm->RegisterFunction("updateRemoteInventory", "AIAgentFunctions", updateRemoteInventory, false);
 
     a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);

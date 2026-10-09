@@ -16,7 +16,7 @@
     let lastRowId = 0;
     let narratorName = 'The Narrator';
     let serverUrl = 'http://192.168.169.218:8081/HerikaServer';
-    const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext']);
+    const dialogueEventTypes = new Set(['chat', 'inputtext', 'ginputtext', 'relationship']);
 
     /**
      * Update the history panel with data from the server
@@ -274,6 +274,12 @@
             </div>
             <div class="entry-text">${escapeHtml(text)}</div>
         `;
+        if (entry.private_thought && entry.private_thought.text) {
+            const thought = document.createElement('div');
+            thought.className = 'event-private-thought';
+            thought.textContent = `Private thought (${entry.private_thought.owner}): ${entry.private_thought.text}`;
+            div.appendChild(thought);
+        }
         if (rowId > 0) {
             div.querySelector('.entry-header-actions').appendChild(createDeleteButton(rowId));
         }

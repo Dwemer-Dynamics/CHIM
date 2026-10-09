@@ -482,10 +482,34 @@ PlayerConversationRoutingResult PlayerConversationRouter::Resolve(
     policyRequest.narratorGesture = context.executionMode != "HYPNOSIS" && IsNarratorGesture(player);
     // Direct address can reach a sleeper; automatic selection still uses autoEligible.
     policyRequest.blockSleepingDirectTarget = false;
+    policyRequest.automaticResponderFormId = context.automaticResponderFormId;
 
     const auto selection = PlayerConversationRoutingPolicy::Select(policyRequest, policyCandidates);
     result.reason = selection.reason;
     result.broadcast = selection.broadcast;
+
+    if (selection.reason == "nearest_eligible") {
+        for (const auto& candidate : runtimeCandidates) {
+            if (!candidate.actor ||
+                !PlayerConversationRoutingPolicy::IsAutomaticFallbackCandidate(policyRequest, candidate.policy)) {
+                continue;
+            }
+            PlayerConversationAutomaticCandidate automatic{};
+            automatic.formId = candidate.policy.formId;
+            automatic.name = candidate.policy.name;
+            automatic.distance = candidate.policy.distance;
+            automatic.inView = candidate.policy.facingDot >= PlayerConversationRoutingPolicy::kFieldOfViewCosine;
+            automatic.follower = candidate.actor->IsPlayerTeammate();
+            result.automaticCandidates.push_back(std::move(automatic));
+        }
+        std::sort(result.automaticCandidates.begin(), result.automaticCandidates.end(),
+            [](const PlayerConversationAutomaticCandidate& lhs, const PlayerConversationAutomaticCandidate& rhs) {
+                if (lhs.distance != rhs.distance) {
+                    return lhs.distance < rhs.distance;
+                }
+                return lhs.formId < rhs.formId;
+            });
+    }
 
     if (selection.kind == PlayerConversationRoutingPolicy::SelectionKind::Rejected) {
         result.rejected = true;

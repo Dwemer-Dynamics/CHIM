@@ -2083,6 +2083,7 @@ void parseRoleCommand(std::string rawCommand) {
                 if (reference) {
                     auto actor = reference->As<RE::Actor>();
 
+                    
                     logger::info("[BackgroundCmd] Reference {} is a valid reference", reference->GetDisplayFullName());
 
                     auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
@@ -2152,6 +2153,16 @@ void parseRoleCommand(std::string rawCommand) {
                 logger::error("[ShowTrainingMenu] Could not find trainer actor: {}", splitResult[0]);
             }
         }
+    } else if (command.contains("SmartWait")) {
+        // Call the native Papyrus function Game.ShowTrainingMenu
+        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+        if (vm) {
+            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+            auto args = RE::MakeFunctionArguments();
+            vm->DispatchStaticCall("AIAgentAIMind", "WaitLaunch", args, callback);
+        } else {
+            logger::error("[SmartWait] Could not get VirtualMachine");
+        }
     }
 
     responsePop("rolecommand");
@@ -2174,39 +2185,6 @@ void parseCommand(std::string rawCommand, std::string actorname) {
 
     AIAgentManager& aiam = AIAgentManager::getInstance();
     auto agentPtr = aiam.getAgentByName(actorname);
-
-    /*
-    if (!agentPtr) {
-        logger::info("No AI actor found");
-        responsePop("command");
-
-        if (actorname == aiam.getPlayerName()) {
-            std::string command = rawCommand.substr(0, pos);
-            std::string parameter = rawCommand.substr(pos + delimiter.length());
-
-            if (command.contains("TravelTo")) {
-                responsePop("command");
-
-                auto player = RE::PlayerCharacter::GetSingleton();
-
-                auto locationForm = findLocation(parameter);
-
-                if (locationForm) {
-                    RE::BGSLocation* location = locationForm->As<RE::BGSLocation>();
-                    logger::info("Location target: {}", location->GetName());
-
-                    auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                    auto args = RE::MakeFunctionArguments(std::move(player->As<RE::Actor>()),
-                                                          std::move(location->worldLocMarker.get().get()),
-                                                          std::move(location->GetName()));
-                    RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
-                        "AIAgentAIMind", "TravelToTargetPlayer", args, callback);
-                }
-            }
-        }
-        return;
-    }
-    */
 
     if (!agentPtr) {
         logger::info("No actorptr found for {}", actorname);
@@ -2232,20 +2210,8 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         agentPtr->setCommandBusy(false);
         agentPtr->setExternalLocked(false);
         agentPtr->setAnimationBusy(false);
-        ;
-        /* if ((spgResponse.findInQueue(qName, "Follow")) &&
-            (spgResponse.findInQueue(qName, RE::PlayerCharacter::GetSingleton()->GetName()))) {
-            HTTPLogger->critical("funcret|{}|{}|{}{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                 "command@Follow@@#HERIKA_NPC1# follows ",
-                                 RE::PlayerCharacter::GetSingleton()->GetName());
-        }
-
-        if ((spgResponse.findInQueue("command", "Relax"))) {
-            HTTPLogger->critical("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                 "command@Relax@@#HERIKA_NPC1# takes a relaxed pose ");
-        }
-
-        */
+      
+      
         if ((spgResponse.findInQueue("command", "ToggleModel"))) {
             RE::DebugNotification(
                 std::format("[CHIM] Model changed to {} for {} ", trim(parameter), agentPtr->getActorName()).c_str());
@@ -2255,13 +2221,6 @@ void parseCommand(std::string rawCommand, std::string actorname) {
             HTTPManager::log(std::format("force_current_task|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                          "Resting and relaxing."));
 
-            /*
-            * Considder
-            HTTPManager::stream(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                                            "command@" + command  + "@#HERIKA_NPC1# is relaxed now.")
-                                , agentPtr->getActor()
-                                );
-            */
             responsePop("command");
             clearQueue("command");
             return;
@@ -2271,7 +2230,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         responsePop("command");
         clearQueue("command");
         return;
-        // HTTPLogger->error("info|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), "Herika: ");
+
 
     } else if (command.contains("AddBounty")) {
         responsePop("command");
@@ -2423,7 +2382,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         StartBrawl(trim(parameter), targetActor);
         responsePop("command");
 
-        // HTTPLogger->error("info|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), "Herika: ");
+        
     } else if (command.contains("OpenInventory")) {
         if (agentPtr.get()->isCommandBusy()) return;
 
@@ -2470,12 +2429,7 @@ void parseCommand(std::string rawCommand, std::string actorname) {
         HTTPManager::log(std::format("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                      "command@" + command + "@" + trim(parameter) + "@"),
                          targetActor);
-        /*
-
-        */
-        /*
-        HTTPLogger->critical("funcret|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
-                             "command@" + command + "@" + trim(parameter) + "@");*/
+        
 
     } else if (command.contains("MoveTo")) {
         responsePop("command");
@@ -5699,49 +5653,51 @@ RE::Actor* findClosestAgent() {
     int n = aiam.getAgents().size();
     for (const auto& agent : aiam.getAgents()) {
         logger::info("Checking Actor {} {}/{}", i, agent->getActorName(), n);
-        float distance = player->GetPosition().GetDistance(agent->getActor()->GetPosition());
+        auto actor = agent->getActorByFormId();
+        if (actor) {
+            float distance = player->GetPosition().GetDistance(actor->GetPosition());
 
-        auto debugActor = agent->getActor();
+            auto debugActor = actor;
 
-        if (!debugActor) {
-            logger::error("ERROR {} {} actor is unreachable, try to readd", i, agent->getActorName());
-            i++;
-            continue;
+            if (!debugActor) {
+                logger::error("ERROR {} {} actor is unreachable, try to readd", i, agent->getActorName());
+                i++;
+                continue;
+            }
+            auto localAgentCell = agent->getActor()->GetParentCell();
+
+            if (beings.find(agent->getActorName()) == std::string::npos) {
+                logger::info("Discarding {} {} because actor is not around", i, agent->getActorName());
+                i++;
+                continue;
+            }
+
+            if (agent->getActorName() == NARRATOR_NAME) {
+                logger::info("Discarding {} {} because actor is Narrator", i, NARRATOR_NAME);
+                i++;
+                continue;
+            }
+
+            if (!localAgentCell || !agent->getActor()) {
+                logger::info("Discarding {} because no actor/no cell", i);
+                i++;
+                continue;
+            }
+
+            if (debugActor->IsOffLimits()) {
+                logger::info("Discarding {} because offlimit", i);
+                i++;
+                continue;
+            }
+
+            if (distance < minDistance && distance > 1) {
+                index = i;
+                minDistance = distance;
+                logger::debug("Selecting {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
+            } else {
+                logger::debug("Discarding {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
+            }
         }
-        auto localAgentCell = agent->getActor()->GetParentCell();
-
-        if (beings.find(agent->getActorName()) == std::string::npos) {
-            logger::info("Discarding {} {} because actor is not around", i, agent->getActorName());
-            i++;
-            continue;
-        }
-
-        if (agent->getActorName() == NARRATOR_NAME) {
-            logger::info("Discarding {} {} because actor is Narrator", i, NARRATOR_NAME);
-            i++;
-            continue;
-        }
-
-        if (!localAgentCell || !agent->getActor()) {
-            logger::info("Discarding {} because no actor/no cell", i);
-            i++;
-            continue;
-        }
-
-        if (debugActor->IsOffLimits()) {
-            logger::info("Discarding {} because offlimit", i);
-            i++;
-            continue;
-        }
-
-        if (distance < minDistance && distance > 1) {
-            index = i;
-            minDistance = distance;
-            logger::debug("Selecting {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
-        } else {
-            logger::debug("Discarding {} because distance ({})", agent->getActor()->GetDisplayFullName(), distance);
-        }
-
         i++;
     }
 

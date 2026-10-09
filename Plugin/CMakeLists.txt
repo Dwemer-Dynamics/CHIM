@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AIAgent VERSION 3.4.2)
+project(AIAgent VERSION 3.5.0)
 
 set(BUILD_TESTS OFF CACHE BOOL "Disable CommonLibSSE tests" FORCE)
 set(SKSE_SUPPORT_XBYAK ON CACHE BOOL "Enable CommonLibSSE Xbyak support" FORCE)
@@ -35,7 +35,7 @@ if(NOT AIAGENT_SKYRIM_FOLDER)
 endif()
 
 add_library(${PROJECT_NAME} SHARED
-    PlaythroughSession.cpp ChimInteraction.cpp Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp DirectorScene.cpp Papyrus.cpp md5.cpp Voicerec.cpp
+    ItemInteraction.cpp InteractExtensions.cpp PlaythroughSession.cpp ChimInteraction.cpp Replacements.cpp Misc.cpp SPGResponse.cpp Conf.cpp Commands.cpp DirectorScene.cpp Papyrus.cpp md5.cpp Voicerec.cpp
     HTTPUploader.cpp HerikaEyes.cpp AudioManager.cpp SpeakManager.cpp HTTPManager.cpp SpatialAwareness.cpp
     SpatialSnapshotManager.cpp SpatialDoorState.cpp PlayerConversationRouter.cpp ThreadPool.cpp Plugin.cpp PluginVersion.cpp ScriptProxy.cpp
     PrismaUIBridge.cpp MusicManager.cpp VRItemAwareness.cpp ResourceFileReader.cpp DynamicDiaryBook.cpp ServerPluginSync.cpp SupportReportLauncher.cpp

@@ -1,6 +1,7 @@
 #include "ChimInteraction.h"
 #include "SpeakManager.h"
 #include "DirectorScene.h"
+#include "ItemInteraction.h"
 
 #include <Windows.h>
 #include <WinInet.h>
@@ -1330,12 +1331,39 @@ bool isSilentAt(const std::vector<SilenceSegment>& silences, double elapsedSecon
 }
 
 
+// Keep trace metadata bounded and separate from dialogue; failures must never interrupt playback.
+static void SpeechTrace(const std::string& id, const char* stage, const std::string& reason = "",
+                        double durationMs = 0, std::size_t bytes = 0) noexcept {
+    if (id.empty()) return;
+    try {
+        json record = {{"utterance_id", id.substr(0, 128)}, {"side", "client"}, {"stage", stage},
+            {"reason", reason.substr(0, 128)}, {"duration_ms", durationMs}, {"bytes", bytes},
+            {"monotonic_ms", std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now().time_since_epoch()).count()}};
+        logger::info("[SPEECH_TRACE] {}", record.dump(-1, ' ', false, json::error_handler_t::replace));
+    } catch (...) {}
+}
+
+// Every playback exit records an outcome, including early WinHTTP failures and exceptions.
+struct SpeechPlaybackTrace {
+    const std::string& id;
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    const char* stage = "failed";
+    const char* reason = "download";
+    ~SpeechPlaybackTrace() {
+        SpeechTrace(id, stage, reason, std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count());
+    }
+};
+
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
                     float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
-                    const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0) {
-    if (!ChimInteraction::Enabled()) return 2;
+                    const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0,
+                    const std::string& utteranceId = "") {
+    SpeechPlaybackTrace trace{utteranceId};
+    if (!ChimInteraction::Enabled()) { trace.stage = "cancelled"; trace.reason = "interaction_disabled"; return 2; }
     const auto interactionGeneration = queuedGeneration;
-    if (interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) return 2;
+    if (interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) { trace.stage = "cancelled"; trace.reason = "superseded"; return 2; }
     // [DAP-PHASE] markers: on freeze, last logged phase names the hung call.
     auto _dap_t0 = std::chrono::high_resolution_clock::now();
     auto _dap_phase = [&](const char* name) {
@@ -1348,10 +1376,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     logger::debug("[SpeakManager] Starting DownloadAndPlay - Text: '{}', PreClip: {}, PostClip: {}, Speaker: {}, Phonetic: {}, VolumeBoost: {}, Duration: {}",
                  text, preclip, postclip, speaker, phonetic, volumeBoost, forcedDuration);
 
+    SpeechTrace(utteranceId, "download_started");
     // Initialize the session
     HINTERNET hSession = WinHttpOpen(L"WinHTTP Example/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     _dap_phase("after_WinHttpOpen");
     if (!hSession) {
+        trace.reason = "session_open";
         logger::error("[SpeakManager] Failed to open WinHTTP session. Error: {}", GetLastError());
         return 1;
     }
@@ -1368,6 +1398,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     HINTERNET hConnect = WinHttpConnect(hSession, wideServer.c_str(), port, 0);
     _dap_phase("after_WinHttpConnect");
     if (!hConnect) {
+        trace.reason = "connect";
         logger::error("[SpeakManager] Failed to connect to server. Error: {}", GetLastError());
         WinHttpCloseHandle(hSession);
         return 1;
@@ -1389,6 +1420,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", widePath.c_str(), NULL, WINHTTP_NO_REFERER,
                                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
     if (!hRequest) {
+        trace.reason = "request_open";
         logger::error("Failed to create HTTP request: {}", GetLastError());
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -1429,6 +1461,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         return 1;
     }
 
+    trace.reason = "read_audio";
     // Allocate buffer for the file content
     char* buffer = new char[contentLength];
     DWORD totalBytesRead = 0;
@@ -1444,6 +1477,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     _dap_phase("after_WinHttpReadData_loop");
 
     if (totalBytesRead != contentLength) {
+        trace.reason = "incomplete_download";
         logger::info("Incomplete file download: expected {}, got {}", contentLength, totalBytesRead);
         delete[] buffer;
         WinHttpCloseHandle(hRequest);
@@ -1460,6 +1494,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     // Log success
     
+    SpeechTrace(utteranceId, "download_completed", "", std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - trace.started).count(), totalBytesRead);
+    trace.reason = "audio_initialization";
     // Play the WAV file
     // UINT volume = 0xFFFF / 100;
     // waveOutSetVolume(NULL, MAKELONG(volume, volume));
@@ -1642,7 +1679,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     _dap_phase("before_LoadWAV");
 
-    if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) return 2;
+    if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
+        trace.stage = "cancelled"; trace.reason = "superseded"; return 2;
+    }
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         if (enable3DAudioPlayback) {
             _dap_phase("after_LoadWAV_ok");
@@ -1675,6 +1714,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     auto avoidClick = std::chrono::steady_clock::now() + std::chrono::duration<double>(preclip);
     // if (!PlaySoundA(buffer, NULL, SND_MEMORY | SND_ASYNC | SND_SYSTEM)) {
     const bool usingTextOnlyTiming = !DXinitOK;
+    SpeechTrace(utteranceId, DXinitOK ? "playback_started" : "playback_failed",
+        DXinitOK ? "" : "audio_device_or_decode");
+    trace.reason = DXinitOK ? "playback" : "subtitle_fallback";
 
     if (!DXinitOK) {
         logger::info("Could not play buffer:  {}, we should now make something here", GetLastError());
@@ -2263,6 +2305,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     delete[] buffer;
     _dap_phase("exit_clean");
 
+    trace.stage = hasBeenAborted ? "interrupted" : "completed";
+    trace.reason = hasBeenAborted ? "playback_cancelled" : "";
+    if (!hasBeenAborted && usingTextOnlyTiming) {
+        trace.stage = "subtitle_only_completed";
+        trace.reason = "audio_device_or_decode";
+    }
     if (hasBeenAborted) return 2;
     if (forcedDuration > 0)
         return 5;  // Currently only happens when called by MusicManager
@@ -2320,16 +2368,23 @@ void SpeakManager::discardPendingInteraction() {
     abortPendingUtterances("chim_off", false);
     cancelRechatChain();
     std::lock_guard lock(mtx);
-    scriptQueue = {};
+    while (!scriptQueue.empty()) {
+        SpeechTrace(scriptQueue.front().utteranceId, "queue_removed", "interaction_disabled");
+        scriptQueue.pop();
+    }
 }
 
 void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
+    if (ItemInteraction::HoldReaction(scriptLine))
+        return;
     // logger::debug("[SpeakManager] Attempting to acquire mutex for insertInQueue");
     std::lock_guard<std::mutex> lock(mtx);
     AIAgentManager& aiam = AIAgentManager::getInstance();
     // logger::debug("[SpeakManager] Mutex acquired for insertInQueue");
     // Trim whitespace from actor name before queueing
     ScriptLine trimmedLine = scriptLine;
+    if (trimmedLine.utteranceId.starts_with("interact-reply-"))
+        trimmedLine.rechatTargetHint = "explicit_disable_rechat";
     if (!trimmedLine.actor.empty()) {
         trimmedLine.actor.erase(0, trimmedLine.actor.find_first_not_of(" \t\n\r"));
         trimmedLine.actor.erase(trimmedLine.actor.find_last_not_of(" \t\n\r") + 1);
@@ -2346,7 +2401,13 @@ void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
             lastRechatter.clear();
         }
     }
-    if (!ChimInteraction::Enabled()) return;
+    SpeechTrace(trimmedLine.utteranceId, "received");
+    if (!ChimInteraction::Enabled()) {
+        SpeechTrace(trimmedLine.utteranceId, "skipped", "interaction_disabled");
+        return;
+    }
+    trimmedLine.traceQueuedAt = std::chrono::steady_clock::now();
+    SpeechTrace(trimmedLine.utteranceId, "queued");
     trimmedLine.interactionGeneration = PrismaUIBridge::GetDialogueStopGeneration();
     scriptQueue.push(trimmedLine);
     logger::info("[SpeakManager] Queue size after insertion: {}", scriptQueue.size());
@@ -2390,6 +2451,7 @@ ScriptLine SpeakManager::getFirstItem() {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - playerLineFirstSeen).count();
                 if (elapsed >= 5) {
                     logger::warn("[SpeakManager] Draining stuck Player line after {}s: '{}'", elapsed, front.subtitle);
+                    SpeechTrace(front.utteranceId, "skipped", "stuck_player_line");
                     scriptQueue.pop();
                     playerLineText.clear();
                     // Also reset isProcessing in case it's stuck
@@ -2530,6 +2592,7 @@ void SpeakManager::abortPendingUtterances(const std::string& reason, bool includ
         return;
     }
 
+    for (const auto& id : utteranceIds) SpeechTrace(id, "cancellation_requested", reason);
     json abortData;
     abortData["utterance_ids"] = utteranceIds;
     abortData["reason"] = reason;
@@ -2565,6 +2628,7 @@ void SpeakManager::deleteQueue(bool isActionCommand) {
             // Skip deleting and keep the item in the temporary queue
             tempQueue.push(currentItem);
         } else {
+            SpeechTrace(currentItem.utteranceId, "queue_removed", "queue_cleared");
             // Log and delete items that aren't from "Player"
             HTTPManager::log(std::format("delete_event|{}|{}|{}: {}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                          currentItem.actor, currentItem.subtitle));
@@ -2597,6 +2661,7 @@ void SpeakManager::deleteQueuedPlayerLines() {
         const auto currentItem = scriptQueue.front();
         scriptQueue.pop();
         if (IsPlayerActorAlias(currentItem.actor, AIAgentManager::getInstance())) {
+            SpeechTrace(currentItem.utteranceId, "queue_removed", "player_queue_cleared");
             continue;
         }
         tempQueue.push(currentItem);
@@ -3095,6 +3160,7 @@ void SpeakManager::process(AIAgent *agent) {
     if (!agent->isNarrator() && (!npc->GetActorRuntimeData().currentProcess || !npc->Is3DLoaded())) {
         logger::info("[SPEAKERMANAGER {}] Agent {} is not currently loaded for dialogue. Skipping.", tid,
                      agent->getActorName());
+        SpeechTrace(getFirstItem().utteranceId, "skipped", "actor_not_loaded");
         DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
@@ -3114,6 +3180,7 @@ void SpeakManager::process(AIAgent *agent) {
 
     if (distance > MIN_DISTANCE) {
         logger::info("[SPEAKERMANAGER {}] {} is too far ({} units). Discarding speech.", tid,npc->GetDisplayFullName(), distance);
+        SpeechTrace(getFirstItem().utteranceId, "skipped", "actor_out_of_range");
         DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
@@ -3139,11 +3206,17 @@ void SpeakManager::process(AIAgent *agent) {
                      tid,agent->getActorName());
         
         ScriptLine scriptLine = getFirstItem();
+        if (ItemInteraction::HoldReaction(scriptLine, true, npc->GetFormID())) {
+            dequeueFirstItem();
+            setProcessing(false);
+            return;
+        }
         if (!scriptLine.directorSceneId.empty() && !DirectorScene::ReadyToSpeak()) {
             setProcessing(false);
             return;
         }
         if (!scriptLine.directorSceneId.empty() && scriptLine.directorGeneration != DirectorScene::Generation()) {
+            SpeechTrace(scriptLine.utteranceId, "skipped", "stale_scene");
             dequeueFirstItem();
             setProcessing(false);
             return;
@@ -3189,6 +3262,7 @@ void SpeakManager::process(AIAgent *agent) {
                 // will ever match "Player", so it blocks the queue head forever.
                 if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
                     logger::warn("[SPEAKERMANAGER {}] Dequeuing stuck Player line: '{}'", tid, scriptLine.subtitle);
+                    SpeechTrace(scriptLine.utteranceId, "skipped", "player_on_npc_queue");
                     dequeueFirstItem();
                 }
                 {
@@ -3457,8 +3531,10 @@ void SpeakManager::process(AIAgent *agent) {
                     agent->getActorName(), scriptLine.action);
             }
 
+            SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
             res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
-                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration);
+                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration, scriptLine.utteranceId);
 
             const bool playbackAborted = (res == 2);
             // Off may have cleared this line and On may already have queued a new one.
@@ -3874,6 +3950,8 @@ void SpeakManager::process(AIAgent *agent) {
             logger::info("Narrator cleanup: restored player name to '{}', subtitles cleared", originalName);
         }
 
+        ItemInteraction::NarrationComplete(scriptLine.utteranceId, hasTalked && (res == 0 || res == 5));
+
         if (hasItems()) {  // More items in queue, so keep processing.
             if (res != 2) {
                 process(agent);
@@ -3918,6 +3996,7 @@ void SpeakManager::processPlayer() {
         logger::info("SpeakManager is processing now for Player");
         ScriptLine scriptLine = getFirstItem();
         if (!ChimInteraction::Enabled() || scriptLine.interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
+            SpeechTrace(scriptLine.utteranceId, "cancelled", "superseded");
             dropMatchingHeadItem(scriptLine); setProcessing(false); return;
         }
 
@@ -3937,7 +4016,9 @@ void SpeakManager::processPlayer() {
             if (isTextOnlyPlayerLine) {
                 res = HoldTextOnlyPlayerSubtitle(*this, scriptLine);
             } else {
-                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration);
+                SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
+                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration, scriptLine.utteranceId);
             }
         }
 

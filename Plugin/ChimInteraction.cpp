@@ -2,6 +2,7 @@
 #include "HTTPManager.h"
 #include "PrismaUIBridge.h"
 #include "DirectorScene.h"
+#include "ItemInteraction.h"
 #include "SpeakManager.h"
 #include "SPGResponse.h"
 #include "ThreadPool.h"
@@ -20,9 +21,10 @@ namespace {
     // Cancel pending work without interrupting the sentence already playing.
     void DiscardPending() {
         PrismaUIBridge::BumpDialogueStopGeneration();
-        for (const auto* type : {"HTTPStream", "HTTPStreamRechat", "HTTPStreamGodMode", "DirectorAction", "CombatBark", "CombatBarkStart"})
+        for (const auto* type : {"HTTPStream", "HTTPStreamRechat", "HTTPStreamGodMode", "DirectorAction"})
             ThreadPool::getInstance().cancelTasksByType(type);
         DirectorScene::Cancel();
+        ItemInteraction::Cancel();
         SPGResponse::getInstance().clearGameOutput();
         SpeakManager::getInstance().discardPendingInteraction();
     }
@@ -82,7 +84,7 @@ bool IsTrigger(std::string_view message) {
         || type == "inputtext" || type == "inputtext_s" || type == "ginputtext" || type == "ginputtext_s"
         || type == "narrator_inputtext" || type == "bored" || type == "rechat" || type == "continue"
         || type == "continue_group" || type == "instruction" || type == "suggestion" || type == "narration"
-        || type == "narrator_welcome" || type == "combatbark" || type == "just_say" || type == "cheatmode"
+        || type == "chatnf_interact_reaction" || type == "narrator_welcome" || type == "combatbark" || type == "just_say" || type == "cheatmode"
         || type == "vision" || type == "force_current_task" || type == "recover_last_task";
 }
 

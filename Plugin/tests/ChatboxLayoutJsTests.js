@@ -50,7 +50,8 @@ test('keeps a standalone recent-context viewer available outside the chat modal'
     assert.ok(viewerStart < contextStart);
     assert.ok(contextEnd < modalStart);
     assert.match(html, /data-chim-menu-scale-target="#chim-chatbox-viewer, \.focus-chatbox-shell"/);
-    assert.match(html, /placeholder="Enter message here, press Enter to send"/);
+    assert.doesNotMatch(html, /placeholder="Enter message here, press Enter to send"/);
+    assert.match(html, /<textarea\s+id="focus-chatbox-input"[^>]*aria-label="Message"/);
 });
 
 test('moves recent context between the bottom-left viewer and focused chat shell', () => {
@@ -259,6 +260,21 @@ test('puts Vanilla Dialogue in the secondary action row as a real toggle button'
     assert.match(html, /<span class="chatbox-mode-help" tabindex="0" aria-label="Vanilla Dialogue help" aria-describedby="chatbox-capture-background-chat-help">\?<\/span>/);
     assert.ok(html.includes('role="tooltip">' + helpCopy + '</div>'), 'help copy must match the approved wording');
     assert.equal(html.split(helpCopy).length - 1, 1, 'help copy appears once, inside the tooltip');
+});
+
+test('places Wait Here beside Halt AI Actions and routes it to the captured crosshair NPC', () => {
+    const haltStart = html.indexOf('onclick="triggerHaltAIActions()"');
+    const waitStart = html.indexOf('onclick="triggerWaitHere()"');
+    const secondaryStart = html.indexOf('focus-chatbox-actions-row-secondary');
+    assert.ok(haltStart !== -1 && haltStart < waitStart && waitStart < secondaryStart, 'Wait Here follows Halt AI Actions in the primary row');
+    assert.match(html, /<button class="focus-btn" type="button" onclick="triggerWaitHere\(\)" title="[^"]*crosshair[^"]*"[^>]*>Wait Here<\/button>/);
+
+    const waitSource = script.slice(script.indexOf('window.triggerWaitHere'), script.indexOf('window.triggerSoulgazeDescribe'));
+    assert.match(waitSource, /sendControlCommand\('wait_here'\);[\s\S]*?focusInput\.focus\(\);/);
+    assert.doesNotMatch(waitSource, /closeFocusChatbox|focusInput\.value/, 'the draft and modal stay open');
+
+    const bridgeSource = bridge.slice(bridge.indexOf('cmd == "wait_here"'), bridge.indexOf('cmd == "soulgaze_describe"'));
+    assert.match(bridgeSource, /CrosshairPickData[\s\S]*?rp_wait_here\|\{\}/);
 });
 
 test('opens the bottom-row help upward and keeps the toggle focusable at a usable size', () => {
@@ -625,4 +641,25 @@ test('applies the saved Prisma mood to both speech-to-text paths', () => {
     const commands = fs.readFileSync(path.resolve(__dirname, '../Commands.cpp'), 'utf8');
     assert.match(voicerec, /routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?HTTPManager::streamPlayer/);
     assert.match(commands, /command\.contains\("ImpersonatePlayer"\)[\s\S]*?routingContext\.source = PlayerConversationInputSource::Voice[\s\S]*?PrismaUIBridge::ApplySavedPlayerMood\(routingContext\)[\s\S]*?sendMessageReal\(message, messageType, routingContext\)/);
+});
+
+test('shows saved Player affinity and adds or removes the captured chat target in Background Life', () => {
+    const formatPlayerAffinity = loadChatboxFunction('formatPlayerAffinity');
+    assert.equal(formatPlayerAffinity(25), '(+25)');
+    assert.equal(formatPlayerAffinity(-10), '(-10)');
+    assert.equal(formatPlayerAffinity(0), '(0)');
+    assert.equal(formatPlayerAffinity(null), '');
+    assert.equal(formatPlayerAffinity(undefined), '');
+
+    assert.match(html, /class="chatbox-current-target-row">\s*<div class="chatbox-control-value" id="chatbox-current-target">[\s\S]*?<\/div>\s*<button id="chatbox-bgl-add"[^>]*>Add BGL<\/button>\s*<\/div>\s*<div class="chatbox-profile-inline">/);
+    assert.doesNotMatch(css, /58vh \+ 32px/);
+    assert.match(script, /if \(bglLoading\) \{\s*label = 'Loading…';\s*\} else if \(adding\) \{\s*label = 'Adding…';\s*\} else if \(removing\) \{\s*label = 'Removing…';\s*\} else if \(removable\) \{\s*label = 'Remove BGL';\s*\} else if \(enrolled\) \{\s*label = 'In BGL';/);
+    assert.match(script, /const removable = enrolled && bglNativeRemoveAvailable && bglServerSupported === true;/);
+    assert.match(script, /bglAddButton\.disabled = !target \|\| bglLoading \|\| busy \|\| \(enrolled && !removable\);/);
+    assert.match(script, /\? `bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}`\s*: `bgl_enroll\|\$\{enrollment\.requestId\}\|\$\{enrollment\.formId\}\|remove`/);
+    assert.match(script, /saved\.status === 'found' && saved\.background_life_enabled === enrollment\.enabled/);
+    assert.match(bridge, /setChatboxBackgroundLifeRemoveAvailable\(true\)/);
+    assert.match(bridge, /cmd\.starts_with\("bgl_enroll\|"\)\) \{\s*EnrollChatboxTargetInBackgroundLife\(cmd\.substr\(11\)\)/);
+    assert.equal('bgl_enroll|'.length, 11);
+    assert.match(bridge, /EnrollChatboxTargetInBackgroundLife[\s\S]*?if \(!ChatboxBackgroundLifeReady\(loadEpoch\)\)[\s\S]*?AddTask\(\[requestId, formId, enabled, loadEpoch\]\(\) \{\s*\/\/.*\s*if \(!ChatboxBackgroundLifeReady\(loadEpoch\)\)[\s\S]*?ApplyBackgroundLifeEnrollment\(actor, formId, target->name, enabled\)/);
 });
