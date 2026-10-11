@@ -147,7 +147,8 @@ enum BFA_StopReason {
 };
 
 // What a face is doing (Owner, the kOwnerChanged event).
-enum BFA_Owner {
+typedef uint32_t BFA_Owner;
+enum BFA_OwnerCode {
   BFA_kOwnerEngine = 0,    // the engine's own speech and expressions
   BFA_kOwnerProvider = 1,  // a provider's line is playing through BFA
   BFA_kOwnerSuppressed = 2,  // Suppress() is in effect
@@ -257,7 +258,7 @@ typedef struct BFA_Interface {
   uint32_t (*GetVersion)(void);
   BFA_Result (*GetReadiness)(void);
   BFA_Result (*CanAnimate)(uint32_t actor_form_id); // Pending: head not mapped
-  uint32_t (*Owner)(uint32_t actor_form_id); // snapshot, not a write lease
+  BFA_Owner (*Owner)(uint32_t actor_form_id); // snapshot, not a write lease
 
   // handle_out is zero on invalid/declined intake. Once allocated, even immediate
   // failure returns a nonzero inspectable terminal handle. Inputs are copied.
