@@ -65,13 +65,19 @@ inline bool IsCompatible(const BFA_Interface* api) {
 // One reply (a BFA utterance) per speaking actor: all of its sentences share
 // it, so BFA keeps the face between them and hands it back once, after
 // EndReply. The token is the write gate for the actor's face.
+struct SegmentState {
+    std::uint64_t handle = 0;
+    bool terminal = false, started = false;
+    BFA_Result result = BFA_kResultPending;
+};
 struct FaceToken {
     std::uint32_t actor = 0;
     std::uint64_t utterance = 0;
     std::uint32_t segments = 0;
     std::atomic<bool> ended{false}, animated{false};
     std::atomic<std::uint32_t> event{UINT32_MAX}, result{BFA_kResultPending};
-    std::atomic<std::uint64_t> terminal_handle{0};  // the segment last told a terminal event
+    // Protected by Events::mutex. Pending intake also blocks CHIM facial writes.
+    std::unordered_map<std::uint32_t, std::shared_ptr<SegmentState>> pending;
     std::chrono::steady_clock::time_point touched = std::chrono::steady_clock::now();
     mutable std::atomic<unsigned> fallbackChecks{0}, blockedChecks{0};
     bool CanWrite() const;
@@ -99,16 +105,24 @@ inline void OnEvent(const BFA_Event* ev, void*) {
     const auto token = it->second;
     if (!token) { state.tokens.erase(it); return; }
     if (ev->speaker_form_id != token->actor || ev->event > BFA_kExpired) return;
-    if (ev->event == BFA_kStarted) {
-        if (ev->handle == token->terminal_handle) return;  // late, for a finished segment
-        token->event = ev->event; token->animated = true;
-        return;
-    }
+    auto segment = token->pending.find(ev->segment);
+    if (segment == token->pending.end()) return;
+    auto& line = *segment->second;
+    if (line.terminal || (line.handle && line.handle != ev->handle)) return;
+    line.handle = ev->handle;  // an event may arrive before Prepare returns
     token->event = ev->event;
-    token->result = ev->event == BFA_kEnded ? BFA_kResultOK : ev->reason;
-    token->terminal_handle = ev->handle;
-    token->animated = false;  // BFA handed the face back (or declined this sentence)
-    if (token->ended) state.tokens.erase(it);
+    if (ev->event == BFA_kStarted) {
+        line.started = true;
+    } else {
+        line.terminal = true;
+        line.result = ev->event == BFA_kEnded ? BFA_kResultOK : ev->reason;
+        token->result = line.result;
+        token->pending.erase(segment);
+    }
+    token->animated = false;
+    for (const auto& [id, pending] : token->pending)
+        if (pending->started) token->animated = true;
+    if (token->ended && token->pending.empty()) state.tokens.erase(it);
 }
 inline bool Listen(const BFA_Interface* api) {
     if (!IsCompatible(api)) return false;
@@ -124,7 +138,7 @@ inline bool CanWriteActor(std::uint32_t actor) {
     for (auto it = state.tokens.begin(); it != state.tokens.end(); ) {
         const auto token = it->second;
         if (!token) { it = state.tokens.erase(it); continue; }
-        if (token->actor == actor && token->animated) return false;
+        if (token->actor == actor && !token->pending.empty()) return false;
         ++it;
     }
     return true;
@@ -148,8 +162,8 @@ inline void EndReply(std::uint32_t actor, std::uint32_t reason) {
         token->ended = true; api = state.api;
     }
     const auto result = api ? api->EndUtterance(token->utterance, reason) : BFA_kResultUnavailable;
-    if (!Accepted(result)) {  // nothing of it reached BFA: no events will come
-        std::lock_guard<std::mutex> guard(state.mutex);
+    std::lock_guard<std::mutex> guard(state.mutex);
+    if (!Accepted(result) || token->pending.empty()) {
         state.tokens.erase(token->utterance);
         token->animated = false;
     }
@@ -197,10 +211,25 @@ public:
     BFA_Result Prepare(const void* audio, std::uint32_t bytes, const char*, std::string_view expression) {
         if (!api) return last = BFA_kResultUnavailable;
         if (handle || stopped) return last = BFA_kResultInvalidState;
+        {
+            std::lock_guard<std::mutex> guard(State().mutex);
+            if (token->ended) return last = BFA_kResultInvalidState;
+            status = std::make_shared<SegmentState>();
+            token->pending[segment] = status;
+        }
         const auto mood = MakeMood(expression);
         BFA_Line line{BFA_API_VERSION, sizeof(BFA_Line), token->utterance, segment, token->actor, audio, bytes,
                       expression.empty() ? nullptr : &mood};
         handle = api->Prepare(&line, &last);
+        {
+            std::lock_guard<std::mutex> guard(State().mutex);
+            status->handle = handle;
+            if (!handle || !Accepted(last)) {
+                status->terminal = true;
+                status->result = last;
+                token->pending.erase(segment);
+            }
+        }
         return LastResult();
     }
     BFA_Result Start(double t) { return Ready() ? last = api->Start(handle, t) : LastResult(); }
@@ -211,19 +240,25 @@ public:
         if (stopped) return LastResult();
         stopped = true;
         if (Ready(true)) last = api->Stop(handle, reason);
-        token->touched = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> guard(State().mutex);
+            token->touched = std::chrono::steady_clock::now();
+        }
         return LastResult();
     }
     BFA_Result LastResult() const {
-        return handle && token->terminal_handle == handle ? token->result.load() : last;
+        std::lock_guard<std::mutex> guard(State().mutex);
+        return status->terminal ? status->result : last;
     }
     std::uint64_t Handle() const { return handle; }
     std::shared_ptr<FaceToken> GetToken() const { return token; }
 private:
     bool Ready(bool stopping = false) const {
-        return api && handle && (stopping || !stopped) && !token->ended && token->terminal_handle != handle;
+        std::lock_guard<std::mutex> guard(State().mutex);
+        return api && handle && (stopping || !stopped) && !token->ended && !status->terminal;
     }
     const BFA_Interface* api = nullptr;
+    std::shared_ptr<SegmentState> status = std::make_shared<SegmentState>();
     std::shared_ptr<FaceToken> token;
     std::uint32_t segment = 0;
     std::uint64_t handle = 0;

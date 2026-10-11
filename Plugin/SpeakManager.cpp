@@ -1708,6 +1708,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
     const auto faceToken = facialLine.GetToken();
+    // Queued legacy mouth writes belong to this playback, not the next line.
+    const auto fallbackActive = std::make_shared<std::atomic<bool>>(true);
     const auto facialActorId = speakerActorPointer->GetFormID();
     std::uint32_t lastFacialCode = UINT32_MAX, lastFacialEvent = UINT32_MAX;
     const auto reportFacial = [&](const char* operation, BFA_Result result, bool force = true) {
@@ -2193,8 +2195,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                         const int queuedLastViseme = lastViseme;
                         const float queuedIntensity = intensity;
                         taskInterface->AddTask(
-                            [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken]() {
-                                if (!faceToken->CanWrite()) return;
+                            [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken, fallbackActive]() {
+                                if (!fallbackActive->load() || !faceToken->CanWrite()) return;
                                 auto* actor = actorHandle.get().get();
                                 if (!actor || !actor->Is3DLoaded()) {
                                     return;
@@ -2282,8 +2284,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             auto now = std::chrono::steady_clock::now();
                             
                                 taskInterface->AddTask(
-                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken]() {
-                                        if (!faceToken->CanWrite()) return;
+                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken, fallbackActive]() {
+                                        if (!fallbackActive->load() || !faceToken->CanWrite()) return;
                                         auto* actor = actorHandle.get().get();
                                         if (!actor || !actor->Is3DLoaded()) {
                                             return;
@@ -2342,6 +2344,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         loopWatchdog.join();
     }
     _dap_phase("after_playback_wait_loop");
+    fallbackActive->store(false);
     if (isVrRuntime) {
         auto* taskInterface = SKSE::GetTaskInterface();
         if (taskInterface) {
@@ -2366,6 +2369,20 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     if (!isVrRuntime) {
         speakerActorPointer->GetActorRuntimeData().voiceTimer = 0.0;
+        // Retire legacy visemes at every sentence boundary. Accepted BFA
+        // lines keep the write gate closed through their final hand-back.
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            auto actorHandle = speakerActorPointer->GetHandle();
+            tasks->AddTask([actorHandle, faceToken]() {
+                if (!faceToken->CanWrite()) return;
+                auto* actor = actorHandle.get().get();
+                if (!actor || !actor->Is3DLoaded()) return;
+                auto* face = actor->GetFaceGenAnimationData();
+                if (!face) return;
+                RE::BSSpinLockGuard locker(face->lock);
+                ResetVisemeFrame(face);
+            });
+        }
     }
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
 
@@ -4124,12 +4141,7 @@ void SpeakManager::processPlayer() {
 
             RE::BSSpinLockGuard locker(fgen->lock);
 
-            for (int i = 0; i <= 15; i++) {
-                if (i == 7)
-                    fgen->phenomeKeyFrame.SetValue(i, 0.20);  // Default mouth position?
-                else
-                    fgen->phenomeKeyFrame.SetValue(i, 0);
-            }
+            ResetVisemeFrame(fgen);
             //
             // fgen->ClearExpressionOverride();
             // fgen->Reset(0.0f, true, true, true, false);
@@ -4230,12 +4242,7 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
         RE::BSSpinLockGuard locker(fgen->lock);
         logger::debug("[SpeakManager] FaceGen lock acquired for dialogue end");
 
-        for (int i = 0; i <= 15; i++) {
-            if (i == 7)
-                fgen->phenomeKeyFrame.SetValue(i, 0.20);  // Default mouth position?
-            else
-                fgen->phenomeKeyFrame.SetValue(i, 0);
-        }
+        ResetVisemeFrame(fgen);
         logger::debug("[SpeakManager] FaceGen lock will be released");
     } else if (!fgen) {
         logger::warn("[SpeakManager] Failed to get FaceGen animation data for dialogue end");
