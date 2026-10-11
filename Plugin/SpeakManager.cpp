@@ -1963,7 +1963,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     logger::info("Resuming audio...game unpaused");
                     setPhase("am_resume_after_pause");
                     am.Resume();
-                    reportFacial("resume", facialLine.Resume(am.GetElapsedTimeSeconds()));
+                    reportFacial("resume", facialLine.Seek(am.GetElapsedTimeSeconds()));
                 }
                 continue;
             }
@@ -1972,7 +1972,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             logger::info("Resuming audio after recovery");
             setPhase("am_resume_recovery");
             am.Resume();
-            reportFacial("resume", facialLine.Resume(am.GetElapsedTimeSeconds()));
+            reportFacial("resume", facialLine.Seek(am.GetElapsedTimeSeconds()));
             recovery = false;
         }
 
