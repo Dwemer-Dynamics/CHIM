@@ -30,6 +30,7 @@
 #include "xeme.h"
 #include "json.hpp"
 #include "AudioManager.h"
+#include "FacialAnimationBridge.h"
 #include "SPGResponse.h"
 #include "HTTPManager.h"
 #include "PrismaUIBridge.h"
@@ -1359,7 +1360,7 @@ struct SpeechPlaybackTrace {
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
                     float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
                     const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0,
-                    const std::string& utteranceId = "") {
+                    const std::string& utteranceId = "", const std::string& expression = "") {
     SpeechPlaybackTrace trace{utteranceId};
     if (!ChimInteraction::Enabled()) { trace.stage = "cancelled"; trace.reason = "interaction_disabled"; return 2; }
     const auto interactionGeneration = queuedGeneration;
@@ -1677,12 +1678,24 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                   headingAngle);
     };
 
+    const BFA_Interface* facialApi = nullptr;
+    if (!isNarrator && !REL::Module::IsVR()) {
+        facialApi = FacialAnimationBridge::Discover();
+    }
+    FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
+    const auto faceToken = facialLine.GetToken();
+
     _dap_phase("before_LoadWAV");
 
     if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
         trace.stage = "cancelled"; trace.reason = "superseded"; return 2;
     }
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
+        const auto facialReason = facialLine.Prepare(buffer, localContentLength, text.c_str(), expression);
+        if (facialApi) {
+            logger::debug("[SpeakManager] BFA prepare actor={:08X} reason={} expression={}",
+                          speakerActorPointer->GetFormID(), facialReason, expression);
+        }
         if (enable3DAudioPlayback) {
             _dap_phase("after_LoadWAV_ok");
             am.setMuffledPlayback(runtimeMuffleFilter);
@@ -1705,6 +1718,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
     } else {
         _dap_phase("after_LoadWAV_failed");
+    }
+
+    if (DXinitOK) {
+        facialLine.Start(am.GetElapsedTimeSeconds());
     }
 
     auto endTime = std::chrono::steady_clock::now()+ std::chrono::duration<double>(1);
@@ -1765,6 +1782,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     auto fgen = speakerActorPointer->GetFaceGenAnimationData();
     auto lastTime = std::chrono::steady_clock::now();
+    auto lastFacialSync = lastTime;
     const bool isVrRuntime = REL::Module::IsVR();
 
     auto game = RE::UI::GetSingleton();
@@ -1910,7 +1928,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             } else if (PauseDialogueWhenMenuOpen) { // Pause audio based on MCM preference
                 logger::info("Pausing audio...game is paused");
                 setPhase("am_pause");
+                const auto pauseStarted = std::chrono::steady_clock::now();
                 am.Pause();
+                facialLine.Pause();
                 recovery = true;
 
                 // Wait for game to unpause
@@ -1924,10 +1944,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     }
                 }
 
+                const auto pausedDuration = std::chrono::steady_clock::now() - pauseStarted;
+                startTime += pausedDuration;
+                endTimeWithBlankSegment += pausedDuration;
+                lastTime = std::chrono::steady_clock::now();
+                if (hasBeenAborted) break;
                 if (!hasBeenAborted) {
                     logger::info("Resuming audio...game unpaused");
                     setPhase("am_resume_after_pause");
                     am.Resume();
+                    facialLine.Resume(am.GetElapsedTimeSeconds());
                 }
                 continue;
             }
@@ -1936,6 +1962,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             logger::info("Resuming audio after recovery");
             setPhase("am_resume_recovery");
             am.Resume();
+            facialLine.Resume(am.GetElapsedTimeSeconds());
             recovery = false;
         }
 
@@ -2020,6 +2047,11 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         auto currentTime = std::chrono::steady_clock::now() - startTime;
         double elapsedSeconds = std::chrono::duration<double>(currentTime).count();
         
+        const auto facialSyncTime = std::chrono::steady_clock::now();
+        if (DXinitOK && facialSyncTime - lastFacialSync >= std::chrono::milliseconds(50)) {
+            facialLine.Seek(am.GetElapsedTimeSeconds());
+            lastFacialSync = facialSyncTime;
+        }
         //elapsedSeconds = am.GetElapsedTimeSeconds();  // New. More accurate elapsed time from audio manager, in case of
         //  pauses or other issues. Use only when real audio is being played, otherwise it can cause issues with timing
         //   of text segments. DXinitOK= true when real audio is being played, false when faking with timers.
@@ -2031,7 +2063,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         lastTime = std::chrono::steady_clock::now();
 
         // Find the text segment that should be playing at the current time
-        if (!isNarrator) {
+        if (!isNarrator && faceToken->CanWrite()) {
             TextSegment currentSegment;
             double totalDuration = 0.0;
             int nSegment = 0;
@@ -2117,7 +2149,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                         const int queuedLastViseme = lastViseme;
                         const float queuedIntensity = intensity;
                         taskInterface->AddTask(
-                            [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
+                            [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken]() {
+                                if (!faceToken->CanWrite()) return;
                                 auto* actor = actorHandle.get().get();
                                 if (!actor || !actor->Is3DLoaded()) {
                                     return;
@@ -2205,7 +2238,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             auto now = std::chrono::steady_clock::now();
                             
                                 taskInterface->AddTask(
-                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
+                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken]() {
+                                        if (!faceToken->CanWrite()) return;
                                         auto* actor = actorHandle.get().get();
                                         if (!actor || !actor->Is3DLoaded()) {
                                             return;
@@ -2290,6 +2324,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         speakerActorPointer->GetActorRuntimeData().voiceTimer = 0.0;
     }
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
+
+    facialLine.Stop(hasBeenAborted || lastLost ? BFA_kAborted : BFA_kCompleted);
 
     _dap_phase("before_am_Stop");
     am.Stop();
@@ -3233,7 +3269,8 @@ void SpeakManager::process(AIAgent *agent) {
 
         int res = 0;
 
-        if (!SM::trim(scriptLine.expression).empty() && !agent->isNarrator()) {
+        if (!SM::trim(scriptLine.expression).empty() && !agent->isNarrator() &&
+            FacialAnimationBridge::CanWriteActor(npc->GetFormID())) {
             int expression = findExpression(SM::trim(scriptLine.expression));
             if (expression > -1) {
                 auto fgen = npc->GetFaceGenAnimationData();
@@ -3534,7 +3571,8 @@ void SpeakManager::process(AIAgent *agent) {
             SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
             res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
-                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration, scriptLine.utteranceId);
+                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey,
+                                  scriptLine.interactionGeneration, scriptLine.utteranceId, SM::trim(scriptLine.expression));
 
             const bool playbackAborted = (res == 2);
             // Off may have cleared this line and On may already have queued a new one.
@@ -4052,7 +4090,7 @@ void SpeakManager::processPlayer() {
 
         auto fgen = player->GetFaceGenAnimationData();
 
-        if (fgen && res!=3) {  // Player actually talked
+        if (fgen && res!=3 && FacialAnimationBridge::CanWriteActor(player->GetFormID())) {  // Player actually talked
 
             RE::BSSpinLockGuard locker(fgen->lock);
 
@@ -4155,7 +4193,7 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
     logger::info("Face reset for {}", npc->GetDisplayFullName());
 
     auto fgen = npc->GetFaceGenAnimationData();
-    if (fgen) {
+    if (fgen && FacialAnimationBridge::CanWriteActor(npc->GetFormID())) {
         logger::debug("[SpeakManager] Attempting to acquire FaceGen lock for dialogue end");
         RE::BSSpinLockGuard locker(fgen->lock);
         logger::debug("[SpeakManager] FaceGen lock acquired for dialogue end");
@@ -4167,7 +4205,7 @@ void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
                 fgen->phenomeKeyFrame.SetValue(i, 0);
         }
         logger::debug("[SpeakManager] FaceGen lock will be released");
-    } else {
+    } else if (!fgen) {
         logger::warn("[SpeakManager] Failed to get FaceGen animation data for dialogue end");
     }
 

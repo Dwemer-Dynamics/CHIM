@@ -33,6 +33,8 @@ Paths below are relative to the CHIM checkout, not this installed documentation 
 | In-game UI/native bridge | `AIAgent/PrismaUI/views/CHIM/`, `Plugin/PrismaUIBridge.cpp` |
 | Installer and bundled files | `AIAgent/fomod/ModuleConfig.xml`, `AIAgent/` |
 
+When Better Facial Animations exposes `BFA_QueryInterface` v1, `SpeakManager.cpp` passes each played WAV and actor form ID through `FacialAnimationBridge.h`. CHIM expressions map to BFA dialogue emotions and persistent mood; an omitted expression keeps the mood, while `MoodNeutral` clears it. Playback start, menu pause/resume, position and stop follow XAudio2. Queued CHIM visemes recheck face ownership at execution and become invalid when their clip ends. Missing, disabled or declined BFA keeps CHIM's lip sync. Narrator and VR retain their existing behavior. The standalone `AIAgentFacialAnimationBridgeTests` target covers the adapter contract; actual game compatibility requires a separate playback test.
+
 For prompts, providers or memory, move to HerikaServer instead of implementing a second copy in the client. Changes to shared settings or action messages may require paired changes and checks in both repositories.
 
 ## Configuration and diagnostics

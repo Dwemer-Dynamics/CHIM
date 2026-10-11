@@ -55,6 +55,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(AIAgentFacialAnimationBridgeTests tests/FacialAnimationBridgeTests.cpp)
+    target_include_directories(AIAgentFacialAnimationBridgeTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_features(AIAgentFacialAnimationBridgeTests PRIVATE cxx_std_23)
+    add_test(NAME AIAgentFacialAnimationBridgeTests COMMAND AIAgentFacialAnimationBridgeTests)
+
     add_executable(AIAgentItemIdentifierTests tests/ItemIdentifierUtilsTests.cpp)
     target_include_directories(AIAgentItemIdentifierTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_features(AIAgentItemIdentifierTests PRIVATE cxx_std_23)
