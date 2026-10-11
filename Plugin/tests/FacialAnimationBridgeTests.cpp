@@ -1,111 +1,149 @@
 #include "FacialAnimationBridge.h"
-
 #include <cstdlib>
 #include <iostream>
 
 namespace {
-void Check(bool condition)
+#define Check(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; std::exit(1); } } while (0)
+std::uint32_t owner = BFA_kOwnerEngine;
+int stops = 0, releases = 0, moods = 0, starts = 0, seeks = 0;
+BFA_Line prepared{};
+BFA_Emotion mood{};
+BFA_LineStatus status{};
+bool reject = false, immediateFailure = false, asynchronousFailure = false;
+BFA_Result R(std::uint32_t value = BFA_ResultOK) { return value; }
+BFA_Interface MakeApi()
 {
-    if (!condition) {
-        std::cerr << "FacialAnimationBridge check failed" << std::endl;
-        std::exit(1);
-    }
-}
-std::uint32_t owner = BFA_SpeechOwnerEngine;
-int stops = 0, endings = 0, moods = 0;
-double position = 0;
-BFA_SpeechLine prepared{};
-BFA_SpeechEmotion mood{};
-BFA_SpeechCallback callback = nullptr;
-void* context = nullptr;
-void Event(std::uint32_t type)
-{
-    BFA_SpeechEvent event{1, sizeof(BFA_SpeechEvent), type, 0, 42,
-                         prepared.utterance_id, prepared.segment, prepared.speaker_form_id};
-    callback(&event, context);
-}
-BFA_SpeechInterface MakeApi()
-{
-    BFA_SpeechInterface api{};
-    api.version = 1;
+    BFA_Interface api{};
+    api.version = BFA_API_VERSION;
     api.size = sizeof(api);
     api.Owner = [](std::uint32_t) { return owner; };
-    api.RegisterListener = [](BFA_SpeechCallback cb, void* ctx, std::uint64_t* id) -> BFA_SpeechResult {
-        callback = cb; context = ctx; *id = 1; return BFA_SpeechOK;
+    api.Prepare = [](const BFA_Line* line, std::uint64_t* handle) -> BFA_Result {
+        *handle = 0;
+        if (reject) return BFA_ResultDisabled;
+        prepared = *line;
+        *handle = 42;
+        status = {};
+        status.version = BFA_API_VERSION; status.size = sizeof(status);
+        status.handle = 42; status.actor_form_id = line->speaker_form_id;
+        status.generation = BFA_GenerationQueued;
+        status.playback = BFA_PlaybackPrepared;
+        status.result = R(BFA_ResultPending);
+        if (immediateFailure) {
+            status.generation = BFA_GenerationFailed;
+            status.playback = BFA_PlaybackFailed;
+            status.result = BFA_ResultAudioFailed;
+        }
+        return status.result;
     };
-    api.Prepare = [](const BFA_SpeechLine* line, std::uint64_t* handle) -> BFA_SpeechResult {
-        prepared = *line; *handle = 42; return BFA_SpeechOK;
+    api.Start = [](std::uint64_t h, double offset) -> BFA_Result {
+        Check(h == 42); ++starts;
+        status.position_seconds = offset; status.playback = BFA_PlaybackPlaying;
+        owner = BFA_kOwnerProvider; status.face_owned = 1;
+        return R(BFA_ResultPending);
     };
-    api.Start = [](std::uint64_t, double offset) -> BFA_SpeechResult {
-        position = offset; return BFA_SpeechOK; // audio starts, face still fallback
+    api.Pause = [](std::uint64_t) -> BFA_Result {
+        status.playback = BFA_PlaybackPaused; return R();
     };
-    api.Pause = [](std::uint64_t) -> BFA_SpeechResult { return BFA_SpeechOK; };
-    api.Resume = [](std::uint64_t, double offset) -> BFA_SpeechResult {
-        position = offset; return BFA_SpeechOK;
+    api.Resume = [](std::uint64_t, double offset) -> BFA_Result {
+        status.playback = BFA_PlaybackPlaying; status.position_seconds = offset; return R();
     };
-    api.Seek = api.Resume;
-    api.Stop = [](std::uint64_t handle, std::uint32_t) -> BFA_SpeechResult {
-        Check(handle == 42); ++stops; return BFA_SpeechOK;
+    api.Seek = [](std::uint64_t, double offset) -> BFA_Result {
+        ++seeks; status.position_seconds = offset;
+        if (asynchronousFailure) {
+            status.generation = BFA_GenerationFailed; status.playback = BFA_PlaybackFailed;
+            status.result = BFA_ResultInferenceFailed;
+            status.face_owned = 0; owner = BFA_kOwnerEngine;
+        }
+        return R(); // caller must also inspect asynchronous status
     };
-    api.EndUtterance = [](std::uint32_t actor, std::uint64_t reply, std::uint32_t) -> BFA_SpeechResult {
-        Check(actor == prepared.speaker_form_id && reply == prepared.utterance_id);
-        ++endings; return BFA_SpeechOK;
+    api.GetStatus = [](std::uint64_t h, BFA_LineStatus* out) -> BFA_Result {
+        Check(h == 42 && out->version == BFA_API_VERSION && out->size == sizeof(*out));
+        *out = status; return R();
     };
-    api.SetMood = [](std::uint32_t, const BFA_SpeechEmotion* value) -> BFA_SpeechResult {
-        ++moods; mood = *value; return BFA_SpeechOK;
+    api.Stop = [](std::uint64_t h, std::uint32_t reason) -> BFA_Result {
+        Check(h == 42); ++stops;
+        if (status.playback >= BFA_PlaybackEnded) return R(BFA_ResultAlreadyStopped);
+        status.playback = BFA_PlaybackEnded; status.stop_reason = reason;
+        status.face_owned = 0; owner = BFA_kOwnerEngine; status.result = R();
+        return R();
+    };
+    api.ReleaseHandle = [](std::uint64_t h) -> BFA_Result { Check(h == 42); ++releases; return R(); };
+    api.SetMood = [](std::uint32_t, const BFA_Emotion* value, float fade) -> BFA_Result {
+        Check(fade == 0); ++moods; mood = *value; return R();
     };
     return api;
 }
 }
-
 int main()
 {
     using namespace FacialAnimationBridge;
     auto api = MakeApi();
-    Check(IsCompatible(&api));
-    auto shortApi = api; shortApi.size = offsetof(BFA_SpeechInterface, Owner);
-    Check(!IsCompatible(&shortApi));
-    const char wav[] = "RIFF copied fixture";
-    std::shared_ptr<FaceToken> queued;
+    const char wav[] = "test audio";
     {
         Line line(&api, 0x123);
-        queued = line.GetToken();
-        Check(line.Prepare(wav, sizeof(wav), "hello", "DialogueHappy") == BFA_SpeechOK);
-        Check(prepared.audio == wav && prepared.audio_bytes == sizeof(wav));
-        Check(moods == 1 && mood.channels[6] == 0.9f);
-        Check(line.Start(0.02) == BFA_SpeechOK && position == 0.02);
-        Check(queued->CanWrite()); // unlike old ABI, Start does not claim face
-        Event(BFA_SpeechStarted);
-        Check(!queued->CanWrite()); // synchronous callback gates queued tasks
-        owner = BFA_SpeechOwnerProvider;
-        line.Pause(); line.Resume(0.5); line.Seek(0.7);
-        Check(position == 0.7);
-        Event(BFA_SpeechEnded);
-        Check(!queued->CanWrite()); // another segment/owner still holds the actor
-        owner = BFA_SpeechOwnerEngine;
+        Check(line.Prepare(wav, sizeof(wav), "hello", "DialogueHappy") == BFA_ResultPending);
+        Check(prepared.flags == BFA_kLastSegment && prepared.audio.bytes == sizeof(wav));
+        Check(prepared.audio.format == BFA_kContainer && mood.skyrim_type == 5);
+        Check(mood.skyrim_value == 90 && line.HasStatus());
+        auto queued = line.GetToken();
         Check(queued->CanWrite());
-        Event(BFA_SpeechDeclined);
-        Check(queued->CanWrite());
-        owner = BFA_SpeechOwnerSuppressed;
-        Check(!queued->CanWrite());
-        line.Stop(BFA_SpeechCompleted);
-        Check(stops == 1 && endings == 1 && !queued->CanWrite());
-        Event(BFA_SpeechStarted); // stale callback must not revive an old token
-        Check(!queued->CanWrite());
+        Check(line.Start(.25) == BFA_ResultPending && !queued->CanWrite());
+        Check(line.Pause() == BFA_ResultOK);
+        Check(line.Snapshot().playback == BFA_PlaybackPaused);
+        Check(line.Resume(.5) == BFA_ResultOK);
+        Check(line.Seek(.75) == BFA_ResultOK);
+        Check(line.Snapshot().position_seconds == .75);
+        status.generation = BFA_GenerationReady; status.audio_seconds = 1;
+        Check(line.Seek(.8) == BFA_ResultOK);
+        Check(line.Snapshot().generation == BFA_GenerationReady);
+        Check(line.Stop(BFA_kCompleted) == BFA_ResultOK);
+        Check(line.Snapshot().playback == BFA_PlaybackEnded && !queued->CanWrite());
+        Check(stops == 1 && releases == 1);
     }
-    Check(stops == 1 && endings == 1);
-    owner = BFA_SpeechOwnerEngine;
+    Check(stops == 1); // RAII cleanup does not double-stop
     {
         Line absent(nullptr, 0x123);
-        Check(absent.Prepare(wav, sizeof(wav), "", "") == BFA_SpeechUnavailable);
+        Check(absent.Prepare(wav, sizeof(wav), "", "") == BFA_ResultUnavailable);
+        Check(absent.Start(0) == BFA_ResultUnavailable);
         Check(absent.GetToken()->CanWrite());
-        Check(absent.Start(0) == BFA_SpeechInvalidHandle);
     }
+    auto old = api; old.size = 16;
+    Check(!IsCompatible(&old));
+    old = api; old.version = 0;
+    Check(!IsCompatible(&old));
+    reject = true;
     {
-        Line cancelled(&api, 0x123);
-        cancelled.Prepare(wav, sizeof(wav), "", "");
-        Check(moods == 1); // omitted mood is preserved
+        Line denied(&api, 0x123);
+        Check(denied.Prepare(wav, sizeof(wav), "", "") == BFA_ResultDisabled);
+        Check(denied.Start(0) == BFA_ResultDisabled);
+        Check(denied.GetToken()->CanWrite());
     }
-    Check(stops == 2 && endings == 2);
-    std::cout << "Streaming bridge tests passed: deferred ownership, callbacks, clock, cleanup and fallback\n";
+    Check(stops == 1 && moods == 1);
+    reject = false; immediateFailure = true;
+    {
+        Line failed(&api, 0x123);
+        Check(failed.Prepare(wav, sizeof(wav), "", "") == BFA_ResultAudioFailed);
+        Check(failed.Snapshot().result == BFA_ResultAudioFailed);
+        const auto before = starts;
+        Check(failed.Start(0) == BFA_ResultAudioFailed && starts == before);
+        Check(failed.GetToken()->CanWrite());
+    }
+    Check(stops == 2 && releases == 2);
+    immediateFailure = false;
+    {
+        Line late(&api, 0x123);
+        Check(late.Prepare(wav, sizeof(wav), "", "MoodNeutral") == BFA_ResultPending);
+        Check(mood.gain == 0);
+        late.Start(0);
+        asynchronousFailure = true;
+        Check(late.Seek(.1) == BFA_ResultInferenceFailed);
+        Check(late.LastResult() == BFA_ResultInferenceFailed && late.GetToken()->CanWrite());
+        const auto before = seeks;
+        Check(late.Seek(.2) == BFA_ResultInferenceFailed && seeks == before);
+        owner = BFA_kOwnerSuppressed;
+        Check(!late.GetToken()->CanWrite());
+        owner = BFA_kOwnerEngine;
+    }
+    Check(stops == 3 && releases == 3);
+    std::cout << "Provider result/status bridge passed: pending, terminal failure, clock, fallback and cleanup\n";
 }

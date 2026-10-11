@@ -24,7 +24,7 @@
 // "BetterFacialAnimations" and is answered the same way. A null interface
 // means BFA is absent or older than the version asked for: keep the lips you
 // have. The interface is handed out even while BFA is disabled by the user;
-// IsReady and the decline reasons say so.
+// GetReadiness and the decline reasons say so.
 //
 // Threads: every function may be called from any thread. Engine access
 // happens on BFA's side. Pointers passed in are copied before the call
@@ -32,11 +32,14 @@
 // Listeners run on a BFA thread, never on the game thread, and may call back
 // into the interface.
 //
-// ABI: append-only. Every struct begins with its version and size; fields
-// are never reordered, resized or removed, and new ones go at the end with
-// the version incremented. A newer BFA adds functions at the end of
-// BFA_Interface and raises BFA_API_VERSION; a caller asking for an older
-// version is given the interface, whose size says how much of it exists.
+// Unreleased ABI: changed in place. Rebuild all callers against this header.
+// Query exactly BFA_API_VERSION; the version value has not been bumped.
+// Functions return a single BFA_Result (uint32_t), never bool.
+// Pending is not proof of visible animation.
+// GetStatus/events report subsequent progress. Struct versions must equal
+// BFA_API_VERSION and size must cover the known fields.
+// UnregisterListener prevents future dispatch snapshots; callbacks already copied
+// may still run. Keep callback context alive for the plugin lifetime.
 
 #ifndef BFA_API_H
 #define BFA_API_H
@@ -74,7 +77,7 @@ typedef struct BFA_Audio {
   // Alternative to data: a file relative to the game's Data directory,
   // UTF-8, read through the engine's resource system (BSAs and loose files),
   // e.g. "Sound\\Voice\\MyMod.esp\\line.wav"; it must lie under Data\\Sound
-  // (else kBadRequest). Null with data.
+  // (else BFA_ResultInvalidArgument). Null with data.
   const char* path;
 } BFA_Audio;
 
@@ -134,28 +137,8 @@ typedef struct BFA_Line {
   const char* text;  // optional, UTF-8, for BFA's log only
 } BFA_Line;
 
-// Why a line or an actor was declined (Prepare's and CanAnimate's reason,
-// the kDeclined event, Owner).
-enum BFA_Reason {
-  BFA_kAccepted = 0,
-  BFA_kDisabled = 1,            // BFA's master switch is off
-  BFA_kPlayerDisabled = 2,      // player facial animation is off
-  BFA_kRaceDisabled = 3,        // the user disabled the actor's race
-  BFA_kInScene = 4,             // a SexLab/OStim scene owns the face
-  BFA_kNoFaceGenHead = 5,       // no such actor, or one without a FaceGen head
-  BFA_kHeadMapFailed = 6,       // the head lacks a morph BFA needs
-  BFA_kModelNotLoaded = 7,      // the network is not loaded (yet)
-  BFA_kNoDevice = 8,            // neither GPU nor CPU inference is available
-  BFA_kSuppressed = 9,          // Suppress() is in effect for the actor
-  BFA_kUnsupportedRuntime = 10,  // BFA cannot look actors up on this runtime
-  BFA_kBadRequest = 11,         // a null or malformed struct, unknown format
-  BFA_kAudioFailed = 12,        // the audio could not be decoded, or is silent
-  BFA_kNoHandle = 13,           // no such line handle (ended, or never was)
-  BFA_kNotInDialogue = 14,      // Potato mode: only the player and the
-                                // actor in dialogue with them are animated
-};
 
-// How a line ended (Stop's and StopActor's reason, the kEnded event).
+// How a line ended (Stop/StopActor input, status.stop_reason, kEnded event).
 enum BFA_StopReason {
   BFA_kCompleted = 0,   // played to its end
   BFA_kSkipped = 1,     // the user skipped it
@@ -170,14 +153,85 @@ enum BFA_Owner {
   BFA_kOwnerSuppressed = 2,  // Suppress() is in effect
 };
 
+// ---------------- operation results and retained status ----------------
+// One fixed-width result per call; compare against these values, not truthiness.
+// Specific failures (e.g. Disabled or AudioFailed) are returned directly.
+typedef uint32_t BFA_Result;
+enum BFA_ResultCode {
+  BFA_ResultOK = 0,
+  BFA_ResultPending = 1, // accepted; generation or face cleanup pending
+  BFA_ResultNoChange = 2, // already in the requested state
+  BFA_ResultAlreadyStopped = 3, // retained terminal handle; GetStatus has its outcome
+  BFA_ResultInvalidArgument = 4,
+  BFA_ResultInvalidHandle = 5, // unknown, released or expired handle
+  BFA_ResultInvalidState = 6, // operation not legal in the current state
+  BFA_ResultNotFound = 7, // unknown listener
+  BFA_ResultUnavailable = 8, // plugin hooks not ready
+  BFA_ResultDisabled = 9, // master switch off
+  BFA_ResultPlayerDisabled = 10,
+  BFA_ResultRaceDisabled = 11,
+  BFA_ResultInScene = 12, // a scene owns the face
+  BFA_ResultNoFaceGenHead = 13, // missing actor or FaceGen head
+  BFA_ResultHeadMapFailed = 14, // required morphs unavailable
+  BFA_ResultModelNotLoaded = 15, // network not loaded yet
+  BFA_ResultNoDevice = 16, // no inference device available
+  BFA_ResultSuppressed = 17,
+  BFA_ResultUnsupportedRuntime = 18, // actor lookup unsupported on this runtime
+  BFA_ResultAudioFailed = 19, // decode failed or audio silent
+  BFA_ResultNotInDialogue = 20, // excluded by Potato mode
+  BFA_ResultInternalError = 21,
+  BFA_ResultInferenceFailed = 22, // animation generation failed
+  BFA_ResultCancelled = 23,
+};
+
+// Generation and playback are independent: audio may start/pause while inference
+// is queued. Playing means the provider clock runs, NOT that a rendered face
+// frame has been applied. face_owned reports BFA's current ownership.
+enum BFA_GenerationState {
+  BFA_GenerationQueued = 0,
+  BFA_GenerationRunning = 1,
+  BFA_GenerationReady = 2,
+  BFA_GenerationFailed = 3,
+};
+enum BFA_PlaybackState {
+  BFA_PlaybackPrepared = 0,
+  BFA_PlaybackPlaying = 1,
+  BFA_PlaybackPaused = 2,
+  BFA_PlaybackStopping = 3,
+  BFA_PlaybackEnded = 4,
+  BFA_PlaybackFailed = 5,
+  BFA_PlaybackDeclined = 6,
+};
+typedef struct BFA_LineStatus {
+  uint32_t version; // caller sets BFA_API_VERSION
+  uint32_t size;    // caller sets sizeof(BFA_LineStatus)
+  uint64_t handle;
+  uint64_t utterance_id;
+  uint32_t actor_form_id;
+  uint32_t segment;
+  uint32_t generation; // BFA_GenerationState
+  uint32_t playback;   // BFA_PlaybackState
+  BFA_Result result;   // latest lifecycle result, not a history of API misuse
+  uint32_t stop_reason; // BFA_StopReason; meaningful for Stopping/Ended
+  uint32_t face_owned;  // 0/1
+  double audio_seconds;    // 0 until decoded
+  double position_seconds; // frozen at terminal transition
+} BFA_LineStatus;
+
+// Terminal records retain no audio/actor pointer. They expire after 120 seconds,
+// capped at 1024 (oldest evicted first). Copy before ReleaseHandle if needed later.
+// Active handles cannot be explicitly released.
+#define BFA_TERMINAL_RETENTION_SECONDS 120u
+#define BFA_TERMINAL_CAPACITY 1024u
+
 // ---------------- events ----------------
 enum BFA_Event {
   BFA_kQueued = 0,     // Prepare accepted the line; inference is queued
   BFA_kGenerated = 1,  // its animation is ready (audio_seconds measured)
-  BFA_kStarted = 2,    // it is playing on the face
+  BFA_kStarted = 2,    // clock started and ownership accepted; generation may be pending
   BFA_kEnded = 3,      // it left the face (reason: BFA_StopReason)
   BFA_kFailed = 4,     // inference failed; the face was never touched
-  BFA_kDeclined = 5,   // Start could not take the face (reason: BFA_Reason)
+  BFA_kDeclined = 5,   // Start could not take the face (reason: BFA_ResultCode)
   BFA_kOwnerChanged = 6,  // reason: the actor's new BFA_Owner
 };
 
@@ -198,67 +252,41 @@ typedef void (*BFA_Listener)(const BFA_EventData* event, void* context);
 
 // ---------------- the interface ----------------
 typedef struct BFA_Interface {
-  uint32_t version;  // the version BFA implements
-  uint32_t size;     // sizeof(BFA_Interface) as BFA built it
-
-  // -- capability --
-  // BFA's plugin version, packed as SKSE does: major << 24 | minor << 16 |
-  // patch << 4 | build.
+  uint32_t version;
+  uint32_t size;
   uint32_t (*GetVersion)(void);
-  // The network is loaded, the hooks are in place and BFA is enabled.
-  bool (*IsReady)(void);
-  // 0 no (reason set), 1 yes, 2 probably (the head is not mapped yet:
-  // Prepare anyway; a kDeclined event follows if the mapping fails).
-  uint32_t (*CanAnimate)(uint32_t actor_form_id, uint32_t* reason);
-  // BFA_Owner of the actor's face now.
-  uint32_t (*Owner)(uint32_t actor_form_id);
+  BFA_Result (*GetReadiness)(void);
+  BFA_Result (*CanAnimate)(uint32_t actor_form_id); // Pending: head not mapped
+  uint32_t (*Owner)(uint32_t actor_form_id); // snapshot, not a write lease
 
-  // -- lines --
-  // Queues the line's inference at the front of BFA's queue and returns its
-  // handle, or 0 with reason set. The audio is copied; the line's events
-  // follow (kQueued now, then kGenerated or kFailed). A provider that has
-  // the audio only at playback time may call Start on a handle before its
-  // kGenerated: the face catches up over BFA's blend-in once it is ready.
-  uint64_t (*Prepare)(const BFA_Line* line, uint32_t* reason);
-  // The audio is at offset_seconds now: the line takes the face (or a
-  // kDeclined event says why not). False: no such handle.
-  bool (*Start)(uint64_t handle, double offset_seconds);
-  // The audio paused (a menu); the face holds its pose.
-  bool (*Pause)(uint64_t handle);
-  // The audio resumed at offset_seconds, or where it paused when negative.
-  bool (*Resume)(uint64_t handle, double offset_seconds);
-  // The audio is at offset_seconds now (drift correction, a scrub).
-  bool (*Seek)(uint64_t handle, double offset_seconds);
-  // The line is over (reason: BFA_StopReason): the face is handed back.
-  // Also forgets a prepared line that never started.
-  bool (*Stop)(uint64_t handle, uint32_t reason);
-  // Stops every provider line of the actor (0: of every actor). Returns how
-  // many.
-  uint32_t (*StopActor)(uint32_t actor_form_id, uint32_t reason);
-
-  // -- events --
-  // Registers a listener for every event of every line. Returns its id, or
-  // 0. Several listeners may be registered; each is called once per event.
-  uint64_t (*RegisterListener)(BFA_Listener listener, void* context);
-  bool (*UnregisterListener)(uint64_t listener_id);
-
-  // -- mood and ownership --
-  // The actor's mood: used for its lines whose emotion is neutral (gain 0,
-  // or a neutral skyrim_type), provider lines and the engine's own alike,
-  // until replaced; null clears it. fade_seconds is advisory. Mood values
-  // are capped by the user's per-channel maximums like any emotion.
-  bool (*SetMood)(uint32_t actor_form_id, const BFA_Emotion* mood,
-                  float fade_seconds);
-  // BFA leaves the actor's face alone for seconds (0: until Release): its
-  // lines end (kAborted) and new ones are declined (kSuppressed). reason is
-  // for BFA's log.
-  bool (*Suppress)(uint32_t actor_form_id, float seconds, const char* reason);
-  bool (*Release)(uint32_t actor_form_id);
+  // handle_out is zero on invalid/declined intake. Once allocated, even immediate
+  // failure returns a nonzero inspectable terminal handle. Inputs are copied.
+  BFA_Result (*Prepare)(const BFA_Line* line, uint64_t* handle_out);
+  // Finite offsets >=0. Legal while generation is pending. Repeated Start seeks.
+  BFA_Result (*Start)(uint64_t handle, double offset_seconds);
+  BFA_Result (*Pause)(uint64_t handle); // InvalidState before Start
+  // -1 resumes from current position; other negative/nonfinite offsets invalid.
+  BFA_Result (*Resume)(uint64_t handle, double offset_seconds);
+  BFA_Result (*Seek)(uint64_t handle, double offset_seconds);
+  BFA_Result (*Stop)(uint64_t handle, uint32_t stop_reason);
+  // actor 0 stops all. stopped_out counts newly stopped handles.
+  BFA_Result (*StopActor)(uint32_t actor_form_id, uint32_t stop_reason,
+                          uint32_t* stopped_out);
+  BFA_Result (*GetStatus)(uint64_t handle, BFA_LineStatus* status_out);
+  BFA_Result (*ReleaseHandle)(uint64_t handle);
+  BFA_Result (*RegisterListener)(BFA_Listener listener, void* context,
+                                 uint64_t* listener_out);
+  BFA_Result (*UnregisterListener)(uint64_t listener_id);
+  // nullptr clears mood. Only immediate changes supported: nonzero fade rejected.
+  BFA_Result (*SetMood)(uint32_t actor_form_id, const BFA_Emotion* mood,
+                        float fade_seconds);
+  // 0 seconds: until Release. Negative/nonfinite durations rejected.
+  BFA_Result (*Suppress)(uint32_t actor_form_id, float seconds, const char* reason);
+  BFA_Result (*Release)(uint32_t actor_form_id);
 } BFA_Interface;
 
 // Exported by BetterFacialAnimations.dll. wanted_version: the
-// BFA_API_VERSION the caller was built against. Null when BFA cannot serve
-// that version (it is older) or is not running.
+// exact BFA_API_VERSION the caller was built against. Null for other versions.
 typedef const BFA_Interface* (*BFA_QueryInterfaceFn)(uint32_t wanted_version);
 
 #ifdef __cplusplus

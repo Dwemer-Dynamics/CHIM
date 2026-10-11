@@ -1678,12 +1678,31 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                   headingAngle);
     };
 
-    const BFA_SpeechInterface* facialApi = nullptr;
+    const BFA_Interface* facialApi = nullptr;
     if (!isNarrator && !REL::Module::IsVR()) {
         facialApi = FacialAnimationBridge::Discover();
     }
     FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
     const auto faceToken = facialLine.GetToken();
+    const auto facialActorId = speakerActorPointer->GetFormID();
+    std::uint32_t lastFacialCode = UINT32_MAX;
+    std::uint32_t lastFacialGeneration = UINT32_MAX, lastFacialPlayback = UINT32_MAX;
+    const auto reportFacial = [&](const char* operation, BFA_Result result, bool force = true) {
+        if (!facialApi) return;
+        const auto& status = facialLine.Snapshot();
+        const bool changed = result != lastFacialCode ||
+            status.generation != lastFacialGeneration || status.playback != lastFacialPlayback;
+        if (force || changed) {
+            logger::debug("[SpeakManager] BFA {} actor={:08X} result={} handle={} "
+                          "status_valid={} generation={} playback={} lifecycle={} owner={} audio={:.3f}s position={:.3f}s",
+                          operation, facialActorId, FacialAnimationBridge::ResultName(result),
+                          status.handle, facialLine.HasStatus(), status.generation, status.playback,
+                          FacialAnimationBridge::ResultName(status.result),
+                          status.face_owned, status.audio_seconds, status.position_seconds);
+        }
+        lastFacialCode = result;
+        lastFacialGeneration = status.generation; lastFacialPlayback = status.playback;
+    };
 
     _dap_phase("before_LoadWAV");
 
@@ -1692,10 +1711,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         const auto facialReason = facialLine.Prepare(buffer, localContentLength, text.c_str(), expression);
-        if (facialApi) {
-            logger::debug("[SpeakManager] BFA prepare actor={:08X} reason={} expression={}",
-                          speakerActorPointer->GetFormID(), facialReason, expression);
-        }
+        reportFacial("prepare", facialReason);
         if (enable3DAudioPlayback) {
             _dap_phase("after_LoadWAV_ok");
             am.setMuffledPlayback(runtimeMuffleFilter);
@@ -1722,8 +1738,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     if (DXinitOK) {
         const auto facialStart = facialLine.Start(am.GetElapsedTimeSeconds());
-        if (facialApi) logger::debug("[SpeakManager] BFA scheduled actor={:08X} result={}",
-            speakerActorPointer->GetFormID(), facialStart);
+        reportFacial("start", facialStart);
     }
 
     auto endTime = std::chrono::steady_clock::now()+ std::chrono::duration<double>(1);
@@ -1932,7 +1947,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                 setPhase("am_pause");
                 const auto pauseStarted = std::chrono::steady_clock::now();
                 am.Pause();
-                facialLine.Pause();
+                reportFacial("pause", facialLine.Pause());
                 recovery = true;
 
                 // Wait for game to unpause
@@ -1955,7 +1970,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     logger::info("Resuming audio...game unpaused");
                     setPhase("am_resume_after_pause");
                     am.Resume();
-                    facialLine.Resume(am.GetElapsedTimeSeconds());
+                    reportFacial("resume", facialLine.Resume(am.GetElapsedTimeSeconds()));
                 }
                 continue;
             }
@@ -1964,7 +1979,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             logger::info("Resuming audio after recovery");
             setPhase("am_resume_recovery");
             am.Resume();
-            facialLine.Resume(am.GetElapsedTimeSeconds());
+            reportFacial("resume", facialLine.Resume(am.GetElapsedTimeSeconds()));
             recovery = false;
         }
 
@@ -2051,7 +2066,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         
         const auto facialSyncTime = std::chrono::steady_clock::now();
         if (DXinitOK && facialSyncTime - lastFacialSync >= std::chrono::milliseconds(50)) {
-            facialLine.Seek(am.GetElapsedTimeSeconds());
+            reportFacial("seek", facialLine.Seek(am.GetElapsedTimeSeconds()), false);
             lastFacialSync = facialSyncTime;
         }
         //elapsedSeconds = am.GetElapsedTimeSeconds();  // New. More accurate elapsed time from audio manager, in case of
@@ -2329,7 +2344,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     if (facialApi) logger::debug("[SpeakManager] BFA face checks: fallback={} blocked={}",
         faceToken->fallbackChecks.load(), faceToken->blockedChecks.load());
-    facialLine.Stop(hasBeenAborted || lastLost ? BFA_SpeechInterrupted : BFA_SpeechCompleted);
+    reportFacial("stop", facialLine.Stop(hasBeenAborted || lastLost ? BFA_kAborted : BFA_kCompleted));
 
     _dap_phase("before_am_Stop");
     am.Stop();
