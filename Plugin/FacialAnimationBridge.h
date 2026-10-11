@@ -1,6 +1,6 @@
 #pragma once
 
-#include "BFA_API.h"
+#include "BFA_SpeechAPI.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -10,137 +10,189 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <string_view>
 
 namespace FacialAnimationBridge {
 
-// CHIM uses FaceGen expression indices; BFA expects dialogue emotion indices.
-inline BFA_Emotion MakeMood(std::string_view expression)
+// CHIM expressions map directly to Audio2Face mood channels.
+inline BFA_SpeechEmotion MakeMood(std::string_view expression)
 {
-    BFA_Emotion mood{};
-    mood.version = BFA_API_VERSION;
+    BFA_SpeechEmotion mood{};
+    mood.version = BFA_SPEECH_API_VERSION;
     mood.size = sizeof(mood);
-    mood.skyrim_value = 90;
-    mood.gain = 1.0f;
     if (expression == "DialogueAnger" || expression == "MoodAnger" || expression == "CombatAnger") {
-        mood.skyrim_type = 1;
+        mood.channels[1] = 0.9f;
     } else if (expression == "DialogueDisgusted" || expression == "MoodDisgusted") {
-        mood.skyrim_type = 2;
+        mood.channels[3] = 0.9f;
     } else if (expression == "DialogueFear" || expression == "MoodFear") {
-        mood.skyrim_type = 3;
+        mood.channels[4] = 0.9f;
     } else if (expression == "DialogueSad" || expression == "MoodSad") {
-        mood.skyrim_type = 4;
+        mood.channels[9] = 0.9f;
     } else if (expression == "DialogueHappy" || expression == "MoodHappy") {
-        mood.skyrim_type = 5;
+        mood.channels[6] = 0.9f;
     } else if (expression == "DialogueSurprise" || expression == "MoodSurprise") {
-        mood.skyrim_type = 6;
+        mood.channels[0] = 0.9f;
     } else if (expression == "DialoguePuzzled" || expression == "MoodPuzzled") {
-        mood.skyrim_type = 7;
-    } else {
-        mood.skyrim_value = 0;
-        mood.gain = 0.0f;
+        mood.channels[0] = 0.4f;
     }
     return mood;
 }
 
-inline bool IsCompatible(const BFA_Interface* api)
+inline bool IsCompatible(const BFA_SpeechInterface* api)
 {
-    return api && api->version >= BFA_API_VERSION &&
-           api->size >= offsetof(BFA_Interface, SetMood) + sizeof(api->SetMood) &&
-           api->IsReady && api->Owner && api->Prepare && api->Start && api->Pause &&
-           api->Resume && api->Seek && api->Stop && api->SetMood;
+    return api && api->version >= BFA_SPEECH_API_VERSION &&
+           api->size >= sizeof(BFA_SpeechInterface) && api->Prepare && api->Start &&
+           api->Pause && api->Resume && api->Seek && api->Stop && api->EndUtterance &&
+           api->SetMood && api->Owner && api->RegisterListener;
 }
 
 #ifdef _WIN32
-inline const BFA_Interface* Discover()
+inline const BFA_SpeechInterface* Discover()
 {
     const auto module = GetModuleHandleA("BetterFacialAnimations.dll");
-    const auto query = module ? reinterpret_cast<BFA_QueryInterfaceFn>(
-        GetProcAddress(module, "BFA_QueryInterface")) : nullptr;
-    const auto* api = query ? query(BFA_API_VERSION) : nullptr;
+    const auto query = module ? reinterpret_cast<BFA_QuerySpeechInterfaceFn>(
+        GetProcAddress(module, "BFA_QuerySpeechInterface")) : nullptr;
+    const auto* api = query ? query(BFA_SPEECH_API_VERSION) : nullptr;
     return IsCompatible(api) ? api : nullptr;
 }
 
 inline bool CanWriteActor(std::uint32_t actor)
 {
     const auto* api = Discover();
-    return !api || api->Owner(actor) == BFA_kOwnerEngine;
+    return !api || api->Owner(actor) == BFA_SpeechOwnerEngine;
 }
 #endif
 
-// Queued game-thread writes retain this token, never the playback stack. Check
-// ownership when the task executes: inference can finish after it was queued.
+// Queued writes check this at execution, not when queued. The callback gates
+// writes before returning; BFA waits for callback delivery before deforming.
 struct FaceToken {
-    const BFA_Interface* api = nullptr;
+    const BFA_SpeechInterface* api = nullptr;
     std::uint32_t actor = 0;
     std::atomic<bool> active{true};
+    std::atomic<bool> owned{false};
+    mutable std::atomic<unsigned> fallbackChecks{0}, blockedChecks{0};
 
     bool CanWrite() const
     {
-        return active.load() && (!api || api->Owner(actor) == BFA_kOwnerEngine);
+        const bool allowed = active.load() && !owned.load() &&
+            (!api || api->Owner(actor) == BFA_SpeechOwnerEngine);
+        if (allowed) ++fallbackChecks;
+        else ++blockedChecks;
+        return allowed;
     }
 };
 
+// Listener context lives with the plugin; no callback can outlive a stack Line.
+// Register the correlation ID BEFORE Prepare, which can finish asynchronously
+// before returning its handle. Don't hold the registry lock across API calls.
+struct EventRegistry {
+    std::mutex mutex;
+    std::unordered_map<std::uint64_t, std::weak_ptr<FaceToken>> clips;
+    std::once_flag once;
+    std::uint64_t listener = 0;
+
+    static void Receive(const BFA_SpeechEvent* event, void* context)
+    {
+        auto& registry = *static_cast<EventRegistry*>(context);
+        std::lock_guard lock(registry.mutex);
+        const auto found = registry.clips.find(event->utterance_id);
+        if (found == registry.clips.end()) return;
+        const auto token = found->second.lock();
+        if (!token || token->actor != event->speaker_form_id) return;
+        if (event->event == BFA_SpeechStarted) token->owned.store(true);
+        else if (event->event == BFA_SpeechEnded || event->event == BFA_SpeechFailed ||
+                 event->event == BFA_SpeechDeclined || event->event == BFA_SpeechHandleExpired ||
+                 (event->event == BFA_SpeechOwnerChanged && event->handle))
+            token->owned.store(false);
+    }
+};
+inline EventRegistry& Registry()
+{
+    static auto* registry = new EventRegistry;
+    return *registry;
+}
+
 class Line {
 public:
-    Line(const BFA_Interface* api, std::uint32_t actor) : token(std::make_shared<FaceToken>())
+    Line(const BFA_SpeechInterface* api, std::uint32_t actor) : token(std::make_shared<FaceToken>())
     {
         token->api = IsCompatible(api) ? api : nullptr;
         token->actor = actor;
+        if (token->api) {
+            auto& registry = Registry();
+            std::call_once(registry.once, [&] {
+                token->api->RegisterListener(EventRegistry::Receive, &registry, &registry.listener);
+            });
+            if (!registry.listener) token->api = nullptr;
+        }
     }
-
     Line(const Line&) = delete;
     Line& operator=(const Line&) = delete;
-    ~Line() { Stop(BFA_kAborted); }
+    ~Line() { Stop(BFA_SpeechInterrupted); }
 
-    std::uint32_t Prepare(const void* audio, std::uint32_t bytes, const char* text,
+    std::uint32_t Prepare(const void* audio, std::uint32_t bytes, const char*,
                           std::string_view expression)
     {
         auto* api = token->api;
-        if (!api || !api->IsReady() || !token->actor) return BFA_kDisabled;
-        BFA_Line line{};
-        line.version = BFA_API_VERSION;
-        line.size = sizeof(line);
-        // Each DownloadAndPlay call owns a complete clip. Do not claim a reply
-        // across CHIM's queue until its final-segment boundary is available here.
-        static std::atomic<std::uint64_t> nextUtterance{0};
-        line.utterance_id = ++nextUtterance;
-        line.flags = BFA_kLastSegment;
-        line.speaker_form_id = token->actor;
-        line.audio.version = BFA_API_VERSION;
-        line.audio.size = sizeof(line.audio);
-        line.audio.format = BFA_kContainer;
-        line.audio.data = audio;
-        line.audio.bytes = bytes;
-        line.emotion = MakeMood(expression);
-        line.text = text;
-        std::uint32_t reason = BFA_kAccepted;
-        handle = api->Prepare(&line, &reason);
-        // An omitted expression preserves the previous mood; MoodNeutral clears
-        // it explicitly. BFA clears its world state on a save/load transition.
-        if (handle && !expression.empty()) {
-            api->SetMood(token->actor, &line.emotion, 0.2f);
+        if (!api || !token->actor) return BFA_SpeechUnavailable;
+        if (!expression.empty()) {
+            const auto mood = MakeMood(expression);
+            const auto result = api->SetMood(token->actor, &mood);
+            if (result != BFA_SpeechOK) return result;
         }
-        return reason;
+        static std::atomic<std::uint64_t> nextUtterance{0};
+        // CHIM's downloaded clips are independently delimited. A namespaced
+        // counter avoids colliding with another provider's small reply IDs.
+        utterance = 0x4348494D00000000ull | ++nextUtterance;
+        {
+            auto& registry = Registry();
+            std::lock_guard lock(registry.mutex);
+            registry.clips[utterance] = token;
+        }
+        BFA_SpeechLine line{};
+        line.version = BFA_SPEECH_API_VERSION;
+        line.size = sizeof(line);
+        line.utterance_id = utterance;
+        line.speaker_form_id = token->actor;
+        line.audio = audio;
+        line.audio_bytes = bytes;
+        return api->Prepare(&line, &handle);
     }
-
-    void Start(double position) { if (handle) token->api->Start(handle, position); }
-    void Pause() { if (handle) token->api->Pause(handle); }
-    void Resume(double position) { if (handle) token->api->Resume(handle, position); }
-    void Seek(double position) { if (handle) token->api->Seek(handle, position); }
+    BFA_SpeechResult Start(double position)
+    {
+        return handle ? token->api->Start(handle, position) : BFA_SpeechResult(BFA_SpeechInvalidHandle);
+    }
+    BFA_SpeechResult Pause()
+    {
+        return handle ? token->api->Pause(handle) : BFA_SpeechResult(BFA_SpeechInvalidHandle);
+    }
+    BFA_SpeechResult Resume(double position)
+    {
+        return handle ? token->api->Resume(handle, position) : BFA_SpeechResult(BFA_SpeechInvalidHandle);
+    }
+    BFA_SpeechResult Seek(double position)
+    {
+        return handle ? token->api->Seek(handle, position) : BFA_SpeechResult(BFA_SpeechInvalidHandle);
+    }
     void Stop(std::uint32_t reason)
     {
         token->active.store(false);
-        if (handle) {
-            token->api->Stop(handle, reason);
-            handle = 0;
+        if (token->api && utterance) {
+            if (handle) token->api->Stop(handle, reason);
+            token->api->EndUtterance(token->actor, utterance, reason);
+            auto& registry = Registry();
+            std::lock_guard lock(registry.mutex);
+            registry.clips.erase(utterance);
+            utterance = handle = 0;
         }
     }
     std::shared_ptr<FaceToken> GetToken() const { return token; }
 
 private:
     std::shared_ptr<FaceToken> token;
-    std::uint64_t handle = 0;
+    std::uint64_t handle = 0, utterance = 0;
 };
 
 }  // namespace FacialAnimationBridge

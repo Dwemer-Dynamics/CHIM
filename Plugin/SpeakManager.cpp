@@ -1678,7 +1678,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                   headingAngle);
     };
 
-    const BFA_Interface* facialApi = nullptr;
+    const BFA_SpeechInterface* facialApi = nullptr;
     if (!isNarrator && !REL::Module::IsVR()) {
         facialApi = FacialAnimationBridge::Discover();
     }
@@ -1721,7 +1721,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
 
     if (DXinitOK) {
-        facialLine.Start(am.GetElapsedTimeSeconds());
+        const auto facialStart = facialLine.Start(am.GetElapsedTimeSeconds());
+        if (facialApi) logger::debug("[SpeakManager] BFA scheduled actor={:08X} result={}",
+            speakerActorPointer->GetFormID(), facialStart);
     }
 
     auto endTime = std::chrono::steady_clock::now()+ std::chrono::duration<double>(1);
@@ -2325,7 +2327,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
 
-    facialLine.Stop(hasBeenAborted || lastLost ? BFA_kAborted : BFA_kCompleted);
+    if (facialApi) logger::debug("[SpeakManager] BFA face checks: fallback={} blocked={}",
+        faceToken->fallbackChecks.load(), faceToken->blockedChecks.load());
+    facialLine.Stop(hasBeenAborted || lastLost ? BFA_SpeechInterrupted : BFA_SpeechCompleted);
 
     _dap_phase("before_am_Stop");
     am.Stop();

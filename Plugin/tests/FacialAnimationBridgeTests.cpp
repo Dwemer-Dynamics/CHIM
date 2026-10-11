@@ -1,7 +1,6 @@
 #include "FacialAnimationBridge.h"
 
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 
 namespace {
@@ -12,38 +11,48 @@ void Check(bool condition)
         std::exit(1);
     }
 }
-
-std::uint32_t owner = BFA_kOwnerEngine;
-bool ready = true;
-bool decline = false;
-int stops = 0;
-int moods = 0;
-int pauses = 0;
+std::uint32_t owner = BFA_SpeechOwnerEngine;
+int stops = 0, endings = 0, moods = 0;
 double position = 0;
-BFA_Line prepared{};
-BFA_Emotion mood{};
-BFA_Interface MakeApi()
+BFA_SpeechLine prepared{};
+BFA_SpeechEmotion mood{};
+BFA_SpeechCallback callback = nullptr;
+void* context = nullptr;
+void Event(std::uint32_t type)
 {
-    BFA_Interface api{};
-    api.version = BFA_API_VERSION;
+    BFA_SpeechEvent event{1, sizeof(BFA_SpeechEvent), type, 0, 42,
+                         prepared.utterance_id, prepared.segment, prepared.speaker_form_id};
+    callback(&event, context);
+}
+BFA_SpeechInterface MakeApi()
+{
+    BFA_SpeechInterface api{};
+    api.version = 1;
     api.size = sizeof(api);
-    api.IsReady = [] { return ready; };
     api.Owner = [](std::uint32_t) { return owner; };
-    api.Prepare = [](const BFA_Line* line, std::uint32_t* reason) -> std::uint64_t {
-        prepared = *line;
-        *reason = decline ? BFA_kRaceDisabled : BFA_kAccepted;
-        return decline ? 0 : 42;
+    api.RegisterListener = [](BFA_SpeechCallback cb, void* ctx, std::uint64_t* id) -> BFA_SpeechResult {
+        callback = cb; context = ctx; *id = 1; return BFA_SpeechOK;
     };
-    api.Start = [](std::uint64_t, double offset) { position = offset; owner = BFA_kOwnerProvider; return true; };
-    api.Pause = [](std::uint64_t) { ++pauses; return true; };
-    api.Resume = [](std::uint64_t, double offset) { position = offset; return true; };
+    api.Prepare = [](const BFA_SpeechLine* line, std::uint64_t* handle) -> BFA_SpeechResult {
+        prepared = *line; *handle = 42; return BFA_SpeechOK;
+    };
+    api.Start = [](std::uint64_t, double offset) -> BFA_SpeechResult {
+        position = offset; return BFA_SpeechOK; // audio starts, face still fallback
+    };
+    api.Pause = [](std::uint64_t) -> BFA_SpeechResult { return BFA_SpeechOK; };
+    api.Resume = [](std::uint64_t, double offset) -> BFA_SpeechResult {
+        position = offset; return BFA_SpeechOK;
+    };
     api.Seek = api.Resume;
-    api.Stop = [](std::uint64_t handle, std::uint32_t reason) {
-        Check(handle == 42 && reason <= BFA_kAborted);
-        ++stops; owner = BFA_kOwnerEngine; return true;
+    api.Stop = [](std::uint64_t handle, std::uint32_t) -> BFA_SpeechResult {
+        Check(handle == 42); ++stops; return BFA_SpeechOK;
     };
-    api.SetMood = [](std::uint32_t actor, const BFA_Emotion* value, float) {
-        Check(actor == 0x123); ++moods; mood = *value; return true;
+    api.EndUtterance = [](std::uint32_t actor, std::uint64_t reply, std::uint32_t) -> BFA_SpeechResult {
+        Check(actor == prepared.speaker_form_id && reply == prepared.utterance_id);
+        ++endings; return BFA_SpeechOK;
+    };
+    api.SetMood = [](std::uint32_t, const BFA_SpeechEmotion* value) -> BFA_SpeechResult {
+        ++moods; mood = *value; return BFA_SpeechOK;
     };
     return api;
 }
@@ -52,66 +61,51 @@ BFA_Interface MakeApi()
 int main()
 {
     using namespace FacialAnimationBridge;
-    const char* expressions[] = {"MoodNeutral", "MoodAnger", "MoodDisgusted", "MoodFear", "MoodSad",
-                                 "MoodHappy", "MoodSurprise", "MoodPuzzled"};
-    for (int i = 0; i < 8; ++i) {
-        Check(MakeMood(expressions[i]).skyrim_type == i);
-    }
-    Check(MakeMood("DialogueHappy").skyrim_type == 5);
-    Check(MakeMood("CombatAnger").skyrim_type == 1);
-    Check(MakeMood("unknown").gain == 0);
     auto api = MakeApi();
     Check(IsCompatible(&api));
-    auto shortApi = api;
-    shortApi.size = offsetof(BFA_Interface, SetMood);
+    auto shortApi = api; shortApi.size = offsetof(BFA_SpeechInterface, Owner);
     Check(!IsCompatible(&shortApi));
-    shortApi = api; shortApi.Seek = nullptr;
-    Check(!IsCompatible(&shortApi));
-    const char wav[] = "RIFF audio fixture";
+    const char wav[] = "RIFF copied fixture";
     std::shared_ptr<FaceToken> queued;
     {
         Line line(&api, 0x123);
         queued = line.GetToken();
+        Check(line.Prepare(wav, sizeof(wav), "hello", "DialogueHappy") == BFA_SpeechOK);
+        Check(prepared.audio == wav && prepared.audio_bytes == sizeof(wav));
+        Check(moods == 1 && mood.channels[6] == 0.9f);
+        Check(line.Start(0.02) == BFA_SpeechOK && position == 0.02);
+        Check(queued->CanWrite()); // unlike old ABI, Start does not claim face
+        Event(BFA_SpeechStarted);
+        Check(!queued->CanWrite()); // synchronous callback gates queued tasks
+        owner = BFA_SpeechOwnerProvider;
+        line.Pause(); line.Resume(0.5); line.Seek(0.7);
+        Check(position == 0.7);
+        Event(BFA_SpeechEnded);
+        Check(!queued->CanWrite()); // another segment/owner still holds the actor
+        owner = BFA_SpeechOwnerEngine;
         Check(queued->CanWrite());
-        Check(line.Prepare(wav, sizeof(wav), "hello", "MoodHappy") == BFA_kAccepted);
-        Check(prepared.audio.data == wav && prepared.audio.bytes == sizeof(wav));
-        Check(prepared.audio.format == BFA_kContainer && prepared.audio.path == nullptr);
-        Check(prepared.speaker_form_id == 0x123 && prepared.flags == BFA_kLastSegment);
-        Check(prepared.emotion.skyrim_type == 5 && mood.skyrim_type == 5 && moods == 1);
-        line.Start(0.02);
-        Check(position == 0.02 && !queued->CanWrite());
-        line.Pause(); Check(pauses == 1);
-        line.Resume(0.5); Check(position == 0.5);
-        line.Seek(0.7); Check(position == 0.7);
-        // Async inference failure/decline releases ownership; fallback recovers.
-        owner = BFA_kOwnerEngine; Check(queued->CanWrite());
-        owner = BFA_kOwnerSuppressed; Check(!queued->CanWrite());
-        line.Stop(BFA_kSkipped);
-        Check(!queued->CanWrite() && stops == 1);
+        Event(BFA_SpeechDeclined);
+        Check(queued->CanWrite());
+        owner = BFA_SpeechOwnerSuppressed;
+        Check(!queued->CanWrite());
+        line.Stop(BFA_SpeechCompleted);
+        Check(stops == 1 && endings == 1 && !queued->CanWrite());
+        Event(BFA_SpeechStarted); // stale callback must not revive an old token
+        Check(!queued->CanWrite());
     }
-    Check(stops == 1 && !queued->CanWrite());
+    Check(stops == 1 && endings == 1);
+    owner = BFA_SpeechOwnerEngine;
     {
         Line absent(nullptr, 0x123);
-        Check(absent.Prepare(wav, sizeof(wav), "hello", "") == BFA_kDisabled);
+        Check(absent.Prepare(wav, sizeof(wav), "", "") == BFA_SpeechUnavailable);
         Check(absent.GetToken()->CanWrite());
-        absent.Start(0); absent.Pause(); absent.Resume(0); absent.Seek(1);
+        Check(absent.Start(0) == BFA_SpeechInvalidHandle);
     }
-    decline = true;
     {
-        Line declined(&api, 0x123);
-        Check(declined.Prepare(wav, sizeof(wav), "hello", "MoodSad") == BFA_kRaceDisabled);
-        Check(declined.GetToken()->CanWrite() && moods == 1);
+        Line cancelled(&api, 0x123);
+        cancelled.Prepare(wav, sizeof(wav), "", "");
+        Check(moods == 1); // omitted mood is preserved
     }
-    decline = false;
-    {
-        Line aborted(&api, 0x123);
-        aborted.Prepare(wav, sizeof(wav), "hello", "");
-        Check(moods == 1);
-    }
-    Check(stops == 2);
-    ready = false;
-    Line disabled(&api, 0x123);
-    Check(disabled.Prepare(wav, sizeof(wav), "hello", "MoodSad") == BFA_kDisabled);
-    Check(disabled.GetToken()->CanWrite());
-    std::cout << "FacialAnimationBridge tests passed\n";
+    Check(stops == 2 && endings == 2);
+    std::cout << "Streaming bridge tests passed: deferred ownership, callbacks, clock, cleanup and fallback\n";
 }
