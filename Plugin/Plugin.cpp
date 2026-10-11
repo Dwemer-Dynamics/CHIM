@@ -8291,13 +8291,14 @@ OnDataLoaded {
     trampoline.create(42);
 
     const bool isVrRuntime = REL::Module::GetRuntime() == REL::Module::Runtime::VR;
+    // VR Soulgaze queues native screenshots, so it also needs the upload hook.
+    ProcessorNativeScreenShot::InstallHooks();
     if (!isVrRuntime) {
         ProcessorScreenShot::InstallHooks();
-        ProcessorNativeScreenShot::InstallHooks();
         ProcessorActorDialogue::InstallHooks();
         ProcessorDialogueMenu::InstallHooks();
     } else {
-        logger::info("VR runtime detected; skipping flat Skyrim native screenshot/dialogue hooks");
+        logger::info("VR runtime detected; skipping flat Skyrim present/dialogue hooks");
         ProcessorVrVisemePump::InstallHooks();
     }
 
