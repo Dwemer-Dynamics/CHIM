@@ -4,6 +4,7 @@
 #include <Windows.h>
 #endif
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -61,22 +62,35 @@ inline bool IsCompatible(const BFA_Interface* api) {
         api->NewUtteranceId && api->Prepare && api->Start && api->Pause && api->Seek &&
         api->Stop && api->EndUtterance && api->RegisterListener;
 }
+// One reply (a BFA utterance) per speaking actor: all of its sentences share
+// it, so BFA keeps the face between them and hands it back once, after
+// EndReply. The token is the write gate for the actor's face.
 struct FaceToken {
     std::uint32_t actor = 0;
-    std::atomic<bool> active{true}, animated{false}, terminal{false};
+    std::uint64_t utterance = 0;
+    std::uint32_t segments = 0;
+    std::atomic<bool> ended{false}, animated{false};
     std::atomic<std::uint32_t> event{UINT32_MAX}, result{BFA_kResultPending};
+    std::atomic<std::uint64_t> terminal_handle{0};  // the segment last told a terminal event
+    std::chrono::steady_clock::time_point touched = std::chrono::steady_clock::now();
     mutable std::atomic<unsigned> fallbackChecks{0}, blockedChecks{0};
     bool CanWrite() const;
 };
-// Process-lifetime callback context; tokens are retained until cleanup completes and removed
-// on terminal events (or rejected intake). Callbacks never call back into BFA.
+// Process-lifetime callback context. Tokens stay registered until BFA hands the
+// face back (a terminal event after EndReply). Callbacks never call back into BFA.
 struct Events {
     std::mutex mutex, registration;
-    std::unordered_map<std::uint64_t, std::shared_ptr<FaceToken>> tokens;
+    std::unordered_map<std::uint64_t, std::shared_ptr<FaceToken>> tokens;   // by utterance
+    std::unordered_map<std::uint32_t, std::shared_ptr<FaceToken>> replies;  // open, by actor
     const BFA_Interface* api = nullptr;
     std::uint64_t listener = 0;
 };
 inline Events& State() { static auto* state = new Events; return *state; }
+// An open reply with no new sentence for this long is over when the next one starts.
+inline double& StaleSeconds() { static double seconds = 10; return seconds; }
+inline double Age(std::chrono::steady_clock::time_point since) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
+}
 inline void OnEvent(const BFA_Event* ev, void*) {
     if (!ev || ev->version != BFA_API_VERSION || ev->size < sizeof(*ev)) return;
     auto& state = State(); std::lock_guard<std::mutex> guard(state.mutex);
@@ -84,14 +98,17 @@ inline void OnEvent(const BFA_Event* ev, void*) {
     if (it == state.tokens.end()) return;
     const auto token = it->second;
     if (!token) { state.tokens.erase(it); return; }
-    if (token->terminal || ev->speaker_form_id != token->actor) return;
-    if (ev->event > BFA_kExpired) return;
+    if (ev->speaker_form_id != token->actor || ev->event > BFA_kExpired) return;
+    if (ev->event == BFA_kStarted) {
+        if (ev->handle == token->terminal_handle) return;  // late, for a finished segment
+        token->event = ev->event; token->animated = true;
+        return;
+    }
     token->event = ev->event;
     token->result = ev->event == BFA_kEnded ? BFA_kResultOK : ev->reason;
-    token->animated = ev->event == BFA_kStarted;
-    if (ev->event != BFA_kStarted) {
-        token->terminal = true; state.tokens.erase(it);
-    }
+    token->terminal_handle = ev->handle;
+    token->animated = false;  // BFA handed the face back (or declined this sentence)
+    if (token->ended) state.tokens.erase(it);
 }
 inline bool Listen(const BFA_Interface* api) {
     if (!IsCompatible(api)) return false;
@@ -113,9 +130,29 @@ inline bool CanWriteActor(std::uint32_t actor) {
     return true;
 }
 inline bool FaceToken::CanWrite() const {
-    const bool allowed = active && CanWriteActor(actor);
+    const bool allowed = CanWriteActor(actor);
     if (allowed) ++fallbackChecks; else ++blockedChecks;
     return allowed;
+}
+// Closes the actor's open reply: BFA stops its sentences, fades the face back and
+// then sends the terminal events that reopen the write gate.
+inline void EndReply(std::uint32_t actor, std::uint32_t reason) {
+    auto& state = State();
+    std::shared_ptr<FaceToken> token;
+    const BFA_Interface* api = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(state.mutex);
+        auto it = state.replies.find(actor);
+        if (it == state.replies.end()) return;
+        token = it->second; state.replies.erase(it);
+        token->ended = true; api = state.api;
+    }
+    const auto result = api ? api->EndUtterance(token->utterance, reason) : BFA_kResultUnavailable;
+    if (!Accepted(result)) {  // nothing of it reached BFA: no events will come
+        std::lock_guard<std::mutex> guard(state.mutex);
+        state.tokens.erase(token->utterance);
+        token->animated = false;
+    }
 }
 #ifdef _WIN32
 inline const BFA_Interface* Discover() {
@@ -125,53 +162,72 @@ inline const BFA_Interface* Discover() {
     return IsCompatible(api) ? api : nullptr;
 }
 #endif
+// One sentence of the actor's current reply (opened by the first sentence).
 class Line {
 public:
-    Line(const BFA_Interface* source, std::uint32_t actor) : token(std::make_shared<FaceToken>()) {
-        token->actor = actor;
+    Line(const BFA_Interface* source, std::uint32_t actor) {
         api = Listen(source) ? source : nullptr;
-        if (!api) return;
-        utterance = api->NewUtteranceId();
-        std::lock_guard<std::mutex> guard(State().mutex);
-        State().tokens[utterance] = token;
+        if (!api) {
+            token = std::make_shared<FaceToken>(); token->actor = actor;
+            return;
+        }
+        auto& state = State();
+        bool stale = false;
+        {
+            std::lock_guard<std::mutex> guard(state.mutex);
+            auto it = state.replies.find(actor);
+            stale = it != state.replies.end() && Age(it->second->touched) >= StaleSeconds();
+        }
+        if (stale) EndReply(actor, BFA_kCompleted);
+        std::lock_guard<std::mutex> guard(state.mutex);
+        auto& reply = state.replies[actor];
+        if (!reply) {
+            reply = std::make_shared<FaceToken>();
+            reply->actor = actor;
+            reply->utterance = api->NewUtteranceId();
+            state.tokens[reply->utterance] = reply;
+        }
+        token = reply;
+        segment = token->segments++;
+        token->touched = std::chrono::steady_clock::now();
     }
     Line(const Line&) = delete;
     Line& operator=(const Line&) = delete;
-    ~Line() {
-        Stop(BFA_kAborted);
-        std::lock_guard<std::mutex> guard(State().mutex);
-        if (utterance && !submitted) State().tokens.erase(utterance);
-    }
+    ~Line() { Stop(BFA_kAborted); }
     BFA_Result Prepare(const void* audio, std::uint32_t bytes, const char*, std::string_view expression) {
         if (!api) return last = BFA_kResultUnavailable;
-        if (handle || !token->active) return last = BFA_kResultInvalidState;
+        if (handle || stopped) return last = BFA_kResultInvalidState;
         const auto mood = MakeMood(expression);
-        BFA_Line line{BFA_API_VERSION, sizeof(BFA_Line), utterance, 0, token->actor, audio, bytes,
+        BFA_Line line{BFA_API_VERSION, sizeof(BFA_Line), token->utterance, segment, token->actor, audio, bytes,
                       expression.empty() ? nullptr : &mood};
         handle = api->Prepare(&line, &last);
-        submitted = handle != 0;
         return LastResult();
     }
     BFA_Result Start(double t) { return Ready() ? last = api->Start(handle, t) : LastResult(); }
     BFA_Result Pause() { return Ready() ? last = api->Pause(handle) : LastResult(); }
     BFA_Result Seek(double t) { return Ready() ? last = api->Seek(handle, t) : LastResult(); }
+    // Ends this sentence; the reply stays open for the next (EndReply closes it).
     BFA_Result Stop(std::uint32_t reason) {
-        if (!token->active.exchange(false)) return LastResult();
-        if (api && handle) {
-            last = api->EndUtterance(utterance, reason);
-            handle = 0;
-        }
+        if (stopped) return LastResult();
+        stopped = true;
+        if (Ready(true)) last = api->Stop(handle, reason);
+        token->touched = std::chrono::steady_clock::now();
         return LastResult();
     }
-    BFA_Result LastResult() const { return token->terminal ? token->result.load() : last; }
+    BFA_Result LastResult() const {
+        return handle && token->terminal_handle == handle ? token->result.load() : last;
+    }
     std::uint64_t Handle() const { return handle; }
     std::shared_ptr<FaceToken> GetToken() const { return token; }
 private:
-    bool Ready() const { return api && handle && token->active && !token->terminal; }
+    bool Ready(bool stopping = false) const {
+        return api && handle && (stopping || !stopped) && !token->ended && token->terminal_handle != handle;
+    }
     const BFA_Interface* api = nullptr;
     std::shared_ptr<FaceToken> token;
-    bool submitted = false;
-    std::uint64_t utterance = 0, handle = 0;
+    std::uint32_t segment = 0;
+    std::uint64_t handle = 0;
+    bool stopped = false;
     BFA_Result last = BFA_kResultUnavailable;
 };
 } // namespace FacialAnimationBridge

@@ -8,12 +8,16 @@
 // in-flight callback; keep its context alive. Every listener receives every
 // provider's events: act only on handles you prepared.
 //
-// Lifecycle: NewUtteranceId names a reply. Prepare copies the WAV bytes and queues engine work on the SKSE
-// task interface. Start/Pause/Seek report the audio clock; they do not
-// mean BFA is animating. kStarted means animation has begun: keep fallback
-// lipsync until then, and stop fallback writes until a terminal event
-// (kEnded/kFailed/kDeclined/kOwnerChanged/kExpired). Terminal events retire
-// the handle. No status polling or explicit release.
+// Lifecycle: NewUtteranceId names a reply. Prepare copies the WAV bytes and
+// queues engine work on the SKSE task interface. Start/Pause/Seek report the
+// audio clock; they do not mean BFA is animating. kStarted means animation
+// has begun: keep fallback lipsync until then, and stop fallback writes until
+// a terminal event (kEnded/kFailed/kDeclined/kOwnerChanged/kExpired).
+// Terminal events retire the handle. An animated segment's arrives when BFA
+// hands the face back: between a reply's segments BFA keeps the face, so
+// give all of a reply's segments one utterance_id and call EndUtterance
+// after the last; the face then fades to the engine's expressions and the
+// events follow. No status polling or explicit release.
 //
 // Limits: open handles expire after 120 seconds without a playback call,
 // a paused one included. Utterance holds expire after 120 seconds without

@@ -48,6 +48,7 @@ int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
 int function startSoulgazeCapture(String hints, int captureType, int renderMode, Actor target = None) Global Native
 int function isGameVR() Global Native									; 1 if VR
+int function isBFADetected() Global Native								; 1 if Better Facial Animations is loaded
 
 int function sendLocationFast(Location curr,string tags,Cell referenceCell=None) global Native
 int function sendFactionFast(Faction factions,string name) global Native

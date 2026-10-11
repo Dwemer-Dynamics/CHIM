@@ -55,6 +55,7 @@ constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
 extern bool GlobalEnable3DAudioPlayback;
+extern bool GlobalBFADialogue;
 extern bool GlobalForceMono;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
@@ -1679,7 +1680,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     };
 
     const BFA_Interface* facialApi = nullptr;
-    if (!isNarrator && !REL::Module::IsVR()) {
+    if (!isNarrator && !REL::Module::IsVR() && GlobalBFADialogue) {
         facialApi = FacialAnimationBridge::Discover();
     }
     FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
@@ -2338,6 +2339,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     if (facialApi) logger::debug("[SpeakManager] BFA face checks: fallback={} blocked={}",
         faceToken->fallbackChecks.load(), faceToken->blockedChecks.load());
     reportFacial("stop", facialLine.Stop(hasBeenAborted || lastLost ? BFA_kAborted : BFA_kCompleted));
+    if (facialApi && (hasBeenAborted || lastLost)) FacialAnimationBridge::EndReply(facialActorId, BFA_kAborted);
 
     _dap_phase("before_am_Stop");
     am.Stop();
@@ -4069,6 +4071,7 @@ void SpeakManager::processPlayer() {
                 SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
                 res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration, scriptLine.utteranceId);
+                FacialAnimationBridge::EndReply(RE::PlayerCharacter::GetSingleton()->GetFormID(), res == 2 ? BFA_kAborted : BFA_kCompleted);
             }
         }
 
@@ -4203,6 +4206,8 @@ void SpeakManager::clearVisibleSubtitles() {
 
 void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
     logger::info("Face reset for {}", npc->GetDisplayFullName());
+    // The reply is over: BFA fades the face back, then reopens the write gate.
+    FacialAnimationBridge::EndReply(npc->GetFormID(), BFA_kCompleted);
 
     auto fgen = npc->GetFaceGenAnimationData();
     if (fgen && FacialAnimationBridge::CanWriteActor(npc->GetFormID())) {
