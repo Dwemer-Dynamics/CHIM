@@ -1685,23 +1685,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
     const auto faceToken = facialLine.GetToken();
     const auto facialActorId = speakerActorPointer->GetFormID();
-    std::uint32_t lastFacialCode = UINT32_MAX;
-    std::uint32_t lastFacialGeneration = UINT32_MAX, lastFacialPlayback = UINT32_MAX;
+    std::uint32_t lastFacialCode = UINT32_MAX, lastFacialEvent = UINT32_MAX;
     const auto reportFacial = [&](const char* operation, BFA_Result result, bool force = true) {
         if (!facialApi) return;
-        const auto& status = facialLine.Snapshot();
-        const bool changed = result != lastFacialCode ||
-            status.generation != lastFacialGeneration || status.playback != lastFacialPlayback;
-        if (force || changed) {
-            logger::debug("[SpeakManager] BFA {} actor={:08X} result={} handle={} "
-                          "status_valid={} generation={} playback={} lifecycle={} owner={} audio={:.3f}s position={:.3f}s",
-                          operation, facialActorId, FacialAnimationBridge::ResultName(result),
-                          status.handle, facialLine.HasStatus(), status.generation, status.playback,
-                          FacialAnimationBridge::ResultName(status.result),
-                          status.face_owned, status.audio_seconds, status.position_seconds);
+        const auto event = faceToken->event.load();
+        if (force || result != lastFacialCode || event != lastFacialEvent) {
+            logger::debug("[SpeakManager] BFA {} actor={:08X} result={} handle={} event={} animating={}",
+                operation, facialActorId, FacialAnimationBridge::ResultName(result),
+                facialLine.Handle(), event, faceToken->animated.load());
         }
-        lastFacialCode = result;
-        lastFacialGeneration = status.generation; lastFacialPlayback = status.playback;
+        lastFacialCode = result; lastFacialEvent = event;
     };
 
     _dap_phase("before_LoadWAV");

@@ -1,52 +1,16 @@
 #pragma once
-
 #include "BFA_API.h"
-
 #ifdef _WIN32
 #include <Windows.h>
 #endif
-
 #include <atomic>
-#include <cstddef>
-#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string_view>
-
+#include <unordered_map>
 namespace FacialAnimationBridge {
-
-// CHIM uses FaceGen expression indices; BFA expects dialogue emotion indices.
-inline BFA_Emotion MakeMood(std::string_view expression)
-{
-    BFA_Emotion mood{};
-    mood.version = BFA_API_VERSION;
-    mood.size = sizeof(mood);
-    mood.skyrim_value = 90;
-    mood.gain = 1.0f;
-    if (expression == "DialogueAnger" || expression == "MoodAnger" || expression == "CombatAnger") {
-        mood.skyrim_type = 1;
-    } else if (expression == "DialogueDisgusted" || expression == "MoodDisgusted") {
-        mood.skyrim_type = 2;
-    } else if (expression == "DialogueFear" || expression == "MoodFear") {
-        mood.skyrim_type = 3;
-    } else if (expression == "DialogueSad" || expression == "MoodSad") {
-        mood.skyrim_type = 4;
-    } else if (expression == "DialogueHappy" || expression == "MoodHappy") {
-        mood.skyrim_type = 5;
-    } else if (expression == "DialogueSurprise" || expression == "MoodSurprise") {
-        mood.skyrim_type = 6;
-    } else if (expression == "DialoguePuzzled" || expression == "MoodPuzzled") {
-        mood.skyrim_type = 7;
-    } else {
-        mood.skyrim_value = 0;
-        mood.gain = 0.0f;
-    }
-    return mood;
-}
-
-inline bool Accepted(BFA_Result result)
-{
-    return result == BFA_ResultOK || result == BFA_ResultPending ||
-           result == BFA_ResultNoChange;
+inline bool Accepted(BFA_Result r) {
+    return r == BFA_ResultOK || r == BFA_ResultPending || r == BFA_ResultNoChange;
 }
 inline const char* ResultName(std::uint32_t code)
 {
@@ -54,7 +18,6 @@ inline const char* ResultName(std::uint32_t code)
     case BFA_ResultOK: return "ok";
     case BFA_ResultPending: return "pending";
     case BFA_ResultNoChange: return "no-change";
-    case BFA_ResultAlreadyStopped: return "already-stopped";
     case BFA_ResultInvalidArgument: return "invalid-argument";
     case BFA_ResultInvalidHandle: return "invalid-handle";
     case BFA_ResultInvalidState: return "invalid-state";
@@ -68,169 +31,151 @@ inline const char* ResultName(std::uint32_t code)
     case BFA_ResultHeadMapFailed: return "head-map-failed";
     case BFA_ResultModelNotLoaded: return "model-not-loaded";
     case BFA_ResultNoDevice: return "no-device";
-    case BFA_ResultSuppressed: return "suppressed";
     case BFA_ResultUnsupportedRuntime: return "unsupported-runtime";
     case BFA_ResultAudioFailed: return "audio-failed";
     case BFA_ResultNotInDialogue: return "not-in-dialogue";
     case BFA_ResultInternalError: return "internal-error";
     case BFA_ResultInferenceFailed: return "inference-failed";
     case BFA_ResultCancelled: return "cancelled";
+    case BFA_ResultTakenByOtherLine: return "taken-by-other-line";
+    case BFA_ResultExpired: return "expired";
+    case BFA_ResultCapacity: return "capacity";
     default: return "unknown";
     }
 }
-inline bool IsCompatible(const BFA_Interface* api)
-{
-    return api && api->version == BFA_API_VERSION && api->size >= sizeof(BFA_Interface) &&
-           api->Prepare && api->Start && api->Pause && api->Resume && api->Seek &&
-           api->Stop && api->SetMood && api->Owner && api->GetStatus && api->ReleaseHandle;
+
+inline BFA_Emotion MakeMood(std::string_view expression) {
+    BFA_Emotion mood{};
+    mood.version = BFA_API_VERSION; mood.size = sizeof mood;
+    if (expression.find("Anger") != expression.npos) mood.channels[BFA_kAnger] = 1;
+    else if (expression.find("Disgust") != expression.npos) mood.channels[BFA_kDisgust] = 1;
+    else if (expression.find("Fear") != expression.npos) mood.channels[BFA_kFear] = 1;
+    else if (expression.find("Sad") != expression.npos) mood.channels[BFA_kSadness] = 1;
+    else if (expression.find("Happy") != expression.npos) mood.channels[BFA_kJoy] = 1;
+    else if (expression.find("Surprise") != expression.npos) mood.channels[BFA_kAmazement] = 1;
+    else if (expression.find("Puzzled") != expression.npos) mood.channels[BFA_kAmazement] = .4f;
+    return mood;
+}
+inline bool IsCompatible(const BFA_Interface* api) {
+    return api && api->version == BFA_API_VERSION && api->size >= sizeof(*api) &&
+        api->Prepare && api->Start && api->Pause && api->Resume && api->Seek &&
+        api->Stop && api->EndUtterance && api->RegisterListener && api->SetMood;
+}
+struct FaceToken {
+    std::uint32_t actor = 0;
+    std::atomic<bool> active{true}, animated{false}, terminal{false};
+    std::atomic<std::uint32_t> event{UINT32_MAX}, result{BFA_ResultPending};
+    mutable std::atomic<unsigned> fallbackChecks{0}, blockedChecks{0};
+    bool CanWrite() const;
+};
+// Process-lifetime callback context; tokens are retained until cleanup completes and removed
+// on terminal events (or rejected intake). Callbacks never call back into BFA.
+struct Events {
+    std::mutex mutex, registration;
+    std::unordered_map<std::uint64_t, std::shared_ptr<FaceToken>> tokens;
+    const BFA_Interface* api = nullptr;
+    std::uint64_t listener = 0;
+};
+inline Events& State() { static auto* state = new Events; return *state; }
+inline void OnEvent(const BFA_Event* ev, void*) {
+    if (!ev || ev->version != BFA_API_VERSION || ev->size < sizeof(*ev)) return;
+    auto& state = State(); std::lock_guard<std::mutex> guard(state.mutex);
+    auto it = state.tokens.find(ev->utterance_id);
+    if (it == state.tokens.end()) return;
+    const auto token = it->second;
+    if (!token) { state.tokens.erase(it); return; }
+    if (token->terminal || ev->speaker_form_id != token->actor) return;
+    if (ev->event > BFA_kExpired) return;
+    token->event = ev->event;
+    token->result = ev->event == BFA_kEnded ? BFA_ResultOK : ev->reason;
+    token->animated = ev->event == BFA_kStarted;
+    if (ev->event != BFA_kStarted) {
+        token->terminal = true; state.tokens.erase(it);
+    }
+}
+inline bool Listen(const BFA_Interface* api) {
+    if (!IsCompatible(api)) return false;
+    auto& state = State(); std::lock_guard<std::mutex> guard(state.registration);
+    if (state.api == api && state.listener) return true;
+    BFA_Result result;
+    auto id = api->RegisterListener(OnEvent, nullptr, &result);
+    if (!id || result != BFA_ResultOK) return false;
+    state.api = api; state.listener = id; return true;
+}
+inline bool CanWriteActor(std::uint32_t actor) {
+    auto& state = State(); std::lock_guard<std::mutex> guard(state.mutex);
+    for (auto it = state.tokens.begin(); it != state.tokens.end(); ) {
+        const auto token = it->second;
+        if (!token) { it = state.tokens.erase(it); continue; }
+        if (token->actor == actor && token->animated) return false;
+        ++it;
+    }
+    return true;
+}
+inline bool FaceToken::CanWrite() const {
+    const bool allowed = active && CanWriteActor(actor);
+    if (allowed) ++fallbackChecks; else ++blockedChecks;
+    return allowed;
 }
 #ifdef _WIN32
-inline const BFA_Interface* Discover()
-{
-    const auto module = GetModuleHandleA("BetterFacialAnimations.dll");
-    const auto query = module ? reinterpret_cast<BFA_QueryInterfaceFn>(
-        GetProcAddress(module, "BFA_QueryInterface")) : nullptr;
-    const auto* api = query ? query(BFA_API_VERSION) : nullptr;
+inline const BFA_Interface* Discover() {
+    auto module = GetModuleHandleA("BetterFacialAnimations.dll");
+    auto query = module ? reinterpret_cast<BFA_QueryInterfaceFn>(GetProcAddress(module, "BFA_QueryInterface")) : nullptr;
+    auto api = query ? query(BFA_API_VERSION) : nullptr;
     return IsCompatible(api) ? api : nullptr;
 }
-inline bool CanWriteActor(std::uint32_t actor)
-{
-    const auto* api = Discover();
-    return !api || api->Owner(actor) == BFA_kOwnerEngine;
-}
 #endif
-
-// Every queued facial task checks this at execution, not when queued. Owner is
-// an instantaneous snapshot, not a cross-plugin write lease or callback gate.
-struct FaceToken {
-    const BFA_Interface* api = nullptr;
-    std::uint32_t actor = 0;
-    std::atomic<bool> active{true};
-    mutable std::atomic<unsigned> fallbackChecks{0}, blockedChecks{0};
-    bool CanWrite() const
-    {
-        const bool allowed = active.load() &&
-            (!api || api->Owner(actor) == BFA_kOwnerEngine);
-        if (allowed) ++fallbackChecks;
-        else ++blockedChecks;
-        return allowed;
-    }
-};
-
 class Line {
 public:
-    Line(const BFA_Interface* api, std::uint32_t actor) : token(std::make_shared<FaceToken>())
-    {
-        token->api = IsCompatible(api) ? api : nullptr;
+    Line(const BFA_Interface* source, std::uint32_t actor) : token(std::make_shared<FaceToken>()) {
         token->actor = actor;
+        api = Listen(source) ? source : nullptr;
+        static std::atomic<std::uint64_t> next{0};
+        utterance = 0x4348494D00000000ull | ++next;
+        std::lock_guard<std::mutex> guard(State().mutex);
+        State().tokens[utterance] = token;
     }
     Line(const Line&) = delete;
     Line& operator=(const Line&) = delete;
-    ~Line() { Stop(BFA_kAborted); }
-
-    BFA_Result Prepare(const void* audio, std::uint32_t bytes, const char* text,
-                       std::string_view expression)
-    {
-        if (!token->api) return last = {BFA_ResultUnavailable};
-        if (!token->active || handle) return last = {BFA_ResultInvalidState};
-        BFA_Line line{};
-        line.version = BFA_API_VERSION;
-        line.size = sizeof(line);
-        static std::atomic<std::uint64_t> nextUtterance{0};
-        line.utterance_id = 0x4348494D00000000ull | ++nextUtterance;
-        line.flags = BFA_kLastSegment; // each downloaded clip is independently delimited
-        line.speaker_form_id = token->actor;
-        line.audio.version = BFA_API_VERSION;
-        line.audio.size = sizeof(line.audio);
-        line.audio.format = BFA_kContainer;
-        line.audio.data = audio;
-        line.audio.bytes = bytes;
-        line.emotion = MakeMood(expression);
-        line.text = text;
+    ~Line() {
+        Stop(BFA_kAborted);
+        std::lock_guard<std::mutex> guard(State().mutex);
+        if (!submitted) State().tokens.erase(utterance);
+    }
+    BFA_Result Prepare(const void* audio, std::uint32_t bytes, const char*, std::string_view expression) {
+        if (!api) return last = BFA_ResultUnavailable;
+        if (handle || !token->active) return last = BFA_ResultInvalidState;
         if (!expression.empty()) {
-            const auto moodResult = token->api->SetMood(token->actor, &line.emotion, 0);
-            if (!Accepted(moodResult)) return last = moodResult;
+            auto mood = MakeMood(expression);
+            last = api->SetMood(token->actor, &mood, 0);
+            if (!Accepted(last)) return last;
         }
-        // An immediate failure may still return a handle: retain and inspect it.
-        return Observe(token->api->Prepare(&line, &handle));
+        BFA_Line line{BFA_API_VERSION, sizeof(BFA_Line), utterance, 0, token->actor, audio, bytes};
+        handle = api->Prepare(&line, &last);
+        submitted = handle != 0;
+        return LastResult();
     }
-    BFA_Result Start(double position)
-    {
-        if (!handle) return UnavailableHandle();
-        if (Terminal()) return last = snapshot.playback == BFA_PlaybackEnded
-            ? BFA_Result{BFA_ResultAlreadyStopped} : snapshot.result;
-        return Observe(token->api->Start(handle, position));
-    }
-    BFA_Result Pause()
-    {
-        return handle ? Observe(token->api->Pause(handle)) : UnavailableHandle();
-    }
-    BFA_Result Resume(double position)
-    {
-        return handle ? Observe(token->api->Resume(handle, position)) : UnavailableHandle();
-    }
-    BFA_Result Seek(double position)
-    {
-        if (!handle) return UnavailableHandle();
-        if (Terminal()) return last = snapshot.playback == BFA_PlaybackEnded
-            ? BFA_Result{BFA_ResultAlreadyStopped} : snapshot.result;
-        return Observe(token->api->Seek(handle, position));
-    }
-    BFA_Result Stop(std::uint32_t reason)
-    {
-        token->active.store(false);
-        if (!handle) return last; // destructor must not issue a duplicate stop
-        auto result = Observe(token->api->Stop(handle, reason));
-        if (Terminal()) {
-            // Copy terminal reason before releasing the record. Pending cleanup
-            // retains it in BFA's bounded terminal store; never wait on game work.
-            const auto released = token->api->ReleaseHandle(handle);
-            if (!Accepted(released)) result = last = released;
-        }
-        handle = 0;
-        return result;
-    }
-    bool HasStatus() const { return hasStatus; }
-    const BFA_LineStatus& Snapshot() const { return snapshot; }
-    BFA_Result LastResult() const { return last; }
-    std::shared_ptr<FaceToken> GetToken() const { return token; }
-
-private:
-    bool Terminal() const
-    {
-        return hasStatus && snapshot.playback >= BFA_PlaybackEnded;
-    }
-    BFA_Result UnavailableHandle()
-    {
-        // Keep the original rejection visible on later clock calls.
-        if (!Accepted(last)) return last;
-        return last = {BFA_ResultInvalidHandle};
-    }
-    BFA_Result Observe(BFA_Result operation)
-    {
-        last = operation;
-        if (!handle) return last;
-        BFA_LineStatus status{};
-        status.version = BFA_API_VERSION;
-        status.size = sizeof(status);
-        const auto queried = token->api->GetStatus(handle, &status);
-        if (queried == BFA_ResultOK) {
-            snapshot = status;
-            hasStatus = true;
-            // Surface asynchronous failure even if this clock update was accepted.
-            if (status.playback == BFA_PlaybackFailed || status.playback == BFA_PlaybackDeclined)
-                last = status.result;
-        } else if (queried == BFA_ResultInvalidHandle) {
+    BFA_Result Start(double t) { return Ready() ? last = api->Start(handle, t) : LastResult(); }
+    BFA_Result Pause() { return Ready() ? last = api->Pause(handle) : LastResult(); }
+    BFA_Result Resume(double t) { return Ready() ? last = api->Resume(handle, t) : LastResult(); }
+    BFA_Result Seek(double t) { return Ready() ? last = api->Seek(handle, t) : LastResult(); }
+    BFA_Result Stop(std::uint32_t reason) {
+        if (!token->active.exchange(false)) return LastResult();
+        if (api && handle) {
+            last = api->EndUtterance(utterance, reason);
             handle = 0;
-            last = queried;
         }
-        return last;
+        return LastResult();
     }
+    BFA_Result LastResult() const { return token->terminal ? token->result.load() : last; }
+    std::uint64_t Handle() const { return handle; }
+    std::shared_ptr<FaceToken> GetToken() const { return token; }
+private:
+    bool Ready() const { return api && handle && token->active && !token->terminal; }
+    const BFA_Interface* api = nullptr;
     std::shared_ptr<FaceToken> token;
-    std::uint64_t handle = 0;
-    BFA_Result last{BFA_ResultUnavailable};
-    BFA_LineStatus snapshot{};
-    bool hasStatus = false;
+    bool submitted = false;
+    std::uint64_t utterance = 0, handle = 0;
+    BFA_Result last = BFA_ResultUnavailable;
 };
-
 } // namespace FacialAnimationBridge
