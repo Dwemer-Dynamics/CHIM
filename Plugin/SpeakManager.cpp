@@ -565,6 +565,29 @@ int findExpression(const std::string& key) {
     }
 }
 
+// The engine's expression override for a line without BFA animation. The
+// engine applies it in one frame, so it only runs when BFA is not animating
+// the actor's face (CanWriteActor): BFA gets the line's mood with the audio.
+static void ApplyExpressionOverride(RE::Actor* actor, const std::string& expression) {
+    if (!actor || expression.empty()) return;
+    const int index = findExpression(expression);
+    if (index < 0) {
+        logger::info("Failed to get expression: {}", expression);
+        return;
+    }
+    if (!FacialAnimationBridge::CanWriteActor(actor->GetFormID())) return;
+    auto fgen = actor->GetFaceGenAnimationData();
+    if (!fgen) {
+        logger::warn("[SpeakManager] Failed to get FaceGen animation data for expression override");
+        return;
+    }
+    RE::BSSpinLockGuard locker(fgen->lock);
+    logger::info("Expression set to {}", expression);
+    fgen->ClearExpressionOverride();
+    fgen->SetExpressionOverride(index, 0.9f);
+    fgen->exprOverride = true;
+}
+
 static bool EqualsIgnoreCase(const std::string& left, const std::string& right)
 {
     if (left.size() != right.size()) {
@@ -1697,6 +1720,14 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         }
         lastFacialCode = result; lastFacialEvent = event;
     };
+    // The line's expression: BFA's mood while it animates the line, else the
+    // engine's override, once, as soon as BFA has declined (or is absent).
+    bool expressionApplied = isNarrator || expression.empty();
+    const auto applyFallbackExpression = [&] {
+        if (expressionApplied || FacialAnimationBridge::Accepted(facialLine.LastResult())) return;
+        expressionApplied = true;
+        ApplyExpressionOverride(speakerActorPointer, expression);
+    };
 
     _dap_phase("before_LoadWAV");
 
@@ -1706,6 +1737,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         const auto facialReason = facialLine.Prepare(buffer, localContentLength, text.c_str(), expression);
         reportFacial("prepare", facialReason);
+        applyFallbackExpression();
         if (enable3DAudioPlayback) {
             _dap_phase("after_LoadWAV_ok");
             am.setMuffledPlayback(runtimeMuffleFilter);
@@ -2063,6 +2095,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             reportFacial("seek", facialLine.Seek(am.GetElapsedTimeSeconds()), false);
             lastFacialSync = facialSyncTime;
         }
+        applyFallbackExpression();  // BFA declined the line after accepting it
         //elapsedSeconds = am.GetElapsedTimeSeconds();  // New. More accurate elapsed time from audio manager, in case of
         //  pauses or other issues. Use only when real audio is being played, otherwise it can cause issues with timing
         //   of text segments. DXinitOK= true when real audio is being played, false when faking with timers.
@@ -3283,29 +3316,11 @@ void SpeakManager::process(AIAgent *agent) {
 
         int res = 0;
 
-        if (!SM::trim(scriptLine.expression).empty() && !agent->isNarrator() &&
-            FacialAnimationBridge::CanWriteActor(npc->GetFormID())) {
-            int expression = findExpression(SM::trim(scriptLine.expression));
-            if (expression > -1) {
-                auto fgen = npc->GetFaceGenAnimationData();
-                if (fgen) {
-                    logger::debug("[SPEAKERMANAGER {}] Attempting to acquire FaceGen lock for expression override",tid);
-                    RE::BSSpinLockGuard locker(fgen->lock);
-                    logger::debug("[SPEAKERMANAGER {}] FaceGen lock acquired for expression override",tid);
-                    logger::info("Expression set to {}", SM::trim(scriptLine.expression));
-                    fgen->ClearExpressionOverride();
-                    fgen->SetExpressionOverride(expression, 0.9f);
-                    fgen->exprOverride = true;
-                    logger::debug("[SPEAKERMANAGER {}] FaceGen lock will be released",tid);
-                } else {
-                    logger::warn("[SPEAKERMANAGER {}] Failed to get FaceGen animation data for expression override",tid);
-                }
-            } else {
-                logger::info("Failed to get expression: {}", SM::trim(scriptLine.expression));
-            }
-            
-        }
-
+        // A spoken line's expression is applied in DownloadAndPlay: by BFA when
+        // it animates the line (its mood), else as the engine's override. A
+        // line with nothing to speak only has the override.
+        if (SM::trim(scriptLine.subtitle).empty() && !agent->isNarrator())
+            ApplyExpressionOverride(npc, SM::trim(scriptLine.expression));
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
             if (scriptLine.actor != agent->getActorName()) {  // Character change
