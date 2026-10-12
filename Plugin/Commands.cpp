@@ -2154,15 +2154,39 @@ void parseRoleCommand(std::string rawCommand) {
             }
         }
     } else if (command.contains("SmartWait")) {
-        // Call the native Papyrus function Game.ShowTrainingMenu
-        auto vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
-        if (vm) {
-            auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-            auto args = RE::MakeFunctionArguments();
-            vm->DispatchStaticCall("AIAgentAIMind", "WaitLaunch", args, callback);
-        } else {
-            logger::error("[SmartWait] Could not get VirtualMachine");
-        }
+        // Open the native Wait menu on the main thread; a simulated Wait key tap is not reliably handled.
+        SKSE::GetTaskInterface()->AddTask([interactionEpoch = PrismaUIBridge::GetDialogueStopGeneration()]() {
+            if (!ChimInteraction::Enabled() || interactionEpoch != PrismaUIBridge::GetDialogueStopGeneration()) return;
+
+            auto player = RE::PlayerCharacter::GetSingleton();
+            auto ui = RE::UI::GetSingleton();
+            if (!player || !ui) {
+                logger::error("[SmartWait] Refused: player or UI unavailable");
+                return;
+            }
+            if (ui->IsMenuOpen(RE::SleepWaitMenu::MENU_NAME)) {
+                logger::info("[SmartWait] Wait menu already open");
+                return;
+            }
+
+            auto controls = RE::ControlMap::GetSingleton();
+            if (ui->GameIsPaused() || PrismaUIBridge::IsAnyHotkeyPanelFocused() ||
+                ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || ui->IsMenuOpen(RE::Console::MENU_NAME) ||
+                ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || (controls && !controls->IsMenuControlsEnabled())) {
+                logger::info("[SmartWait] Refused: menu open or menu controls disabled");
+                RE::DebugNotification("[CHIM] Cannot wait right now.");
+                return;
+            }
+
+            // Native wait eligibility check; on refusal it shows the matching vanilla HUD message itself.
+            if (!player->CanSleepWait(nullptr)) {
+                logger::info("[SmartWait] Refused by native wait restrictions");
+                return;
+            }
+
+            RE::SleepWaitMenu::ToggleOpenMenu(false);
+            logger::info("[SmartWait] Requested native Wait menu");
+        });
     }
 
     responsePop("rolecommand");
