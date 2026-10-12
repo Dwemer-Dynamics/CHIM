@@ -511,7 +511,7 @@ test('Director ignores saved moods without blocking or clearing the next normal 
     for (const mood of ['', 'happy', 'custom']) {
         for (const custom of ['', 'cheerfully']) {
             const context = {
-                window: { closeFocusChatbox() {} }, currentMode: 'DIRECTOR',
+                window: { closeFocusChatbox() {} }, currentMode: 'DIRECTOR', pendingModeSubmission: null,
                 focusInput: { value: 'Let Lydia answer Serana' }, sent: [], invalid: false,
                 detectSymbolMode: (message) => message.startsWith('>') ? { mode: 'DIRECTOR' } : null,
                 isCustomPlayerMoodSelected: () => mood === 'custom',
@@ -535,6 +535,53 @@ test('Director ignores saved moods without blocking or clearing the next normal 
             else assert.deepEqual(context.sent.pop(), ['Hello', mood === 'custom' ? '' : mood, mood === 'custom' ? custom : '']);
         }
     }
+});
+
+test('Smart Wait sends one narrator scene without a target or mood and keeps it until native accepts', () => {
+    const send = script.match(/window\.sendFocusMessage = function\(\) \{[\s\S]*?\n    \};/)[0];
+    const finish = script.match(/function finishModeSubmission\(result, failureMessage\) \{[\s\S]*?\n    \}/)[0];
+    const callback = script.match(/window\.onSmartWaitSubmission = function\(result\) \{[\s\S]*?\n    \};/)[0];
+    const scene = 'We rest by the fire until the storm passes';
+    const context = {
+        currentMode: 'SMARTWAIT', pendingModeSubmission: null, commands: [], sent: [], system: [], closed: 0,
+        currentTargetFormId: 0, currentTargetName: '', currentTargetIsNarrator: false, currentTargetOverrideMode: 'everyone',
+        focusInput: { value: scene },
+        detectSymbolMode: (message) => message.startsWith('@') ? { mode: 'NARRATOR' } : null,
+        isCustomPlayerMoodSelected: () => false, getCustomPlayerMoodText: () => '', getSelectedPlayerMood: () => 'happy',
+        setCustomPlayerMoodInvalid() {}, renderModeIndicator() {},
+        sendMessageToBridge(...args) { context.sent.push(args); },
+        pushChatboxSystemMessage(message) { context.system.push(message); }
+    };
+    context.window = {
+        closeFocusChatbox() { context.closed += 1; },
+        chimChatboxCommand(command) { context.commands.push(command); }
+    };
+    require('node:vm').runInNewContext(`${send}\n${finish}\n${callback}`, context);
+
+    // No NPC is required, the mood is never attached, and a pending scene blocks duplicate sends.
+    context.window.sendFocusMessage();
+    context.window.sendFocusMessage();
+    assert.deepEqual(context.commands, ['send_smartwait|' + JSON.stringify({ message: scene })]);
+    assert.deepEqual(context.sent, []);
+
+    context.window.onSmartWaitSubmission({ message: scene, accepted: false });
+    assert.equal(context.focusInput.value, scene);
+    assert.equal(context.closed, 0);
+    assert.equal(context.system.length, 1);
+
+    context.window.sendFocusMessage();
+    context.window.onSmartWaitSubmission({ message: scene, accepted: true });
+    assert.equal(context.focusInput.value, '');
+    assert.equal(context.closed, 1);
+
+    // Existing shortcuts still override the saved Smart Wait selection.
+    context.focusInput.value = '@ Describe the camp';
+    context.window.sendFocusMessage();
+    assert.deepEqual(context.sent.pop(), ['@ Describe the camp', 'happy', '']);
+
+    assert.match(html, /data-action="mode_hypnosis"[^>]*>Hypnosis<\/button>\s*<button class="chatbox-option-tile" type="button" role="option" data-action="mode_smartwait"[^>]*>Smart Wait<\/button>/);
+    assert.match(overlayScript, /'SMARTWAIT': \{ label: 'Smart Wait', class: 'director' \}/);
+    assert.match(bridge, /else if \(actionId == "mode_smartwait"\) modeStr = "SMARTWAIT";/);
 });
 
 test('sends the custom mood as JSON so pipes in player text stay intact', () => {

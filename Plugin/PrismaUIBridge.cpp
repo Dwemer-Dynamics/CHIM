@@ -1826,7 +1826,7 @@ R"CHIM(
 
         static const std::vector<std::string> validModes{
             "STANDARD", "WHISPER", "CLOSE", "SHOUT", "NARRATOR",
-            "DIRECTOR", "CHEATMODE", "HYPNOSIS", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
+            "DIRECTOR", "CHEATMODE", "HYPNOSIS", "SMARTWAIT", "AUTOCHAT", "INJECTION_LOG", "INJECTION_CHAT"
         };
         if (std::find(validModes.begin(), validModes.end(), normalizedMode) == validModes.end()) {
             logger::warn("[{}] Ignoring unknown CHIM mode '{}'", sourceTag, mode);
@@ -1881,6 +1881,7 @@ R"CHIM(
         else if (actionId == "mode_director") modeStr = "DIRECTOR";
         else if (actionId == "mode_cheat") modeStr = "CHEATMODE";
         else if (actionId == "mode_hypnosis") modeStr = "HYPNOSIS";
+        else if (actionId == "mode_smartwait") modeStr = "SMARTWAIT";
         else if (actionId == "mode_autochat") modeStr = "AUTOCHAT";
         else if (actionId == "mode_inject_log") modeStr = "INJECTION_LOG";
         else if (actionId == "mode_inject_chat") modeStr = "INJECTION_CHAT";
@@ -7425,6 +7426,18 @@ R"CHIM(
             const json result{{"message", message}, {"accepted", accepted}};
             const std::string callback = "window.onHypnosisSubmission && window.onHypnosisSubmission(" + result.dump() + ")";
             g_prismaUI->Invoke(g_chatboxView, callback.c_str(), nullptr);
+        } else if (cmd.starts_with("send_smartwait|")) {
+            const json payload = json::parse(cmd.substr(15), nullptr, false);
+            if (!payload.is_object() || !payload.contains("message") || !payload["message"].is_string()) {
+                return;
+            }
+            const std::string message = payload["message"].get<std::string>();
+            const bool accepted = g_chatboxCurrentMode == "SMARTWAIT" &&
+                !ChatboxModePolicy::ParseSubmission(message, "SMARTWAIT").symbolOverride &&
+                SendChatboxMessage(message, "", "");
+            const json result{{"message", message}, {"accepted", accepted}};
+            const std::string callback = "window.onSmartWaitSubmission && window.onSmartWaitSubmission(" + result.dump() + ")";
+            g_prismaUI->Invoke(g_chatboxView, callback.c_str(), nullptr);
         } else if (cmd.starts_with("send_custom_mood|")) {
             const json payload = json::parse(cmd.substr(17), nullptr, false);
             if (payload.is_discarded() || !payload.is_object() ||
@@ -8062,6 +8075,10 @@ R"CHIM(
             }
             hypnosisTargetName = target->name;
         }
+        if (submission.mode == "SMARTWAIT" && !AIAgentManager::getInstance().getAgentByName(NARRATOR_NAME)) {
+            RE::DebugNotification("[CHIM] Smart Wait needs the Narrator. Try again once CHIM has loaded.");
+            return false;
+        }
 
         logger::info("[PrismaUIBridge] Sending chatbox message with {} routing{}: {}",
                      submission.mode,
@@ -8076,7 +8093,7 @@ R"CHIM(
         // Push to chatbox UI with actual player name
         // This will show the single message with the correct player name. Mood is routing metadata
         // only, so the optimistic row stays exactly what the player submitted.
-        if (submission.mode != "HYPNOSIS") {
+        if (submission.mode != "HYPNOSIS" && submission.mode != "SMARTWAIT") {
             PushChatboxMessage(playerName, message, "", "player");
         }
         
