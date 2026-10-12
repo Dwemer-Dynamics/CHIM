@@ -3034,7 +3034,8 @@ private:
                                             if (agent->getActor()) {
                                                 if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
                                                     auto fgen = agent->getActor()->GetFaceGenAnimationData();
-                                                    if (fgen && FacialAnimationBridge::CanWriteActor(agent->getActor()->GetFormID())) {
+                                                    if (fgen && FacialAnimationBridge::CanWriteActor(
+                                                                    agent->getActor()->GetFormID())) {
                                                         RE::BSSpinLockGuard locker(fgen->lock);
 
                                                         fgen->ClearExpressionOverride();

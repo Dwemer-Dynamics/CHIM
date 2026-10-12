@@ -1716,11 +1716,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         if (!facialApi) return;
         const auto event = faceToken->event.load();
         if (force || result != lastFacialCode || event != lastFacialEvent) {
-            logger::debug("[SpeakManager] BFA {} actor={:08X} result={} handle={} event={} animating={}",
-                operation, facialActorId, FacialAnimationBridge::ResultName(result),
-                facialLine.Handle(), event, faceToken->animated.load());
+            logger::debug("[SpeakManager] BFA {} actor={:08X} result={} handle={} event={} animating={}", operation,
+                          facialActorId, FacialAnimationBridge::ResultName(result), facialLine.Handle(), event,
+                          faceToken->animated.load());
         }
-        lastFacialCode = result; lastFacialEvent = event;
+        lastFacialCode = result;
+        lastFacialEvent = event;
     };
     // The line's expression: BFA's mood while it animates the line, else the
     // engine's override, once, as soon as BFA has declined (or is absent).
@@ -2091,7 +2092,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
         auto currentTime = std::chrono::steady_clock::now() - startTime;
         double elapsedSeconds = std::chrono::duration<double>(currentTime).count();
-        
+
         const auto facialSyncTime = std::chrono::steady_clock::now();
         if (DXinitOK && facialSyncTime - lastFacialSync >= std::chrono::milliseconds(50)) {
             reportFacial("seek", facialLine.Seek(am.GetElapsedTimeSeconds()), false);
@@ -2194,24 +2195,24 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                         auto actorHandle = speakerActorPointer->GetHandle();
                         const int queuedLastViseme = lastViseme;
                         const float queuedIntensity = intensity;
-                        taskInterface->AddTask(
-                            [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken, fallbackActive]() {
-                                if (!fallbackActive->load() || !faceToken->CanWrite()) return;
-                                auto* actor = actorHandle.get().get();
-                                if (!actor || !actor->Is3DLoaded()) {
-                                    return;
-                                }
+                        taskInterface->AddTask([actorHandle, queuedLastViseme, visemeCode, queuedIntensity,
+                                                intensityStepDecal, faceToken, fallbackActive]() {
+                            if (!fallbackActive->load() || !faceToken->CanWrite()) return;
+                            auto* actor = actorHandle.get().get();
+                            if (!actor || !actor->Is3DLoaded()) {
+                                return;
+                            }
 
-                                auto deferredFgen = actor->GetFaceGenAnimationData();
-                                if (!deferredFgen) {
-                                    return;
-                                }
+                            auto deferredFgen = actor->GetFaceGenAnimationData();
+                            if (!deferredFgen) {
+                                return;
+                            }
 
-                                actor->GetActorRuntimeData().voiceTimer = 10.0f;
-                                RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                 intensityStepDecal);
-                            });
+                            actor->GetActorRuntimeData().voiceTimer = 10.0f;
+                            RE::BSSpinLockGuard locker(deferredFgen->lock);
+                            ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                             intensityStepDecal);
+                        });
                     } else {
                         setPhase("vr_publish_viseme_state");
                         PublishVrVisemeFrame(speakerActorPointer, lastViseme, visemeCode, intensity, intensityStepDecal,
@@ -2282,26 +2283,25 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             const float queuedIntensity = intensity;
                             
                             auto now = std::chrono::steady_clock::now();
-                            
-                                taskInterface->AddTask(
-                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal, faceToken, fallbackActive]() {
-                                        if (!fallbackActive->load() || !faceToken->CanWrite()) return;
-                                        auto* actor = actorHandle.get().get();
-                                        if (!actor || !actor->Is3DLoaded()) {
-                                            return;
-                                        }
 
-                                        auto deferredFgen = actor->GetFaceGenAnimationData();
-                                        if (!deferredFgen) {
-                                            return;
-                                        }
+                            taskInterface->AddTask([actorHandle, queuedLastViseme, visemeCode, queuedIntensity,
+                                                    intensityStepDecal, faceToken, fallbackActive]() {
+                                if (!fallbackActive->load() || !faceToken->CanWrite()) return;
+                                auto* actor = actorHandle.get().get();
+                                if (!actor || !actor->Is3DLoaded()) {
+                                    return;
+                                }
 
-                                        RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                        ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                         intensityStepDecal);
-                                    });
-                            
-                            
+                                auto deferredFgen = actor->GetFaceGenAnimationData();
+                                if (!deferredFgen) {
+                                    return;
+                                }
+
+                                RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                 intensityStepDecal);
+                            });
+
                         } else {
                             logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                         }
@@ -2386,8 +2386,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
 
-    if (facialApi) logger::debug("[SpeakManager] BFA face checks: fallback={} blocked={}",
-        faceToken->fallbackChecks.load(), faceToken->blockedChecks.load());
+    if (facialApi)
+        logger::debug("[SpeakManager] BFA face checks: fallback={} blocked={}", faceToken->fallbackChecks.load(),
+                      faceToken->blockedChecks.load());
     reportFacial("stop", facialLine.Stop(hasBeenAborted || lastLost ? BFA_kAborted : BFA_kCompleted));
     if (facialApi && (hasBeenAborted || lastLost)) FacialAnimationBridge::EndReply(facialActorId, BFA_kAborted);
 
@@ -2418,9 +2419,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                    // This is a bit of a hack, but it works for now. In the future, we may want to refactor
                    // this to be more elegant.
     return 0;
-
 }
-
 
 namespace SM {
     std::string ltrim(const std::string& s) {
@@ -4137,7 +4136,7 @@ void SpeakManager::processPlayer() {
 
         auto fgen = player->GetFaceGenAnimationData();
 
-        if (fgen && res!=3 && FacialAnimationBridge::CanWriteActor(player->GetFormID())) {  // Player actually talked
+        if (fgen && res != 3 && FacialAnimationBridge::CanWriteActor(player->GetFormID())) {  // Player actually talked
 
             RE::BSSpinLockGuard locker(fgen->lock);
 

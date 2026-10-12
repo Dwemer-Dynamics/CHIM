@@ -3874,11 +3874,11 @@ int Papyrus::isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackI
     return result;
 }
 
-int Papyrus::isBFADetected(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*) {
+int Papyrus::isBFADetected(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                           RE::StaticFunctionTag*) {
     ScopedPapyrusLock lock("isBFADetected");
     return FacialAnimationBridge::Discover() ? 1 : 0;
 }
-
 
 int Papyrus::isUsingFurniture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,RE::Actor *actor) {
     ScopedPapyrusLock lock("isUsingFurniture");
