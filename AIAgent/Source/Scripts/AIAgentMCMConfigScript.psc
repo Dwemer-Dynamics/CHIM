@@ -74,7 +74,7 @@ float		_timeout_int				= 60.0
 int			_toggleAnimation
 bool		_animationstate			= false
 int			_toggleBFADialogue		= -1
-bool		_bfaDialogueState		= true
+bool		_bfaDialogueState		= false
 
 
 int			_toggle1OID_Rereg
@@ -273,7 +273,7 @@ float		_lip_resDefault					= 500.0
 float		_lip_intDefault					= 1.0
 float		_timeout_intDefault				= 30.0
 bool		_animationstateDefault			= false
-bool		_bfaDialogueStateDefault		= true
+bool		_bfaDialogueStateDefault		= false
 bool		_enable3daudioplaybackstateDefault	= false
 bool		_camera_based_audio_stateDefault	= false
 bool		_invertheadingstateDefault		= false

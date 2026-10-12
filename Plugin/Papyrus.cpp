@@ -353,7 +353,7 @@ extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
-std::atomic<bool> GlobalBFADialogue{true};  // animate dialogue faces with Better Facial Animations when present
+std::atomic<bool> GlobalBFADialogue{false};  // animate dialogue faces with Better Facial Animations when present
 bool GlobalForceMono = false;
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
