@@ -206,6 +206,22 @@ int main() {
         Event(BFA_kEnded, BFA_kCompleted, line.Handle());
         Check(CanWriteActor(0x14));
     }
+    // Audio can fail to start after intake. Stop before Start must wait for
+    // the terminal callback, then release fallback even though Ended means OK.
+    {
+        Line line(&api, 0x14);
+        const int startsBefore = starts, stopsBefore = stops;
+        Check(line.Prepare(wav, sizeof wav, "", "DialogueHappy") == BFA_kResultPending);
+        Check(line.Stop(BFA_kAborted) == BFA_kResultOK);
+        Check(starts == startsBefore && stops == stopsBefore + 1 && !CanWriteActor(0x14));
+        Event(BFA_kEnded, BFA_kAborted, line.Handle());
+        Check(line.LastResult() == BFA_kResultOK && CanWriteActor(0x14));
+        line.Seek(.5);
+        line.Stop(BFA_kAborted);
+        Check(stops == stopsBefore + 1);
+        EndReply(0x14, BFA_kAborted);
+    }
+    Check(State().tokens.empty());
     // Failure can arrive during Prepare itself; returning Pending must not
     // close the gate again or lose the terminal result.
     failInline = true;

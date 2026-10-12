@@ -353,7 +353,7 @@ extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
-bool GlobalBFADialogue = true;  // animate dialogue faces with Better Facial Animations when present
+std::atomic<bool> GlobalBFADialogue{true};  // animate dialogue faces with Better Facial Animations when present
 bool GlobalForceMono = false;
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
@@ -2005,7 +2005,7 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
         logger::info("Setting _invertheadingstate to {} ", f_Value);
 
     } else if (code == "_bfa_dialogue") {
-        GlobalBFADialogue = f_Value > 0;
+        GlobalBFADialogue.store(f_Value > 0);
         logger::info("Setting _bfa_dialogue to {} ", f_Value);
 
     } else if (code == "_enable_3d_audio_playback") {
@@ -3064,7 +3064,7 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
         result=GlobalAnimations ? 1 : 0;
 
     } else if (code == "_bfa_dialogue") {
-        result = GlobalBFADialogue ? 1 : 0;
+        result = GlobalBFADialogue.load() ? 1 : 0;
 
     } else if (code == "_enable_3d_audio_playback") {
         result = GlobalEnable3DAudioPlayback ? 1 : 0;

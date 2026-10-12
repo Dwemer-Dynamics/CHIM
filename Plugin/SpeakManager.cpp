@@ -55,7 +55,7 @@ constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
 extern bool GlobalEnable3DAudioPlayback;
-extern bool GlobalBFADialogue;
+extern std::atomic<bool> GlobalBFADialogue;
 extern bool GlobalForceMono;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
@@ -568,24 +568,25 @@ int findExpression(const std::string& key) {
 // The engine's expression override for a line without BFA animation. The
 // engine applies it in one frame, so it only runs when BFA is not animating
 // the actor's face (CanWriteActor): BFA gets the line's mood with the audio.
-static void ApplyExpressionOverride(RE::Actor* actor, const std::string& expression) {
-    if (!actor || expression.empty()) return;
+static bool ApplyExpressionOverride(RE::Actor* actor, const std::string& expression) {
+    if (!actor || expression.empty()) return false;
     const int index = findExpression(expression);
     if (index < 0) {
         logger::info("Failed to get expression: {}", expression);
-        return;
+        return false;
     }
-    if (!FacialAnimationBridge::CanWriteActor(actor->GetFormID())) return;
+    if (!FacialAnimationBridge::CanWriteActor(actor->GetFormID())) return false;
     auto fgen = actor->GetFaceGenAnimationData();
     if (!fgen) {
         logger::warn("[SpeakManager] Failed to get FaceGen animation data for expression override");
-        return;
+        return false;
     }
     RE::BSSpinLockGuard locker(fgen->lock);
     logger::info("Expression set to {}", expression);
     fgen->ClearExpressionOverride();
     fgen->SetExpressionOverride(index, 0.9f);
     fgen->exprOverride = true;
+    return true;
 }
 
 static bool EqualsIgnoreCase(const std::string& left, const std::string& right)
@@ -1703,7 +1704,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     };
 
     const BFA_Interface* facialApi = nullptr;
-    if (!isNarrator && !REL::Module::IsVR() && GlobalBFADialogue) {
+    if (!isNarrator && !REL::Module::IsVR() && GlobalBFADialogue.load()) {
         facialApi = FacialAnimationBridge::Discover();
     }
     FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
@@ -1725,11 +1726,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     };
     // The line's expression: BFA's mood while it animates the line, else the
     // engine's override, once, as soon as BFA has declined (or is absent).
-    bool expressionApplied = isNarrator || expression.empty();
+    bool expressionApplied = isNarrator || expression.empty() || findExpression(expression) < 0;
     const auto applyFallbackExpression = [&] {
-        if (expressionApplied || FacialAnimationBridge::Accepted(facialLine.LastResult())) return;
-        expressionApplied = true;
-        ApplyExpressionOverride(speakerActorPointer, expression);
+        if (expressionApplied || (DXinitOK && FacialAnimationBridge::Accepted(facialLine.LastResult()))) return;
+        expressionApplied = ApplyExpressionOverride(speakerActorPointer, expression);
     };
 
     _dap_phase("before_LoadWAV");
@@ -1768,6 +1768,10 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     if (DXinitOK) {
         const auto facialStart = facialLine.Start(am.GetElapsedTimeSeconds());
         reportFacial("start", facialStart);
+    } else {
+        // Playback failed after Prepare: cancel intake and wait for hand-back
+        // before allowing the timer-based facial fallback to write.
+        reportFacial("audio-failed", facialLine.Stop(BFA_kAborted));
     }
 
     auto endTime = std::chrono::steady_clock::now()+ std::chrono::duration<double>(1);
