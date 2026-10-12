@@ -109,6 +109,33 @@ static std::string TrimSubtitleLogText(const std::string& subtitleText)
     return subtitleText.substr(first, last - first + 1);
 }
 
+// Defensive cap for AI text handed to the native SubtitleManager. A crash report showed a
+// 1000-byte subtitle, an overwritten return address and a register value of 1024, which suggests
+// a native formatting overflow; the exact writer and its limit are unverified. 512 bytes is a
+// conservative mitigation, not a proven engine limit, and cannot guarantee that arbitrary speaker
+// names or subtitle-mod formatting stay in bounds. Chat, history and audio keep the full text.
+constexpr std::size_t kMaxNativeSubtitleBytes = 512;
+
+static std::string LimitNativeSubtitleText(const std::string& subtitleText)
+{
+    if (subtitleText.size() <= kMaxNativeSubtitleBytes) {
+        return subtitleText;
+    }
+
+    constexpr std::string_view kEllipsis = "...";
+    std::size_t cut = kMaxNativeSubtitleBytes - kEllipsis.size();
+    // Back up to the start of a UTF-8 sequence so a multi-byte character is never split.
+    for (int i = 0; i < 3 && cut > 0 && (static_cast<unsigned char>(subtitleText[cut]) & 0xC0) == 0x80; ++i) {
+        --cut;
+    }
+
+    std::string limited = subtitleText.substr(0, cut);
+    const auto last = limited.find_last_not_of(" \t\r\n");
+    limited.resize(last == std::string::npos ? 0 : last + 1);
+    limited += kEllipsis;
+    return limited;
+}
+
 static std::string GetCurrentSubtitleManagerText(RE::SubtitleManager* subtitleManager)
 {
     if (!subtitleManager || subtitleManager->subtitles.empty()) {
@@ -130,9 +157,10 @@ static void PushForcedPlayerSubtitle(RE::SubtitleManager* subtitleManager, RE::P
     toSay.forceDisplay = true;
     toSay.targetDistance = 10;
     toSay.speaker = player->GetHandle();
-    toSay.subtitle = subtitleText;
+    const std::string displayedText = LimitNativeSubtitleText(subtitleText);
+    toSay.subtitle = displayedText;
     toSay.pad04 = 0xabcd;
-    SpeakManager::getInstance().registerAiSubtitle(player->GetFormID(), subtitleText);
+    SpeakManager::getInstance().registerAiSubtitle(player->GetFormID(), displayedText, subtitleText);
 
     subtitleManager->KillSubtitles();
     subtitleManager->subtitles.clear();
@@ -193,11 +221,12 @@ static void PushForcedActorSubtitle(RE::SubtitleManager* subtitleManager, RE::Ac
     } else {
         toSay.speaker = subtitleSpeaker->GetHandle();
     }
-    toSay.subtitle = subtitleText;
+    const std::string displayedText = LimitNativeSubtitleText(subtitleText);
+    toSay.subtitle = displayedText;
     toSay.pad04 = 0xabcd;
     auto* registeredSpeaker = toSay.speaker.get().get();
     if (registeredSpeaker) {
-        SpeakManager::getInstance().registerAiSubtitle(registeredSpeaker->GetFormID(), subtitleText);
+        SpeakManager::getInstance().registerAiSubtitle(registeredSpeaker->GetFormID(), displayedText, subtitleText);
     }
 
     subtitleManager->KillSubtitles();
@@ -227,7 +256,8 @@ void SpeakManager::setNarratorDisplayName(const std::string& displayName) {
     }
 }
 
-void SpeakManager::registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText) {
+void SpeakManager::registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText,
+                                      const std::string& sourceText) {
     const std::string normalizedText = TrimSubtitleLogText(subtitleText);
     if (speakerFormId == 0 || normalizedText.empty()) {
         return;
@@ -236,7 +266,7 @@ void SpeakManager::registerAiSubtitle(RE::FormID speakerFormId, const std::strin
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(recentAiSubtitleMutex);
     std::erase_if(recentAiSubtitles, [now](const RecentAiSubtitle& subtitle) { return subtitle.expiresAt <= now; });
-    recentAiSubtitles.push_back({speakerFormId, normalizedText, now + std::chrono::seconds(90)});
+    recentAiSubtitles.push_back({speakerFormId, normalizedText, sourceText, now + std::chrono::seconds(90)});
     while (recentAiSubtitles.size() > 128) {
         recentAiSubtitles.pop_front();
     }
@@ -255,6 +285,24 @@ bool SpeakManager::isRecentAiSubtitle(RE::FormID speakerFormId, const std::strin
                        [speakerFormId, &normalizedText](const RecentAiSubtitle& subtitle) {
                            return subtitle.speakerFormId == speakerFormId && subtitle.text == normalizedText;
                        });
+}
+
+// Maps a possibly truncated native subtitle back to the full AI text registered for the speaker.
+// Expired or unknown entries return the subtitle unchanged.
+std::string SpeakManager::resolveAiSubtitleSourceText(RE::FormID speakerFormId, const std::string& subtitleText) {
+    const std::string normalizedText = TrimSubtitleLogText(subtitleText);
+    if (speakerFormId == 0 || normalizedText.empty()) {
+        return subtitleText;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(recentAiSubtitleMutex);
+    for (auto it = recentAiSubtitles.rbegin(); it != recentAiSubtitles.rend(); ++it) {
+        if (it->expiresAt > now && it->speakerFormId == speakerFormId && it->text == normalizedText) {
+            return it->sourceText;
+        }
+    }
+    return subtitleText;
 }
 
 std::string SpeakManager::getNarratorDisplayName() {
@@ -1787,6 +1835,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     bool appliedMuffleFilter = runtimeMuffleFilter;
     float appliedLineVolumeMultiplier = runtimeLineVolumeMultiplier;
     const std::string expectedSubtitleText = text;
+    const std::string expectedDisplayedSubtitleText = TrimSubtitleLogText(LimitNativeSubtitleText(text));
     const bool holdNpcTextOnlySubtitle = usingTextOnlyTiming && speaker != "Player" && !expectedSubtitleText.empty();
     constexpr auto kNpcTextOnlySubtitleKeepAliveInterval = std::chrono::milliseconds(250);
     auto lastNpcSubtitleRefresh = std::chrono::steady_clock::now() - kNpcTextOnlySubtitleKeepAliveInterval;
@@ -1876,7 +1925,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             const auto subtitleCount = subtitleManager ? subtitleManager->subtitles.size() : 0;
             const std::string currentSubtitle = GetCurrentSubtitleManagerText(subtitleManager);
             const bool matchesExpected = subtitleCount > 0 &&
-                                         TrimSubtitleLogText(currentSubtitle) == TrimSubtitleLogText(expectedSubtitleText);
+                                         TrimSubtitleLogText(currentSubtitle) == expectedDisplayedSubtitleText;
             const bool keepAliveDue = now - lastNpcSubtitleRefresh >= kNpcTextOnlySubtitleKeepAliveInterval;
             if ((subtitleCount == 0 || !matchesExpected || keepAliveDue) && subtitleManager && speakerActorPointer) {
                 PushForcedActorSubtitle(subtitleManager,

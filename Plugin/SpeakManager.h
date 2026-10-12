@@ -154,6 +154,7 @@ private:
     struct RecentAiSubtitle {
         RE::FormID speakerFormId;
         std::string text;
+        std::string sourceText;
         std::chrono::steady_clock::time_point expiresAt;
     };
     std::mutex recentAiSubtitleMutex;
@@ -315,8 +316,9 @@ public:
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);
     void clearPlayerPlaybackCompletedCallback();
     void recoverFromProcessingFailure(const std::string& actorName);
-    void registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
+    void registerAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText, const std::string& sourceText);
     bool isRecentAiSubtitle(RE::FormID speakerFormId, const std::string& subtitleText);
+    std::string resolveAiSubtitleSourceText(RE::FormID speakerFormId, const std::string& subtitleText);
 
     bool downloadFakeNote(std::string name);
 

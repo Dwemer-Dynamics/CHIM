@@ -1675,6 +1675,10 @@ void MonitorAllSubtitlesForChatbox() {
         const bool aiGeneratedSubtitle =
             s.pad04 == 0xabcd || SpeakManager::getInstance().isRecentAiSubtitle(actor->GetFormID(), subtitle);
         const std::string source = aiGeneratedSubtitle ? "llm" : "subtitle";
+        if (aiGeneratedSubtitle) {
+            // Native AI subtitles may be length-limited; chat and history keep the full line.
+            subtitle = SpeakManager::getInstance().resolveAiSubtitleSourceText(actor->GetFormID(), subtitle);
+        }
         
         // Create unique key to prevent duplicate pushes
         std::string cacheKey = std::string(actor->GetDisplayFullName()) + "|" + subtitle;
