@@ -73,6 +73,8 @@ float		_timeout_int				= 60.0
 
 int			_toggleAnimation
 bool		_animationstate			= false
+int			_toggleBFADialogue		= -1
+bool		_bfaDialogueState		= false
 
 
 int			_toggle1OID_Rereg
@@ -271,6 +273,7 @@ float		_lip_resDefault					= 500.0
 float		_lip_intDefault					= 1.0
 float		_timeout_intDefault				= 30.0
 bool		_animationstateDefault			= false
+bool		_bfaDialogueStateDefault		= false
 bool		_enable3daudioplaybackstateDefault	= false
 bool		_camera_based_audio_stateDefault	= false
 bool		_invertheadingstateDefault		= false
@@ -1016,6 +1019,9 @@ Function PublishPrismaMCMState()
 	PublishPrismaMCMEntry("Behavior", "Timers", "bored_period", "Bored Event Timer", "Minimum period between potential Bored events.", "slider", _bored_period as String, "15|600|1|seconds|0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "enable_ai_actions", "Enable AI Actions", "Allow AI NPCs to perform actions.", "toggle", PrismaMCMBool(_toggleState2), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "animations", "Enable Animations", "Allow AI NPCs to perform animations.", "toggle", PrismaMCMBool(_animationstate), "0|1|1||0|0")
+	if (AIAgentFunctions.isBFADetected() == 1)
+		PublishPrismaMCMEntry("Behavior", "General Behavior", "bfa_dialogue", "BFA Facial Animations", "Animate dialogue faces with Better Facial Animations.", "toggle", PrismaMCMBool(_bfaDialogueState), "0|1|1||0|0")
+	endIf
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "player_tts_traditional_dialogue", "Player TTS for Traditional Dialogue", "Play configured Player TTS for traditional dialogue choices.", "toggle", PrismaMCMBool(_playerTtsTraditionalDialogueState), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "capture_background_chat", "Vanilla Dialogue", "When on, vanilla dialogue-menu conversations and nearby ambient NPC chatter are added to AI context. When off, neither is captured; normal dialogue and subtitles still work.", "toggle", PrismaMCMBool(_captureBackgroundChatState), "0|1|1||0|0")
 	PublishPrismaMCMEntry("Behavior", "General Behavior", "soulgaze_hd", "Soulgaze HD Mode", "Use DirectX backbuffer capture for Soulgaze.", "toggle", PrismaMCMBool(_toggleState7), "0|1|1||0|0")
@@ -1252,6 +1258,9 @@ bool Function ApplyPrismaMCMSetting(String keyName, float value)
 	elseif keyName == "animations"
 		_animationstate = enabled
 		controlScript.setConf("_animations", value)
+	elseif keyName == "bfa_dialogue"
+		_bfaDialogueState = enabled
+		controlScript.setConf("_bfa_dialogue", value)
 	elseif keyName == "player_tts_traditional_dialogue"
 		_playerTtsTraditionalDialogueState = enabled
 		controlScript.setConf("_player_tts_traditional_dialogue", value)
@@ -1572,6 +1581,12 @@ event OnPageReset(string a_page)
 
 		_toggle1OID_C = AddToggleOption("Enable AI Actions", _toggleState2)
 		_toggleAnimation = AddToggleOption("Enable Animations", _animationstate)
+		if (AIAgentFunctions.isBFADetected() == 1)
+			_toggleBFADialogue = AddToggleOption("BFA Facial Animations", _bfaDialogueState)
+		else
+			_toggleBFADialogue = -1
+			AddTextOption("BFA Facial Animations", "Not detected", OPTION_FLAG_DISABLED)
+		endIf
 		_togglePlayerTtsTraditionalDialogue = AddToggleOption("Player TTS for Traditional Dialogue", _playerTtsTraditionalDialogueState)
 		_toggleCaptureBackgroundChat = AddToggleOption("Vanilla Dialogue", _captureBackgroundChatState)
 		_toggle1OID_E = AddToggleOption("Soulgaze HD Mode", _toggleState7)
@@ -2132,6 +2147,12 @@ event OnGameReload()
 	else
 		a=controlScript.setConf("_animations",0)
 	endif
+
+	if (_bfaDialogueState)
+		a=controlScript.setConf("_bfa_dialogue",1)
+	else
+		a=controlScript.setConf("_bfa_dialogue",0)
+	endif
 	
 	if (_pauseDialogueState)
 		a=controlScript.setConf("_pause_dialogue_when_menu_open",1)
@@ -2285,6 +2306,11 @@ event OnOptionDefault(int a_option)
 	elseif (a_option == _toggleAnimation)
 		_animationstate = _animationstateDefault
 		SetToggleOptionValue(a_option, _animationstate)
+
+	elseif (a_option == _toggleBFADialogue)
+		_bfaDialogueState = _bfaDialogueStateDefault
+		controlScript.setConf("_bfa_dialogue", _bfaDialogueState as Int)
+		SetToggleOptionValue(a_option, _bfaDialogueState)
 
 	elseif (a_option == _toggle1OID_E)
 		_toggleState7 = _toggleState7Default
@@ -2692,6 +2718,11 @@ event OnOptionSelect(int a_option)
 		
 		SetToggleOptionValue(a_option, _animationstate)
 	endIf
+	if (a_option == _toggleBFADialogue)
+		_bfaDialogueState = !_bfaDialogueState
+		controlScript.setConf("_bfa_dialogue", _bfaDialogueState as Int)
+		SetToggleOptionValue(a_option, _bfaDialogueState)
+	endIf
 	if (a_option == _toggle1OID_Rereg)
 		ConsoleUtil.ExecuteCommand("SetStage SKI_ConfigManagerInstance 1")
 		ShowMessage("Close menu")
@@ -3095,6 +3126,10 @@ event OnOptionHighlight(int a_option)
 	
 	if (a_option == _toggleAnimation)
 		SetInfoText("Enable AI NPCs to perform animations during interactions.")
+	endIf
+
+	if (a_option == _toggleBFADialogue)
+		SetInfoText("Animate CHIM dialogue faces with Better Facial Animations. Off: CHIM's own lip sync and expressions.")
 	endIf
 	
 	if (a_option == _toggle1OID_Rereg)

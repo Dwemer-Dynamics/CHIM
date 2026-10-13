@@ -45,6 +45,7 @@
 #include "Replacements.h"
 #include "json.hpp"
 #include "SpeakManager.h"
+#include "FacialAnimationBridge.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
 #include "SPGResponse.h"
@@ -3033,7 +3034,8 @@ private:
                                             if (agent->getActor()) {
                                                 if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
                                                     auto fgen = agent->getActor()->GetFaceGenAnimationData();
-                                                    if (fgen) {
+                                                    if (fgen && FacialAnimationBridge::CanWriteActor(
+                                                                    agent->getActor()->GetFormID())) {
                                                         RE::BSSpinLockGuard locker(fgen->lock);
 
                                                         fgen->ClearExpressionOverride();

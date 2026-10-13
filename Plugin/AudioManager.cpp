@@ -533,6 +533,7 @@ bool AudioManager::LoadWAV(BYTE* originalbuffer, size_t dataSize) {
         pSourceVoice = newSourceVoice;
         copiedData = newCopiedData;
         wfx = newWfx;
+        sourceDurationSeconds = static_cast<float>(audioDataSize) / newWfx.nAvgBytesPerSec;
         forceSpatialMatrixUpdate = true;
     }
 
@@ -875,14 +876,19 @@ void AudioManager::Update(const X3DAUDIO_VECTOR& emitterPosition,
 }
 
 float AudioManager::GetElapsedTimeSeconds() {
-    if (!pSourceVoice) {
+    std::lock_guard<std::mutex> lock(voiceMtx);
+    if (!pSourceVoice || !wfx.nSamplesPerSec) {
         return 0.0f;
     }
 
     XAUDIO2_VOICE_STATE state;
     pSourceVoice->GetState(&state);
 
-    // SamplesPlayed is total samples played since Start()
+    // END_OF_STREAM resets SamplesPlayed. Keep the completed clip at its end
+    // so playback followers do not seek back to zero during the trailing gap.
+    if (state.BuffersQueued == 0) return sourceDurationSeconds;
+
+    // SamplesPlayed is the position within the current stream.
     UINT64 samplesPlayed = state.SamplesPlayed;
 
     // Convert samples to seconds

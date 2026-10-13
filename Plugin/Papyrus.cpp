@@ -1,4 +1,5 @@
 #include "ItemInteraction.h"
+#include "FacialAnimationBridge.h"
 #include "ChimInteraction.h"
 #include "Papyrus.h"
 
@@ -352,6 +353,7 @@ extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
+std::atomic<bool> GlobalBFADialogue{false};  // animate dialogue faces with Better Facial Animations when present
 bool GlobalForceMono = false;
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
@@ -2002,6 +2004,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
         logger::info("Setting _invertheadingstate to {} ", f_Value);
 
+    } else if (code == "_bfa_dialogue") {
+        GlobalBFADialogue.store(f_Value > 0);
+        logger::info("Setting _bfa_dialogue to {} ", f_Value);
+
     } else if (code == "_enable_3d_audio_playback") {
         if (f_Value > 0)
             GlobalEnable3DAudioPlayback = true;
@@ -3057,6 +3063,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_animations") {
         result=GlobalAnimations ? 1 : 0;
 
+    } else if (code == "_bfa_dialogue") {
+        result = GlobalBFADialogue.load() ? 1 : 0;
+
     } else if (code == "_enable_3d_audio_playback") {
         result = GlobalEnable3DAudioPlayback ? 1 : 0;
 
@@ -3865,6 +3874,11 @@ int Papyrus::isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackI
     return result;
 }
 
+int Papyrus::isBFADetected(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                           RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("isBFADetected");
+    return FacialAnimationBridge::Discover() ? 1 : 0;
+}
 
 int Papyrus::isUsingFurniture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,RE::Actor *actor) {
     ScopedPapyrusLock lock("isUsingFurniture");
@@ -5577,6 +5591,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
     a_vm->RegisterFunction("startSoulgazeCapture", "AIAgentFunctions", startSoulgazeCapture, false);
     a_vm->RegisterFunction("isGameVR", "AIAgentFunctions", isGameVR, false);
+    a_vm->RegisterFunction("isBFADetected", "AIAgentFunctions", isBFADetected, false);
     a_vm->RegisterFunction("setConf", "AIAgentFunctions", setConf, false);
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);
     a_vm->RegisterFunction("setDrivenByAI", "AIAgentFunctions", setDrivenByAI, false);

@@ -33,6 +33,8 @@ Paths below are relative to the CHIM checkout, not this installed documentation 
 | In-game UI/native bridge | `AIAgent/PrismaUI/views/CHIM/`, `Plugin/PrismaUIBridge.cpp` |
 | Installer and bundled files | `AIAgent/fomod/ModuleConfig.xml`, `AIAgent/` |
 
+When Better Facial Animations exposes the current unreleased `BFA_QueryInterface`, `SpeakManager.cpp` passes each WAV, actor ID and optional mood through `FacialAnimationBridge.h`. Rebuild CHIM and BFA together; `BFA_API_VERSION` remains 1. CHIM synchronizes Start/Pause/Seek with XAudio2. Accepted Prepare calls suppress CHIM's facial writes immediately, including while pending. Terminal events retire individual segments; fallback resumes only after all accepted segments for that actor have handed back. Queued legacy writes also check that their playback is still active. Sentences share the actor's reply until EndReply calls EndUtterance to discard prepared animations and release the face. Omitted mood is neutral. Logs show operation results and lifecycle events. Narrator and VR retain their existing routes. `AIAgentFacialAnimationBridgeTests` covers pending suppression, interleaved and early callbacks, failure fallback and reply cleanup; actual game playback remains a separate validation.
+
 For prompts, providers or memory, move to HerikaServer instead of implementing a second copy in the client. Changes to shared settings or action messages may require paired changes and checks in both repositories.
 
 ## Configuration and diagnostics
