@@ -10194,7 +10194,13 @@ EventHandlers {
 
 
     On<RE::TESSpellCastEvent>([](const RE::TESSpellCastEvent* event) {
-        
+        // CHIM Interact power (AIAgent.esp 0x05A0F1, see ItemInteraction.cpp) opens the interaction UI; it is not a spell cast.
+        static const RE::FormID interactPower = [] {
+            auto power = RE::TESDataHandler::GetSingleton()->LookupForm<RE::SpellItem>(0x05A0F1, "AIAgent.esp");
+            return power ? power->GetFormID() : 0;
+        }();
+        if (!event || (interactPower && event->spell == interactPower)) return;
+
         logger::info("TESSpellCastEvent. Spell {:#x} value {}", event->spell, event->object->GetDisplayFullName());
         if (event->object) {
             if (event->object->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
