@@ -103,7 +103,7 @@
     let currentTargetIsNarrator = false;
     let currentTargetOverrideActive = false;
     let currentTargetOverrideMode = 'auto';
-    let pendingHypnosisMessage = null;
+    let pendingModeSubmission = null;
     let pendingDeleteCount = 0;
     let pendingDeleteConfirmTimeoutId = null;
     const targetRowsByKey = new Map();
@@ -153,6 +153,7 @@
         DIRECTOR: { label: 'Director', class: 'director', action: 'mode_director' },
         CHEATMODE: { label: 'Cheat Mode', class: 'cheatmode', action: 'mode_cheat' },
         HYPNOSIS: { label: 'Hypnosis', class: 'director', action: 'mode_hypnosis' },
+        SMARTWAIT: { label: 'Smart Wait', class: 'director', action: 'mode_smartwait' },
         AUTOCHAT: { label: 'Auto Chat', class: 'autochat', action: 'mode_autochat' },
         INJECTION_LOG: { label: 'Event Inject', class: 'director', action: 'mode_inject_log' },
         INJECTION_CHAT: { label: 'Inject & Chat', class: 'director', action: 'mode_inject_chat' }
@@ -191,6 +192,9 @@
             : (config.label === 'Close' ? 'Close-range talk the nearby group can hear' : '');
         if (!symbolMode && effectiveMode === 'HYPNOSIS') {
             currentModeElement.title = 'Give one NPC a profile instruction, then return to Standard.';
+        }
+        if (!symbolMode && effectiveMode === 'SMARTWAIT') {
+            currentModeElement.title = 'Describe what happens while you wait, then return to Standard.';
         }
     }
 
@@ -1471,7 +1475,7 @@
      */
     window.sendFocusMessage = function() {
         if (!focusInput) return;
-        if (pendingHypnosisMessage !== null) return;
+        if (pendingModeSubmission !== null) return;
         const message = focusInput.value;
         if (!message.trim()) return;
 
@@ -1484,11 +1488,18 @@
                 return;
             }
             if (!window.chimChatboxCommand) return;
-            pendingHypnosisMessage = message;
+            pendingModeSubmission = message;
             window.chimChatboxCommand('send_hypnosis|' + JSON.stringify({
                 message: message,
                 target_form_id: currentTargetFormId
             }));
+            return;
+        }
+        // Smart Wait is a scene instruction for the Narrator, so it needs no NPC target or mood.
+        if (!symbolMode && currentMode === 'SMARTWAIT') {
+            if (!window.chimChatboxCommand) return;
+            pendingModeSubmission = message;
+            window.chimChatboxCommand('send_smartwait|' + JSON.stringify({ message: message }));
             return;
         }
         const director = (symbolMode ? symbolMode.mode : currentMode) === 'DIRECTOR';
@@ -1508,12 +1519,12 @@
         window.closeFocusChatbox(true);
     };
 
-    // Keep the instruction until native target validation accepts this exact submission.
-    window.onHypnosisSubmission = function(result) {
-        if (!result || result.message !== pendingHypnosisMessage) return;
-        pendingHypnosisMessage = null;
+    // Keep the instruction until native validation accepts this exact submission.
+    function finishModeSubmission(result, failureMessage) {
+        if (!result || result.message !== pendingModeSubmission) return;
+        pendingModeSubmission = null;
         if (!result.accepted) {
-            pushChatboxSystemMessage('Hypnosis was not sent. Check that CHIM is on and one NPC is selected. Your instruction has been kept.');
+            pushChatboxSystemMessage(failureMessage);
             return;
         }
         if (focusInput && focusInput.value === result.message) {
@@ -1521,6 +1532,14 @@
             renderModeIndicator();
             window.closeFocusChatbox(true);
         }
+    }
+
+    window.onHypnosisSubmission = function(result) {
+        finishModeSubmission(result, 'Hypnosis was not sent. Check that CHIM is on and one NPC is selected. Your instruction has been kept.');
+    };
+
+    window.onSmartWaitSubmission = function(result) {
+        finishModeSubmission(result, 'Smart Wait was not sent. Check that CHIM is on. Your scene has been kept.');
     };
 
     window.clearFocusMessage = function() {

@@ -2194,9 +2194,15 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
             requestContext.executionMode = requestContext.symbolRoutingMode.empty()
                 ? PrismaUIBridge::GetCurrentChatboxMode() : requestContext.symbolRoutingMode;
         }
-        if (requestContext.executionMode == "DIRECTOR" || requestContext.executionMode == "HYPNOSIS") {
+        if (requestContext.executionMode == "DIRECTOR" || requestContext.executionMode == "HYPNOSIS" ||
+            requestContext.executionMode == "SMARTWAIT") {
             requestContext.playerMood.clear();
             requestContext.customPlayerMood.clear();
+        }
+        // Smart Wait describes a scene, so reuse Narrator routing instead of selecting an NPC responder.
+        if (requestContext.executionMode == "SMARTWAIT") {
+            requestContext.narratorMode = true;
+            requestContext.everyoneMode = false;
         }
         streamInternal(std::move(msg), 0, &requestContext);
     }
@@ -2763,7 +2769,8 @@ int sendMsgStream(const char* msg, bool close_asap, std::string speaker, int rec
                 speechLogPayload["spatial_volume"] = hasSpatialContext ? listenerSpatial.volume : 0.0f;
                 speechLogPayload["spatial_reason"] = hasSpatialContext ? listenerSpatial.reason : "no_listener_context";
                 shouldLogSpeech = !routingContext ||
-                    (routingContext->executionMode != "DIRECTOR" && routingContext->executionMode != "HYPNOSIS");
+                    (routingContext->executionMode != "DIRECTOR" && routingContext->executionMode != "HYPNOSIS" &&
+                     routingContext->executionMode != "SMARTWAIT");
 
                 if (isSpatialSnapshotEligibleRequest) {
                     json audienceSnapshot;

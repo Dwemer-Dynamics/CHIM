@@ -71,7 +71,7 @@ namespace ChatboxModePolicy
 
     constexpr bool IsOneShot(std::string_view mode)
     {
-        return mode == "DIRECTOR" || mode == "HYPNOSIS";
+        return mode == "DIRECTOR" || mode == "HYPNOSIS" || mode == "SMARTWAIT";
     }
 
     constexpr std::string_view ModeAfterSubmission(std::string_view mode)
