@@ -1,3 +1,12 @@
+3.5.1 - 2026-10-13
+* Added one-shot Smart Wait through Prisma chat and Skyrim's Wait menu.
+* Added optional BFA facial animation integration, disabled by default, with smoother transitions and playback fallback. Thanks @Cyberquach!
+* Split long speech into smaller UTF-8-safe segments.
+* Improved Interact context handling and excluded the CHIM Interact power from spell-cast events.
+* Added server support for text-only Director speakers; paired client support remains pending.
+* Fixed biography saving and improved speech and translation handling.
+* Improved Background Life prompts for concrete requests near the player.
+
 3.5.0 - 2026-10-08
 * Added CHIM Interact: describe what you want to do with an NPC, item, or object and let CHIM resolve the result. Supports inventory items, known magic, physical effects, Cheat Mode, and actions supplied by plugins.
 * Added automatic voice targeting through Jev, with crosshair targets taking priority. Added optional Jev matching for Traditional Quest dialogue.

@@ -45,6 +45,7 @@
 #include "Replacements.h"
 #include "json.hpp"
 #include "SpeakManager.h"
+#include "FacialAnimationBridge.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
 #include "SPGResponse.h"
@@ -59,8 +60,8 @@
 
 using json = nlohmann::json;
 
-#define PLUGIN_VERSION "3.5.0"
-#define PLUGIN_RELEASE_DATE "2026-10-08"
+#define PLUGIN_VERSION "3.5.1"
+#define PLUGIN_RELEASE_DATE "2026-10-13"
 
 const char* GetPluginVersion()
 {
@@ -3033,7 +3034,8 @@ private:
                                             if (agent->getActor()) {
                                                 if (agent->getActor()->Is3DLoaded()) {  // 1.0.13
                                                     auto fgen = agent->getActor()->GetFaceGenAnimationData();
-                                                    if (fgen) {
+                                                    if (fgen && FacialAnimationBridge::CanWriteActor(
+                                                                    agent->getActor()->GetFormID())) {
                                                         RE::BSSpinLockGuard locker(fgen->lock);
 
                                                         fgen->ClearExpressionOverride();
@@ -10192,7 +10194,13 @@ EventHandlers {
 
 
     On<RE::TESSpellCastEvent>([](const RE::TESSpellCastEvent* event) {
-        
+        // CHIM Interact power (AIAgent.esp 0x05A0F1, see ItemInteraction.cpp) opens the interaction UI; it is not a spell cast.
+        static const RE::FormID interactPower = [] {
+            auto power = RE::TESDataHandler::GetSingleton()->LookupForm<RE::SpellItem>(0x05A0F1, "AIAgent.esp");
+            return power ? power->GetFormID() : 0;
+        }();
+        if (!event || (interactPower && event->spell == interactPower)) return;
+
         logger::info("TESSpellCastEvent. Spell {:#x} value {}", event->spell, event->object->GetDisplayFullName());
         if (event->object) {
             if (event->object->GetFormID() == RE::PlayerCharacter::GetSingleton()->GetFormID()) {
