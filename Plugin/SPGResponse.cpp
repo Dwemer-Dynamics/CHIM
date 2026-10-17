@@ -43,7 +43,8 @@ void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated
         auto actorname = item;
         std::getline(ss, item, '|');
         auto action = item;
-        std::getline(ss, item, '|');
+        // The payload is the rest of the line: dialogue may contain '|', and ScriptQueue metadata follows it after '/'.
+        std::getline(ss, item);
         auto message = item;
 
         std::string tkey(actorname + action);

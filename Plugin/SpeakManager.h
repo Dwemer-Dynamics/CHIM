@@ -289,6 +289,7 @@ public:
 
     // Method to process the queue
     void process(AIAgent* agent);
+    bool processQueueHead(AIAgent* agent);
     void processPlayer();
     void setPendingPlayerSubtitle(const std::string& subtitleText);
     void releasePendingPlayerSubtitle();
