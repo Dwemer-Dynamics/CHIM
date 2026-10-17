@@ -2492,6 +2492,12 @@ void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
         trimmedLine.actor.erase(0, trimmedLine.actor.find_first_not_of(" \t\n\r"));
         trimmedLine.actor.erase(trimmedLine.actor.find_last_not_of(" \t\n\r") + 1);
     }
+    if (trimmedLine.actor.empty()) {
+        // No speaker can claim a line without an actor, so it would block the queue head.
+        logger::warn("[SpeakManager] Rejected line without actor: '{}'", trimmedLine.subtitle);
+        SpeechTrace(trimmedLine.utteranceId, "skipped", "missing_actor");
+        return;
+    }
     logger::debug("[SpeakManager] Queueing new line - Actor: {}, Text: '{}', Expression: '{}', Action: '{}', Animation: '{}', Phonetic: '{}'", 
                   trimmedLine.actor, trimmedLine.subtitle, trimmedLine.expression, trimmedLine.action, trimmedLine.animation, trimmedLine.phonetic);
     if (IsPlayerActorAlias(trimmedLine.actor, aiam)) {
@@ -3232,8 +3238,8 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 
 }
 
-void SpeakManager::process(AIAgent *agent) {
-    if (!ChimInteraction::Enabled()) { setProcessing(false); return; }
+bool SpeakManager::processQueueHead(AIAgent *agent) {
+    if (!ChimInteraction::Enabled()) { setProcessing(false); return false; }
 
     auto tid = std::this_thread::get_id();
     logger::debug("[SPEAKERMANAGER {}] Starting process for agent: {}",
@@ -3243,7 +3249,7 @@ void SpeakManager::process(AIAgent *agent) {
     if (!agent) {
         logger::error("[SPEAKERMANAGER {}] Received null agent pointer",tid);
         setProcessing(false);
-        return;
+        return false;
     }
 
     bool hasTalked = false;
@@ -3252,12 +3258,12 @@ void SpeakManager::process(AIAgent *agent) {
 
     if (!npc) {
         logger::error("[SPEAKERMANAGER {}] Actor not instantiated for agent: {}",tid, agent->getActorName());
-        return;
+        return false;
     }
 
     if (isProcessing) {
         logger::debug("[SPEAKERMANAGER {}] Manager is busy processing another request",tid);
-        return;
+        return false;
     }
 
     if (!agent->isNarrator() && (!npc->GetActorRuntimeData().currentProcess || !npc->Is3DLoaded())) {
@@ -3267,14 +3273,14 @@ void SpeakManager::process(AIAgent *agent) {
         DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
-        return;
+        return false;
     }
 
     if (npc->IsDead()) {
         logger::warn("[SPEAKERMANAGER {}] Actor {} is dead. Deleting agent and queue.",tid, agent->getActorName());
         aiam.deleteAgentByName(agent->getActorName());
         deleteQueue();
-        return;
+        return false;
     }
 
     auto player = RE::PlayerCharacter::GetSingleton();
@@ -3287,7 +3293,7 @@ void SpeakManager::process(AIAgent *agent) {
         DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
-        return;
+        return false;
     }
 
     if (distance > 3000) {
@@ -3295,7 +3301,7 @@ void SpeakManager::process(AIAgent *agent) {
         if ( nfac < 3) {
             agent->increaseFarAwayCounter();
             logger::info("{} is {} units away (too far) (retry {})", npc->GetDisplayFullName(), distance, nfac);
-            return;
+            return false;
         } else {
             logger::info("{} is {} units away (forced by nfac: {})", npc->GetDisplayFullName(), distance, nfac);
             agent->resetFarAwayCounter();
@@ -3312,17 +3318,17 @@ void SpeakManager::process(AIAgent *agent) {
         if (ItemInteraction::HoldReaction(scriptLine, true, npc->GetFormID())) {
             dequeueFirstItem();
             setProcessing(false);
-            return;
+            return false;
         }
         if (!scriptLine.directorSceneId.empty() && !DirectorScene::ReadyToSpeak()) {
             setProcessing(false);
-            return;
+            return false;
         }
         if (!scriptLine.directorSceneId.empty() && scriptLine.directorGeneration != DirectorScene::Generation()) {
             SpeechTrace(scriptLine.utteranceId, "skipped", "stale_scene");
             dequeueFirstItem();
             setProcessing(false);
-            return;
+            return false;
         }
         {
             std::lock_guard<std::mutex> lock(mtx);
@@ -3336,31 +3342,35 @@ void SpeakManager::process(AIAgent *agent) {
 
         int res = 0;
 
+        if (scriptLine.actor != agent->getActorName()) {  // Character change
+            // If the mismatched item is a "Player" line, dequeue it â€” no NPC agent
+            // will ever match "Player", so it blocks the queue head forever.
+            if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
+                logger::warn("[SPEAKERMANAGER {}] Dequeuing stuck Player line: '{}'", tid, scriptLine.subtitle);
+                SpeechTrace(scriptLine.utteranceId, "skipped", "player_on_npc_queue");
+                dequeueFirstItem();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                currentPlaybackUtteranceId.clear();
+                currentPlaybackActor.clear();
+                currentPlaybackUtteranceConfirmed = false;
+            }
+            setProcessing(false);
+            endDialogue(npc, "");
+            return false;
+        }
+
         // A spoken line's expression is applied in DownloadAndPlay: by BFA when
         // it animates the line (its mood), else as the engine's override. A
-        // line with nothing to speak only has the override.
-        if (SM::trim(scriptLine.subtitle).empty() && !agent->isNarrator())
-            ApplyExpressionOverride(npc, SM::trim(scriptLine.expression));
+        // line with nothing to speak only has the override, then leaves the queue.
+        if (SM::trim(scriptLine.subtitle).empty()) {
+            if (!agent->isNarrator())
+                ApplyExpressionOverride(npc, SM::trim(scriptLine.expression));
+            dropMatchingHeadItem(scriptLine);
+        }
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
-            if (scriptLine.actor != agent->getActorName()) {  // Character change
-                // If the mismatched item is a "Player" line, dequeue it â€” no NPC agent
-                // will ever match "Player", so it blocks the queue head forever.
-                if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
-                    logger::warn("[SPEAKERMANAGER {}] Dequeuing stuck Player line: '{}'", tid, scriptLine.subtitle);
-                    SpeechTrace(scriptLine.utteranceId, "skipped", "player_on_npc_queue");
-                    dequeueFirstItem();
-                }
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    currentPlaybackUtteranceId.clear();
-                    currentPlaybackActor.clear();
-                    currentPlaybackUtteranceConfirmed = false;
-                }
-                setProcessing(false);
-                endDialogue(npc, "");
-                return;
-            }
             if (agent->isExternalLocked()) {
                 logger::info("[SPEAKERMANAGER {}] {} is locked, cannot speak ", tid, agent->getActorName());
                 deleteQueue(false);
@@ -3373,7 +3383,7 @@ void SpeakManager::process(AIAgent *agent) {
                 setProcessing(false);
                 endDialogue(npc, "");
 
-                return;
+                return false;
             }
 
             if (agent) {
@@ -4022,7 +4032,7 @@ void SpeakManager::process(AIAgent *agent) {
         }
 
         // Narrator cleanup MUST run before checking for more queue items.
-        // If the queue has items from other actors, the recursive process() call
+        // If the queue has items from other actors, the next processQueueHead() pass
         // hits the actor mismatch at line 1789 and returns early â€” never reaching
         // this cleanup code. That leaves the Player permanently named "The Narrator"
         // and corrupts the actor state, freezing the game.
@@ -4040,9 +4050,7 @@ void SpeakManager::process(AIAgent *agent) {
         ItemInteraction::NarrationComplete(scriptLine.utteranceId, hasTalked && (res == 0 || res == 5));
 
         if (hasItems()) {  // More items in queue, so keep processing.
-            if (res != 2) {
-                process(agent);
-            }
+            return res != 2;
         } else {
             {
                 std::lock_guard<std::mutex> lock(mtx);
@@ -4061,6 +4069,13 @@ void SpeakManager::process(AIAgent *agent) {
             }
 
         }
+    }
+    return false;
+}
+
+// Plays consecutive queue lines for this agent iteratively so a long queue cannot exhaust the stack.
+void SpeakManager::process(AIAgent *agent) {
+    while (processQueueHead(agent)) {
     }
 }
 
