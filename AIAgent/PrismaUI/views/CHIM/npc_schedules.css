@@ -1,0 +1,11 @@
+.schedule-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:10px; }
+.schedule-toolbar strong { margin-right:auto; }
+.schedule-card { border:1px solid #515151; border-radius:8px; padding:12px; margin:10px 0; background:#242424; overflow-wrap:anywhere; }
+.schedule-card label { display:flex; flex-direction:column; gap:5px; margin:8px 0; }
+.schedule-card input,.schedule-card select { box-sizing:border-box; width:100%; min-width:0; padding:8px; background:#181818; color:#eee; border:1px solid #666; border-radius:4px; }
+.schedule-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+[data-schedule-root] button { padding:7px 12px; border:1px solid #666; background:#303030; color:#eee; border-radius:5px; cursor:pointer; }
+[data-schedule-root] button:focus-visible,[data-schedule-root] input:focus-visible,[data-schedule-root] select:focus-visible { outline:2px solid #f27c11; outline-offset:2px; }
+[data-schedule-root] button:disabled { opacity:.6; cursor:wait; }
+[data-schedule-root] [hidden] { display:none!important; }
+@media(max-width:500px) { .schedule-fields { grid-template-columns:minmax(0,1fr); } }

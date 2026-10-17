@@ -63,6 +63,7 @@ public:
     X3DAUDIO_EMITTER emitter;
     X3DAUDIO_DSP_SETTINGS dspSettings;
     WAVEFORMATEX wfx = {};
+    float sourceDurationSeconds = 0.0f;
     BYTE* copiedData = nullptr;
 
     std::atomic<float> defaultVolume{1.0f};

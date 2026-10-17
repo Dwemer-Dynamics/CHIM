@@ -1,6 +1,7 @@
 #include "ChimInteraction.h"
 #include "SpeakManager.h"
 #include "DirectorScene.h"
+#include "ItemInteraction.h"
 
 #include <Windows.h>
 #include <WinInet.h>
@@ -29,6 +30,7 @@
 #include "xeme.h"
 #include "json.hpp"
 #include "AudioManager.h"
+#include "FacialAnimationBridge.h"
 #include "SPGResponse.h"
 #include "HTTPManager.h"
 #include "PrismaUIBridge.h"
@@ -53,6 +55,7 @@ constexpr float kVisemeAbsoluteMaxIntensity = 0.82f;
 constexpr auto kVrVisemeStateStaleAfter = std::chrono::milliseconds(1500);
 
 extern bool GlobalEnable3DAudioPlayback;
+extern std::atomic<bool> GlobalBFADialogue;
 extern bool GlobalForceMono;
 extern bool GlobalInvertHeadingState;
 extern bool GlobalCameraBasedAudio;
@@ -560,6 +563,30 @@ int findExpression(const std::string& key) {
     } else {
         return -1;  // Key not found
     }
+}
+
+// The engine's expression override for a line without BFA animation. The
+// engine applies it in one frame, so it only runs when BFA is not animating
+// the actor's face (CanWriteActor): BFA gets the line's mood with the audio.
+static bool ApplyExpressionOverride(RE::Actor* actor, const std::string& expression) {
+    if (!actor || expression.empty()) return false;
+    const int index = findExpression(expression);
+    if (index < 0) {
+        logger::info("Failed to get expression: {}", expression);
+        return false;
+    }
+    if (!FacialAnimationBridge::CanWriteActor(actor->GetFormID())) return false;
+    auto fgen = actor->GetFaceGenAnimationData();
+    if (!fgen) {
+        logger::warn("[SpeakManager] Failed to get FaceGen animation data for expression override");
+        return false;
+    }
+    RE::BSSpinLockGuard locker(fgen->lock);
+    logger::info("Expression set to {}", expression);
+    fgen->ClearExpressionOverride();
+    fgen->SetExpressionOverride(index, 0.9f);
+    fgen->exprOverride = true;
+    return true;
 }
 
 static bool EqualsIgnoreCase(const std::string& left, const std::string& right)
@@ -1330,12 +1357,39 @@ bool isSilentAt(const std::vector<SilenceSegment>& silences, double elapsedSecon
 }
 
 
+// Keep trace metadata bounded and separate from dialogue; failures must never interrupt playback.
+static void SpeechTrace(const std::string& id, const char* stage, const std::string& reason = "",
+                        double durationMs = 0, std::size_t bytes = 0) noexcept {
+    if (id.empty()) return;
+    try {
+        json record = {{"utterance_id", id.substr(0, 128)}, {"side", "client"}, {"stage", stage},
+            {"reason", reason.substr(0, 128)}, {"duration_ms", durationMs}, {"bytes", bytes},
+            {"monotonic_ms", std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now().time_since_epoch()).count()}};
+        logger::info("[SPEECH_TRACE] {}", record.dump(-1, ' ', false, json::error_handler_t::replace));
+    } catch (...) {}
+}
+
+// Every playback exit records an outcome, including early WinHTTP failures and exceptions.
+struct SpeechPlaybackTrace {
+    const std::string& id;
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    const char* stage = "failed";
+    const char* reason = "download";
+    ~SpeechPlaybackTrace() {
+        SpeechTrace(id, stage, reason, std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count());
+    }
+};
+
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
                     float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
-                    const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0) {
-    if (!ChimInteraction::Enabled()) return 2;
+                    const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0,
+                    const std::string& utteranceId = "", const std::string& expression = "") {
+    SpeechPlaybackTrace trace{utteranceId};
+    if (!ChimInteraction::Enabled()) { trace.stage = "cancelled"; trace.reason = "interaction_disabled"; return 2; }
     const auto interactionGeneration = queuedGeneration;
-    if (interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) return 2;
+    if (interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) { trace.stage = "cancelled"; trace.reason = "superseded"; return 2; }
     // [DAP-PHASE] markers: on freeze, last logged phase names the hung call.
     auto _dap_t0 = std::chrono::high_resolution_clock::now();
     auto _dap_phase = [&](const char* name) {
@@ -1348,10 +1402,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     logger::debug("[SpeakManager] Starting DownloadAndPlay - Text: '{}', PreClip: {}, PostClip: {}, Speaker: {}, Phonetic: {}, VolumeBoost: {}, Duration: {}",
                  text, preclip, postclip, speaker, phonetic, volumeBoost, forcedDuration);
 
+    SpeechTrace(utteranceId, "download_started");
     // Initialize the session
     HINTERNET hSession = WinHttpOpen(L"WinHTTP Example/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     _dap_phase("after_WinHttpOpen");
     if (!hSession) {
+        trace.reason = "session_open";
         logger::error("[SpeakManager] Failed to open WinHTTP session. Error: {}", GetLastError());
         return 1;
     }
@@ -1368,6 +1424,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     HINTERNET hConnect = WinHttpConnect(hSession, wideServer.c_str(), port, 0);
     _dap_phase("after_WinHttpConnect");
     if (!hConnect) {
+        trace.reason = "connect";
         logger::error("[SpeakManager] Failed to connect to server. Error: {}", GetLastError());
         WinHttpCloseHandle(hSession);
         return 1;
@@ -1389,6 +1446,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", widePath.c_str(), NULL, WINHTTP_NO_REFERER,
                                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
     if (!hRequest) {
+        trace.reason = "request_open";
         logger::error("Failed to create HTTP request: {}", GetLastError());
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -1429,6 +1487,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         return 1;
     }
 
+    trace.reason = "read_audio";
     // Allocate buffer for the file content
     char* buffer = new char[contentLength];
     DWORD totalBytesRead = 0;
@@ -1444,6 +1503,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     _dap_phase("after_WinHttpReadData_loop");
 
     if (totalBytesRead != contentLength) {
+        trace.reason = "incomplete_download";
         logger::info("Incomplete file download: expected {}, got {}", contentLength, totalBytesRead);
         delete[] buffer;
         WinHttpCloseHandle(hRequest);
@@ -1460,6 +1520,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     // Log success
     
+    SpeechTrace(utteranceId, "download_completed", "", std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - trace.started).count(), totalBytesRead);
+    trace.reason = "audio_initialization";
     // Play the WAV file
     // UINT volume = 0xFFFF / 100;
     // waveOutSetVolume(NULL, MAKELONG(volume, volume));
@@ -1640,10 +1703,44 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                   headingAngle);
     };
 
+    const BFA_Interface* facialApi = nullptr;
+    if (!isNarrator && !REL::Module::IsVR() && GlobalBFADialogue.load()) {
+        facialApi = FacialAnimationBridge::Discover();
+    }
+    FacialAnimationBridge::Line facialLine(facialApi, speakerActorPointer->GetFormID());
+    const auto faceToken = facialLine.GetToken();
+    // Queued legacy mouth writes belong to this playback, not the next line.
+    const auto fallbackActive = std::make_shared<std::atomic<bool>>(true);
+    const auto facialActorId = speakerActorPointer->GetFormID();
+    std::uint32_t lastFacialCode = UINT32_MAX, lastFacialEvent = UINT32_MAX;
+    const auto reportFacial = [&](const char* operation, BFA_Result result, bool force = true) {
+        if (!facialApi) return;
+        const auto event = faceToken->event.load();
+        if (force || result != lastFacialCode || event != lastFacialEvent) {
+            logger::debug("[SpeakManager] BFA {} actor={:08X} result={} handle={} event={} animating={}", operation,
+                          facialActorId, FacialAnimationBridge::ResultName(result), facialLine.Handle(), event,
+                          faceToken->animated.load());
+        }
+        lastFacialCode = result;
+        lastFacialEvent = event;
+    };
+    // The line's expression: BFA's mood while it animates the line, else the
+    // engine's override, once, as soon as BFA has declined (or is absent).
+    bool expressionApplied = isNarrator || expression.empty() || findExpression(expression) < 0;
+    const auto applyFallbackExpression = [&] {
+        if (expressionApplied || (DXinitOK && FacialAnimationBridge::Accepted(facialLine.LastResult()))) return;
+        expressionApplied = ApplyExpressionOverride(speakerActorPointer, expression);
+    };
+
     _dap_phase("before_LoadWAV");
 
-    if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) return 2;
+    if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
+        trace.stage = "cancelled"; trace.reason = "superseded"; return 2;
+    }
     if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
+        const auto facialReason = facialLine.Prepare(buffer, localContentLength, text.c_str(), expression);
+        reportFacial("prepare", facialReason);
+        applyFallbackExpression();
         if (enable3DAudioPlayback) {
             _dap_phase("after_LoadWAV_ok");
             am.setMuffledPlayback(runtimeMuffleFilter);
@@ -1668,6 +1765,15 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         _dap_phase("after_LoadWAV_failed");
     }
 
+    if (DXinitOK) {
+        const auto facialStart = facialLine.Start(am.GetElapsedTimeSeconds());
+        reportFacial("start", facialStart);
+    } else {
+        // Playback failed after Prepare: cancel intake and wait for hand-back
+        // before allowing the timer-based facial fallback to write.
+        reportFacial("audio-failed", facialLine.Stop(BFA_kAborted));
+    }
+
     auto endTime = std::chrono::steady_clock::now()+ std::chrono::duration<double>(1);
 
     std::vector<TextSegment> textSegments;
@@ -1675,6 +1781,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     auto avoidClick = std::chrono::steady_clock::now() + std::chrono::duration<double>(preclip);
     // if (!PlaySoundA(buffer, NULL, SND_MEMORY | SND_ASYNC | SND_SYSTEM)) {
     const bool usingTextOnlyTiming = !DXinitOK;
+    SpeechTrace(utteranceId, DXinitOK ? "playback_started" : "playback_failed",
+        DXinitOK ? "" : "audio_device_or_decode");
+    trace.reason = DXinitOK ? "playback" : "subtitle_fallback";
 
     if (!DXinitOK) {
         logger::info("Could not play buffer:  {}, we should now make something here", GetLastError());
@@ -1723,6 +1832,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     auto fgen = speakerActorPointer->GetFaceGenAnimationData();
     auto lastTime = std::chrono::steady_clock::now();
+    auto lastFacialSync = lastTime;
     const bool isVrRuntime = REL::Module::IsVR();
 
     auto game = RE::UI::GetSingleton();
@@ -1868,7 +1978,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             } else if (PauseDialogueWhenMenuOpen) { // Pause audio based on MCM preference
                 logger::info("Pausing audio...game is paused");
                 setPhase("am_pause");
+                const auto pauseStarted = std::chrono::steady_clock::now();
                 am.Pause();
+                reportFacial("pause", facialLine.Pause());
                 recovery = true;
 
                 // Wait for game to unpause
@@ -1882,10 +1994,16 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                     }
                 }
 
+                const auto pausedDuration = std::chrono::steady_clock::now() - pauseStarted;
+                startTime += pausedDuration;
+                endTimeWithBlankSegment += pausedDuration;
+                lastTime = std::chrono::steady_clock::now();
+                if (hasBeenAborted) break;
                 if (!hasBeenAborted) {
                     logger::info("Resuming audio...game unpaused");
                     setPhase("am_resume_after_pause");
                     am.Resume();
+                    reportFacial("resume", facialLine.Seek(am.GetElapsedTimeSeconds()));
                 }
                 continue;
             }
@@ -1894,6 +2012,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
             logger::info("Resuming audio after recovery");
             setPhase("am_resume_recovery");
             am.Resume();
+            reportFacial("resume", facialLine.Seek(am.GetElapsedTimeSeconds()));
             recovery = false;
         }
 
@@ -1977,7 +2096,13 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
         auto currentTime = std::chrono::steady_clock::now() - startTime;
         double elapsedSeconds = std::chrono::duration<double>(currentTime).count();
-        
+
+        const auto facialSyncTime = std::chrono::steady_clock::now();
+        if (DXinitOK && facialSyncTime - lastFacialSync >= std::chrono::milliseconds(50)) {
+            reportFacial("seek", facialLine.Seek(am.GetElapsedTimeSeconds()), false);
+            lastFacialSync = facialSyncTime;
+        }
+        applyFallbackExpression();  // BFA declined the line after accepting it
         //elapsedSeconds = am.GetElapsedTimeSeconds();  // New. More accurate elapsed time from audio manager, in case of
         //  pauses or other issues. Use only when real audio is being played, otherwise it can cause issues with timing
         //   of text segments. DXinitOK= true when real audio is being played, false when faking with timers.
@@ -1989,7 +2114,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         lastTime = std::chrono::steady_clock::now();
 
         // Find the text segment that should be playing at the current time
-        if (!isNarrator) {
+        if (!isNarrator && faceToken->CanWrite()) {
             TextSegment currentSegment;
             double totalDuration = 0.0;
             int nSegment = 0;
@@ -2074,23 +2199,24 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                         auto actorHandle = speakerActorPointer->GetHandle();
                         const int queuedLastViseme = lastViseme;
                         const float queuedIntensity = intensity;
-                        taskInterface->AddTask(
-                            [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
-                                auto* actor = actorHandle.get().get();
-                                if (!actor || !actor->Is3DLoaded()) {
-                                    return;
-                                }
+                        taskInterface->AddTask([actorHandle, queuedLastViseme, visemeCode, queuedIntensity,
+                                                intensityStepDecal, faceToken, fallbackActive]() {
+                            if (!fallbackActive->load() || !faceToken->CanWrite()) return;
+                            auto* actor = actorHandle.get().get();
+                            if (!actor || !actor->Is3DLoaded()) {
+                                return;
+                            }
 
-                                auto deferredFgen = actor->GetFaceGenAnimationData();
-                                if (!deferredFgen) {
-                                    return;
-                                }
+                            auto deferredFgen = actor->GetFaceGenAnimationData();
+                            if (!deferredFgen) {
+                                return;
+                            }
 
-                                actor->GetActorRuntimeData().voiceTimer = 10.0f;
-                                RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                 intensityStepDecal);
-                            });
+                            actor->GetActorRuntimeData().voiceTimer = 10.0f;
+                            RE::BSSpinLockGuard locker(deferredFgen->lock);
+                            ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                             intensityStepDecal);
+                        });
                     } else {
                         setPhase("vr_publish_viseme_state");
                         PublishVrVisemeFrame(speakerActorPointer, lastViseme, visemeCode, intensity, intensityStepDecal,
@@ -2161,25 +2287,25 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                             const float queuedIntensity = intensity;
                             
                             auto now = std::chrono::steady_clock::now();
-                            
-                                taskInterface->AddTask(
-                                    [actorHandle, queuedLastViseme, visemeCode, queuedIntensity, intensityStepDecal]() {
-                                        auto* actor = actorHandle.get().get();
-                                        if (!actor || !actor->Is3DLoaded()) {
-                                            return;
-                                        }
 
-                                        auto deferredFgen = actor->GetFaceGenAnimationData();
-                                        if (!deferredFgen) {
-                                            return;
-                                        }
+                            taskInterface->AddTask([actorHandle, queuedLastViseme, visemeCode, queuedIntensity,
+                                                    intensityStepDecal, faceToken, fallbackActive]() {
+                                if (!fallbackActive->load() || !faceToken->CanWrite()) return;
+                                auto* actor = actorHandle.get().get();
+                                if (!actor || !actor->Is3DLoaded()) {
+                                    return;
+                                }
 
-                                        RE::BSSpinLockGuard locker(deferredFgen->lock);
-                                        ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
-                                                         intensityStepDecal);
-                                    });
-                            
-                            
+                                auto deferredFgen = actor->GetFaceGenAnimationData();
+                                if (!deferredFgen) {
+                                    return;
+                                }
+
+                                RE::BSSpinLockGuard locker(deferredFgen->lock);
+                                ApplyVisemeFrame(deferredFgen, queuedLastViseme, visemeCode, queuedIntensity,
+                                                 intensityStepDecal);
+                            });
+
                         } else {
                             logger::warn("[SpeakManager] Task interface unavailable for viseme update");
                         }
@@ -2222,6 +2348,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
         loopWatchdog.join();
     }
     _dap_phase("after_playback_wait_loop");
+    fallbackActive->store(false);
     if (isVrRuntime) {
         auto* taskInterface = SKSE::GetTaskInterface();
         if (taskInterface) {
@@ -2246,8 +2373,28 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     }
     if (!isVrRuntime) {
         speakerActorPointer->GetActorRuntimeData().voiceTimer = 0.0;
+        // Retire legacy visemes at every sentence boundary. Accepted BFA
+        // lines keep the write gate closed through their final hand-back.
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            auto actorHandle = speakerActorPointer->GetHandle();
+            tasks->AddTask([actorHandle, faceToken]() {
+                if (!faceToken->CanWrite()) return;
+                auto* actor = actorHandle.get().get();
+                if (!actor || !actor->Is3DLoaded()) return;
+                auto* face = actor->GetFaceGenAnimationData();
+                if (!face) return;
+                RE::BSSpinLockGuard locker(face->lock);
+                ResetVisemeFrame(face);
+            });
+        }
     }
     speakerActorPointer->DecRefCount();  // Increment reference count to prevent actor from being unloaded
+
+    if (facialApi)
+        logger::debug("[SpeakManager] BFA face checks: fallback={} blocked={}", faceToken->fallbackChecks.load(),
+                      faceToken->blockedChecks.load());
+    reportFacial("stop", facialLine.Stop(hasBeenAborted || lastLost ? BFA_kAborted : BFA_kCompleted));
+    if (facialApi && (hasBeenAborted || lastLost)) FacialAnimationBridge::EndReply(facialActorId, BFA_kAborted);
 
     _dap_phase("before_am_Stop");
     am.Stop();
@@ -2263,6 +2410,12 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     delete[] buffer;
     _dap_phase("exit_clean");
 
+    trace.stage = hasBeenAborted ? "interrupted" : "completed";
+    trace.reason = hasBeenAborted ? "playback_cancelled" : "";
+    if (!hasBeenAborted && usingTextOnlyTiming) {
+        trace.stage = "subtitle_only_completed";
+        trace.reason = "audio_device_or_decode";
+    }
     if (hasBeenAborted) return 2;
     if (forcedDuration > 0)
         return 5;  // Currently only happens when called by MusicManager
@@ -2270,9 +2423,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
                    // This is a bit of a hack, but it works for now. In the future, we may want to refactor
                    // this to be more elegant.
     return 0;
-
 }
-
 
 namespace SM {
     std::string ltrim(const std::string& s) {
@@ -2320,19 +2471,32 @@ void SpeakManager::discardPendingInteraction() {
     abortPendingUtterances("chim_off", false);
     cancelRechatChain();
     std::lock_guard lock(mtx);
-    scriptQueue = {};
+    while (!scriptQueue.empty()) {
+        SpeechTrace(scriptQueue.front().utteranceId, "queue_removed", "interaction_disabled");
+        scriptQueue.pop();
+    }
 }
 
 void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
+    if (ItemInteraction::HoldReaction(scriptLine))
+        return;
     // logger::debug("[SpeakManager] Attempting to acquire mutex for insertInQueue");
     std::lock_guard<std::mutex> lock(mtx);
     AIAgentManager& aiam = AIAgentManager::getInstance();
     // logger::debug("[SpeakManager] Mutex acquired for insertInQueue");
     // Trim whitespace from actor name before queueing
     ScriptLine trimmedLine = scriptLine;
+    if (trimmedLine.utteranceId.starts_with("interact-reply-"))
+        trimmedLine.rechatTargetHint = "explicit_disable_rechat";
     if (!trimmedLine.actor.empty()) {
         trimmedLine.actor.erase(0, trimmedLine.actor.find_first_not_of(" \t\n\r"));
         trimmedLine.actor.erase(trimmedLine.actor.find_last_not_of(" \t\n\r") + 1);
+    }
+    if (trimmedLine.actor.empty()) {
+        // No speaker can claim a line without an actor, so it would block the queue head.
+        logger::warn("[SpeakManager] Rejected line without actor: '{}'", trimmedLine.subtitle);
+        SpeechTrace(trimmedLine.utteranceId, "skipped", "missing_actor");
+        return;
     }
     logger::debug("[SpeakManager] Queueing new line - Actor: {}, Text: '{}', Expression: '{}', Action: '{}', Animation: '{}', Phonetic: '{}'", 
                   trimmedLine.actor, trimmedLine.subtitle, trimmedLine.expression, trimmedLine.action, trimmedLine.animation, trimmedLine.phonetic);
@@ -2346,7 +2510,13 @@ void SpeakManager::insertInQueue(const ScriptLine& scriptLine) {
             lastRechatter.clear();
         }
     }
-    if (!ChimInteraction::Enabled()) return;
+    SpeechTrace(trimmedLine.utteranceId, "received");
+    if (!ChimInteraction::Enabled()) {
+        SpeechTrace(trimmedLine.utteranceId, "skipped", "interaction_disabled");
+        return;
+    }
+    trimmedLine.traceQueuedAt = std::chrono::steady_clock::now();
+    SpeechTrace(trimmedLine.utteranceId, "queued");
     trimmedLine.interactionGeneration = PrismaUIBridge::GetDialogueStopGeneration();
     scriptQueue.push(trimmedLine);
     logger::info("[SpeakManager] Queue size after insertion: {}", scriptQueue.size());
@@ -2390,6 +2560,7 @@ ScriptLine SpeakManager::getFirstItem() {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - playerLineFirstSeen).count();
                 if (elapsed >= 5) {
                     logger::warn("[SpeakManager] Draining stuck Player line after {}s: '{}'", elapsed, front.subtitle);
+                    SpeechTrace(front.utteranceId, "skipped", "stuck_player_line");
                     scriptQueue.pop();
                     playerLineText.clear();
                     // Also reset isProcessing in case it's stuck
@@ -2530,6 +2701,7 @@ void SpeakManager::abortPendingUtterances(const std::string& reason, bool includ
         return;
     }
 
+    for (const auto& id : utteranceIds) SpeechTrace(id, "cancellation_requested", reason);
     json abortData;
     abortData["utterance_ids"] = utteranceIds;
     abortData["reason"] = reason;
@@ -2565,6 +2737,7 @@ void SpeakManager::deleteQueue(bool isActionCommand) {
             // Skip deleting and keep the item in the temporary queue
             tempQueue.push(currentItem);
         } else {
+            SpeechTrace(currentItem.utteranceId, "queue_removed", "queue_cleared");
             // Log and delete items that aren't from "Player"
             HTTPManager::log(std::format("delete_event|{}|{}|{}: {}", getCurrentTimeMillis(), GetGameTimeStamp(),
                                          currentItem.actor, currentItem.subtitle));
@@ -2597,6 +2770,7 @@ void SpeakManager::deleteQueuedPlayerLines() {
         const auto currentItem = scriptQueue.front();
         scriptQueue.pop();
         if (IsPlayerActorAlias(currentItem.actor, AIAgentManager::getInstance())) {
+            SpeechTrace(currentItem.utteranceId, "queue_removed", "player_queue_cleared");
             continue;
         }
         tempQueue.push(currentItem);
@@ -3064,8 +3238,8 @@ int SpeakManager::rechat(std::string speaker, std::string targetedNpc, int recha
 
 }
 
-void SpeakManager::process(AIAgent *agent) {
-    if (!ChimInteraction::Enabled()) { setProcessing(false); return; }
+bool SpeakManager::processQueueHead(AIAgent *agent) {
+    if (!ChimInteraction::Enabled()) { setProcessing(false); return false; }
 
     auto tid = std::this_thread::get_id();
     logger::debug("[SPEAKERMANAGER {}] Starting process for agent: {}",
@@ -3075,7 +3249,7 @@ void SpeakManager::process(AIAgent *agent) {
     if (!agent) {
         logger::error("[SPEAKERMANAGER {}] Received null agent pointer",tid);
         setProcessing(false);
-        return;
+        return false;
     }
 
     bool hasTalked = false;
@@ -3084,28 +3258,29 @@ void SpeakManager::process(AIAgent *agent) {
 
     if (!npc) {
         logger::error("[SPEAKERMANAGER {}] Actor not instantiated for agent: {}",tid, agent->getActorName());
-        return;
+        return false;
     }
 
     if (isProcessing) {
         logger::debug("[SPEAKERMANAGER {}] Manager is busy processing another request",tid);
-        return;
+        return false;
     }
 
     if (!agent->isNarrator() && (!npc->GetActorRuntimeData().currentProcess || !npc->Is3DLoaded())) {
         logger::info("[SPEAKERMANAGER {}] Agent {} is not currently loaded for dialogue. Skipping.", tid,
                      agent->getActorName());
+        SpeechTrace(getFirstItem().utteranceId, "skipped", "actor_not_loaded");
         DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
-        return;
+        return false;
     }
 
     if (npc->IsDead()) {
         logger::warn("[SPEAKERMANAGER {}] Actor {} is dead. Deleting agent and queue.",tid, agent->getActorName());
         aiam.deleteAgentByName(agent->getActorName());
         deleteQueue();
-        return;
+        return false;
     }
 
     auto player = RE::PlayerCharacter::GetSingleton();
@@ -3114,10 +3289,11 @@ void SpeakManager::process(AIAgent *agent) {
 
     if (distance > MIN_DISTANCE) {
         logger::info("[SPEAKERMANAGER {}] {} is too far ({} units). Discarding speech.", tid,npc->GetDisplayFullName(), distance);
+        SpeechTrace(getFirstItem().utteranceId, "skipped", "actor_out_of_range");
         DirectorScene::CompleteLine(getFirstItem(), false);
         dequeueFirstItem();
         setProcessing(false);
-        return;
+        return false;
     }
 
     if (distance > 3000) {
@@ -3125,7 +3301,7 @@ void SpeakManager::process(AIAgent *agent) {
         if ( nfac < 3) {
             agent->increaseFarAwayCounter();
             logger::info("{} is {} units away (too far) (retry {})", npc->GetDisplayFullName(), distance, nfac);
-            return;
+            return false;
         } else {
             logger::info("{} is {} units away (forced by nfac: {})", npc->GetDisplayFullName(), distance, nfac);
             agent->resetFarAwayCounter();
@@ -3139,14 +3315,20 @@ void SpeakManager::process(AIAgent *agent) {
                      tid,agent->getActorName());
         
         ScriptLine scriptLine = getFirstItem();
-        if (!scriptLine.directorSceneId.empty() && !DirectorScene::ReadyToSpeak()) {
-            setProcessing(false);
-            return;
-        }
-        if (!scriptLine.directorSceneId.empty() && scriptLine.directorGeneration != DirectorScene::Generation()) {
+        if (ItemInteraction::HoldReaction(scriptLine, true, npc->GetFormID())) {
             dequeueFirstItem();
             setProcessing(false);
-            return;
+            return false;
+        }
+        if (!scriptLine.directorSceneId.empty() && !DirectorScene::ReadyToSpeak()) {
+            setProcessing(false);
+            return false;
+        }
+        if (!scriptLine.directorSceneId.empty() && scriptLine.directorGeneration != DirectorScene::Generation()) {
+            SpeechTrace(scriptLine.utteranceId, "skipped", "stale_scene");
+            dequeueFirstItem();
+            setProcessing(false);
+            return false;
         }
         {
             std::lock_guard<std::mutex> lock(mtx);
@@ -3160,47 +3342,35 @@ void SpeakManager::process(AIAgent *agent) {
 
         int res = 0;
 
-        if (!SM::trim(scriptLine.expression).empty() && !agent->isNarrator()) {
-            int expression = findExpression(SM::trim(scriptLine.expression));
-            if (expression > -1) {
-                auto fgen = npc->GetFaceGenAnimationData();
-                if (fgen) {
-                    logger::debug("[SPEAKERMANAGER {}] Attempting to acquire FaceGen lock for expression override",tid);
-                    RE::BSSpinLockGuard locker(fgen->lock);
-                    logger::debug("[SPEAKERMANAGER {}] FaceGen lock acquired for expression override",tid);
-                    logger::info("Expression set to {}", SM::trim(scriptLine.expression));
-                    fgen->ClearExpressionOverride();
-                    fgen->SetExpressionOverride(expression, 0.9f);
-                    fgen->exprOverride = true;
-                    logger::debug("[SPEAKERMANAGER {}] FaceGen lock will be released",tid);
-                } else {
-                    logger::warn("[SPEAKERMANAGER {}] Failed to get FaceGen animation data for expression override",tid);
-                }
-            } else {
-                logger::info("Failed to get expression: {}", SM::trim(scriptLine.expression));
+        if (scriptLine.actor != agent->getActorName()) {  // Character change
+            // If the mismatched item is a "Player" line, dequeue it â€” no NPC agent
+            // will ever match "Player", so it blocks the queue head forever.
+            if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
+                logger::warn("[SPEAKERMANAGER {}] Dequeuing stuck Player line: '{}'", tid, scriptLine.subtitle);
+                SpeechTrace(scriptLine.utteranceId, "skipped", "player_on_npc_queue");
+                dequeueFirstItem();
             }
-            
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                currentPlaybackUtteranceId.clear();
+                currentPlaybackActor.clear();
+                currentPlaybackUtteranceConfirmed = false;
+            }
+            setProcessing(false);
+            endDialogue(npc, "");
+            return false;
         }
 
+        // A spoken line's expression is applied in DownloadAndPlay: by BFA when
+        // it animates the line (its mood), else as the engine's override. A
+        // line with nothing to speak only has the override, then leaves the queue.
+        if (SM::trim(scriptLine.subtitle).empty()) {
+            if (!agent->isNarrator())
+                ApplyExpressionOverride(npc, SM::trim(scriptLine.expression));
+            dropMatchingHeadItem(scriptLine);
+        }
 
         if (!SM::trim(scriptLine.subtitle).empty()) {
-            if (scriptLine.actor != agent->getActorName()) {  // Character change
-                // If the mismatched item is a "Player" line, dequeue it â€” no NPC agent
-                // will ever match "Player", so it blocks the queue head forever.
-                if (IsPlayerActorAlias(scriptLine.actor, aiam)) {
-                    logger::warn("[SPEAKERMANAGER {}] Dequeuing stuck Player line: '{}'", tid, scriptLine.subtitle);
-                    dequeueFirstItem();
-                }
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    currentPlaybackUtteranceId.clear();
-                    currentPlaybackActor.clear();
-                    currentPlaybackUtteranceConfirmed = false;
-                }
-                setProcessing(false);
-                endDialogue(npc, "");
-                return;
-            }
             if (agent->isExternalLocked()) {
                 logger::info("[SPEAKERMANAGER {}] {} is locked, cannot speak ", tid, agent->getActorName());
                 deleteQueue(false);
@@ -3213,7 +3383,7 @@ void SpeakManager::process(AIAgent *agent) {
                 setProcessing(false);
                 endDialogue(npc, "");
 
-                return;
+                return false;
             }
 
             if (agent) {
@@ -3457,8 +3627,11 @@ void SpeakManager::process(AIAgent *agent) {
                     agent->getActorName(), scriptLine.action);
             }
 
+            SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
             res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
-                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey, scriptLine.interactionGeneration);
+                                  playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey,
+                                  scriptLine.interactionGeneration, scriptLine.utteranceId, SM::trim(scriptLine.expression));
 
             const bool playbackAborted = (res == 2);
             // Off may have cleared this line and On may already have queued a new one.
@@ -3859,7 +4032,7 @@ void SpeakManager::process(AIAgent *agent) {
         }
 
         // Narrator cleanup MUST run before checking for more queue items.
-        // If the queue has items from other actors, the recursive process() call
+        // If the queue has items from other actors, the next processQueueHead() pass
         // hits the actor mismatch at line 1789 and returns early â€” never reaching
         // this cleanup code. That leaves the Player permanently named "The Narrator"
         // and corrupts the actor state, freezing the game.
@@ -3874,10 +4047,10 @@ void SpeakManager::process(AIAgent *agent) {
             logger::info("Narrator cleanup: restored player name to '{}', subtitles cleared", originalName);
         }
 
+        ItemInteraction::NarrationComplete(scriptLine.utteranceId, hasTalked && (res == 0 || res == 5));
+
         if (hasItems()) {  // More items in queue, so keep processing.
-            if (res != 2) {
-                process(agent);
-            }
+            return res != 2;
         } else {
             {
                 std::lock_guard<std::mutex> lock(mtx);
@@ -3896,6 +4069,13 @@ void SpeakManager::process(AIAgent *agent) {
             }
 
         }
+    }
+    return false;
+}
+
+// Plays consecutive queue lines for this agent iteratively so a long queue cannot exhaust the stack.
+void SpeakManager::process(AIAgent *agent) {
+    while (processQueueHead(agent)) {
     }
 }
 
@@ -3918,6 +4098,7 @@ void SpeakManager::processPlayer() {
         logger::info("SpeakManager is processing now for Player");
         ScriptLine scriptLine = getFirstItem();
         if (!ChimInteraction::Enabled() || scriptLine.interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
+            SpeechTrace(scriptLine.utteranceId, "cancelled", "superseded");
             dropMatchingHeadItem(scriptLine); setProcessing(false); return;
         }
 
@@ -3937,7 +4118,10 @@ void SpeakManager::processPlayer() {
             if (isTextOnlyPlayerLine) {
                 res = HoldTextOnlyPlayerSubtitle(*this, scriptLine);
             } else {
-                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration);
+                SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
+                res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration, scriptLine.utteranceId);
+                FacialAnimationBridge::EndReply(RE::PlayerCharacter::GetSingleton()->GetFormID(), res == 2 ? BFA_kAborted : BFA_kCompleted);
             }
         }
 
@@ -3971,16 +4155,11 @@ void SpeakManager::processPlayer() {
 
         auto fgen = player->GetFaceGenAnimationData();
 
-        if (fgen && res!=3) {  // Player actually talked
+        if (fgen && res != 3 && FacialAnimationBridge::CanWriteActor(player->GetFormID())) {  // Player actually talked
 
             RE::BSSpinLockGuard locker(fgen->lock);
 
-            for (int i = 0; i <= 15; i++) {
-                if (i == 7)
-                    fgen->phenomeKeyFrame.SetValue(i, 0.20);  // Default mouth position?
-                else
-                    fgen->phenomeKeyFrame.SetValue(i, 0);
-            }
+            ResetVisemeFrame(fgen);
             //
             // fgen->ClearExpressionOverride();
             // fgen->Reset(0.0f, true, true, true, false);
@@ -4072,21 +4251,18 @@ void SpeakManager::clearVisibleSubtitles() {
 
 void SpeakManager::endDialogue(RE::Actor* npc, std::string lastline) {
     logger::info("Face reset for {}", npc->GetDisplayFullName());
+    // The reply is over: BFA fades the face back, then reopens the write gate.
+    FacialAnimationBridge::EndReply(npc->GetFormID(), BFA_kCompleted);
 
     auto fgen = npc->GetFaceGenAnimationData();
-    if (fgen) {
+    if (fgen && FacialAnimationBridge::CanWriteActor(npc->GetFormID())) {
         logger::debug("[SpeakManager] Attempting to acquire FaceGen lock for dialogue end");
         RE::BSSpinLockGuard locker(fgen->lock);
         logger::debug("[SpeakManager] FaceGen lock acquired for dialogue end");
 
-        for (int i = 0; i <= 15; i++) {
-            if (i == 7)
-                fgen->phenomeKeyFrame.SetValue(i, 0.20);  // Default mouth position?
-            else
-                fgen->phenomeKeyFrame.SetValue(i, 0);
-        }
+        ResetVisemeFrame(fgen);
         logger::debug("[SpeakManager] FaceGen lock will be released");
-    } else {
+    } else if (!fgen) {
         logger::warn("[SpeakManager] Failed to get FaceGen animation data for dialogue end");
     }
 

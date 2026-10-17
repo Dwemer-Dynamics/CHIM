@@ -8,6 +8,7 @@ Choose the smallest integration surface before changing CHIM itself.
 | Read another Skyrim mod's state and send it to the server | [CHIM-Custom](https://github.com/Dwemer-Dynamics/CHIM-Custom), including its `SkyrimPlugin/` source and server hooks |
 | Connect an external tool/service | [CHIM-MCP](https://github.com/Dwemer-Dynamics/CHIM-MCP) and [CHIM-Twitch-Bot](https://github.com/Dwemer-Dynamics/CHIM-Twitch-Bot) as separate integration examples |
 | Add a game-side command | CHIM's `Plugin/Commands.cpp`, `Plugin/Papyrus.cpp` and `AIAgent/Source/Scripts/AIAgentFunctions.psc` at the target revision |
+| Add an action to CHIM Interact | [Interact plugin actions](agent-guide.md#plugin-actions): a Papyrus handler via `CHIMInteractExtensions.psc`, or a server composition of built-in effects |
 
 Examples are maintained projects, not a promise that every interface is stable across CHIM releases. Pin and test compatible client/server versions. Keep custom plugin source in its own repository; the server's `ext/<name>/` is an installation destination.
 

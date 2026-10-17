@@ -393,6 +393,91 @@ body {
     margin-top: 10px;
 }
 
+/* The Background Life button sits beside the target name. In narrow columns the name and
+   the Override marker truncate in proportion to their widths; the distance and the button
+   always stay whole. */
+.chatbox-current-target-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.chatbox-current-target-row .chatbox-control-value {
+    flex: 0 1 auto;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+#chatbox-current-target .target-name {
+    min-width: 0;
+}
+
+#chatbox-current-target .target-distance {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+#chatbox-current-target .target-distance + .target-distance {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chatbox-bgl-add {
+    flex: 0 0 auto;
+    height: 20px;
+    padding: 0 5px;
+    border: 1px solid rgba(242, 124, 17, 0.3);
+    border-radius: 4px;
+    background: rgba(30, 30, 40, 0.9);
+    color: #ddd;
+    font-size: 0.7em;
+    line-height: 18px;
+    white-space: nowrap;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.chatbox-bgl-add[hidden] {
+    display: none;
+}
+
+/* Clickable but unable to add right now; a click explains why or checks again. */
+.chatbox-bgl-add.unavailable {
+    opacity: 0.55;
+}
+
+.chatbox-bgl-add:hover:not(:disabled) {
+    border-color: rgba(242, 124, 17, 0.68);
+    background: rgba(242, 124, 17, 0.16);
+}
+
+.chatbox-bgl-add:focus-visible {
+    outline: none;
+    border-color: rgb(242, 124, 17);
+    box-shadow: 0 0 0 2px rgba(242, 124, 17, 0.24);
+}
+
+.chatbox-bgl-add:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Waiting for the save load and Background Life setup; kept readable, not clickable. */
+.chatbox-bgl-add.loading:disabled {
+    opacity: 0.7;
+    cursor: progress;
+}
+
+.chatbox-bgl-add.enrolled:disabled {
+    opacity: 0.85;
+    color: #a9d8a9;
+    border-color: rgba(120, 200, 120, 0.4);
+}
+
 .chatbox-profile-menu-toggle:hover:not(:disabled),
 .chatbox-profile-menu-toggle[aria-expanded="true"] {
     border-color: rgba(242, 124, 17, 0.68);
@@ -1242,9 +1327,28 @@ body {
 
 .chatbox-target-meta {
     min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+}
+
+/* Saved NPC->Player affinity stays visible when long names truncate. */
+.chatbox-target-affinity {
+    flex-shrink: 0;
+    font-size: 0.8em;
+    color: #c9c9d2;
+}
+
+.chatbox-target-affinity.positive {
+    color: #9fd49f;
+}
+
+.chatbox-target-affinity.negative {
+    color: #e39a8f;
 }
 
 .chatbox-target-name {
+    min-width: 0;
     font-size: 0.95em;
     font-weight: 600;
     color: #f2f2f2;

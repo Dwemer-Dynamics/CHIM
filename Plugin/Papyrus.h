@@ -167,6 +167,7 @@ namespace Papyrus {
                              RE::Actor* target);
 
     int isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
+    int isBFADetected(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*);
 
     int setConf(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                 std::string code, float f_Value, int i_value, std::string s_value);
@@ -229,6 +230,9 @@ namespace Papyrus {
 
     int updateRemoteInventory(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,
                                 RE::Actor* target);
+
+    int updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                   RE::StaticFunctionTag*, RE::Actor* target);
 
     RE::TESObjectREFR* getNearestDoor(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
                                       RE::StaticFunctionTag*);

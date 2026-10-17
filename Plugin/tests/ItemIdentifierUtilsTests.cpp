@@ -25,6 +25,16 @@ int main()
     Check(MatchesRequestedBaseId(identified, 0x00012EB7), "BaseID action matching rejected the requested item");
     Check(!MatchesRequestedBaseId(identified, 0x00012EB8), "BaseID action matching accepted a different item");
 
+    const auto labelledFormId = ParseFormId("000CEE9E:Mage Hood");
+    Check(labelledFormId.has_value(), "Labelled FormID was not parsed");
+    Check(labelledFormId.value() == 0x000CEE9E, "Labelled FormID parsed incorrectly");
+
+    const auto bareFormId = ParseFormId("000CEE9E");
+    Check(bareFormId.has_value(), "Bare hexadecimal FormID was not parsed");
+    Check(bareFormId.value() == 0x000CEE9E, "Bare hexadecimal FormID parsed incorrectly");
+
+    Check(!ParseFormId("000CEE9E trailing").has_value(), "FormID parser accepted trailing garbage");
+
     const auto legacy = ParseInventoryItemIdentifier("Iron Sword");
     Check(!legacy.baseId.has_value(), "Legacy name unexpectedly produced a BaseID");
     Check(legacy.name == "Iron Sword", "Legacy item name changed");

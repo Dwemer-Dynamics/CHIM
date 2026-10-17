@@ -1,0 +1,36 @@
+/* Reuse CHIM Chat chrome; keep layout adjustments local to Interact. */
+.interaction-panel { position: relative; flex: none; width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
+.interaction-panel [hidden] { display: none !important; }
+.interaction-panel h1 { font-size: 16px; font-weight: 600; }
+.interaction-panel button { font-family: inherit; }
+.interaction-body { padding: 16px; }
+.target-line, .item-summary { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.target-line { margin-bottom: 12px; }
+.field-caption { color: #999; width: 46px; flex: 0 0 46px; font-size: 13px; }
+#target, #selected-item, #selected-magic { overflow-wrap: anywhere; min-width: 0; font-size: 14px; }
+#selected-item, #selected-magic { flex: 1; }
+.item-summary { flex-wrap: wrap; margin-bottom: 18px; }
+#amount-field { display: flex; align-items: center; gap: 8px; margin-left: 56px; width: calc(100% - 56px); font-size: 13px; color: #bbb; }
+#quantity { width: 78px; }
+.interaction-panel input { min-width: 0; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.4); color: #eee; padding: 10px; font: inherit; }
+#intent { display: block; width: 100%; min-height: 110px; resize: vertical; max-height: 35vh; }
+.intent-label { display: block; font-size: 14px; margin-bottom: 8px; }
+.interaction-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
+.interaction-panel :focus-visible { outline: 2px solid #f27c11; outline-offset: 2px; }
+.interaction-panel input:focus { outline: none; border-color: #f27c11; box-shadow: 0 0 0 1px rgba(242,124,17,.3); }
+.interaction-panel :disabled { opacity: .55; cursor: default; }
+.choice-picker { padding: 10px; margin: -6px 0 18px; border: 1px solid rgba(242,124,17,.25); border-radius: 4px; background: rgba(0,0,0,.2); }
+.choice-search { width: 100%; font-size: 14px; }
+.choice-list { max-height: 190px; overflow-y: auto; margin-top: 8px; }
+.inventory-row { display: block; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #eee; padding: 9px; cursor: pointer; overflow-wrap: anywhere; font-size: 14px; }
+.inventory-row:hover, .inventory-row[aria-pressed="true"] { background: rgba(242,124,17,.12); border-color: rgba(242,124,17,.3); }
+.inventory-row small { display: block; color: #aaa; font-size: 12px; margin-top: 3px; }
+.empty-inventory { color: #aaa; font-size: 13px; padding: 9px; }
+#status { margin-top: 12px; font-size: 13px; line-height: 1.45; color: #ccc; overflow-wrap: anywhere; }
+#status:empty { display: none; }
+#status[data-state="error"] { color: #ffaaa3; }
+#status[data-state="busy"]::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: -1px; border: 2px solid rgba(242,124,17,.2); border-top-color: #f27c11; border-radius: 50%; animation: interact-spin 1s linear infinite; }
+@keyframes interact-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #status[data-state="busy"]::before { animation: none; } }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+@media (max-width: 420px) { .interaction-body { padding: 12px; } .item-summary { gap: 7px; } }

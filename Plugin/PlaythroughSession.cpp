@@ -1,3 +1,4 @@
+#include "ItemInteraction.h"
 #include "PlaythroughSession.h"
 #include "HTTPManager.h"
 #include "Misc.h"
@@ -42,6 +43,7 @@ std::string Header(std::uint64_t value) {
 }
 void ResetCharacter() { std::lock_guard lock(stateMutex); character.clear(); newCharacter = false; }
 void BeginLoad() {
+    ItemInteraction::Cancel();
     {
         // Serializes with handshake publication, so an older load's accepted result cannot mark this one ready.
         std::lock_guard lock(stateMutex);

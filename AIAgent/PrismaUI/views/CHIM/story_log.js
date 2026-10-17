@@ -11,7 +11,7 @@
 
     const dialogueEvents = new Set(['chat', 'chat_background', 'inputtext', 'ginputtext']);
     const actionEvents = new Set(['infoaction', 'book', 'combat', 'itemfound']);
-    const storyEvents = new Set(['quest', 'death', 'info_timeforward', 'instruction', 'narration']);
+    const storyEvents = new Set(['quest', 'death', 'info_timeforward', 'instruction', 'narration', 'relationship']);
     const persistedDuplicateWindowMs = 10000;
 
     function clean(value, decode) {

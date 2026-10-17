@@ -519,6 +519,59 @@ int main()
               result.reason == "explicit_ui_target",
           "Sleep gating changed other direct-target soft-blocker behavior");
 
+    // An automatic decision replaces only the nearest-eligible fallback.
+    std::vector<Candidate> automaticDecision{
+        MakeCandidate(0xE0, "Nearest", 100.0f),
+        MakeCandidate(0xE1, "Decided", 300.0f),
+        MakeCandidate(0xE2, "Busy", 200.0f, true, false),
+        MakeCandidate(0xE3, "Crosshair", 400.0f, true, true, true, 1.0f, true)
+    };
+    Request automaticRequest{};
+    automaticRequest.utterance = "Has anyone seen my sword";
+    automaticRequest.directAddressRadius = 1000.0f;
+    automaticRequest.interactionRadius = 560.0f;
+    automaticRequest.automaticResponderFormId = 0xE1;
+    result = Select(automaticRequest, automaticDecision);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 3 &&
+              result.reason == "true_crosshair",
+          "Automatic decision overrode a valid crosshair target");
+
+    automaticDecision[3].trueCrosshair = false;
+    result = Select(automaticRequest, automaticDecision);
+    Check(result.kind == SelectionKind::Candidate && result.candidateIndex == 1 &&
+              result.reason == "automatic_decision",
+          "Current automatic decision did not replace the nearest fallback");
+
+    automaticRequest.automaticResponderFormId = 0xE2;
+    result = Select(automaticRequest, automaticDecision);
+    Check(result.candidateIndex == 0 && result.reason == "nearest_eligible",
+          "Stale automatic decision selected an automatically ineligible actor");
+
+    automaticRequest.automaticResponderFormId = 0xE1;
+    automaticRequest.interactionRadius = 250.0f;
+    result = Select(automaticRequest, automaticDecision);
+    Check(result.candidateIndex == 0 && result.reason == "nearest_eligible",
+          "Automatic decision widened the speech-mode range");
+
+    automaticRequest.interactionRadius = 560.0f;
+    automaticRequest.utterance = "Hey Nearest, a question";
+    result = Select(automaticRequest, automaticDecision);
+    Check(result.candidateIndex == 0 && result.reason == "explicit_npc_name",
+          "Automatic decision overrode an explicitly named actor");
+
+    automaticRequest.utterance = "Has anyone seen my sword";
+    automaticRequest.narratorGesture = true;
+    result = Select(automaticRequest, automaticDecision);
+    Check(result.kind == SelectionKind::Narrator && result.reason == "narrator_camera_gesture",
+          "Automatic decision overrode the narrator gesture");
+
+    const std::vector<std::uint32_t> offered{ 0xE0, 0xE1 };
+    Check(AcceptOfferedAutomaticDecision(offered, 0xE1) == 0xE1,
+          "Offered automatic decision was rejected");
+    Check(AcceptOfferedAutomaticDecision(offered, 0xE3) == 0 &&
+              AcceptOfferedAutomaticDecision(offered, 0) == 0,
+          "Automatic decision accepted an actor that was not offered");
+
     std::vector<PresenceCandidate> presentCandidates{
         { 0x100, "Alvor", 200.0f, true, true, false },
         { 0x101, "Chicken", 100.0f, true, false, true },
