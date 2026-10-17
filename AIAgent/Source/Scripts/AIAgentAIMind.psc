@@ -474,6 +474,16 @@ function EndWaitSoft(Actor npc) global
 endFunction
 
 function Follow(Actor npc, ObjectReference akTarget) global
+    if (!AIAgentFollowSafety.IsValidFollowTarget(npc, akTarget))
+        AIAgentFollowSafety.RepairSelfFollow(npc)
+        Debug.Trace("[CHIM] Rejected invalid or self-follow target")
+        return
+    endif
+    if (akTarget == Game.GetPlayer())
+        stayAtPlace(npc, 1)
+        return
+    endif
+
 	
 	Debug.Trace("[CHIM] "+npc.GetDisplayName()+" following "+akTarget.GetDisplayName())
 	ResetPackages(npc);

@@ -8,6 +8,7 @@ Location pendingCellInfoLocation
 bool pendingCellInfoDetailed = false
 bool pendingCellInfoActive = false
 float pendingCellInfoReadyAt = 0.0
+Cell lastFollowRepairCell
 Cell lastCellInfoPlayerCell
 Location lastCellInfoPlayerLocation
 float lastCellInfoPlayerSentAt = 0.0
@@ -69,6 +70,7 @@ endEvent
 ;  endEvent
 
  Event OnPlayerLoadGame()
+    lastFollowRepairCell = None
 
 	Cell currCell = Game.GetPlayer().getParentCell()
 	Location currLoc = Game.GetPlayer().getCurrentLocation();
@@ -597,6 +599,12 @@ function LogExteriorNamedCellDoor(ObjectReference sref, Cell localCell, Location
 EndFunction
 
 Event OnUpdate()
+    Cell followRepairCell = Game.GetPlayer().GetParentCell()
+    if (followRepairCell && followRepairCell != lastFollowRepairCell)
+        lastFollowRepairCell = followRepairCell
+        AIAgentFollowSafety.RepairLoadedSelfFollowers()
+    endif
+
     ; Do some stuff
 	bool hadPendingCellInfo = pendingCellInfoActive
 	bool processedDeferredCellInfo = ProcessDeferredCellInfo()
