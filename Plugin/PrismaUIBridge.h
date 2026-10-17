@@ -1,4 +1,5 @@
 #pragma once
+#include "json.hpp"
 
 #include "Globals.h"
 #include "PrismaUI_API.h"
@@ -348,6 +349,11 @@ namespace PrismaUIBridge {
     void BumpDialogueStopGeneration();
     void UpdateChimInteractionState();
 
+    // Chat Background Life adds open only once this load's post-load setup has run.
+    // Marks the given playthrough load ready (ignored once a later load began) and
+    // republishes the chat's Loading… state; call with no epoch after a load begins.
+    void SetChatboxBackgroundLifeReady(std::uint64_t loadEpoch = 0);
+
     // Shared by the chatbox and voice hotkey; does not require a Prisma view.
     void StopAllDialogueNow(const char* sourceTag);
 
@@ -417,3 +423,5 @@ namespace PrismaUIBridge {
     std::string GetLastError();
 
 }
+
+namespace PrismaUIBridge { void ShowItemInteraction(const nlohmann::json& payload); void UpdateItemInteraction(const nlohmann::json& payload); void HideItemInteraction(); }

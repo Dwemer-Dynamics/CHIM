@@ -231,6 +231,9 @@ Function ProcessPendingSettingsAction(String pendingAction = "")
 		AIAgentFunctions.logMessage(targetActor.GetDisplayName(), "updateprofiles_batch_async_manual")
 	elseif (actionId == "rp_wait" && targetActor)
 		AIAgentAIMind.StartWait(targetActor)
+	elseif (actionId == "rp_wait_here")
+		; Chatbox Wait Here: only the actor native captured at click, revalidated now.
+		WaitForNpc(Game.GetFormEx(npcName as int) as Actor)
 	elseif (actionId == "rp_follow" && targetActor)
 		AIAgentAIMind.Follow(targetActor, Game.GetPlayer())
 	elseif (actionId == "rp_rename" && targetActor)
@@ -647,12 +650,15 @@ Function FinishTextHotkey(float holdTime)
 	endif
 EndFunction
 
-; Textbox holds use a live actor reference, never name/nearest fallback.
 Function WaitForCrosshairNpc()
+	WaitForNpc(Game.GetCurrentCrosshairRef() as Actor)
+EndFunction
+
+; Textbox holds and chatbox Wait Here use a live actor reference, never name/nearest fallback.
+Function WaitForNpc(Actor target)
 	if (!SafeProcess() || !AIAgentFunctions.isGameFocused())
 		Return
 	endif
-	Actor target = Game.GetCurrentCrosshairRef() as Actor
 	if (!target || target == Game.GetPlayer() || target.IsDead() || target.IsDisabled() || !target.Is3DLoaded())
 		Debug.Notification("[CHIM] Look at a living NPC to make them wait here.")
 		Return

@@ -24,6 +24,10 @@ int main()
           "Hypnosis instructions must preserve their submitted mode");
     Check(ChatboxModePolicy::ParseSubmission("% hello", "HYPNOSIS").mode == "WHISPER",
           "Existing shortcuts must still override Hypnosis");
+    Check(ChatboxModePolicy::ModeAfterSubmission("SMARTWAIT") == "STANDARD" &&
+              ChatboxModePolicy::ParseSubmission("We rest until dusk", "SMARTWAIT").mode == "SMARTWAIT" &&
+              ChatboxModePolicy::ParseSubmission("@ Describe the camp", "SMARTWAIT").mode == "NARRATOR",
+          "Smart Wait must be one-shot, preserve its submitted mode and yield to shortcuts");
     using namespace std::literals;
 
     Check(ChatboxModePolicy::IsOneShot("DIRECTOR"sv),

@@ -1,3 +1,5 @@
+#include "ItemInteraction.h"
+#include "FacialAnimationBridge.h"
 #include "ChimInteraction.h"
 #include "Papyrus.h"
 
@@ -26,6 +28,7 @@
 #include "Globals.h"
 #include "HTTPManager.h"
 #include "HTTPUploader.h"
+#include "ItemIdentifierUtils.h"
 #include "Misc.h"
 #include "SpeakManager.h"
 #include "SpatialAwareness.h"
@@ -46,6 +49,8 @@
 // Forward declaration
 extern int VoiceRecord(int bindedKey);
 
+extern void RefreshAIAgentEquipment(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
+extern void RefreshAIAgentStats(RE::Actor* npc, const std::string& agentName, bool forceUpdate);
 extern void RefreshAIAgentInventoryImpl(RE::Actor* npc, const std::string& agentName, bool forceUpdate,
                                         bool synchronous, std::function<void(bool)> completion = {});
 
@@ -348,6 +353,7 @@ extern float GlobalLegacyDistanceScaler;
 
 bool GlobalAnimations = true;
 bool GlobalEnable3DAudioPlayback = true;
+std::atomic<bool> GlobalBFADialogue{false};  // animate dialogue faces with Better Facial Animations when present
 bool GlobalForceMono = false;
 bool GlobalInvertHeadingState = false;
 bool GlobalCameraBasedAudio = false;
@@ -1998,6 +2004,10 @@ int Papyrus::setConfReal(std::string code, float f_Value, int i_value, std::stri
 
         logger::info("Setting _invertheadingstate to {} ", f_Value);
 
+    } else if (code == "_bfa_dialogue") {
+        GlobalBFADialogue.store(f_Value > 0);
+        logger::info("Setting _bfa_dialogue to {} ", f_Value);
+
     } else if (code == "_enable_3d_audio_playback") {
         if (f_Value > 0)
             GlobalEnable3DAudioPlayback = true;
@@ -3053,6 +3063,9 @@ int Papyrus::get_conf_i(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStac
     } else if (code == "_animations") {
         result=GlobalAnimations ? 1 : 0;
 
+    } else if (code == "_bfa_dialogue") {
+        result = GlobalBFADialogue.load() ? 1 : 0;
+
     } else if (code == "_enable_3d_audio_playback") {
         result = GlobalEnable3DAudioPlayback ? 1 : 0;
 
@@ -3861,6 +3874,11 @@ int Papyrus::isGameVR(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackI
     return result;
 }
 
+int Papyrus::isBFADetected(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID,
+                           RE::StaticFunctionTag*) {
+    ScopedPapyrusLock lock("isBFADetected");
+    return FacialAnimationBridge::Discover() ? 1 : 0;
+}
 
 int Papyrus::isUsingFurniture(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VMStackID a_stackID, RE::StaticFunctionTag*,RE::Actor *actor) {
     ScopedPapyrusLock lock("isUsingFurniture");
@@ -3900,16 +3918,17 @@ RE::FormID Papyrus::getForm(RE::BSScript::Internal::VirtualMachine* a_vm, RE::VM
                 return static_cast<RE::FormID>(j.at(key).get<uint32_t>());
             } else if (j.at(key).is_string()) {
                 std::string val = j.at(key).get<std::string>();
-                try {
-                    uint32_t intval = 0;
-                    intval = std::stoul(val, nullptr, 0);
-                    RE::TESForm* form = RE::TESForm::LookupByID(intval);
-                    if (form)
-                        return static_cast<RE::FormID>(std::stoul(val, nullptr, 0));
-                    else
-                        logger::warn("[getForm] No form found for FormID '{}'", val);
-                } catch (...) {
+                const auto formId = ItemIdentifierUtils::ParseFormId(val);
+                if (!formId.has_value()) {
+                    logger::warn("[getForm] Invalid FormID '{}'", val);
+                    return 0;
                 }
+
+                RE::TESForm* form = RE::TESForm::LookupByID(*formId);
+                if (form)
+                    return static_cast<RE::FormID>(*formId);
+                else
+                    logger::warn("[getForm] No form found for FormID '{}'", val);
             }
         }
     } catch (const std::exception& e) {
@@ -5421,8 +5440,24 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
     if (target->GetHandle()) {
         addBasicProfileReal(target->GetHandle());
         RefreshAIAgentInventoryImpl(target, target->GetDisplayFullName(), true, true);
+        RefreshAIAgentStats(target, target->GetDisplayFullName(), true);
     } else {
         logger::warn("[addBasicProfile] Target actor has no valid handle.");
+    }
+    return 0;
+}
+
+int Papyrus::updateRemoteCombatSnapshot(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID a_stackID,
+                                        RE::StaticFunctionTag*, RE::Actor* target) {
+    ScopedPapyrusLock lock("updateRemoteCombatSnapshot");
+
+    if (target && target->GetHandle()) {
+        const std::string actorName = target->GetDisplayFullName();
+        RefreshAIAgentEquipment(target, actorName, true);
+        RefreshAIAgentInventoryImpl(target, actorName, true, true);
+        RefreshAIAgentStats(target, actorName, true);
+    } else {
+        logger::warn("[updateRemoteCombatSnapshot] Target actor has no valid handle.");
     }
     return 0;
 }
@@ -5517,6 +5552,7 @@ int Papyrus::addBasicProfile(RE::BSScript::IVirtualMachine* a_vm, RE::VMStackID 
 }
 
 bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
+    ItemInteraction::Register(a_vm);
     a_vm->RegisterFunction("sendMessage", "AIAgentFunctions", sendMessage, false);
     a_vm->RegisterFunction("sendMessageToActor", "AIAgentFunctions", sendMessageToActor, false);
     a_vm->RegisterFunction("commandEnded", "AIAgentFunctions", commandEnded, false);
@@ -5555,6 +5591,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("shotAndUpload", "AIAgentFunctions", shotAndUpload, false);
     a_vm->RegisterFunction("startSoulgazeCapture", "AIAgentFunctions", startSoulgazeCapture, false);
     a_vm->RegisterFunction("isGameVR", "AIAgentFunctions", isGameVR, false);
+    a_vm->RegisterFunction("isBFADetected", "AIAgentFunctions", isBFADetected, false);
     a_vm->RegisterFunction("setConf", "AIAgentFunctions", setConf, false);
     a_vm->RegisterFunction("get_conf_i", "AIAgentFunctions", get_conf_i, false);
     a_vm->RegisterFunction("setDrivenByAI", "AIAgentFunctions", setDrivenByAI, false);
@@ -5652,6 +5689,7 @@ bool Papyrus::RegisterSGPFuncs(RE::BSScript::IVirtualMachine* a_vm) {
     a_vm->RegisterFunction("stopMusicScene", "AIAgentFunctions", stopMusicScene, false);
 
     a_vm->RegisterFunction("scanActorsAroundOffline", "AIAgentFunctions", scanActorsAroundOffline, false);
+    a_vm->RegisterFunction("updateRemoteCombatSnapshot", "AIAgentFunctions", updateRemoteCombatSnapshot, false);
     a_vm->RegisterFunction("updateRemoteInventory", "AIAgentFunctions", updateRemoteInventory, false);
 
     a_vm->RegisterFunction("sendLocationFast", "AIAgentFunctions", sendLocationFast, false);

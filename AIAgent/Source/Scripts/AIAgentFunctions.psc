@@ -48,6 +48,7 @@ int function hardResetExpression() Global Native
 int function shotAndUpload(String hints,int mode) Global Native
 int function startSoulgazeCapture(String hints, int captureType, int renderMode, Actor target = None) Global Native
 int function isGameVR() Global Native									; 1 if VR
+int function isBFADetected() Global Native								; 1 if Better Facial Animations is loaded
 
 int function sendLocationFast(Location curr,string tags,Cell referenceCell=None) global Native
 int function sendFactionFast(Faction factions,string name) global Native
@@ -84,6 +85,7 @@ ObjectReference function findLocationsToSafeSpawn(float minDistance,bool restric
 
 int function scanActorsAroundOffline(Actor akActor)  global Native; This will send data to server, should retun 0
 
+int function updateRemoteCombatSnapshot(Actor akActor) global Native
 int function updateRemoteInventory(Actor akActor)  global Native; This will send data to server, should retun 0
 
 string function GetLocationSpecialRefsString(int locationFormId)  Global Native
