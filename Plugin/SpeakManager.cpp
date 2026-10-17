@@ -1385,7 +1385,8 @@ struct SpeechPlaybackTrace {
 int DownloadAndPlay(std::string text, float preclip, float postclip, std::string speaker, std::string phonetic = "",
                     float volumeBoost = 1.0f, float forcedDuration = -1, bool applyMuffleFilter = false,
                     const std::string& cacheKey = "", std::uint64_t queuedGeneration = 0,
-                    const std::string& utteranceId = "", const std::string& expression = "") {
+                    const std::string& utteranceId = "", const std::string& expression = "",
+                    bool textOnly = false) {
     SpeechPlaybackTrace trace{utteranceId};
     if (!ChimInteraction::Enabled()) { trace.stage = "cancelled"; trace.reason = "interaction_disabled"; return 2; }
     const auto interactionGeneration = queuedGeneration;
@@ -1402,126 +1403,130 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     logger::debug("[SpeakManager] Starting DownloadAndPlay - Text: '{}', PreClip: {}, PostClip: {}, Speaker: {}, Phonetic: {}, VolumeBoost: {}, Duration: {}",
                  text, preclip, postclip, speaker, phonetic, volumeBoost, forcedDuration);
 
-    SpeechTrace(utteranceId, "download_started");
-    // Initialize the session
-    HINTERNET hSession = WinHttpOpen(L"WinHTTP Example/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
-    _dap_phase("after_WinHttpOpen");
-    if (!hSession) {
-        trace.reason = "session_open";
-        logger::error("[SpeakManager] Failed to open WinHTTP session. Error: {}", GetLastError());
-        return 1;
-    }
-
-    // Get server and port from configuration
-    auto server = Conf::getInstance().getServer();
-    auto port = std::stoi(Conf::getInstance().getPort());
-    logger::debug("[SpeakManager] Connecting to server: {}:{}", server, port);
-
-    // Convert server to wide string
-    std::wstring wideServer = StringToWideString(server);
-
-    // Connect to the server
-    HINTERNET hConnect = WinHttpConnect(hSession, wideServer.c_str(), port, 0);
-    _dap_phase("after_WinHttpConnect");
-    if (!hConnect) {
-        trace.reason = "connect";
-        logger::error("[SpeakManager] Failed to connect to server. Error: {}", GetLastError());
-        WinHttpCloseHandle(hSession);
-        return 1;
-    }
-
-    // Construct file path and HTTP request path
-
-    std::string path = Conf::getInstance().getPath();
-    std::filesystem::path fullPath = path;
-    std::filesystem::path dirName = fullPath.parent_path();
-    path.assign(fullPath.parent_path().string());
-    std::string hashedName = cacheKey.empty() ? md5(trim(text),false) : cacheKey;
-    std::string fullPathFile = path.append("/soundcache/" + hashedName + ".wav").c_str();
-
-    // Convert path to wide string
-    std::wstring widePath = StringToWideString(fullPathFile);
-
-    // Create the HTTP request
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", widePath.c_str(), NULL, WINHTTP_NO_REFERER,
-                                            WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
-    if (!hRequest) {
-        trace.reason = "request_open";
-        logger::error("Failed to create HTTP request: {}", GetLastError());
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return 1;
-    }
-
-    // Send the request
-    _dap_phase("before_WinHttpSendRequest");
-    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        logger::error("Failed to send HTTP request: {} {}", GetLastError(), fullPathFile);
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return 1;
-    }
-    _dap_phase("after_WinHttpSendRequest");
-
-    // Wait for response
-    _dap_phase("before_WinHttpReceiveResponse");
-    if (!WinHttpReceiveResponse(hRequest, NULL)) {
-        logger::error("Failed to receive HTTP response: {} {}", GetLastError(), fullPathFile);
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return 1;
-    }
-    _dap_phase("after_WinHttpReceiveResponse");
-
-    // Query content length
     DWORD contentLength = 0;
-    DWORD lengthSize = sizeof(contentLength);
-    if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, NULL, &contentLength,
-                             &lengthSize, NULL)) {
-        logger::error("Failed to query content length: {}", GetLastError());
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return 1;
-    }
-
-    trace.reason = "read_audio";
-    // Allocate buffer for the file content
-    char* buffer = new char[contentLength];
-    DWORD totalBytesRead = 0;
     DWORD bytesRead = 0;
+    char* buffer = nullptr;
+    // A text-only line has no audio to fetch; it goes straight to estimated subtitle timing.
+    if (!textOnly) {
+        SpeechTrace(utteranceId, "download_started");
+        // Initialize the session
+        HINTERNET hSession = WinHttpOpen(L"WinHTTP Example/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
+        _dap_phase("after_WinHttpOpen");
+        if (!hSession) {
+            trace.reason = "session_open";
+            logger::error("[SpeakManager] Failed to open WinHTTP session. Error: {}", GetLastError());
+            return 1;
+        }
 
-    // Read the data
-    logger::info("[SpeakManager] Reading data");
-    _dap_phase("before_WinHttpReadData_loop");
-    while (WinHttpReadData(hRequest, buffer + totalBytesRead, contentLength - totalBytesRead, &bytesRead) &&
-           bytesRead > 0) {
-        totalBytesRead += bytesRead;
-    }
-    _dap_phase("after_WinHttpReadData_loop");
+        // Get server and port from configuration
+        auto server = Conf::getInstance().getServer();
+        auto port = std::stoi(Conf::getInstance().getPort());
+        logger::debug("[SpeakManager] Connecting to server: {}:{}", server, port);
 
-    if (totalBytesRead != contentLength) {
-        trace.reason = "incomplete_download";
-        logger::info("Incomplete file download: expected {}, got {}", contentLength, totalBytesRead);
-        delete[] buffer;
+        // Convert server to wide string
+        std::wstring wideServer = StringToWideString(server);
+
+        // Connect to the server
+        HINTERNET hConnect = WinHttpConnect(hSession, wideServer.c_str(), port, 0);
+        _dap_phase("after_WinHttpConnect");
+        if (!hConnect) {
+            trace.reason = "connect";
+            logger::error("[SpeakManager] Failed to connect to server. Error: {}", GetLastError());
+            WinHttpCloseHandle(hSession);
+            return 1;
+        }
+
+        // Construct file path and HTTP request path
+
+        std::string path = Conf::getInstance().getPath();
+        std::filesystem::path fullPath = path;
+        std::filesystem::path dirName = fullPath.parent_path();
+        path.assign(fullPath.parent_path().string());
+        std::string hashedName = cacheKey.empty() ? md5(trim(text),false) : cacheKey;
+        std::string fullPathFile = path.append("/soundcache/" + hashedName + ".wav").c_str();
+
+        // Convert path to wide string
+        std::wstring widePath = StringToWideString(fullPathFile);
+
+        // Create the HTTP request
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", widePath.c_str(), NULL, WINHTTP_NO_REFERER,
+                                                WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_REFRESH);
+        if (!hRequest) {
+            trace.reason = "request_open";
+            logger::error("Failed to create HTTP request: {}", GetLastError());
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return 1;
+        }
+
+        // Send the request
+        _dap_phase("before_WinHttpSendRequest");
+        if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+            logger::error("Failed to send HTTP request: {} {}", GetLastError(), fullPathFile);
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return 1;
+        }
+        _dap_phase("after_WinHttpSendRequest");
+
+        // Wait for response
+        _dap_phase("before_WinHttpReceiveResponse");
+        if (!WinHttpReceiveResponse(hRequest, NULL)) {
+            logger::error("Failed to receive HTTP response: {} {}", GetLastError(), fullPathFile);
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return 1;
+        }
+        _dap_phase("after_WinHttpReceiveResponse");
+
+        // Query content length
+        DWORD lengthSize = sizeof(contentLength);
+        if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, NULL, &contentLength,
+                                 &lengthSize, NULL)) {
+            logger::error("Failed to query content length: {}", GetLastError());
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return 1;
+        }
+
+        trace.reason = "read_audio";
+        // Allocate buffer for the file content
+        buffer = new char[contentLength];
+        DWORD totalBytesRead = 0;
+
+        // Read the data
+        logger::info("[SpeakManager] Reading data");
+        _dap_phase("before_WinHttpReadData_loop");
+        while (WinHttpReadData(hRequest, buffer + totalBytesRead, contentLength - totalBytesRead, &bytesRead) &&
+               bytesRead > 0) {
+            totalBytesRead += bytesRead;
+        }
+        _dap_phase("after_WinHttpReadData_loop");
+
+        if (totalBytesRead != contentLength) {
+            trace.reason = "incomplete_download";
+            logger::info("Incomplete file download: expected {}, got {}", contentLength, totalBytesRead);
+            delete[] buffer;
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return 1;
+        }
+
+
+        // Clean up
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        return 1;
-    }
 
-
-    // Clean up
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-
-    // Log success
+        // Log success
     
-    SpeechTrace(utteranceId, "download_completed", "", std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - trace.started).count(), totalBytesRead);
+        SpeechTrace(utteranceId, "download_completed", "", std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - trace.started).count(), totalBytesRead);
+    }
     trace.reason = "audio_initialization";
     // Play the WAV file
     // UINT volume = 0xFFFF / 100;
@@ -1534,7 +1539,8 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
 
     // removeLastHalfSecond(reinterpret_cast<BYTE*>(buffer), localContentLength);
 
-    double duration = calculateWavDuration(reinterpret_cast<BYTE*>(buffer), localContentLength);
+    double duration = 0;
+    if (!textOnly) duration = calculateWavDuration(reinterpret_cast<BYTE*>(buffer), localContentLength);
 
     auto& am = AudioManagerController::GetInstance();
     struct ScopedVolumeRestore {
@@ -1737,7 +1743,9 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     if (!ChimInteraction::Enabled() || interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
         trace.stage = "cancelled"; trace.reason = "superseded"; return 2;
     }
-    if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
+    if (textOnly) {
+        _dap_phase("text_only_skip_audio");
+    } else if (am.LoadWAV(reinterpret_cast<BYTE*>(buffer), localContentLength)) {
         const auto facialReason = facialLine.Prepare(buffer, localContentLength, text.c_str(), expression);
         reportFacial("prepare", facialReason);
         applyFallbackExpression();
@@ -1781,12 +1789,17 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     auto avoidClick = std::chrono::steady_clock::now() + std::chrono::duration<double>(preclip);
     // if (!PlaySoundA(buffer, NULL, SND_MEMORY | SND_ASYNC | SND_SYSTEM)) {
     const bool usingTextOnlyTiming = !DXinitOK;
-    SpeechTrace(utteranceId, DXinitOK ? "playback_started" : "playback_failed",
-        DXinitOK ? "" : "audio_device_or_decode");
-    trace.reason = DXinitOK ? "playback" : "subtitle_fallback";
+    if (textOnly) {
+        SpeechTrace(utteranceId, "text_only_started", "tts_disabled");
+        trace.reason = "text_only";
+    } else {
+        SpeechTrace(utteranceId, DXinitOK ? "playback_started" : "playback_failed",
+            DXinitOK ? "" : "audio_device_or_decode");
+        trace.reason = DXinitOK ? "playback" : "subtitle_fallback";
+    }
 
     if (!DXinitOK) {
-        logger::info("Could not play buffer:  {}, we should now make something here", GetLastError());
+        if (!textOnly) logger::info("Could not play buffer:  {}, we should now make something here", GetLastError());
         duration = static_cast<double>(EstimateTextOnlySpeechDurationMs(text)) / 1000.0;
         if (forcedDuration > 0) {
             duration = forcedDuration;
@@ -2414,7 +2427,7 @@ int DownloadAndPlay(std::string text, float preclip, float postclip, std::string
     trace.reason = hasBeenAborted ? "playback_cancelled" : "";
     if (!hasBeenAborted && usingTextOnlyTiming) {
         trace.stage = "subtitle_only_completed";
-        trace.reason = "audio_device_or_decode";
+        trace.reason = textOnly ? "text_only" : "audio_device_or_decode";
     }
     if (hasBeenAborted) return 2;
     if (forcedDuration > 0)
@@ -3621,7 +3634,8 @@ void SpeakManager::process(AIAgent *agent) {
                 std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
             res = DownloadAndPlay(scriptLine.subtitle, preClip, postClip, agent->getActorName(), phoneticTrimmed,
                                   playbackVolumeBoost, scriptLine.duration, applyMuffleFilter, scriptLine.ttsCacheKey,
-                                  scriptLine.interactionGeneration, scriptLine.utteranceId, SM::trim(scriptLine.expression));
+                                  scriptLine.interactionGeneration, scriptLine.utteranceId, SM::trim(scriptLine.expression),
+                                  scriptLine.textOnly);
 
             const bool playbackAborted = (res == 2);
             // Off may have cleared this line and On may already have queued a new one.
