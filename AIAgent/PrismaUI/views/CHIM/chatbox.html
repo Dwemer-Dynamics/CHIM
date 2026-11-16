@@ -57,6 +57,24 @@
                             </div>
 
                             <div class="chatbox-control-block selector-stack">
+                                <div class="chatbox-control-label">Speech mode</div>
+                                <div class="chatbox-control-value">
+                                    <div class="chatbox-tile-selector">
+                                        <button id="chatbox-speech-mode-menu-toggle" class="chatbox-tile-trigger" type="button" aria-expanded="false" aria-controls="chatbox-speech-mode-options" title="Switch speech mode">
+                                            <span id="chatbox-speech-current-mode" class="mode-badge standard" aria-live="polite">Standard</span>
+                                            <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
+                                        </button>
+                                        <div id="chatbox-speech-mode-options" class="chatbox-tile-options hidden" role="listbox" aria-label="Speech mode">
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_standard">Standard</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_whisper">Whisper</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_close" title="Close-range talk the nearby group can hear">Close</button>
+                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_shout">Shout</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="chatbox-control-block selector-stack">
                                 <div class="chatbox-control-label chatbox-mode-label">
                                     <span>Mode</span>
                                     <span class="chatbox-mode-help" tabindex="0" aria-label="Chat mode shortcut help" aria-describedby="chatbox-mode-shortcuts">?</span>
@@ -79,14 +97,10 @@
                                 <div class="chatbox-control-value">
                                     <div class="chatbox-tile-selector">
                                         <button id="chatbox-mode-menu-toggle" class="chatbox-tile-trigger" type="button" aria-expanded="false" aria-controls="chatbox-mode-options" title="Switch mode">
-                                            <span id="chatbox-current-mode" class="mode-badge standard" aria-live="polite">Standard</span>
+                                            <span id="chatbox-current-mode" class="mode-badge" aria-live="polite">None</span>
                                             <span class="chatbox-tile-trigger-arrow" aria-hidden="true"></span>
                                         </button>
                                         <div id="chatbox-mode-options" class="chatbox-tile-options hidden" role="listbox" aria-label="Mode">
-                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_standard">Standard</button>
-                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_whisper">Whisper</button>
-                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_close" title="Close-range talk the nearby group can hear">Close</button>
-                                            <button class="chatbox-option-tile" type="button" role="option" data-action="mode_shout">Shout</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_narrator">Narrator</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_director">Director</button>
                                             <button class="chatbox-option-tile" type="button" role="option" data-action="mode_cheat">Cheat Mode</button>
