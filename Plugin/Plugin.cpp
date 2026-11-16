@@ -9567,6 +9567,7 @@ EventHandlers {
                 }
 
                 auto cameraObject = RE::CrosshairPickData::GetSingleton()->GetActiveTarget();
+                RE::NiPointer<RE::TESObjectREFR> cameraTarget = cameraObject.get();
                 if (!cameraObject) {
                     // logger::info("Checking NPC via grabbed ref");
                     // logger::info("TESTopicInfoEvent {} {}", source->GetFormID(), event->topicInfoID);
@@ -9574,17 +9575,14 @@ EventHandlers {
                     auto targetObjectRef = RE::PlayerCharacter::GetSingleton()->GetGrabbedRef();
                     if (targetObjectRef) {
                         // logger::info("Grabbed ref is null");
-                        auto cameraObject2 = targetObjectRef.get();
-                        if (cameraObject2) {
-                            cameraObject = cameraObject2->GetHandle();
-                            logger::info("Checked NPC via grabbed ref {}", cameraObject.get()->GetDisplayFullName());
-                        }
+                        cameraTarget = targetObjectRef;
+                        logger::info("Checked NPC via grabbed ref {}", cameraTarget->GetDisplayFullName());
                     }
                 }
 
-                if (cameraObject) {
-                    if (cameraObject.get()->GetFormType() == RE::FormType::ActorCharacter) {
-                        auto targetActor = cameraObject.get()->As<RE::Actor>();
+                if (cameraTarget) {
+                    if (cameraTarget->GetFormType() == RE::FormType::ActorCharacter) {
+                        auto targetActor = cameraTarget->As<RE::Actor>();
                         if (targetActor == topicActor) {
                             auto existingAgent = aiam.getAgentByName(targetActor->GetDisplayFullName());
                             if (existingAgent) {
