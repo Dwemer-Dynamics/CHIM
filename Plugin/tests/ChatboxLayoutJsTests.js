@@ -247,7 +247,7 @@ test('puts Vanilla Dialogue in the secondary action row as a real toggle button'
     assert.notEqual(captureStart, -1, 'capture toggle not found in chatbox.html');
     assert.ok(secondaryStart < captureStart, 'toggle must live inside the secondary action row');
     assert.ok(captureStart < soulgazeStart, 'toggle leads the row ahead of Soulgaze and Delete Events');
-    assert.ok(gridStart < secondaryStart, 'toggle must not land in the four-column settings grid');
+    assert.ok(gridStart < secondaryStart, 'toggle must not land in the chatbox controls grid');
 
     // Real button, short visible label, concise state, and pending until native answers.
     assert.match(html, /<button id="chatbox-capture-background-chat"[^>]*type="button"[^>]*aria-pressed="mixed"[^>]*disabled/);

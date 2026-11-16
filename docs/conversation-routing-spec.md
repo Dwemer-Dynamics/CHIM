@@ -87,9 +87,12 @@ select the mode, but it does not mutate global hearing distances.
 
 ### Prisma text chat
 
-Prisma exposes one **Mode** selector containing the conversation modes
-Standard, Whisper, Close, Shout, and Narrator plus the tool modes Director,
-Cheat Mode, Auto Chat, Event Inject, and Inject & Chat.
+Prisma exposes a **Speech mode** selector containing Standard, Whisper, Close,
+and Shout, in that order. The existing **Mode** selector contains all remaining
+modes: Narrator, Director, Cheat Mode, Hypnosis, Smart Wait, Auto Chat, Event
+Inject, and Inject & Chat. Both selectors share one persistent active mode;
+the inactive selector displays None. Request-local symbol shortcuts continue
+to preview their effective mode without changing the saved selection.
 
 Pressing Ctrl+Enter selects persistent Close mode before submitting the
 message. Normal Enter uses the currently selected persistent mode. Prisma sends

@@ -25,7 +25,10 @@
     const currentModeElement = document.getElementById('chatbox-current-mode');
     const modeMenuToggleButton = document.getElementById('chatbox-mode-menu-toggle');
     const modeOptionsElement = document.getElementById('chatbox-mode-options');
-    const modeOptionButtons = document.querySelectorAll('#chatbox-mode-options .chatbox-option-tile');
+    const speechModeElement = document.getElementById('chatbox-speech-current-mode');
+    const speechModeMenuToggleButton = document.getElementById('chatbox-speech-mode-menu-toggle');
+    const speechModeOptionsElement = document.getElementById('chatbox-speech-mode-options');
+    const modeOptionButtons = document.querySelectorAll('#chatbox-mode-options .chatbox-option-tile, #chatbox-speech-mode-options .chatbox-option-tile');
     const currentModelElement = document.getElementById('chatbox-current-model');
     const globalModelControlElement = document.getElementById('chatbox-global-model-control');
     const currentRechatModeElement = document.getElementById('chatbox-current-rechat-mode');
@@ -179,22 +182,30 @@
 
     // Preview the request-local symbol mode while leaving the saved selector state unchanged.
     function renderModeIndicator() {
-        if (!currentModeElement) return;
         const symbolMode = detectSymbolMode(focusInput ? focusInput.value : '');
         const effectiveMode = symbolMode ? symbolMode.mode : currentMode;
         const config = modeConfig[effectiveMode] || modeConfig.STANDARD;
-        currentModeElement.className = 'mode-badge ' + config.class;
-        currentModeElement.textContent = symbolMode
+        const isSpeechMode = ['STANDARD', 'WHISPER', 'CLOSE', 'SHOUT'].includes(effectiveMode);
+        const activeElement = isSpeechMode ? speechModeElement : currentModeElement;
+        const inactiveElement = isSpeechMode ? currentModeElement : speechModeElement;
+        if (inactiveElement) {
+            inactiveElement.className = 'mode-badge';
+            inactiveElement.textContent = 'None';
+            inactiveElement.title = 'No active mode in this list';
+        }
+        if (!activeElement) return;
+        activeElement.className = 'mode-badge ' + config.class;
+        activeElement.textContent = symbolMode
             ? `${config.label} (${symbolMode.display || symbolMode.prefix})`
             : config.label;
-        currentModeElement.title = symbolMode
+        activeElement.title = symbolMode
             ? `One-shot ${config.label}; saved mode remains ${modeConfig[currentMode].label}.`
             : (config.label === 'Close' ? 'Close-range talk the nearby group can hear' : '');
         if (!symbolMode && effectiveMode === 'HYPNOSIS') {
-            currentModeElement.title = 'Give one NPC a profile instruction, then return to Standard.';
+            activeElement.title = 'Give one NPC a profile instruction, then return to Standard.';
         }
         if (!symbolMode && effectiveMode === 'SMARTWAIT') {
-            currentModeElement.title = 'Describe what happens while you wait, then return to Standard.';
+            activeElement.title = 'Describe what happens while you wait, then return to Standard.';
         }
     }
 
@@ -525,6 +536,7 @@
     function closeAllTileMenus(exceptOptionsElement) {
         [
             [modeMenuToggleButton, modeOptionsElement],
+            [speechModeMenuToggleButton, speechModeOptionsElement],
             [modelMenuToggleButton, modelOptionsElement],
             [rechatMenuToggleButton, rechatOptionsElement],
             [soulgazeMenuToggleButton, soulgazeOptionsElement]
@@ -2482,6 +2494,13 @@
         }
     }
 
+    if (speechModeMenuToggleButton) {
+        speechModeMenuToggleButton.addEventListener('click', function(event) {
+            event.stopPropagation();
+            toggleTileMenu(speechModeMenuToggleButton, speechModeOptionsElement);
+        });
+    }
+
     if (modeMenuToggleButton) {
         modeMenuToggleButton.addEventListener('click', function(event) {
             event.stopPropagation();
@@ -2494,6 +2513,7 @@
             event.stopPropagation();
             const action = button.dataset.action;
             closeTileMenu(modeMenuToggleButton, modeOptionsElement);
+            closeTileMenu(speechModeMenuToggleButton, speechModeOptionsElement);
             if (!action || action === currentModeAction) return;
             resetTargetSelectionForModeChange();
             sendControlCommand(action);
