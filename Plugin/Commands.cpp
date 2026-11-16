@@ -2045,54 +2045,36 @@ void parseRoleCommand(std::string rawCommand) {
             logger::info("Command has not enough parms {}", command);
         } else {
 
-            // Pseudocode plan:
-            // - The issue is with parsing hex strings like "0xFF0026FF" using std::stoul.
-            // - std::stoul with base 0 should always parse "0x..." as hex, but locale or input issues may cause
-            // problems.
-            // - Add logging to show the string before parsing and the result after parsing.
-            // - Add a fallback: if std::stoul fails, try std::stoul with base 16 explicitly.
-            // - If both fail, log an error and set intval to 0.
-
-
             std::string backgroundCmdStr(splitResult[1].c_str());
 
-            uint32_t intval = 0;
-            try {
-                logger::info("[BackgroundCmd] Attempting to parse '{}'", splitResult[0]);
-                intval = std::stoul(splitResult[0], nullptr, 0);
-                logger::info("[BackgroundCmd] Parsed value: 0x{:08x}", intval);
-            } catch (const std::exception&) {
-                // Try parsing as hex explicitly if the first attempt fails
-                try {
-                    intval = std::stoul(splitResult[0], nullptr, 16);
-                    logger::info("[BackgroundCmd] Fallback hex parse: 0x{:08x}", intval);
-                } catch (const std::exception&) {
-                    logger::warn("Invalid integer parameter: '{}'", splitResult[0]);
-                    intval = 0;  // default fallback
-                }
-            }
-
-            RE::TESForm* form = RE::TESForm::LookupByID(intval);
-
-            if (!form) {
-                logger::info("[BackgroundCmd] Reference 0x{:08x} <{}>, is not a valid form", intval, splitResult[0]);
+            // FormIDs are hexadecimal with or without 0x; base-0 parsing would read 00019DF7 as octal.
+            const auto parsedFormId = ItemIdentifierUtils::ParseFormId(splitResult[0]);
+            if (!parsedFormId.has_value() || parsedFormId.value() == 0) {
+                logger::warn("[BackgroundCmd] Invalid FormID parameter: '{}'", splitResult[0]);
             } else {
-                logger::info("[BackgroundCmd] Reference 0x{:08x} is a valid form", form->GetFormID());
+                const uint32_t intval = parsedFormId.value();
+                RE::TESForm* form = RE::TESForm::LookupByID(intval);
+
+                if (!form) {
+                    logger::info("[BackgroundCmd] Reference 0x{:08x} <{}>, is not a valid form", intval, splitResult[0]);
+                } else {
+                    logger::info("[BackgroundCmd] Reference 0x{:08x} is a valid form", form->GetFormID());
                 
-                auto reference = form->As<RE::TESObjectREFR>();
-                if (reference) {
-                    auto actor = reference->As<RE::Actor>();
+                    auto reference = form->As<RE::TESObjectREFR>();
+                    if (reference) {
+                        auto actor = reference->As<RE::Actor>();
 
                     
-                    logger::info("[BackgroundCmd] Reference {} is a valid reference", reference->GetDisplayFullName());
+                        logger::info("[BackgroundCmd] Reference {} is a valid reference", reference->GetDisplayFullName());
 
-                    auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
-                    auto args = RE::MakeFunctionArguments(std::move(form), std::move(backgroundCmdStr));
+                        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>();
+                        auto args = RE::MakeFunctionArguments(std::move(form), std::move(backgroundCmdStr));
 
-                    RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
-                        "AIAgentAIMind", "BackgroundCmd", args, callback);
-                } else {
-                    logger::info("[BackgroundCmd] Reference 0x{:08x} is not a valid TESObjectREFR", intval);
+                        RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall(
+                            "AIAgentAIMind", "BackgroundCmd", args, callback);
+                    } else {
+                        logger::info("[BackgroundCmd] Reference 0x{:08x} is not a valid TESObjectREFR", intval);
+                    }
                 }
             }
         }
