@@ -34,6 +34,7 @@ void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated
     std::stringstream ss(data);
     std::string line;
     while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         std::stringstream ss(line);
         std::string item;
         
@@ -46,6 +47,8 @@ void SPGResponse::decodeAndEnqueue(const std::string& data, bool rechatGenerated
         // The payload is the rest of the line: dialogue may contain '|', and ScriptQueue metadata follows it after '/'.
         std::getline(ss, item);
         auto message = item;
+        // Queued rolecommands carry their payload in the action column, so the empty text column leaves one terminal '|'.
+        if (action == "rolecommand" && !message.empty() && message.back() == '|') message.pop_back();
 
         std::string tkey(actorname + action);
         if (tkey.empty()) return;
