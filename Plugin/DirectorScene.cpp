@@ -48,6 +48,20 @@ namespace {
         HTTPManager::log(std::format("_speech_abort|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(),
             nlohmann::json{{"utterance_ids", ids}, {"reason", "director_cancelled"}}.dump()));
     }
+
+    // Voiced lines carry the server's 32-hex audio key. A text-only line (speaker TTS disabled) must carry
+    // none, so neither its key nor a text-hash fallback can play stale cached audio.
+    bool ReadSpeechMode(const nlohmann::json& line, bool& textOnly, std::string& cacheKey) {
+        const auto mode = line.find("text_only");
+        if (mode != line.end() && !mode->is_boolean()) return false;
+        textOnly = mode != line.end() && mode->get<bool>();
+        const auto key = line.find("tts_cache_key");
+        cacheKey.clear();
+        if (textOnly) return key == line.end();
+        if (key == line.end() || !key->is_string()) return false;
+        cacheKey = key->get<std::string>();
+        return cacheKey.size() == 32 && cacheKey.find_first_not_of("0123456789abcdef") == std::string::npos;
+    }
 }
 std::uint64_t Generation() { return generation.load(); }
 bool Active() {
@@ -154,12 +168,14 @@ void Queue(const std::string& encoded) {
             queued.directorLine = static_cast<int>(i + 1);
             queued.directorHasActions = std::any_of(scene.at("actions").begin(), scene.at("actions").end(),
                 [i](const auto& action) { return action.at("after_line") == i + 1; });
-            queued.ttsCacheKey = line.at("tts_cache_key");
+            if (!ReadSpeechMode(line, queued.textOnly, queued.ttsCacheKey)) {
+                logger::error("[DIRECTOR] Queue: invalid text_only/tts_cache_key metadata at line {}", i + 1);
+                ReportAborted(lines); return;
+            }
             if (queued.utteranceId.empty() || !utterances.insert(queued.utteranceId).second
-                || queued.subtitle.empty() || queued.subtitle.size() > 2400 || queued.ttsCacheKey.size() != 32
-                || queued.ttsCacheKey.find_first_not_of("0123456789abcdef") != std::string::npos) {
-                logger::error("[DIRECTOR] Queue: invalid utterance/tts metadata at line {} (utteranceId empty: {}, duplicate: {}, subtitle.len: {}, ttsKey.len: {})",
-                    i + 1, queued.utteranceId.empty(), !utterances.insert(queued.utteranceId).second, queued.subtitle.size(), queued.ttsCacheKey.size());
+                || queued.subtitle.empty() || queued.subtitle.size() > 2400) {
+                logger::error("[DIRECTOR] Queue: invalid utterance metadata at line {} (utteranceId empty: {}, duplicate: {}, subtitle.len: {})",
+                    i + 1, queued.utteranceId.empty(), !utterances.insert(queued.utteranceId).second, queued.subtitle.size());
                 ReportAborted(lines); return;
             }
             speech.push_back(std::move(queued));

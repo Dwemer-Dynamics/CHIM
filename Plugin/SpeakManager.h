@@ -37,6 +37,7 @@ struct ScriptLine {
     std::uint64_t interactionGeneration = 0;
     int directorLine = 0;
     bool directorHasActions = false;
+    bool textOnly = false;  // intentional subtitle-only line: never download or play audio
     bool rechatGenerated = false;
     float volumeBoost;  // Volume multiplier for shouting (1.0 = normal, 1.3 = 30% louder)
     float duration;     // Duration of the line in seconds, used for timing animations and lip sync
