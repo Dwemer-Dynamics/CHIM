@@ -1,10 +1,3 @@
-3.5.2 - 2026-11-16
-* Fixed Background Life NPC reference parsing and delivery of queued inventory commands.
-* Fixed NPC schedule travel and release acknowledgements and included the required compiled Papyrus scripts.
-* Fixed Background Life production accounting and model response limits.
-* Preserved Background Life enrollment when loading a save.
-* Improved stuck NPC recovery using recent movement data and the correct actor.
-
 3.5.1 - 2026-10-13
 * Added one-shot Smart Wait through Prisma chat and Skyrim's Wait menu.
 * Added optional BFA facial animation integration, disabled by default, with smoother transitions and playback fallback. Thanks @Cyberquach!
