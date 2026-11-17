@@ -35,6 +35,19 @@ int main()
 
     Check(!ParseFormId("000CEE9E trailing").has_value(), "FormID parser accepted trailing garbage");
 
+    // BackgroundCmd FormIDs: leading zeros must not switch to octal (base-0 stoul read 00019DF7 as 1).
+    const auto leadingZeroFormId = ParseFormId("00019DF7");
+    Check(leadingZeroFormId.has_value() && leadingZeroFormId.value() == 0x00019DF7,
+          "Leading-zero FormID was not parsed as hexadecimal");
+    const auto prefixedFormId = ParseFormId("0x00019DF7");
+    Check(prefixedFormId.has_value() && prefixedFormId.value() == 0x00019DF7,
+          "0x-prefixed FormID did not match its bare equivalent");
+    const auto digitOnlyFormId = ParseFormId("00012345");
+    Check(digitOnlyFormId.has_value() && digitOnlyFormId.value() == 0x00012345,
+          "Digit-only FormID was not parsed as hexadecimal");
+    Check(!ParseFormId("00019DF7G").has_value(), "FormID parser accepted a non-hex suffix");
+    Check(!ParseFormId("0x100000000").has_value(), "FormID parser accepted a value wider than 32 bits");
+
     const auto legacy = ParseInventoryItemIdentifier("Iron Sword");
     Check(!legacy.baseId.has_value(), "Legacy name unexpectedly produced a BaseID");
     Check(legacy.name == "Iron Sword", "Legacy item name changed");
