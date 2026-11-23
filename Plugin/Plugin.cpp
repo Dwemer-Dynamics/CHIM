@@ -2454,11 +2454,9 @@ private:
                         l.rechatGenerated = newResponse.rechatGenerated;
 
                         if (IsPlayerActorName(l.actor)) {  // Player has talk. Remove NPC speech.
-                            SpeakManager::getInstance().deleteQueue();
                             // A long player line arrives as several parts; the part already playing finishes.
-                            if (SpeakManager::getInstance().getProcessing() &&
-                                !SpeakManager::getInstance().isPlayerPlaybackActive())
-                                SpeakManager::getInstance().abortPlay(true);
+                            SpeakManager::getInstance().deleteQueue(false, true);
+                            SpeakManager::getInstance().abortPlaybackForIncomingPlayerLine();
                         }
                         SpeakManager::getInstance().insertInQueue(l);
 
