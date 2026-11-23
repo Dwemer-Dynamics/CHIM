@@ -151,6 +151,10 @@ private:
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
+    // Set when processPlayer() claims a voiced player line; cleared with isProcessing.
+    bool playerPlaybackOwned = false;
+    // Changes on each processing claim so a released worker cannot clear a newer claim.
+    std::uint64_t processingClaimToken = 0;
     struct RecentAiSubtitle {
         RE::FormID speakerFormId;
         std::string text;
@@ -177,6 +181,9 @@ private:
     std::string narratorDisplayName = NARRATOR_NAME;
 
     SpeakManager() : isProcessing(false) {}  // Private constructor for Singleton pattern
+
+    std::uint64_t beginPlayerProcessing();
+    void endPlayerProcessing(std::uint64_t claimToken);
 
     std::chrono::high_resolution_clock::time_point rechatCooldown = std::chrono::high_resolution_clock::now();
 
@@ -267,6 +274,22 @@ public:
         std::lock_guard<std::mutex> lock(mtx);
         return currentPlaybackActor;
     }
+
+    // Called when a player line arrives from the server. A voiced player line that has already
+    // claimed playback finishes, because a long line arrives as several parts; any other current
+    // playback is aborted as before. Returns true when the current player playback was kept.
+    bool abortPlaybackForIncomingPlayerLine() {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (!isProcessing) {
+            return false;
+        }
+        if (playerPlaybackOwned) {
+            return true;
+        }
+        interrupt = true;
+        forceInterruptCurrentPlayback = true;
+        return false;
+    }
     // Method to insert a ScriptLine into the queue
     void insertInQueue(const ScriptLine& scriptLine);
 
@@ -310,7 +333,7 @@ public:
     float getPlaybackDropoffOutside();
 
     void abortPendingUtterances(const std::string& reason, bool includeCurrentPlayback = true);
-    void deleteQueue(bool isActionCommand = false);
+    void deleteQueue(bool isActionCommand = false, bool keepOwnedPlayerSubtitle = false);
     void deleteQueuedPlayerLines();
     void discardPendingInteraction();
     void setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback);

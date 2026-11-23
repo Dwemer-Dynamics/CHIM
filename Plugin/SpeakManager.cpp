@@ -2708,7 +2708,7 @@ void SpeakManager::abortPendingUtterances(const std::string& reason, bool includ
     HTTPManager::log(std::format("_speech_abort|{}|{}|{}", getCurrentTimeMillis(), GetGameTimeStamp(), abortData.dump()));
 }
 
-void SpeakManager::deleteQueue(bool isActionCommand) {
+void SpeakManager::deleteQueue(bool isActionCommand, bool keepOwnedPlayerSubtitle) {
     if (DirectorScene::IsDispatchingAction()) return;
     if (isActionCommand && DirectorScene::Active()) return;
     if (!isActionCommand) {
@@ -2751,8 +2751,11 @@ void SpeakManager::deleteQueue(bool isActionCommand) {
     audienceSnapshotKey.clear();
     audienceSnapshotCompanions.clear();
     audienceSnapshotReady = false;
-    pendingPlayerSubtitleActive = false;
-    pendingPlayerSubtitleText.clear();
+    // A player line that keeps playing keeps its subtitle refreshed.
+    if (!(keepOwnedPlayerSubtitle && isProcessing && playerPlaybackOwned)) {
+        pendingPlayerSubtitleActive = false;
+        pendingPlayerSubtitleText.clear();
+    }
     // If we uncomment this, rechat will happen more often. but now it's hnday because if you talk a
     // lot with only one NPC, while another NPC present, you can focus on single conversation,
     // as second NPC will only try to rechat once after being interrupted
@@ -2814,8 +2817,32 @@ void SpeakManager::setProcessing(bool processing) {
     std::unique_lock<std::mutex> lock(mtx);
     // logger::debug("[SpeakManager] Mutex acquired for setProcessing");
     isProcessing = processing;
+    playerPlaybackOwned = false;
+    ++processingClaimToken;
     logger::debug("[SpeakManager] Set processing state to: {}", processing);
     // logger::debug("[SpeakManager] Releasing mutex for setProcessing");
+}
+
+std::uint64_t SpeakManager::beginPlayerProcessing() {
+    std::lock_guard<std::mutex> lock(mtx);
+    isProcessing = true;
+    // Clear stale aborts here, under the same lock as the claim, so an abort requested after the
+    // claim reaches this line's playback.
+    interrupt = false;
+    forceInterruptCurrentPlayback = false;
+    playerPlaybackOwned = !scriptQueue.empty() && scriptQueue.front().action != "__player_text_only";
+    return ++processingClaimToken;
+}
+
+void SpeakManager::endPlayerProcessing(std::uint64_t claimToken) {
+    std::lock_guard<std::mutex> lock(mtx);
+    // An external stop may have released this claim and another line may have started since.
+    if (processingClaimToken != claimToken) {
+        return;
+    }
+    isProcessing = false;
+    playerPlaybackOwned = false;
+    ++processingClaimToken;
 }
 
 void SpeakManager::setPlayerPlaybackCompletedCallback(std::function<void(const ScriptLine&, int)> callback) {
@@ -2840,6 +2867,8 @@ void SpeakManager::recoverFromProcessingFailure(const std::string& actorName) {
         interrupt = false;
         forceInterruptCurrentPlayback = false;
         isProcessing = false;
+        playerPlaybackOwned = false;
+        ++processingClaimToken;
         audienceSnapshotKey.clear();
         audienceSnapshotCompanions.clear();
         audienceSnapshotReady = false;
@@ -4093,13 +4122,12 @@ void SpeakManager::processPlayer() {
     auto player = RE::PlayerCharacter::GetSingleton();
     
     if (!isProcessing && !scriptQueue.empty()) {
-        setProcessing(true);
-        isAborted();// Reset flag
+        const std::uint64_t claimToken = beginPlayerProcessing();
         logger::info("SpeakManager is processing now for Player");
         ScriptLine scriptLine = getFirstItem();
         if (!ChimInteraction::Enabled() || scriptLine.interactionGeneration != PrismaUIBridge::GetDialogueStopGeneration()) {
             SpeechTrace(scriptLine.utteranceId, "cancelled", "superseded");
-            dropMatchingHeadItem(scriptLine); setProcessing(false); return;
+            dropMatchingHeadItem(scriptLine); endPlayerProcessing(claimToken); return;
         }
 
         const std::string trimmedSubtitle = SM::trim(scriptLine.subtitle);
@@ -4126,7 +4154,7 @@ void SpeakManager::processPlayer() {
         }
 
         dropMatchingHeadItem(scriptLine);
-        setProcessing(false);
+        endPlayerProcessing(claimToken);
         if (isTextOnlyPlayerLine) {
             // Text-only STT captions are a short echo of what the player said.
             // If no NPC/Narrator subtitle replaces them, release the pending state so
