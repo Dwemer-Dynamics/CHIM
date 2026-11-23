@@ -151,6 +151,7 @@ private:
     std::string currentPlaybackUtteranceId = "";
     std::string currentPlaybackActor = "";
     bool currentPlaybackUtteranceConfirmed = false;
+    bool playerPlaybackActive = false;
     struct RecentAiSubtitle {
         RE::FormID speakerFormId;
         std::string text;
@@ -266,6 +267,17 @@ public:
     std::string getCurrentProcessingActorName() {
         std::lock_guard<std::mutex> lock(mtx);
         return currentPlaybackActor;
+    }
+
+    // True while processPlayer() is playing a voiced player line.
+    bool isPlayerPlaybackActive() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return playerPlaybackActive;
+    }
+
+    void setPlayerPlaybackActive(bool active) {
+        std::lock_guard<std::mutex> lock(mtx);
+        playerPlaybackActive = active;
     }
     // Method to insert a ScriptLine into the queue
     void insertInQueue(const ScriptLine& scriptLine);

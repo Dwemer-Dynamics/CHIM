@@ -2840,6 +2840,7 @@ void SpeakManager::recoverFromProcessingFailure(const std::string& actorName) {
         interrupt = false;
         forceInterruptCurrentPlayback = false;
         isProcessing = false;
+        playerPlaybackActive = false;
         audienceSnapshotKey.clear();
         audienceSnapshotCompanions.clear();
         audienceSnapshotReady = false;
@@ -4120,7 +4121,9 @@ void SpeakManager::processPlayer() {
             } else {
                 SpeechTrace(scriptLine.utteranceId, "dequeued", "", std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - scriptLine.traceQueuedAt).count());
+                setPlayerPlaybackActive(true);
                 res = DownloadAndPlay(trimmedSubtitle, preClip, postClip, "Player", playbackPhonetic, 1.0f, -1, false, "", scriptLine.interactionGeneration, scriptLine.utteranceId);
+                setPlayerPlaybackActive(false);
                 FacialAnimationBridge::EndReply(RE::PlayerCharacter::GetSingleton()->GetFormID(), res == 2 ? BFA_kAborted : BFA_kCompleted);
             }
         }
